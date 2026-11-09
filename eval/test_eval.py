@@ -23,6 +23,9 @@ assert not se.breaches([("Glob", '{"path": "/h/.claude/projects/-work-A"}', Fals
 sys.dont_write_bytecode = True
 body = 'we ran ctx and it worked\nBash {"command":"cd x; ~/.local/bin/ctx search a b | head -3"}\nBash {"command":"grep ctx file"}\nBash {"command":"A=1 ctx show 5"}'
 assert se.ctx_calls(body) == [("search", ["a", "b"]), ("show", ["5"])], se.ctx_calls(body)
+code = json.dumps({"command": "cat > x.go <<'EOF'\nctx context.Context\nfunc f(ctx interface{}) {}\nEOF\nctx turn 5"})
+assert se.ctx_calls("Bash " + code) == [("turn", ["5"])], se.ctx_calls("Bash " + code)
+assert se.ctx_calls('Bash {"command":"go test -run X(ctx context.Context)"}') == []
 
 T = tempfile.mkdtemp()
 LOG = f"{T}/log"
