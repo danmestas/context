@@ -2,7 +2,8 @@
 
 ctx keeps agent sessions and knowledge durable, shares them between people and
 machines, and makes them cheap to search. It is being built as one C binary on
-SQLite and libfossil. There is no working binary yet.
+SQLite and libfossil. So far it creates its database and extracts agent
+transcripts; the archive and search come next.
 
 ## What is here
 
@@ -16,6 +17,11 @@ SQLite and libfossil. There is no working binary yet.
 Source documents are check-ins, the compiled wiki is Fossil wiki in Markdown,
 work items are tickets, and session transcripts are technotes in a per-person
 repository.
+
+## Building
+
+`make` builds `./ctx` from the SQLite and libfossil sources in `vendor/`, and
+`make test` checks it. It needs a C compiler and zlib.
 
 ## The bench
 

@@ -1,8 +1,9 @@
 on: [push, landing]
 jobs:
   test:
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
+      - run: make test
       - run: python3 bench/check_corpus.py
       - run: bash -n bench/run.sh
       - run: python3 -c "import sqlite3; sqlite3.connect(':memory:').executescript(open('bench/schema.sql').read())"
