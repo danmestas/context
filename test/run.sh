@@ -269,6 +269,85 @@ while alive and time.time() < end:
 assert not alive, "child stopped at the same deadline"
 EOF
 
+# Every prefixed rule is redacted before storage. Values are built so no secret-shaped text sits in this file.
+export CTX_DB="$T/rules.sqlite"
+"$CTX" init >/dev/null
+R="$T/cc001111-rules.jsonl"
+python3 - "$R" <<'EOF'
+import json, sys
+tail = "aB3dE6gH9" * 6
+prefixes = ["gh" + "p_", "gh" + "o_", "gh" + "u_", "gh" + "s_", "gh" + "r_", "github" + "_pat_", "s" + "k-", "sk" + "_live_",
+            "rk" + "_live_", "wh" + "sec_", "AK" + "IA", "AS" + "IA", "xo" + "xa-", "xo" + "xb-", "xo" + "xp-", "xo" + "xr-",
+            "xo" + "xs-", "gl" + "pat-", "np" + "m_", "py" + "pi-", "h" + "f_", "sh" + "pat_", "sh" + "pss_", "AI" + "za",
+            "ya" + "29.", "dop" + "_v1_", "lin" + "_api_", "ts" + "key-", "sn" + "trys_", "AGE-SECRET" + "-KEY-1"]
+def body(p):
+    if p.startswith("AK") or p.startswith("AS") or p.startswith("AGE"):
+        return tail.upper()
+    if p.startswith("dop"):
+        return "abc123" * 10
+    return tail
+with open(sys.argv[1], "w") as f:
+    for i, p in enumerate(prefixes):
+        f.write(json.dumps({"uuid": f"r-{i}", "timestamp": "2026-06-03T01:00:00Z", "cwd": "/w/r",
+                            "message": {"role": "user", "content": f"value {p}{body(p)} end"}}) + "\n")
+EOF
+"$CTX" archive "$R" >/dev/null
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE body LIKE '%[REDACTED] end'")" = 30 ] || fail "every prefixed rule redacts"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE body LIKE '%aB3dE6gH9%' OR body LIKE '%AB3DE6GH9%' OR body LIKE '%abc123abc123%'")" = 0 ] || fail "a value was stored"
+
+# Secret manager output is redacted even with no recognizable prefix.
+D="$T/dd001111-doppler.jsonl"
+python3 - "$D" <<'EOF'
+import json, sys
+text = '{"NAME":{"computed":"plainvalue1234","computedValueType":{"type":"string"},"raw":"plainvalue5678","rawValueType":{"type":"string"}}}'
+other = 'an unrelated {"raw":"keep this text","other":1}'
+with open(sys.argv[1], "w") as f:
+    f.write(json.dumps({"uuid": "dj-1", "timestamp": "2026-06-04T01:00:00Z", "cwd": "/w/r", "message": {"role": "user", "content": text + " " + other}}) + "\n")
+EOF
+"$CTX" archive "$D" >/dev/null
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE body LIKE '%plainvalue%'")" = 0 ] || fail "secret manager output is redacted"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE turn='dj-1' AND body LIKE '%keep this text%'")" = 1 ] || fail "ordinary raw fields stay"
+
+# Audit finds what got into storage, and shows only where and what shape.
+export CTX_DB="$T/audit.sqlite"
+"$CTX" init >/dev/null
+python3 - "$T/seed.sql" <<'EOF'
+import sys
+token = "gh" + "p_" + "Zq7Kp2Lm9Xw4Rt8Vb3Nc6Hj1Df5Gs0Yu"
+random = "Qz8Wm3Rt7Yp2Lk5Xn9Bv4Cs6Jh1Gd0Fa2Te"
+known = "hunter2-correct-horse"
+rows = [("a token " + token, 1), ("blob " + random + " here", 2), ("the value " + known + " again", 3),
+        ("password = hunter2", 4), ("ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", 5), ("nothing here at all", 6)]
+with open(sys.argv[1], "w") as f:
+    f.write("INSERT INTO ctx_doc(id, kind, name, project, hash, size, mtime) VALUES (1, 'session', 's', 'p', 'h', 1, 1);\n")
+    for b, i in rows:
+        f.write(f"INSERT INTO ctx_chunk(id, doc_id, seq, heading, at, project, body) VALUES ({i}, 1, {i}, 'user', '2026-07-01', 'p', '{b}');\n")
+open(sys.argv[1] + ".known", "w").write(known + "\nshort\n")
+open(sys.argv[1] + ".values", "w").write("\n".join([token, random, known]) + "\n")
+EOF
+python3 - "$T/seed.sql" "$CTX" <<'EOF'
+import subprocess, sys
+for line in open(sys.argv[1]):
+    subprocess.run([sys.argv[2], "sql", line.strip()], check=True, capture_output=True)
+EOF
+if "$CTX" audit --limit 20 > "$T/a1.txt"; then fail "audit exits 1 with open findings"; fi
+head -1 "$T/a1.txt" | grep -q '6 turns scanned' || fail "audit scans every turn"
+grep -q 'github-token' "$T/a1.txt" || fail "audit finds a token"
+grep -q 'entropy' "$T/a1.txt" || fail "audit finds a high-entropy value"
+grep -c 'turn 5 ' "$T/a1.txt" | grep -q '^0$' || fail "placeholders are not findings"
+if "$CTX" audit --known --limit 20 < "$T/seed.sql.known" > "$T/a2.txt"; then fail "known exits 1"; fi
+grep -q 'known .*line 1, len=21' "$T/a2.txt" || fail "known value located"
+while read -r v; do
+  if grep -qF -- "$v" "$T/a1.txt" "$T/a2.txt"; then fail "audit printed a value"; fi
+done < "$T/seed.sql.values"
+if "$CTX" sql "SELECT shape || fingerprint FROM ctx_audit_finding" | grep -qF -f "$T/seed.sql.values"; then fail "audit stored a value"; fi
+# Nothing new is reported twice, and an allowed finding stays quiet.
+out=$("$CTX" audit --limit 0 || true); echo "$out" | head -1 | grep -q '^0 turns scanned, 0 new' || fail "audit resumes where it stopped"
+for id in $("$CTX" sql "SELECT min(id) FROM ctx_audit_finding WHERE status='open' GROUP BY rule, fingerprint"); do "$CTX" audit --allow "$id" "test" >/dev/null; done
+"$CTX" audit --limit 0 > "$T/a3.txt" || fail "audit exits 0 when nothing is open"
+out=$("$CTX" audit --all --limit 0) || fail "allowed findings stay allowed on a full rescan"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_audit_run")" -ge 4 ] || fail "runs are counted over time"
+
 # The skill eval harness works end to end with a stand-in for the model.
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"
 
