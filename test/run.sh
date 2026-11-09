@@ -198,6 +198,50 @@ EOF
 [ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE project='repo'")" = 2 ] || fail "a turn's project comes from its own directory"
 [ "$(cd "$T/repo/internal/deep" && "$CTX" search pelican | grep -c '^#')" = 2 ] || fail "search from a subdirectory finds the repository's turns"
 
+# Hooks return at once, even with many sessions firing, and every transcript lands.
+export CTX_DB="$T/hook.sqlite"
+"$CTX" init >/dev/null
+python3 - "$CTX" "$T" <<'EOF'
+import json, os, subprocess, sys, time
+ctx, T = sys.argv[1:3]
+paths = []
+for i in range(20):
+    p = f"{T}/{i:08x}-hook.jsonl"
+    with open(p, "w") as f:
+        for n in range(200):
+            f.write(json.dumps({"uuid": f"h{i}-{n}", "timestamp": "2026-06-01T10:00:00Z",
+                                "cwd": "/w/hooked", "message": {"role": "user", "content": "turn %d of session %d " % (n, i) + "words " * 50}}) + "\n")
+    paths.append(p)
+procs = []
+for p in paths:
+    body = json.dumps({"session_id": "x", "transcript_path": p, "hook_event_name": "Stop"}).encode()
+    start = time.time()
+    r = subprocess.run([ctx, "hook"], input=body, capture_output=True)
+    procs.append(time.time() - start)
+    assert r.returncode == 0 and r.stdout == b"", "hook stayed quiet"
+assert max(procs) < 1.0, "hook returned quickly: %.3f" % max(procs)
+end = time.time() + 60
+want = 20 * 200
+n = 0
+while time.time() < end:
+    n = int(subprocess.run([ctx, "sql", "SELECT count(*) FROM ctx_chunk"], capture_output=True, text=True).stdout or 0)
+    if n >= want: break
+    time.sleep(0.2)
+assert n == want, "all turns landed: %d of %d" % (n, want)
+EOF
+
+# Junk on stdin never disturbs a session.
+echo 'not json' | "$CTX" hook || fail "hook on junk input"
+"$CTX" hook </dev/null || fail "hook on empty input"
+
+# A scan catches transcripts no hook reported, and then has nothing to do.
+mkdir -p "$T/projects/p1"
+echo '{"uuid":"sc-1","timestamp":"2026-06-02T10:00:00Z","cwd":"/w/s","message":{"role":"user","content":"scanned turn"}}' > "$T/projects/p1/12341234-a.jsonl"
+touch "$T/projects/p1/ignored.txt"
+[ "$("$CTX" scan "$T/projects")" = "1 transcripts read" ] || fail "scan reads a new transcript"
+[ "$("$CTX" scan "$T/projects")" = "0 transcripts read" ] || fail "scan has nothing left"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE turn='sc-1'")" = 1 ] || fail "scan stored the turn"
+
 # A missing file is an error.
 if "$CTX" extract "$T/none.jsonl" 2>/dev/null; then fail "missing file"; fi
 
