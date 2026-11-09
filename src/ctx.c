@@ -12,6 +12,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "sqlite3.h"
 #include "schema.h"
@@ -800,6 +801,161 @@ static int cmd_archive(const char *path) {
   return 0;
 }
 
+/* Words too common to help a search. */
+static int is_stopword(const char *w) {
+  static const char *const words[] = {
+      "about", "after", "all", "also", "and", "any", "are", "because", "been", "before",
+      "between", "both", "but", "can", "could", "did", "does", "each", "for", "from", "has",
+      "have", "how", "into", "its", "like", "may", "more", "most", "must", "not", "one",
+      "only", "other", "out", "over", "should", "some", "such", "than", "that", "the",
+      "their", "them", "then", "there", "these", "they", "this", "those", "through", "under",
+      "use", "was", "were", "what", "when", "where", "which", "while", "who", "why", "will",
+      "with", "would", "you", "your", NULL};
+  for (int i = 0; words[i]; i++)
+    if (!strcmp(w, words[i])) return 1;
+  return 0;
+}
+
+/* Builds an FTS5 OR query from free text. Returns 0 if no usable word is left. */
+static int fts_query(int argc, char **argv, buf *q) {
+  int terms = 0;
+  char w[64];
+  for (int a = 0; a < argc; a++) {
+    const char *p = argv[a];
+    size_t n = 0;
+    for (;; p++) {
+      unsigned char c = (unsigned char)*p;
+      if (c_word(c)) {
+        if (n < sizeof w - 1) w[n++] = (char)((c >= 'A' && c <= 'Z') ? c + 32 : c);
+        continue;
+      }
+      w[n] = 0;
+      if (n >= 3 && !is_stopword(w)) {
+        if (terms++) buf_str(q, " OR ");
+        buf_str(q, "\"");
+        buf_str(q, w);
+        buf_str(q, "\"");
+      }
+      n = 0;
+      if (!c) break;
+    }
+  }
+  return terms;
+}
+
+static char *current_project(sqlite3 *db) {
+  char cwd[4096];
+  return project_for(db, getcwd(cwd, sizeof cwd));
+}
+
+/* Runs the search; prints hits and returns how many there were. */
+static int search_run(sqlite3 *db, const char *match, const char *project, int limit) {
+  sqlite3_stmt *q = db_prepare(db,
+      "SELECT c.id, d.project, d.kind, coalesce(c.heading,''), substr(coalesce(c.at,''),1,10),"
+      "       snippet(ctx_chunk_fts, 1, '[', ']', ' ... ', 40)"
+      " FROM ctx_chunk_fts"
+      " JOIN ctx_chunk c ON c.id = ctx_chunk_fts.rowid"
+      " JOIN ctx_doc d ON d.id = c.doc_id"
+      " WHERE ctx_chunk_fts MATCH ?1 AND (?2 IS NULL OR d.project = ?2)"
+      " ORDER BY ctx_chunk_fts.rank LIMIT ?3");
+  sqlite3_bind_text(q, 1, match, -1, SQLITE_STATIC);
+  if (project) sqlite3_bind_text(q, 2, project, -1, SQLITE_STATIC);
+  sqlite3_bind_int(q, 3, limit);
+  int hits = 0, rc;
+  while ((rc = sqlite3_step(q)) == SQLITE_ROW) {
+    hits++;
+    printf("#%lld %s %s %s %s\n", sqlite3_column_int64(q, 0), sqlite3_column_text(q, 1),
+           sqlite3_column_text(q, 2), sqlite3_column_text(q, 3), sqlite3_column_text(q, 4));
+    const char *snip = (const char *)sqlite3_column_text(q, 5);
+    fputs("    ", stdout);
+    int space = 0; /* collapse runs of whitespace so each hit stays on one line */
+    for (; snip && *snip; snip++) {
+      if (c_space((unsigned char)*snip)) {
+        space = 1;
+        continue;
+      }
+      if (space) putchar(' ');
+      space = 0;
+      putchar(*snip);
+    }
+    putchar('\n');
+  }
+  if (rc != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+  sqlite3_finalize(q);
+  return hits;
+}
+
+/* ctx search [--all] [--limit N] WORDS... */
+static int cmd_search(int argc, char **argv) {
+  int all = 0, limit = 12, nwords = 0;
+  char **words = calloc((size_t)argc + 1, sizeof *words);
+  if (!words) die("out of memory");
+  for (int i = 0; i < argc; i++) {
+    if (!strcmp(argv[i], "--all")) all = 1;
+    else if (!strcmp(argv[i], "--limit") && i + 1 < argc) limit = atoi(argv[++i]);
+    else if (!strncmp(argv[i], "--", 2)) die("unknown option %s", argv[i]);
+    else words[nwords++] = argv[i];
+  }
+  if (limit < 1) die("--limit must be at least 1");
+  buf q = {0};
+  if (!fts_query(nwords, words, &q)) die("no search words");
+  free(words);
+  sqlite3 *db = ctx_open();
+  char *project = all ? NULL : current_project(db);
+  int hits = search_run(db, q.p, project, limit);
+  if (!hits && project) {
+    fprintf(stderr, "ctx: nothing in project %s; searching everything\n", project);
+    hits = search_run(db, q.p, NULL, limit);
+  }
+  if (!hits) fprintf(stderr, "ctx: no matches\n");
+  free(project);
+  free(q.p);
+  sqlite3_close(db);
+  return 0;
+}
+
+/* How much of one turn is printed unless --full is given. */
+#define TURN_SHOW 8000
+
+/* ctx turn ID [BEFORE [AFTER]] [--full] */
+static int cmd_turn(int argc, char **argv) {
+  int full = 0, nums[3] = {0, 0, 0}, have = 0;
+  for (int i = 0; i < argc; i++) {
+    if (!strcmp(argv[i], "--full")) full = 1;
+    else if (have < 3) nums[have++] = atoi(argv[i]);
+    else return 2;
+  }
+  if (have < 1 || nums[0] <= 0) die("usage: ctx turn ID [BEFORE [AFTER]] [--full]");
+  sqlite3 *db = ctx_open();
+  sqlite3_stmt *q = db_prepare(db,
+      "SELECT n.id, n.heading, coalesce(n.at,''), n.body"
+      " FROM ctx_chunk c JOIN ctx_chunk n ON n.doc_id = c.doc_id"
+      " WHERE c.id = ?1 AND n.seq BETWEEN c.seq - ?2 AND c.seq + ?3 ORDER BY n.seq");
+  sqlite3_bind_int(q, 1, nums[0]);
+  sqlite3_bind_int(q, 2, nums[1]);
+  sqlite3_bind_int(q, 3, nums[2]);
+  int found = 0, rc;
+  while ((rc = sqlite3_step(q)) == SQLITE_ROW) {
+    found = 1;
+    const char *body = (const char *)sqlite3_column_text(q, 3);
+    size_t n = (size_t)sqlite3_column_bytes(q, 3), show = n;
+    if (!full && n > TURN_SHOW) {
+      show = TURN_SHOW;
+      while (show > 0 && is_utf8_cont(body[show])) show--;
+    }
+    printf("--- #%lld %s %s\n", sqlite3_column_int64(q, 0), sqlite3_column_text(q, 1),
+           sqlite3_column_text(q, 2));
+    fwrite(body, 1, show, stdout);
+    if (show < n) printf("\n[... %zu more bytes; use --full]", n - show);
+    fputs("\n\n", stdout);
+  }
+  if (rc != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+  sqlite3_finalize(q);
+  sqlite3_close(db);
+  if (!found) die("no turn #%d", nums[0]);
+  return 0;
+}
+
 /* Runs one SQL statement with libfossil ready, printing rows tab-separated. */
 static int cmd_sql(const char *sql) {
   sqlite3 *db = ctx_open();
@@ -824,6 +980,8 @@ static int usage(void) {
         "       ctx init\n"
         "       ctx extract TRANSCRIPT\n"
         "       ctx archive TRANSCRIPT\n"
+        "       ctx search [--all] [--limit N] WORDS...\n"
+        "       ctx turn ID [BEFORE [AFTER]] [--full]\n"
         "       ctx sql STATEMENT\n",
         stderr);
   return 2;
@@ -837,5 +995,7 @@ int main(int argc, char **argv) {
   if (argc == 3 && !strcmp(argv[1], "extract")) return cmd_extract(argv[2]);
   if (argc == 3 && !strcmp(argv[1], "archive")) return cmd_archive(argv[2]);
   if (argc == 3 && !strcmp(argv[1], "sql")) return cmd_sql(argv[2]);
+  if (argc >= 3 && !strcmp(argv[1], "search")) return cmd_search(argc - 2, argv + 2);
+  if (argc >= 3 && !strcmp(argv[1], "turn")) return cmd_turn(argc - 2, argv + 2);
   return usage();
 }

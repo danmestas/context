@@ -2,7 +2,7 @@
 # Checks the built binary. Uses only made-up data and a temporary directory.
 set -eu
 
-CTX=${CTX:-./ctx}
+CTX=${CTX:-$PWD/ctx}
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT INT TERM
 
@@ -144,6 +144,45 @@ EOF
 "$CTX" sql "SELECT fsl_technote(technote) FROM ctx_capture_day WHERE session LIKE 'ef56%'" > "$T/k.txt"
 grep -q 'aB3aB3aB3' "$T/k.txt" && fail "secret in the technote"
 grep -q 'REDACTED' "$T/k.txt" || fail "redaction marker"
+
+# Search finds a turn, and turn reads it with its neighbours.
+export CTX_DB="$T/find.sqlite"
+"$CTX" init >/dev/null
+S="$T/aaaa1111-s.jsonl"
+cat > "$S" <<'EOF'
+{"uuid":"s-1","timestamp":"2026-04-01T10:00:00Z","cwd":"/w/alpha","message":{"role":"user","content":"why did the walrus migration stall"}}
+{"uuid":"s-2","timestamp":"2026-04-01T10:00:01Z","cwd":"/w/alpha","message":{"role":"assistant","content":"because the lock was held"}}
+EOF
+O="$T/bbbb2222-s.jsonl"
+cat > "$O" <<'EOF'
+{"uuid":"o-1","timestamp":"2026-04-02T10:00:00Z","cwd":"/w/beta","message":{"role":"user","content":"a walrus in another project"}}
+EOF
+"$CTX" archive "$S" >/dev/null; "$CTX" archive "$O" >/dev/null
+mkdir -p "$T/alpha"; R=$(cd "$T/alpha" && "$CTX" search --all walrus); [ "$(echo "$R" | grep -c '^#')" = 2 ] || fail "search --all"
+echo "$R" | grep -q '\[walrus\]' || fail "search highlights the match"
+[ "$(cd "$T/alpha" && "$CTX" search walrus --all --limit 1 | grep -c '^#')" = 1 ] || fail "options after the words"
+sq() { "$CTX" sql "$1"; }
+ID=$(sq "SELECT c.id FROM ctx_chunk c WHERE c.turn='s-1'")
+"$CTX" turn "$ID" 0 1 > "$T/turn.txt"
+grep -q 'walrus migration' "$T/turn.txt" && grep -q 'lock was held' "$T/turn.txt" || fail "turn and its neighbour"
+[ "$("$CTX" turn "$ID" | grep -c '^--- #')" = 1 ] || fail "turn alone"
+sq "INSERT INTO ctx_project(root, project) VALUES ('$T/alpha', 'alpha')" >/dev/null
+[ "$(cd "$T/alpha" && "$CTX" search walrus | grep -c '^#')" = 1 ] || fail "search stays in the project"
+[ "$(cd "$T" && "$CTX" search walrus 2>/dev/null | grep -c '^#')" = 2 ] || fail "falls back when the project has nothing"
+if "$CTX" search the 2>/dev/null; then fail "search with only stopwords"; fi
+if "$CTX" turn 999999 2>/dev/null; then fail "missing turn"; fi
+
+# A long turn is cut unless --full is given.
+python3 - "$T/cccc3333-s.jsonl" <<'EOF'
+import json, sys
+line = {"uuid": "l-1", "timestamp": "2026-04-03T10:00:00Z", "cwd": "/w/gamma",
+        "message": {"role": "user", "content": "longword " + "x" * 20000}}
+open(sys.argv[1], "w").write(json.dumps(line) + "\n")
+EOF
+"$CTX" archive "$T/cccc3333-s.jsonl" >/dev/null
+ID=$(sq "SELECT id FROM ctx_chunk WHERE turn='l-1'")
+"$CTX" turn "$ID" | grep -q 'more bytes; use --full' || fail "long turn is cut"
+[ "$("$CTX" turn "$ID" --full | wc -c)" -gt 20000 ] || fail "--full shows it all"
 
 # A missing file is an error.
 if "$CTX" extract "$T/none.jsonl" 2>/dev/null; then fail "missing file"; fi
