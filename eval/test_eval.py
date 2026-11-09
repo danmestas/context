@@ -27,6 +27,9 @@ code = json.dumps({"command": "cat > x.go <<'EOF'\nctx context.Context\nfunc f(c
 assert se.ctx_calls("Bash " + code) == [("turn", ["5"])], se.ctx_calls("Bash " + code)
 assert se.ctx_calls('Bash {"command":"go test -run X(ctx context.Context)"}') == []
 
+assert not se.breaches([("Bash", "cd /h/.ctx/eval/work/x/repos/C/p", False)], "-work"), "its own workspace"
+assert se.breaches([("Read", "/h/.ctx/ctx.sqlite", False)], "-work"), "the live archive"
+
 T = tempfile.mkdtemp()
 LOG = f"{T}/log"
 FAKE = f"{T}/fake"
