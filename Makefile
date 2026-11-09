@@ -22,7 +22,12 @@ build/schema.h: schema/index.sql | build
 	     { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); print "\"" $$0 "\\n\"" } \
 	     END { print ";" }' $< > $@
 
-build/ctx.o: src/ctx.c build/schema.h | build
+build/ticket_schema.h: schema/ticket-table.sql | build
+	awk 'BEGIN { print "static const char ctx_ticket_schema[] =" } \
+	     { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); print "\"" $$0 "\\n\"" } \
+	     END { print ";" }' $< > $@
+
+build/ctx.o: src/ctx.c build/schema.h build/ticket_schema.h | build
 	$(CC) $(CFLAGS) -Wall -Wextra -I$(VENDOR) -Ibuild -c -o $@ $<
 
 build/sqlite3.o: $(VENDOR)/sqlite3.c | build

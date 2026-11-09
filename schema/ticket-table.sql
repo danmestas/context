@@ -1,8 +1,8 @@
--- The ticket schema for ctx's shared project repositories. Stored as the value of
+-- The ticket schema for ctx's repositories. Stored as the value of
 -- the repository's 'ticket-table' config entry, then applied by a rebuild.
 --
 -- Tickets are the work agents and people pick up. ctx ships this schema and applies
--- it to each shared repository.
+-- it to each repository. In the private repository, subsystem holds the project.
 --   type     Task, Bug, Feature or Question
 --   status   Open, Claimed, Done or Dropped
 --
