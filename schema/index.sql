@@ -1,7 +1,11 @@
--- The machine-wide ctx index. Everything here is derived: it can be rebuilt from
--- the Fossil repositories and project files, and it is never synced.
+-- The ctx tables in the machine's one SQLite file, ~/.ctx/ctx.sqlite. The Fossil
+-- repositories live in the same file as libfossil host repositories (repo:NAME).
 --
--- What lives in Fossil, not here:
+-- State, kept across a rebuild: ctx_project, ctx_repo, ctx_capture.
+-- Derived, cleared and rebuilt from the repositories and project files, and never
+-- synced: ctx_doc, ctx_chunk, ctx_chunk_fts, ctx_link.
+--
+-- What lives in the Fossil repositories, not here:
 --   source documents   check-ins in the project's shared repository
 --   compiled wiki      Fossil wiki pages, mimetype text/x-markdown, same repository
 --   work items         tickets, same repository (see ticket-table.sql)
@@ -9,15 +13,45 @@
 
 PRAGMA user_version = 1;
 
--- One row per Fossil repository found under ~/.ctx/repos/<project>/<name>.fossil.
+-- Which project a working directory belongs to. The longest root that contains the
+-- directory wins, so a nested project is found before its parent:
+--   SELECT project FROM ctx_project
+--   WHERE @cwd = root OR substr(@cwd, 1, length(root) + 1) = root || '/'
+--   ORDER BY length(root) DESC LIMIT 1;
+CREATE TABLE ctx_project(
+  root    TEXT PRIMARY KEY,
+  project TEXT NOT NULL
+) STRICT, WITHOUT ROWID;
+CREATE INDEX ctx_project_name ON ctx_project(project);
+
+-- One row per repository in this file. Each project has one shared repository; each
+-- person has one private repository, which belongs to no project.
 CREATE TABLE ctx_repo(
   id      INTEGER PRIMARY KEY,
-  project TEXT NOT NULL,
-  name    TEXT NOT NULL,
-  path    TEXT NOT NULL UNIQUE,
+  name    TEXT NOT NULL UNIQUE,  -- the NAME in repo:NAME
+  project TEXT,
   scope   TEXT NOT NULL CHECK (scope IN ('shared', 'private')),
-  UNIQUE (project, name)
+  remote  TEXT,                  -- sync URL; NULL never leaves the machine
+  CHECK (scope = 'private' OR project IS NOT NULL)
 ) STRICT;
+
+-- How far each transcript has been archived. Offsets are bytes into the file;
+-- head_hash is of its first 64 KB, so a replaced file is noticed and read again.
+CREATE TABLE ctx_capture(
+  session   TEXT PRIMARY KEY,
+  path      TEXT NOT NULL,
+  project   TEXT NOT NULL,
+  offset    INTEGER NOT NULL DEFAULT 0,
+  head_hash TEXT
+) STRICT;
+
+-- The technote holding one session's turns for one UTC day.
+CREATE TABLE ctx_capture_day(
+  session  TEXT NOT NULL REFERENCES ctx_capture(session) ON DELETE CASCADE,
+  day      TEXT NOT NULL,
+  technote TEXT NOT NULL,
+  PRIMARY KEY (session, day)
+) STRICT, WITHOUT ROWID;
 
 -- One row per indexed thing, at the version last indexed.
 --   kind      name
@@ -50,9 +84,11 @@ CREATE TABLE ctx_chunk(
   seq     INTEGER NOT NULL,
   heading TEXT NOT NULL DEFAULT '',  -- section heading, or the speaker for a turn
   at      TEXT,                      -- turn timestamp, sessions only
+  turn    TEXT,                      -- transcript uuid of a turn, so a re-read skips it
   body    TEXT NOT NULL,
   UNIQUE (doc_id, seq)
 ) STRICT;
+CREATE UNIQUE INDEX ctx_chunk_turn ON ctx_chunk(turn) WHERE turn IS NOT NULL;
 
 CREATE VIRTUAL TABLE ctx_chunk_fts USING fts5(
   heading, body,
