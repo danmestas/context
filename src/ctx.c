@@ -3,6 +3,7 @@
  * One binary on SQLite and libfossil. All state lives in one SQLite file:
  * the ctx tables (schema/index.sql) beside libfossil host repositories.
  */
+#define _GNU_SOURCE /* memmem */
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -120,6 +121,171 @@ static void buf_str(buf *b, const char *s) { buf_add(b, s, strlen(s)); }
 
 static int is_utf8_cont(char c) { return ((unsigned char)c & 0xC0) == 0x80; }
 
+/* Secret removal. Fossil history is hard to purge, so this runs before anything
+ * is stored. It is a single left-to-right pass with no regular expressions. */
+#define REDACTED "[REDACTED]"
+
+static int c_alnum(unsigned char c) {
+  return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+}
+static int c_word(unsigned char c) { return c_alnum(c) || c == '_'; }
+static int c_b64(unsigned char c) { return c_word(c) || c == '-'; }
+static int c_bearer(unsigned char c) { return c_b64(c) || c == '.'; }
+static int c_slack(unsigned char c) { return c_alnum(c) || c == '-'; }
+static int c_upnum(unsigned char c) { return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z'); }
+static int c_hex(unsigned char c) {
+  return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+static int c_space(unsigned char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
+static int c_value(unsigned char c) {
+  return !c_space(c) && c != '"' && c != '\'' && c != ',' && c != ';' && c != ')' && c != '}';
+}
+
+static size_t span(const char *s, size_t n, size_t i, int (*ok)(unsigned char)) {
+  size_t j = i;
+  while (j < n && ok((unsigned char)s[j])) j++;
+  return j;
+}
+
+static int at(const char *s, size_t n, size_t i, const char *lit) {
+  size_t m = strlen(lit);
+  return i + m <= n && memcmp(s + i, lit, m) == 0;
+}
+
+static int at_ci(const char *s, size_t n, size_t i, const char *lit) {
+  size_t m = strlen(lit);
+  if (i + m > n) return 0;
+  for (size_t k = 0; k < m; k++) {
+    char a = s[i + k], b = lit[k];
+    if (a >= 'A' && a <= 'Z') a = (char)(a + 32);
+    if (a != b) return 0;
+  }
+  return 1;
+}
+
+/* The end of a prefixed token starting at i, or 0. */
+static size_t token_end(const char *s, size_t n, size_t i) {
+  static const char *const gh[] = {"ghp_", "gho_", "ghu_", "ghs_", "ghr_", NULL};
+  for (int k = 0; gh[k]; k++)
+    if (at(s, n, i, gh[k])) {
+      size_t e = span(s, n, i + 4, c_alnum);
+      return e - (i + 4) >= 20 ? e : 0;
+    }
+  size_t e;
+  if (at(s, n, i, "github_pat_")) {
+    e = span(s, n, i + 11, c_word);
+    return e - (i + 11) >= 30 ? e : 0;
+  }
+  if (at(s, n, i, "sk-")) {
+    e = span(s, n, i + 3, c_b64);
+    return e - (i + 3) >= 20 ? e : 0;
+  }
+  if (at(s, n, i, "AKIA")) {
+    e = span(s, n, i + 4, c_upnum);
+    return e - (i + 4) >= 16 ? e : 0;
+  }
+  if (at(s, n, i, "xox") && i + 4 < n && s[i + 4] == '-' && strchr("abprs", s[i + 3])) {
+    e = span(s, n, i + 5, c_slack);
+    return e - (i + 5) >= 20 ? e : 0;
+  }
+  if (at(s, n, i, "dp.") && i + 5 < n && s[i + 5] == '.') {
+    e = span(s, n, i + 6, c_alnum);
+    return e - (i + 6) >= 20 ? e : 0;
+  }
+  if (at(s, n, i, "eyJ")) { /* JWT: three base64url parts */
+    size_t a = span(s, n, i, c_b64);
+    if (a - i < 15 || a >= n || s[a] != '.') return 0;
+    size_t b = span(s, n, a + 1, c_b64);
+    if (b - (a + 1) < 15 || b >= n || s[b] != '.') return 0;
+    size_t c = span(s, n, b + 1, c_b64);
+    return c - (b + 1) >= 10 ? c : 0;
+  }
+  return 0;
+}
+
+/* After a keyword: optional quotes and spaces around a required ':' or '='.
+ * Returns the index of the value, or 0 if this is not an assignment. */
+static size_t assignment_value(const char *s, size_t n, size_t i) {
+  size_t j = i;
+  int sep = 0;
+  while (j < n && (s[j] == ' ' || s[j] == '\t' || s[j] == '"' || s[j] == '\'' || s[j] == ':' ||
+                   s[j] == '=')) {
+    if (s[j] == ':' || s[j] == '=') sep = 1;
+    j++;
+  }
+  return sep ? j : 0;
+}
+
+/* Appends s with secrets replaced. */
+static void add_redacted(buf *out, const char *s, size_t n) {
+  static const char *const words[] = {"password", "passwd", "token",  "secret",
+                                      "api_key",  "api-key", "apikey", NULL};
+  static const char *const hexwords[] = {"key", "auth", "credential", NULL};
+  size_t i = 0, done = 0;
+  while (i < n) {
+    size_t end = 0, from = i;
+    int prev_ok = i == 0 || !c_word((unsigned char)s[i - 1]);
+    if (s[i] == '-' && at(s, n, i, "-----BEGIN ")) {
+      size_t line = i;
+      while (line < n && s[line] != '\n') line++;
+      if (memmem(s + i, line - i, "PRIVATE KEY-----", 16)) {
+        const char *close = memmem(s + line, n - line, "PRIVATE KEY-----", 16);
+        end = close ? (size_t)(close - s) + 16 : n;
+      }
+    } else if (prev_ok) {
+      end = token_end(s, n, i);
+      if (!end && at_ci(s, n, i, "bearer")) {
+        size_t v = span(s, n, i + 6, c_space);
+        size_t e = span(s, n, v, c_bearer);
+        if (v > i + 6 && e - v >= 24) {
+          from = v;
+          end = e;
+        }
+      }
+    }
+    if (!end && s[i] == ':' && at(s, n, i, "://")) {
+      size_t a = i + 3, j = a, colon = 0;
+      while (j < n && s[j] != '/' && s[j] != '@' && !c_space((unsigned char)s[j])) {
+        if (s[j] == ':' && !colon) colon = j;
+        j++;
+      }
+      if (j < n && s[j] == '@' && colon && j - colon - 1 >= 6) {
+        from = a;
+        end = j;
+      }
+    }
+    if (!end) {
+      for (int k = 0; !end && words[k]; k++)
+        if (at_ci(s, n, i, words[k])) {
+          size_t v = assignment_value(s, n, i + strlen(words[k]));
+          size_t e = v ? span(s, n, v, c_value) : 0;
+          if (v && e - v >= 8 && !strchr("$<{[", s[v])) {
+            from = v;
+            end = e;
+          }
+        }
+      for (int k = 0; !end && hexwords[k]; k++)
+        if (at_ci(s, n, i, hexwords[k])) {
+          size_t w = span(s, n, i, c_word);
+          size_t v = assignment_value(s, n, w);
+          size_t e = v ? span(s, n, v, c_hex) : 0;
+          if (v && e - v >= 32) {
+            from = v;
+            end = e;
+          }
+        }
+    }
+    if (end) {
+      buf_add(out, s + done, from - done);
+      buf_str(out, REDACTED);
+      done = i = end;
+    } else {
+      i++;
+    }
+  }
+  buf_add(out, s + done, n - done);
+}
+
 /* Appends tool output, cutting the middle of anything too long at character
  * boundaries so the result stays valid UTF-8. */
 static void add_tool_text(buf *b, const char *s, size_t n) {
@@ -207,7 +373,7 @@ static int cmd_extract(const char *path) {
   size_t cap = 0;
   ssize_t len;
   long turn = 0;
-  buf body = {0};
+  buf body = {0}, clean = {0};
   while ((len = getline(&line, &cap, f)) != -1) {
     sqlite3_bind_text(meta, 1, line, (int)len, SQLITE_STATIC);
     if (sqlite3_step(meta) == SQLITE_ROW) {
@@ -227,8 +393,10 @@ static int cmd_extract(const char *path) {
           if (is_text && is_noise(text)) continue;
           if (!first) buf_str(&body, "\n");
           first = 0;
-          if (is_text) buf_add(&body, text, n);
-          else add_tool_text(&body, text, n);
+          clean.n = 0;
+          add_redacted(&clean, text, n);
+          if (is_text) buf_add(&body, clean.p, clean.n);
+          else add_tool_text(&body, clean.p, clean.n);
         }
         sqlite3_reset(parts);
         if (body.n && !is_blank(body.p, body.n)) {
@@ -244,6 +412,7 @@ static int cmd_extract(const char *path) {
   }
   free(line);
   free(body.p);
+  free(clean.p);
   sqlite3_finalize(meta);
   sqlite3_finalize(parts);
   sqlite3_close(db);
