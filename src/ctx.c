@@ -7,6 +7,7 @@
 #define _FILE_OFFSET_BITS 64
 #include <dirent.h>
 #include <errno.h>
+#include <math.h>
 #include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -177,33 +178,51 @@ static int at_ci(const char *s, size_t n, size_t i, const char *lit) {
   return 1;
 }
 
+/* Secrets with a recognizable prefix. A rule added here is redacted from then on,
+ * and `ctx audit --all` finds it in what was stored before. test/run.sh covers each. */
+typedef struct {
+  const char *name, *prefix;
+  int (*ok)(unsigned char);
+  size_t min; /* characters required after the prefix */
+} token_rule;
+
+static const token_rule token_rules[] = {
+    {"github-token", "ghp_", c_alnum, 20},  {"github-token", "gho_", c_alnum, 20},
+    {"github-token", "ghu_", c_alnum, 20},  {"github-token", "ghs_", c_alnum, 20},
+    {"github-token", "ghr_", c_alnum, 20},  {"github-pat", "github_pat_", c_word, 30},
+    {"api-key", "sk-", c_b64, 20},          {"stripe", "sk_live_", c_alnum, 16},
+    {"stripe", "rk_live_", c_alnum, 16},    {"stripe", "whsec_", c_alnum, 24},
+    {"aws-key", "AKIA", c_upnum, 16},       {"aws-key", "ASIA", c_upnum, 16},
+    {"slack", "xoxa-", c_slack, 20},        {"slack", "xoxb-", c_slack, 20},
+    {"slack", "xoxp-", c_slack, 20},        {"slack", "xoxr-", c_slack, 20},
+    {"slack", "xoxs-", c_slack, 20},        {"gitlab", "glpat-", c_b64, 20},
+    {"npm", "npm_", c_alnum, 30},           {"pypi", "pypi-", c_b64, 40},
+    {"huggingface", "hf_", c_alnum, 30},    {"shopify", "shpat_", c_alnum, 24},
+    {"shopify", "shpss_", c_alnum, 24},     {"google-api", "AIza", c_b64, 30},
+    {"google-oauth", "ya29.", c_bearer, 30}, {"digitalocean", "dop_v1_", c_hex, 40},
+    {"linear", "lin_api_", c_alnum, 30},    {"tailscale", "tskey-", c_b64, 30},
+    {"sentry", "sntrys_", c_bearer, 30},    {"age-key", "AGE-SECRET-KEY-1", c_upnum, 40},
+};
+
 /* The end of a prefixed token starting at i, or 0. */
-static size_t token_end(const char *s, size_t n, size_t i) {
-  static const char *const gh[] = {"ghp_", "gho_", "ghu_", "ghs_", "ghr_", NULL};
-  for (int k = 0; gh[k]; k++)
-    if (at(s, n, i, gh[k])) {
-      size_t e = span(s, n, i + 4, c_alnum);
-      return e - (i + 4) >= 20 ? e : 0;
-    }
-  size_t e;
-  if (at(s, n, i, "github_pat_")) {
-    e = span(s, n, i + 11, c_word);
-    return e - (i + 11) >= 30 ? e : 0;
-  }
-  if (at(s, n, i, "sk-")) {
-    e = span(s, n, i + 3, c_b64);
-    return e - (i + 3) >= 20 ? e : 0;
-  }
-  if (at(s, n, i, "AKIA")) {
-    e = span(s, n, i + 4, c_upnum);
-    return e - (i + 4) >= 16 ? e : 0;
-  }
-  if (at(s, n, i, "xox") && i + 4 < n && s[i + 4] == '-' && strchr("abprs", s[i + 3])) {
-    e = span(s, n, i + 5, c_slack);
-    return e - (i + 5) >= 20 ? e : 0;
-  }
+static size_t token_end(const char *s, size_t n, size_t i, const char **name) {
+  static unsigned char first[256];
+  size_t rules = sizeof token_rules / sizeof *token_rules, e;
+  if (!first['g'])
+    for (size_t k = 0; k < rules; k++) first[(unsigned char)token_rules[k].prefix[0]] = 1;
+  if (first[(unsigned char)s[i]])
+    for (size_t k = 0; k < rules; k++)
+      if (at(s, n, i, token_rules[k].prefix)) {
+        size_t skip = strlen(token_rules[k].prefix);
+        e = span(s, n, i + skip, token_rules[k].ok);
+        if (e - (i + skip) >= token_rules[k].min) {
+          *name = token_rules[k].name;
+          return e;
+        }
+      }
   if (at(s, n, i, "dp.") && i + 5 < n && s[i + 5] == '.') {
     e = span(s, n, i + 6, c_alnum);
+    *name = "doppler";
     return e - (i + 6) >= 20 ? e : 0;
   }
   if (at(s, n, i, "eyJ")) { /* JWT: three base64url parts */
@@ -212,6 +231,7 @@ static size_t token_end(const char *s, size_t n, size_t i) {
     size_t b = span(s, n, a + 1, c_b64);
     if (b - (a + 1) < 15 || b >= n || s[b] != '.') return 0;
     size_t c = span(s, n, b + 1, c_b64);
+    *name = "jwt";
     return c - (b + 1) >= 10 ? c : 0;
   }
   return 0;
@@ -230,65 +250,89 @@ static size_t assignment_value(const char *s, size_t n, size_t i) {
   return sep ? j : 0;
 }
 
-/* Appends s with secrets replaced. */
-static void add_redacted(buf *out, const char *s, size_t n) {
+/* If a secret starts at i, returns its end and sets its start and rule name. */
+static size_t secret_at(const char *s, size_t n, size_t i, size_t *from_out, const char **name) {
   static const char *const words[] = {"password", "passwd", "token",  "secret",
                                       "api_key",  "api-key", "apikey", NULL};
   static const char *const hexwords[] = {"key", "auth", "credential", NULL};
-  size_t i = 0, done = 0;
-  while (i < n) {
-    size_t end = 0, from = i;
-    int prev_ok = i == 0 || !c_word((unsigned char)s[i - 1]);
-    if (s[i] == '-' && at(s, n, i, "-----BEGIN ")) {
-      size_t line = i;
-      while (line < n && s[line] != '\n') line++;
-      if (memmem(s + i, line - i, "PRIVATE KEY-----", 16)) {
-        const char *close = memmem(s + line, n - line, "PRIVATE KEY-----", 16);
-        end = close ? (size_t)(close - s) + 16 : n;
+  size_t end = 0, from = i;
+  int prev_ok = i == 0 || !c_word((unsigned char)s[i - 1]);
+  if (s[i] == '-' && at(s, n, i, "-----BEGIN ")) {
+    size_t line = i;
+    while (line < n && s[line] != '\n') line++;
+    if (memmem(s + i, line - i, "PRIVATE KEY-----", 16)) {
+      const char *close = memmem(s + line, n - line, "PRIVATE KEY-----", 16);
+      end = close ? (size_t)(close - s) + 16 : n;
+      *name = "private-key";
+    }
+  } else if (prev_ok) {
+    end = token_end(s, n, i, name);
+    if (!end && at_ci(s, n, i, "bearer")) {
+      size_t v = span(s, n, i + 6, c_space);
+      size_t e = span(s, n, v, c_bearer);
+      if (v > i + 6 && e - v >= 24) {
+        from = v;
+        end = e;
+        *name = "bearer";
       }
-    } else if (prev_ok) {
-      end = token_end(s, n, i);
-      if (!end && at_ci(s, n, i, "bearer")) {
-        size_t v = span(s, n, i + 6, c_space);
-        size_t e = span(s, n, v, c_bearer);
-        if (v > i + 6 && e - v >= 24) {
+    }
+  }
+  if (!end && s[i] == '"' && (at(s, n, i, "\"computed\":\"") || at(s, n, i, "\"raw\":\""))) {
+    /* `doppler secrets get --json`: the value, then a matching ...ValueType field. */
+    size_t v = i + (s[i + 1] == 'c' ? 12 : 7), e = v;
+    while (e < n && s[e] != '"') e += s[e] == '\\' ? 2 : 1;
+    if (e < n && e > v && memmem(s + e, n - e < 40 ? n - e : 40, "ValueType\"", 10)) {
+      from = v;
+      end = e;
+      *name = "doppler-json";
+    }
+  }
+  if (!end && s[i] == ':' && at(s, n, i, "://")) {
+    size_t a = i + 3, j = a, colon = 0;
+    while (j < n && s[j] != '/' && s[j] != '@' && !c_space((unsigned char)s[j])) {
+      if (s[j] == ':' && !colon) colon = j;
+      j++;
+    }
+    if (j < n && s[j] == '@' && colon && j - colon - 1 >= 6) {
+      from = a;
+      end = j;
+      *name = "url-credential";
+    }
+  }
+  if (!end) {
+    for (int k = 0; !end && words[k]; k++)
+      if (at_ci(s, n, i, words[k])) {
+        size_t v = assignment_value(s, n, i + strlen(words[k]));
+        size_t e = v ? span(s, n, v, c_value) : 0;
+        if (v && e - v >= 8 && !strchr("$<{[", s[v])) {
           from = v;
           end = e;
+          *name = "keyword";
         }
       }
-    }
-    if (!end && s[i] == ':' && at(s, n, i, "://")) {
-      size_t a = i + 3, j = a, colon = 0;
-      while (j < n && s[j] != '/' && s[j] != '@' && !c_space((unsigned char)s[j])) {
-        if (s[j] == ':' && !colon) colon = j;
-        j++;
-      }
-      if (j < n && s[j] == '@' && colon && j - colon - 1 >= 6) {
-        from = a;
-        end = j;
-      }
-    }
-    if (!end) {
-      for (int k = 0; !end && words[k]; k++)
-        if (at_ci(s, n, i, words[k])) {
-          size_t v = assignment_value(s, n, i + strlen(words[k]));
-          size_t e = v ? span(s, n, v, c_value) : 0;
-          if (v && e - v >= 8 && !strchr("$<{[", s[v])) {
-            from = v;
-            end = e;
-          }
+    for (int k = 0; !end && hexwords[k]; k++)
+      if (at_ci(s, n, i, hexwords[k])) {
+        size_t w = span(s, n, i, c_word);
+        size_t v = assignment_value(s, n, w);
+        size_t e = v ? span(s, n, v, c_hex) : 0;
+        if (v && e - v >= 32) {
+          from = v;
+          end = e;
+          *name = "hex-key";
         }
-      for (int k = 0; !end && hexwords[k]; k++)
-        if (at_ci(s, n, i, hexwords[k])) {
-          size_t w = span(s, n, i, c_word);
-          size_t v = assignment_value(s, n, w);
-          size_t e = v ? span(s, n, v, c_hex) : 0;
-          if (v && e - v >= 32) {
-            from = v;
-            end = e;
-          }
-        }
-    }
+      }
+  }
+  *from_out = from;
+  return end;
+}
+
+/* Appends s with secrets replaced. */
+static void add_redacted(buf *out, const char *s, size_t n) {
+  size_t i = 0, done = 0;
+  while (i < n) {
+    size_t from;
+    const char *name;
+    size_t end = secret_at(s, n, i, &from, &name);
     if (end) {
       buf_add(out, s + done, from - done);
       buf_str(out, REDACTED);
@@ -1224,6 +1268,255 @@ static int cmd_scan(const char *root_arg) {
   return 0;
 }
 
+/* ctx audit: looks for secrets in what is already stored. It reports where and
+ * what shape, and never prints or stores a value. The rules above are exact enough
+ * to redact on sight. The two here are too noisy for that, so a person decides:
+ * a real finding becomes a new rule, a false one is allowed by its fingerprint. */
+static int c_token(unsigned char c) { return c_b64(c) || c == '+' || c == '/' || c == '='; }
+
+static double entropy(const char *s, size_t n) {
+  size_t count[256] = {0};
+  for (size_t i = 0; i < n; i++) count[(unsigned char)s[i]]++;
+  double bits = 0;
+  for (int c = 0; c < 256; c++)
+    if (count[c]) bits -= (double)count[c] / n * log2((double)count[c] / n);
+  return bits;
+}
+
+/* Which character classes a value uses: 1 lower, 2 upper, 4 digit, 8 other. */
+static int classes(const char *s, size_t n) {
+  int m = 0;
+  for (size_t i = 0; i < n; i++) {
+    unsigned char c = (unsigned char)s[i];
+    m |= (c >= 'a' && c <= 'z') ? 1 : (c >= 'A' && c <= 'Z') ? 2 : (c >= '0' && c <= '9') ? 4 : 8;
+  }
+  return m;
+}
+
+static int placeholder(const char *s, size_t n) {
+  static const char *const words[] = {"xxxx", "example", "your", "fake", "dummy", "sample", "placeholder", "redacted", NULL};
+  unsigned char seen[256] = {0};
+  int distinct = 0;
+  for (size_t i = 0; i < n; i++)
+    if (!seen[(unsigned char)s[i]]++) distinct++;
+  if (distinct < 6) return 1;
+  for (size_t i = 0; i < n; i++)
+    for (int k = 0; words[k]; k++)
+      if (at_ci(s, n, i, words[k])) return 1;
+  return 0;
+}
+
+/* Candidates that only a person can judge. */
+static size_t candidate_at(const char *s, size_t n, size_t i, size_t *from, const char **name) {
+  static const char *const words[] = {"password", "passwd", "secret", "token", "api_key", "apikey", "credential", NULL};
+  unsigned char c = (unsigned char)s[i];
+  if (i && c_token((unsigned char)s[i - 1])) return 0;
+  if (!c_token(c)) return 0;
+  size_t w = span(s, n, i, c_b64);
+  if (w - i < 80) {
+    int hit = 0;
+    for (size_t k = i; k < w && !hit; k++)
+      for (int t = 0; words[t] && !hit; t++) hit = at_ci(s, w, k, words[t]);
+    size_t v = hit ? assignment_value(s, n, w) : 0;
+    size_t e = v ? span(s, n, v, c_value) : 0;
+    if (v && e - v >= 12 && !strchr("$<{[/.", s[v]) && !memchr(s + v, '(', e - v) && (classes(s + v, e - v) & 4) &&
+        entropy(s + v, e - v) >= 3.2) {
+      *from = v;
+      *name = "assignment";
+      return e;
+    }
+  }
+  size_t e = span(s, n, i, c_token);
+  if (e - i < 32 || e - i > 256 || (classes(s + i, e - i) & 7) != 7) return 0;
+  if (at(s, n, i, "sha256-") || at(s, n, i, "sha512-") || entropy(s + i, e - i) < 4.5) return 0;
+  size_t symbols = 0; /* paths and hyphenated names are the bulk of false alarms */
+  for (size_t k = i; k < e; k++) {
+    if (s[k] == '/') return 0;
+    symbols += !c_alnum((unsigned char)s[k]);
+  }
+  if (symbols > 2) return 0;
+  *from = i;
+  *name = "entropy";
+  return e;
+}
+
+static unsigned long long fingerprint(const char *s, size_t n) {
+  unsigned long long h = 14695981039346656037ULL;
+  for (size_t i = 0; i < n; i++) h = (h ^ (unsigned char)s[i]) * 1099511628211ULL;
+  return h;
+}
+
+/* Values from --known, found by a hash of their first eight bytes. */
+#define KNOWN_MIN 8
+typedef struct {
+  char *value;
+  size_t n, line;
+} known_value;
+typedef struct {
+  known_value *slots;
+  size_t mask, count;
+} known_set;
+
+static size_t known_hash(const char *s, size_t mask) {
+  unsigned long long k;
+  memcpy(&k, s, 8);
+  return (size_t)((k * 0x9E3779B97F4A7C15ULL) >> 20) & mask;
+}
+
+static known_set known_read(void) {
+  known_set set = {0};
+  char *line = NULL;
+  size_t cap = 0, no = 0, have = 0;
+  ssize_t len;
+  known_value *all = NULL;
+  while ((len = getline(&line, &cap, stdin)) != -1) {
+    no++;
+    while (len && (line[len - 1] == '\n' || line[len - 1] == '\r')) line[--len] = 0;
+    if (len < KNOWN_MIN) continue;
+    all = realloc(all, (have + 1) * sizeof *all);
+    if (!all) die("out of memory");
+    all[have].value = strdup(line);
+    all[have].n = (size_t)len;
+    all[have++].line = no;
+  }
+  free(line);
+  size_t size = 16;
+  while (size < have * 4) size *= 2;
+  set.slots = calloc(size, sizeof *set.slots);
+  if (!set.slots) die("out of memory");
+  set.mask = size - 1;
+  set.count = have;
+  for (size_t i = 0; i < have; i++) {
+    size_t h = known_hash(all[i].value, set.mask);
+    while (set.slots[h].value) h = (h + 1) & set.mask;
+    set.slots[h] = all[i];
+  }
+  free(all);
+  return set;
+}
+
+static void finding_add(sqlite3_stmt *ins, const char *rule, const char *v, size_t n, sqlite3_int64 chunk, const char *project,
+                        const char *day, const char *shape_prefix) {
+  char fp[17], shape[96];
+  int m = classes(v, n);
+  snprintf(fp, sizeof fp, "%016llx", fingerprint(v, n));
+  snprintf(shape, sizeof shape, "%slen=%zu%s%s%s%s entropy=%.1f", shape_prefix, n, m & 1 ? " lower" : "", m & 2 ? " upper" : "",
+           m & 4 ? " digit" : "", m & 8 ? " symbol" : "", entropy(v, n));
+  sqlite3_bind_text(ins, 1, rule, -1, SQLITE_STATIC);
+  sqlite3_bind_text(ins, 2, fp, -1, SQLITE_STATIC);
+  sqlite3_bind_int64(ins, 3, chunk);
+  sqlite3_bind_text(ins, 4, project, -1, SQLITE_STATIC);
+  sqlite3_bind_text(ins, 5, day, -1, SQLITE_STATIC);
+  sqlite3_bind_text(ins, 6, shape, -1, SQLITE_TRANSIENT);
+  sqlite3_step(ins);
+  sqlite3_reset(ins);
+}
+
+/* ctx audit [--all] [--known] [--limit N] | ctx audit --allow ID [NOTE]. Exits 1 if any finding is open. */
+static int cmd_audit(int argc, char **argv) {
+  int all = 0, use_known = 0, limit = 30;
+  sqlite3_int64 allow = 0;
+  const char *note = "";
+  for (int i = 0; i < argc; i++) {
+    if (!strcmp(argv[i], "--all")) all = 1;
+    else if (!strcmp(argv[i], "--known")) use_known = 1;
+    else if (!strcmp(argv[i], "--limit") && i + 1 < argc) limit = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--allow") && i + 1 < argc) {
+      allow = atoll(argv[++i]);
+      if (i + 1 < argc) note = argv[++i];
+    } else die("usage: ctx audit [--all] [--known] [--limit N] | --allow ID [NOTE]");
+  }
+  sqlite3 *db = ctx_open();
+  db_exec(db,
+          "CREATE TABLE IF NOT EXISTS ctx_audit_run(id INTEGER PRIMARY KEY, at TEXT NOT NULL, scanned INTEGER NOT NULL,"
+          " to_id INTEGER NOT NULL, known INTEGER NOT NULL, found INTEGER NOT NULL, open INTEGER NOT NULL) STRICT;"
+          "CREATE TABLE IF NOT EXISTS ctx_audit_finding(id INTEGER PRIMARY KEY, rule TEXT NOT NULL, fingerprint TEXT NOT NULL,"
+          " chunk INTEGER NOT NULL, project TEXT, day TEXT, shape TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open',"
+          " note TEXT NOT NULL DEFAULT '', UNIQUE (rule, fingerprint, chunk)) STRICT;");
+  if (allow) {
+    sqlite3_stmt *u = db_prepare(db,
+        "UPDATE ctx_audit_finding SET status = 'allowed', note = ?2 WHERE (rule, fingerprint) ="
+        " (SELECT rule, fingerprint FROM ctx_audit_finding WHERE id = ?1)");
+    sqlite3_bind_int64(u, 1, allow);
+    sqlite3_bind_text(u, 2, note, -1, SQLITE_STATIC);
+    sqlite3_step(u);
+    sqlite3_finalize(u);
+    int changed = sqlite3_changes(db);
+    sqlite3_close(db);
+    if (!changed) die("no finding #%lld", (long long)allow);
+    printf("%d findings allowed\n", changed);
+    return 0;
+  }
+  known_set known = {0};
+  if (use_known) known = known_read();
+  sqlite3_int64 cursor = all ? 0 : db_int(db, "SELECT coalesce(max(to_id), 0) FROM ctx_audit_run WHERE known = 0");
+  db_exec(db, "CREATE TEMP TABLE f(rule, fingerprint, chunk, project, day, shape)");
+  sqlite3_stmt *ins = db_prepare(db, "INSERT INTO temp.f VALUES (?1, ?2, ?3, ?4, ?5, ?6)");
+  sqlite3_stmt *q = db_prepare(db, "SELECT id, body, coalesce(project,''), substr(coalesce(at,''),1,10) FROM ctx_chunk WHERE id > ?1 ORDER BY id");
+  sqlite3_bind_int64(q, 1, use_known ? 0 : cursor);
+  sqlite3_int64 last = cursor;
+  long scanned = 0;
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    sqlite3_int64 id = sqlite3_column_int64(q, 0);
+    const char *s = (const char *)sqlite3_column_blob(q, 1);
+    size_t n = (size_t)sqlite3_column_bytes(q, 1);
+    const char *project = (const char *)sqlite3_column_text(q, 2), *day = (const char *)sqlite3_column_text(q, 3);
+    scanned++;
+    if (id > last) last = id;
+    if (id > cursor) {
+      for (size_t i = 0; i < n;) {
+        size_t from = i;
+        const char *name = NULL;
+        size_t end = secret_at(s, n, i, &from, &name);
+        if (!end) end = candidate_at(s, n, i, &from, &name);
+        if (end && !placeholder(s + from, end - from)) finding_add(ins, name, s + from, end - from, id, project, day, "");
+        i = end ? end : i + 1;
+      }
+    }
+    if (known.count && n >= KNOWN_MIN)
+      for (size_t i = 0; i + KNOWN_MIN <= n; i++)
+        for (size_t h = known_hash(s + i, known.mask); known.slots[h].value; h = (h + 1) & known.mask)
+          if (i + known.slots[h].n <= n && !memcmp(s + i, known.slots[h].value, known.slots[h].n)) {
+            char prefix[32];
+            snprintf(prefix, sizeof prefix, "line %zu, ", known.slots[h].line);
+            finding_add(ins, "known", s + i, known.slots[h].n, id, project, day, prefix);
+          }
+  }
+  sqlite3_finalize(q);
+  sqlite3_finalize(ins);
+  db_exec(db, "BEGIN IMMEDIATE");
+  int before = db_int(db, "SELECT count(*) FROM ctx_audit_finding");
+  db_exec(db,
+          "INSERT OR IGNORE INTO ctx_audit_finding(rule, fingerprint, chunk, project, day, shape, status, note)"
+          " SELECT rule, fingerprint, chunk, project, day, shape,"
+          "   coalesce((SELECT 'allowed' FROM ctx_audit_finding a WHERE a.rule = f.rule AND a.fingerprint = f.fingerprint AND a.status = 'allowed' LIMIT 1), 'open'), ''"
+          " FROM temp.f f");
+  int found = db_int(db, "SELECT count(*) FROM ctx_audit_finding") - before;
+  int open = db_int(db, "SELECT count(*) FROM ctx_audit_finding WHERE status = 'open'");
+  sqlite3_stmt *r = db_prepare(db, "INSERT INTO ctx_audit_run(at, scanned, to_id, known, found, open) VALUES (datetime('now'), ?1, ?2, ?3, ?4, ?5)");
+  sqlite3_bind_int64(r, 1, scanned);
+  sqlite3_bind_int64(r, 2, last);
+  sqlite3_bind_int(r, 3, use_known);
+  sqlite3_bind_int(r, 4, found);
+  sqlite3_bind_int(r, 5, open);
+  sqlite3_step(r);
+  sqlite3_finalize(r);
+  db_exec(db, "COMMIT");
+  printf("%ld turns scanned, %d new findings, %d open\n", scanned, found, open);
+  sqlite3_stmt *t = db_prepare(db, "SELECT rule, sum(status = 'open'), sum(status = 'allowed'), count(DISTINCT fingerprint) FROM ctx_audit_finding GROUP BY 1 ORDER BY 2 DESC");
+  while (sqlite3_step(t) == SQLITE_ROW)
+    printf("  %-16s %6d open %6d allowed %6d distinct\n", sqlite3_column_text(t, 0), sqlite3_column_int(t, 1), sqlite3_column_int(t, 2), sqlite3_column_int(t, 3));
+  sqlite3_finalize(t);
+  sqlite3_stmt *l = db_prepare(db, "SELECT id, chunk, project, day, rule, shape FROM ctx_audit_finding WHERE status = 'open' ORDER BY rule = 'known' DESC, id LIMIT ?1");
+  sqlite3_bind_int(l, 1, limit);
+  while (sqlite3_step(l) == SQLITE_ROW)
+    printf("#%lld turn %lld %s %s %s %s\n", sqlite3_column_int64(l, 0), sqlite3_column_int64(l, 1), sqlite3_column_text(l, 2), sqlite3_column_text(l, 3),
+           sqlite3_column_text(l, 4), sqlite3_column_text(l, 5));
+  sqlite3_finalize(l);
+  sqlite3_close(db);
+  return open ? 1 : 0;
+}
+
 static int usage(void) {
   fputs("usage: ctx version\n"
         "       ctx init\n"
@@ -1231,6 +1524,7 @@ static int usage(void) {
         "       ctx archive TRANSCRIPT\n"
         "       ctx search [--all] [--limit N] WORDS...\n"
         "       ctx turn ID [BEFORE [AFTER]] [--full]\n"
+        "       ctx audit [--all] [--known] [--limit N] | --allow ID [NOTE]\n"
         "       ctx scan [DIR]\n"
         "       ctx hook\n"
         "       ctx sql STATEMENT\n",
@@ -1249,6 +1543,7 @@ int main(int argc, char **argv) {
   if (argc == 3 && !strcmp(argv[1], "sql")) return cmd_sql(argv[2]);
   if (argc == 2 && !strcmp(argv[1], "hook")) return cmd_hook();
   if ((argc == 2 || argc == 3) && !strcmp(argv[1], "scan")) return cmd_scan(argc == 3 ? argv[2] : NULL);
+  if (argc >= 2 && !strcmp(argv[1], "audit")) return cmd_audit(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "search")) return cmd_search(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "turn")) return cmd_turn(argc - 2, argv + 2);
   return usage();
