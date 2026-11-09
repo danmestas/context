@@ -343,7 +343,8 @@ static void session_id(const char *path, char out[9]) {
 
 static const char sql_meta[] =
     "SELECT json_extract(?1,'$.message.role'), json_extract(?1,'$.isSidechain'),"
-    "       json_extract(?1,'$.timestamp'), json_extract(?1,'$.uuid')"
+    "       json_extract(?1,'$.timestamp'), json_extract(?1,'$.uuid'),"
+    "       json_extract(?1,'$.cwd')"
     " WHERE json_valid(?1)";
 
 /* One row per part of a message, in order: its kind and its text. */
@@ -371,7 +372,7 @@ static const char sql_parts[] =
 
 /* One user or assistant turn, heap-allocated. */
 typedef struct {
-  char *role, *ts, *uuid, *body;
+  char *role, *ts, *uuid, *cwd, *body;
   size_t body_n;
 } turn_t;
 
@@ -379,6 +380,7 @@ static void turn_free(turn_t *t) {
   free(t->role);
   free(t->ts);
   free(t->uuid);
+  free(t->cwd);
   free(t->body);
   memset(t, 0, sizeof *t);
 }
@@ -453,6 +455,7 @@ static int ex_line(extractor *e, const char *line, size_t len, turn_t *t) {
         t->role = dup_text((const unsigned char *)role);
         t->ts = dup_text(sqlite3_column_text(e->meta, 2));
         t->uuid = dup_text(sqlite3_column_text(e->meta, 3));
+        t->cwd = dup_text(sqlite3_column_text(e->meta, 4));
         t->body = malloc(e->body.n + 1);
         if (!t->body) die("out of memory");
         memcpy(t->body, e->body.p, e->body.n + 1);
@@ -534,8 +537,19 @@ static void open_private(sqlite3 *db) {
   sqlite3_finalize(q);
 }
 
-/* The project for a working directory: the longest mapped root, else its last
- * path segment. Caller frees. */
+static int is_repo_root(const char *dir) {
+  static const char *const markers[] = {".git", ".fslckout", ".zit-checkout", "_FOSSIL_", NULL};
+  char p[4200];
+  struct stat st;
+  for (int i = 0; markers[i]; i++) {
+    snprintf(p, sizeof p, "%s/%s", dir, markers[i]);
+    if (stat(p, &st) == 0) return 1;
+  }
+  return 0;
+}
+
+/* The project for a working directory: the longest mapped root, else the name of
+ * the repository containing it, else its last path segment. Caller frees. */
 static char *project_for(sqlite3 *db, const char *cwd) {
   if (!cwd || !*cwd) return dup_text((const unsigned char *)"unknown");
   sqlite3_stmt *q = db_prepare(db,
@@ -543,15 +557,29 @@ static char *project_for(sqlite3 *db, const char *cwd) {
       " WHERE ?1 = root OR substr(?1, 1, length(root) + 1) = root || '/'"
       " ORDER BY length(root) DESC LIMIT 1");
   sqlite3_bind_text(q, 1, cwd, -1, SQLITE_STATIC);
-  char *out;
-  if (sqlite3_step(q) == SQLITE_ROW) {
-    out = dup_text(sqlite3_column_text(q, 0));
-  } else {
-    const char *base = strrchr(cwd, '/');
-    out = dup_text((const unsigned char *)(base && base[1] ? base + 1 : cwd));
-  }
+  char *out = NULL;
+  if (sqlite3_step(q) == SQLITE_ROW) out = dup_text(sqlite3_column_text(q, 0));
   sqlite3_finalize(q);
-  return out;
+  if (out) return out;
+
+  char dir[4200];
+  snprintf(dir, sizeof dir, "%s", cwd);
+  char *wt = strstr(dir, "/.claude/worktrees/"); /* an agent worktree belongs to its parent */
+  if (wt) *wt = 0;
+  const char *home = getenv("HOME");
+  char walk[4200];
+  snprintf(walk, sizeof walk, "%s", dir);
+  for (;;) {
+    if (is_repo_root(walk)) {
+      snprintf(dir, sizeof dir, "%s", walk);
+      break;
+    }
+    char *slash = strrchr(walk, '/');
+    if (!slash || slash == walk || (home && !strcmp(walk, home))) break;
+    *slash = 0;
+  }
+  const char *base = strrchr(dir, '/');
+  return dup_text((const unsigned char *)(base && base[1] ? base + 1 : dir));
 }
 
 static void turn_day(const turn_t *t, char out[11], const char *fallback) {
@@ -602,7 +630,8 @@ static long archive_batch(sqlite3 *db, const char *session, const char *path, co
       " VALUES (?1, ?2, 'session', ?3, ?4, ?3, ?5, unixepoch())"
       " ON CONFLICT(project, kind, name) DO UPDATE SET size = excluded.size, mtime = excluded.mtime"
       " RETURNING id, (SELECT coalesce(max(seq), -1) FROM ctx_chunk WHERE doc_id = ctx_doc.id)");
-  sqlite3_stmt *chunk = db_prepare(db, "INSERT INTO ctx_chunk(doc_id, seq, heading, at, turn, body) VALUES (?1,?2,?3,?4,?5,?6)");
+  sqlite3_stmt *chunk = db_prepare(db, "INSERT INTO ctx_chunk(doc_id, seq, heading, at, turn, body, project) VALUES (?1,?2,?3,?4,?5,?6,?7)");
+  char *last_cwd = NULL, *last_proj = NULL; /* most turns repeat the previous directory */
 
   buf text = {0};
   for (size_t i = 0; i < n; i++) {
@@ -681,6 +710,13 @@ static long archive_batch(sqlite3 *db, const char *session, const char *path, co
       if (*turns[j].uuid) sqlite3_bind_text(chunk, 5, turns[j].uuid, -1, SQLITE_STATIC);
       else sqlite3_bind_null(chunk, 5);
       sqlite3_bind_text(chunk, 6, turns[j].body, (int)turns[j].body_n, SQLITE_STATIC);
+      if (*turns[j].cwd && (!last_cwd || strcmp(last_cwd, turns[j].cwd))) {
+        free(last_cwd);
+        free(last_proj);
+        last_cwd = dup_text((const unsigned char *)turns[j].cwd);
+        last_proj = project_for(db, turns[j].cwd);
+      }
+      sqlite3_bind_text(chunk, 7, last_proj ? last_proj : project, -1, SQLITE_STATIC);
       if (sqlite3_step(chunk) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
       sqlite3_reset(chunk);
       done[j] = 1;
@@ -690,6 +726,8 @@ static long archive_batch(sqlite3 *db, const char *session, const char *path, co
   }
   free(text.p);
   free(done);
+  free(last_cwd);
+  free(last_proj);
   sqlite3_finalize(find);
   sqlite3_finalize(read);
   sqlite3_finalize(save_new);
@@ -851,12 +889,12 @@ static char *current_project(sqlite3 *db) {
 /* Runs the search; prints hits and returns how many there were. */
 static int search_run(sqlite3 *db, const char *match, const char *project, int limit) {
   sqlite3_stmt *q = db_prepare(db,
-      "SELECT c.id, d.project, d.kind, coalesce(c.heading,''), substr(coalesce(c.at,''),1,10),"
+      "SELECT c.id, coalesce(c.project, d.project), d.kind, coalesce(c.heading,''), substr(coalesce(c.at,''),1,10),"
       "       snippet(ctx_chunk_fts, 1, '[', ']', ' ... ', 40)"
       " FROM ctx_chunk_fts"
       " JOIN ctx_chunk c ON c.id = ctx_chunk_fts.rowid"
       " JOIN ctx_doc d ON d.id = c.doc_id"
-      " WHERE ctx_chunk_fts MATCH ?1 AND (?2 IS NULL OR d.project = ?2)"
+      " WHERE ctx_chunk_fts MATCH ?1 AND (?2 IS NULL OR coalesce(c.project, d.project) = ?2)"
       " ORDER BY ctx_chunk_fts.rank LIMIT ?3");
   sqlite3_bind_text(q, 1, match, -1, SQLITE_STATIC);
   if (project) sqlite3_bind_text(q, 2, project, -1, SQLITE_STATIC);

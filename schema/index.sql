@@ -85,6 +85,7 @@ CREATE TABLE ctx_chunk(
   heading TEXT NOT NULL DEFAULT '',  -- section heading, or the speaker for a turn
   at      TEXT,                      -- turn timestamp, sessions only
   turn    TEXT,                      -- transcript uuid of a turn, so a re-read skips it
+  project TEXT,                      -- where a turn happened; a session can move between projects
   body    TEXT NOT NULL,
   UNIQUE (doc_id, seq)
 ) STRICT;

@@ -184,6 +184,20 @@ ID=$(sq "SELECT id FROM ctx_chunk WHERE turn='l-1'")
 "$CTX" turn "$ID" | grep -q 'more bytes; use --full' || fail "long turn is cut"
 [ "$("$CTX" turn "$ID" --full | wc -c)" -gt 20000 ] || fail "--full shows it all"
 
+# A session can start in one place and work in another, so each turn has its own project.
+export CTX_DB="$T/move.sqlite"
+"$CTX" init >/dev/null
+mkdir -p "$T/repo/internal/deep"; mkdir "$T/repo/.git"
+M="$T/dddd4444-s.jsonl"
+cat > "$M" <<EOF
+{"uuid":"m-1","timestamp":"2026-05-01T10:00:00Z","cwd":"$T","message":{"role":"user","content":"pelican started elsewhere"}}
+{"uuid":"m-2","timestamp":"2026-05-01T10:00:01Z","cwd":"$T/repo/internal/deep","message":{"role":"assistant","content":"pelican inside the repository"}}
+{"uuid":"m-3","timestamp":"2026-05-01T10:00:02Z","cwd":"$T/repo/.claude/worktrees/agent-1","message":{"role":"assistant","content":"pelican in a worktree"}}
+EOF
+"$CTX" archive "$M" >/dev/null
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE project='repo'")" = 2 ] || fail "a turn's project comes from its own directory"
+[ "$(cd "$T/repo/internal/deep" && "$CTX" search pelican | grep -c '^#')" = 2 ] || fail "search from a subdirectory finds the repository's turns"
+
 # A missing file is an error.
 if "$CTX" extract "$T/none.jsonl" 2>/dev/null; then fail "missing file"; fi
 
