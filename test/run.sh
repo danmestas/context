@@ -242,6 +242,33 @@ touch "$T/projects/p1/ignored.txt"
 [ "$("$CTX" scan "$T/projects")" = "0 transcripts read" ] || fail "scan has nothing left"
 [ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE turn='sc-1'")" = 1 ] || fail "scan stored the turn"
 
+# The deadline reaches the runs a scan starts. ctx re-runs its own argv[0], so
+# a stand-in shows what those runs inherit.
+python3 - "$CTX" "$T" <<'EOF'
+import os, signal, subprocess, sys, time
+ctx, T = sys.argv[1:3]
+os.makedirs(f"{T}/deadline/p")
+with open(f"{T}/deadline/p/d.jsonl", "w") as f:
+    f.write("{}\n")
+fake = f"{T}/stand-in"
+with open(fake, "w") as f:
+    f.write(f'#!/bin/sh\necho $$ > {T}/stand-in.pid\nexec sleep 30\n')
+os.chmod(fake, 0o755)
+p = subprocess.Popen([fake, "scan", f"{T}/deadline"], executable=ctx, stdout=subprocess.DEVNULL,
+                     preexec_fn=lambda: signal.alarm(2))
+assert p.wait(timeout=20) == -signal.SIGALRM, "scan stopped at its deadline"
+pid = int(open(f"{T}/stand-in.pid").read())
+end = time.time() + 5
+alive = True
+while alive and time.time() < end:
+    try:
+        os.kill(pid, 0)
+        time.sleep(0.1)
+    except ProcessLookupError:
+        alive = False
+assert not alive, "child stopped at the same deadline"
+EOF
+
 # A missing file is an error.
 if "$CTX" extract "$T/none.jsonl" 2>/dev/null; then fail "missing file"; fi
 
