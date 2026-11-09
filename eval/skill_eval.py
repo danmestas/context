@@ -31,7 +31,7 @@ RUN_DEADLINE = 480
 LONG_DEADLINE = 2400
 VALUE = {"correct": 1.0, "partial": 0.5, "wrong": 0.0, "dont_know": 0.0}
 SETTINGS = json.dumps({"disableAllHooks": True, "permissions": {"blockReadsOutsideWorkingDirectories": True}})
-SKIP = shutil.ignore_patterns("node_modules", ".wrangler", "dist", "target", ".zig-cache", "zig-out", ".next")
+SKIP = shutil.ignore_patterns("node_modules", ".wrangler", "dist", "target", ".zig-cache", "zig-out", ".next", ".turbo")
 READ_ONLY = ["Bash(git log*)", "Bash(git show*)", "Bash(git grep*)", "Bash(ls*)", "Bash(head*)", "Bash(tail*)",
              "Bash(wc*)", "Bash(cut*)", "Bash(sort*)", "Bash(uniq*)", "Bash(grep*)", "Bash(rg*)", "Bash(find*)",
              "Bash(cd*)", "Bash(echo*)", "Bash(cat*)", "Bash(sed*)", "Bash(awk*)", "Bash(tr*)", "Bash(xargs*)"]
@@ -198,7 +198,7 @@ def breaches(inputs, own):
     for name, text, failed in inputs:
         if failed:
             continue
-        if ".ctx/" in text:
+        if ".ctx/" in text.replace("/.ctx/eval/work/", "/"):  # the workspace itself lives under .ctx
             found.append(text[:90])
         for target in re.findall(r"\.claude/projects/([^\s\"'/]*)", text):
             if not target.startswith(own):
@@ -458,8 +458,16 @@ def cmd_author(a):
         cwd = w.repo("author", a.project, bank["projects"][a.project]["repo"])
 
         def ask(prompt):
-            p = spawn(claude(prompt, a.model, "json", tools, allow), cwd, w.env(True), LONG_DEADLINE)
-            return parse_array(json.loads(p.stdout)["result"])
+            for attempt in range(2):
+                p = spawn(claude(prompt, a.model, "json", tools, allow), cwd, w.env(True), LONG_DEADLINE)
+                try:
+                    d = json.loads(p.stdout)
+                    print(f"{a.project}: {d.get('num_turns')} turns", file=sys.stderr)
+                    return parse_array(d["result"])
+                except (ValueError, KeyError):
+                    print(f"{a.project}: attempt {attempt + 1} gave no JSON (exit {p.returncode}): "
+                          f"{(p.stdout or p.stderr)[-200:]}", file=sys.stderr)
+            sys.exit(f"{a.project}: no usable reply")
 
         drafted = ask(AUTHOR.format(project=a.project, n=a.n, avoid=avoid))
         kept = ask(REVIEW.format(project=a.project, questions=json.dumps(drafted, indent=0)))
