@@ -94,6 +94,57 @@ printf '{"uuid":"c-1","timestamp":"t","message":{"role":"user","content":"whole"
 "$CTX" extract "$T/partial.jsonl" > "$T/partial.txt"
 [ "$(grep -c '^--- ' "$T/partial.txt")" = 1 ] || fail "partial line"
 
+# Archiving saves technotes and chunks, and a second run stores nothing new.
+export CTX_DB="$T/arc.sqlite"
+"$CTX" init >/dev/null
+A="$T/abcd1234-session.jsonl"
+cat > "$A" <<'EOF'
+{"uuid":"a-1","timestamp":"2026-03-01T10:00:00Z","cwd":"/work/proj/src","message":{"role":"user","content":"first question about zebras"}}
+{"uuid":"a-2","timestamp":"2026-03-01T10:00:05Z","cwd":"/work/proj/src","message":{"role":"assistant","content":[{"type":"text","text":"first answer"}]}}
+{"uuid":"a-3","timestamp":"2026-03-02T09:00:00Z","cwd":"/work/proj/src","message":{"role":"user","content":"next day"}}
+EOF
+[ "$("$CTX" archive "$A")" = "3 turns archived" ] || fail "first archive"
+[ "$("$CTX" archive "$A")" = "0 turns archived" ] || fail "second archive stored something"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_capture_day")" = 2 ] || fail "one technote per day"
+[ "$("$CTX" sql "SELECT project FROM ctx_capture")" = src ] || fail "project falls back to the directory name"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk_fts WHERE ctx_chunk_fts MATCH 'zebras'")" = 1 ] || fail "search finds a turn"
+"$CTX" sql "SELECT fsl_technote(technote) FROM ctx_capture_day WHERE day='2026-03-01'" | grep -q 'first answer' || fail "technote body"
+"$CTX" sql "SELECT fsl_technote(technote) FROM ctx_capture_day WHERE day='2026-03-01'" | grep -q '^## assistant 2026-03-01T10:00:05Z$' || fail "technote heading"
+
+# New turns append to the same day's technote.
+echo '{"uuid":"a-4","timestamp":"2026-03-02T09:30:00Z","message":{"role":"assistant","content":"later reply"}}' >> "$A"
+[ "$("$CTX" archive "$A")" = "1 turns archived" ] || fail "append"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_capture_day")" = 2 ] || fail "append made a new technote"
+"$CTX" sql "SELECT fsl_technote(technote) FROM ctx_capture_day WHERE day='2026-03-02'" > "$T/day.txt"
+grep -q 'next day' "$T/day.txt" && grep -q 'later reply' "$T/day.txt" || fail "append lost text"
+
+# A line still being written is left for next time.
+printf '{"uuid":"a-5","timestamp":"2026-03-02T10:00:00Z","message":{"role":"user","content":"par' >> "$A"
+[ "$("$CTX" archive "$A")" = "0 turns archived" ] || fail "partial line was stored"
+printf 'tial"}}\n' >> "$A"
+[ "$("$CTX" archive "$A")" = "1 turns archived" ] || fail "completed line was not stored"
+
+# A replaced file is read from the start without storing a turn twice.
+{ echo '{"uuid":"z-1","timestamp":"2026-03-03T01:00:00Z","message":{"role":"user","content":"replaced file turn"}}'; cat "$A"; } > "$A.new"
+mv "$A.new" "$A"
+[ "$("$CTX" archive "$A")" = "1 turns archived" ] || fail "replaced file"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk")" = 6 ] || fail "duplicate turns after replacement"
+
+# A secret never reaches the repository or the index.
+K="$T/ef567890-session.jsonl"
+python3 - "$K" <<'EOF'
+import json, sys
+value = "aB3" * 8
+line = {"uuid": "k-1", "timestamp": "2026-03-04T01:00:00Z",
+        "message": {"role": "user", "content": "gh" + "p_" + value + " is the key"}}
+open(sys.argv[1], "w").write(json.dumps(line) + "\n")
+EOF
+"$CTX" archive "$K" >/dev/null
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE body LIKE '%aB3aB3aB3%'")" = 0 ] || fail "secret in the index"
+"$CTX" sql "SELECT fsl_technote(technote) FROM ctx_capture_day WHERE session LIKE 'ef56%'" > "$T/k.txt"
+grep -q 'aB3aB3aB3' "$T/k.txt" && fail "secret in the technote"
+grep -q 'REDACTED' "$T/k.txt" || fail "redaction marker"
+
 # A missing file is an error.
 if "$CTX" extract "$T/none.jsonl" 2>/dev/null; then fail "missing file"; fi
 

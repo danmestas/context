@@ -4,12 +4,14 @@
  * the ctx tables (schema/index.sql) beside libfossil host repositories.
  */
 #define _GNU_SOURCE /* memmem */
+#define _FILE_OFFSET_BITS 64
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #include "sqlite3.h"
 #include "schema.h"
@@ -85,12 +87,19 @@ static int cmd_version(void) {
 static int cmd_init(void) {
   char *path = db_path();
   sqlite3 *db = db_open(path);
-  db_exec(db, "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
+  db_exec(db, "PRAGMA journal_mode=WAL;");
   if (db_int(db, "PRAGMA user_version") == 0) {
     db_exec(db, "BEGIN IMMEDIATE");
     db_exec(db, ctx_schema);
     db_exec(db, "COMMIT");
   }
+  if (!db_int(db, "SELECT count(*) FROM sqlite_master WHERE name='fslrepo_me_config'")) {
+    sqlite3_stmt *q = db_prepare(db, "SELECT fsl_open('repo:me', ?1, '{\"create\":true}')");
+    sqlite3_bind_text(q, 1, getenv("USER") && *getenv("USER") ? getenv("USER") : "ctx", -1, SQLITE_STATIC);
+    if (sqlite3_step(q) != SQLITE_ROW) die("cannot create the private repository: %s", sqlite3_errmsg(db));
+    sqlite3_finalize(q);
+  }
+  db_exec(db, "INSERT OR IGNORE INTO ctx_repo(name, scope) VALUES ('me', 'private')");
   printf("%s\n", path);
   sqlite3_close(db);
   free(path);
@@ -359,71 +368,463 @@ static const char sql_parts[] =
     "    AND json_type(e.value)='object'"
     "  ORDER BY k)";
 
-/* Writes one numbered, conversation-only record per user or assistant turn. */
+/* One user or assistant turn, heap-allocated. */
+typedef struct {
+  char *role, *ts, *uuid, *body;
+  size_t body_n;
+} turn_t;
+
+static void turn_free(turn_t *t) {
+  free(t->role);
+  free(t->ts);
+  free(t->uuid);
+  free(t->body);
+  memset(t, 0, sizeof *t);
+}
+
+typedef struct {
+  sqlite3 *db;
+  sqlite3_stmt *meta, *parts, *cwd;
+  buf body, clean;
+} extractor;
+
+static void ex_open(extractor *e) {
+  memset(e, 0, sizeof *e);
+  e->db = db_open(":memory:");
+  e->meta = db_prepare(e->db, sql_meta);
+  e->parts = db_prepare(e->db, sql_parts);
+  e->cwd = db_prepare(e->db, "SELECT json_extract(?1,'$.cwd') WHERE json_valid(?1)");
+}
+
+static void ex_close(extractor *e) {
+  sqlite3_finalize(e->meta);
+  sqlite3_finalize(e->parts);
+  sqlite3_finalize(e->cwd);
+  sqlite3_close(e->db);
+  free(e->body.p);
+  free(e->clean.p);
+}
+
+static char *dup_text(const unsigned char *s) {
+  char *p = strdup(s ? (const char *)s : "");
+  if (!p) die("out of memory");
+  return p;
+}
+
+/* The working directory recorded on a transcript line, or NULL. Caller frees. */
+static char *ex_cwd(extractor *e, const char *line, size_t len) {
+  char *out = NULL;
+  sqlite3_bind_text(e->cwd, 1, line, (int)len, SQLITE_STATIC);
+  if (sqlite3_step(e->cwd) == SQLITE_ROW && sqlite3_column_text(e->cwd, 0))
+    out = dup_text(sqlite3_column_text(e->cwd, 0));
+  sqlite3_reset(e->cwd);
+  return out;
+}
+
+/* Parses one transcript line. Returns 1 and fills t if it holds a turn to keep. */
+static int ex_line(extractor *e, const char *line, size_t len, turn_t *t) {
+  int kept = 0;
+  sqlite3_bind_text(e->meta, 1, line, (int)len, SQLITE_STATIC);
+  if (sqlite3_step(e->meta) == SQLITE_ROW) {
+    const char *role = (const char *)sqlite3_column_text(e->meta, 0);
+    if (role && (!strcmp(role, "user") || !strcmp(role, "assistant")) &&
+        sqlite3_column_int(e->meta, 1) == 0) {
+      e->body.n = 0;
+      int first = 1;
+      sqlite3_bind_text(e->parts, 1, line, (int)len, SQLITE_STATIC);
+      while (sqlite3_step(e->parts) == SQLITE_ROW) {
+        const char *kind = (const char *)sqlite3_column_text(e->parts, 0);
+        const char *text = (const char *)sqlite3_column_text(e->parts, 1);
+        size_t n = (size_t)sqlite3_column_bytes(e->parts, 1);
+        if (!kind || !text) continue;
+        int is_text = !strcmp(kind, "text");
+        if (!is_text && strcmp(kind, "tool_use") && strcmp(kind, "tool_result")) continue;
+        if (is_text && is_noise(text)) continue;
+        if (!first) buf_str(&e->body, "\n");
+        first = 0;
+        e->clean.n = 0;
+        add_redacted(&e->clean, text, n);
+        if (is_text) buf_add(&e->body, e->clean.p, e->clean.n);
+        else add_tool_text(&e->body, e->clean.p, e->clean.n);
+      }
+      sqlite3_reset(e->parts);
+      if (e->body.n && !is_blank(e->body.p, e->body.n)) {
+        t->role = dup_text((const unsigned char *)role);
+        t->ts = dup_text(sqlite3_column_text(e->meta, 2));
+        t->uuid = dup_text(sqlite3_column_text(e->meta, 3));
+        t->body = malloc(e->body.n + 1);
+        if (!t->body) die("out of memory");
+        memcpy(t->body, e->body.p, e->body.n + 1);
+        t->body_n = e->body.n;
+        kept = 1;
+      }
+    }
+  }
+  sqlite3_reset(e->meta);
+  return kept;
+}
+
+/* Writes one numbered record per user or assistant turn. */
 static int cmd_extract(const char *path) {
   FILE *f = fopen(path, "r");
   if (!f) die("cannot open %s: %s", path, strerror(errno));
-  sqlite3 *db = db_open(":memory:");
-  sqlite3_stmt *meta = db_prepare(db, sql_meta);
-  sqlite3_stmt *parts = db_prepare(db, sql_parts);
+  extractor e;
+  ex_open(&e);
   char sid[9];
   session_id(path, sid);
-
   char *line = NULL;
   size_t cap = 0;
   ssize_t len;
-  long turn = 0;
-  buf body = {0}, clean = {0};
+  long n = 0;
   while ((len = getline(&line, &cap, f)) != -1) {
-    sqlite3_bind_text(meta, 1, line, (int)len, SQLITE_STATIC);
-    if (sqlite3_step(meta) == SQLITE_ROW) {
-      const char *role = (const char *)sqlite3_column_text(meta, 0);
-      if (role && (!strcmp(role, "user") || !strcmp(role, "assistant")) &&
-          sqlite3_column_int(meta, 1) == 0) {
-        body.n = 0;
-        int first = 1;
-        sqlite3_bind_text(parts, 1, line, (int)len, SQLITE_STATIC);
-        while (sqlite3_step(parts) == SQLITE_ROW) {
-          const char *kind = (const char *)sqlite3_column_text(parts, 0);
-          const char *text = (const char *)sqlite3_column_text(parts, 1);
-          size_t n = (size_t)sqlite3_column_bytes(parts, 1);
-          if (!kind || !text) continue;
-          int is_text = !strcmp(kind, "text");
-          if (!is_text && strcmp(kind, "tool_use") && strcmp(kind, "tool_result")) continue;
-          if (is_text && is_noise(text)) continue;
-          if (!first) buf_str(&body, "\n");
-          first = 0;
-          clean.n = 0;
-          add_redacted(&clean, text, n);
-          if (is_text) buf_add(&body, clean.p, clean.n);
-          else add_tool_text(&body, clean.p, clean.n);
-        }
-        sqlite3_reset(parts);
-        if (body.n && !is_blank(body.p, body.n)) {
-          const char *ts = (const char *)sqlite3_column_text(meta, 2);
-          const char *uuid = (const char *)sqlite3_column_text(meta, 3);
-          printf("--- %s turn %ld %s %s %s\n", sid, ++turn, role, ts ? ts : "", uuid ? uuid : "");
-          fwrite(body.p, 1, body.n, stdout);
-          fputs("\n\n", stdout);
-        }
-      }
+    turn_t t = {0};
+    if (ex_line(&e, line, (size_t)len, &t)) {
+      printf("--- %s turn %ld %s %s %s\n", sid, ++n, t.role, t.ts, t.uuid);
+      fwrite(t.body, 1, t.body_n, stdout);
+      fputs("\n\n", stdout);
+      turn_free(&t);
     }
-    sqlite3_reset(meta);
   }
   free(line);
-  free(body.p);
-  free(clean.p);
-  sqlite3_finalize(meta);
-  sqlite3_finalize(parts);
-  sqlite3_close(db);
+  ex_close(&e);
   fclose(f);
+  return 0;
+}
+
+/* A file is read again from the start if its first bytes change. */
+#define HEAD_BYTES (64 * 1024)
+/* Each committed batch covers about this much of a transcript. */
+#define BATCH_BYTES (8 * 1024 * 1024)
+
+/* FNV-1a over the first min(HEAD_BYTES, upto) bytes, as hex. */
+static void head_hash(const char *path, long long upto, char out[17]) {
+  unsigned long long h = 14695981039346656037ULL;
+  FILE *f = fopen(path, "rb");
+  if (!f) die("cannot open %s: %s", path, strerror(errno));
+  long long left = upto < HEAD_BYTES ? upto : HEAD_BYTES;
+  int c;
+  while (left-- > 0 && (c = getc(f)) != EOF) {
+    h ^= (unsigned char)c;
+    h *= 1099511628211ULL;
+  }
+  fclose(f);
+  snprintf(out, 17, "%016llx", h);
+}
+
+/* libfossil refuses connections with foreign keys on, so this one leaves them off.
+ * Work that relies on cascades, such as a rebuild, uses its own connection. */
+static sqlite3 *ctx_open(void) {
+  char *path = db_path();
+  sqlite3 *db = db_open(path);
+  free(path);
+  if (db_int(db, "PRAGMA user_version") == 0) die("no ctx database here; run: ctx init");
+  return db;
+}
+
+static const char *person(void) {
+  const char *u = getenv("USER");
+  return u && *u ? u : "ctx";
+}
+
+static void open_private(sqlite3 *db) {
+  sqlite3_stmt *q = db_prepare(db, "SELECT fsl_open('repo:me', ?1)");
+  sqlite3_bind_text(q, 1, person(), -1, SQLITE_STATIC);
+  if (sqlite3_step(q) != SQLITE_ROW) die("cannot open the private repository: %s", sqlite3_errmsg(db));
+  sqlite3_finalize(q);
+}
+
+/* The project for a working directory: the longest mapped root, else its last
+ * path segment. Caller frees. */
+static char *project_for(sqlite3 *db, const char *cwd) {
+  if (!cwd || !*cwd) return dup_text((const unsigned char *)"unknown");
+  sqlite3_stmt *q = db_prepare(db,
+      "SELECT project FROM ctx_project"
+      " WHERE ?1 = root OR substr(?1, 1, length(root) + 1) = root || '/'"
+      " ORDER BY length(root) DESC LIMIT 1");
+  sqlite3_bind_text(q, 1, cwd, -1, SQLITE_STATIC);
+  char *out;
+  if (sqlite3_step(q) == SQLITE_ROW) {
+    out = dup_text(sqlite3_column_text(q, 0));
+  } else {
+    const char *base = strrchr(cwd, '/');
+    out = dup_text((const unsigned char *)(base && base[1] ? base + 1 : cwd));
+  }
+  sqlite3_finalize(q);
+  return out;
+}
+
+static void turn_day(const turn_t *t, char out[11], const char *fallback) {
+  const char *s = strlen(t->ts) >= 10 && t->ts[4] == '-' && t->ts[7] == '-' ? t->ts : fallback;
+  memcpy(out, s, 10);
+  out[10] = 0;
+}
+
+/* Stores one batch of turns and advances the read position, in one transaction. */
+static long archive_batch(sqlite3 *db, const char *session, const char *path, const char *project,
+                          long long repo_id, turn_t *turns, size_t n, long long offset) {
+  long stored = 0;
+  char sid[9], today[32];
+  session_id(path, sid);
+  time_t now = time(NULL);
+  strftime(today, sizeof today, "%Y-%m-%d", gmtime(&now));
+  db_exec(db, "BEGIN IMMEDIATE");
+
+  sqlite3_stmt *up = db_prepare(db,
+      "INSERT INTO ctx_capture(session, path, project) VALUES (?1, ?2, ?3)"
+      " ON CONFLICT(session) DO UPDATE SET path = excluded.path");
+  sqlite3_bind_text(up, 1, session, -1, SQLITE_STATIC);
+  sqlite3_bind_text(up, 2, path, -1, SQLITE_STATIC);
+  sqlite3_bind_text(up, 3, project, -1, SQLITE_STATIC);
+  if (sqlite3_step(up) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+  sqlite3_finalize(up);
+
+  sqlite3_stmt *seen = db_prepare(db, "SELECT 1 FROM ctx_chunk WHERE turn = ?1");
+  char *done = calloc(n ? n : 1, 1);
+  if (!done) die("out of memory");
+  for (size_t i = 0; i < n; i++) {
+    if (!*turns[i].uuid) continue;
+    sqlite3_bind_text(seen, 1, turns[i].uuid, -1, SQLITE_STATIC);
+    if (sqlite3_step(seen) == SQLITE_ROW) done[i] = 1;
+    sqlite3_reset(seen);
+  }
+  sqlite3_finalize(seen);
+
+  sqlite3_stmt *find = db_prepare(db, "SELECT technote FROM ctx_capture_day WHERE session=?1 AND day=?2");
+  sqlite3_stmt *read = db_prepare(db, "SELECT fsl_technote(?1)");
+  sqlite3_stmt *save_new = db_prepare(db,
+      "SELECT fsl_technote_save(?1, json_object('comment', ?2, 'time', ?3 || ' 00:00:00',"
+      " 'mimetype', 'text/x-markdown', 'tags', json_array('session', ?4)))");
+  sqlite3_stmt *save_old = db_prepare(db, "SELECT fsl_technote_save(?1, json_object('id', ?2))");
+  sqlite3_stmt *day_in = db_prepare(db, "INSERT OR IGNORE INTO ctx_capture_day(session, day, technote) VALUES (?1,?2,?3)");
+  sqlite3_stmt *doc = db_prepare(db,
+      "INSERT INTO ctx_doc(project, repo_id, kind, name, title, hash, size, mtime)"
+      " VALUES (?1, ?2, 'session', ?3, ?4, ?3, ?5, unixepoch())"
+      " ON CONFLICT(project, kind, name) DO UPDATE SET size = excluded.size, mtime = excluded.mtime"
+      " RETURNING id, (SELECT coalesce(max(seq), -1) FROM ctx_chunk WHERE doc_id = ctx_doc.id)");
+  sqlite3_stmt *chunk = db_prepare(db, "INSERT INTO ctx_chunk(doc_id, seq, heading, at, turn, body) VALUES (?1,?2,?3,?4,?5,?6)");
+
+  buf text = {0};
+  for (size_t i = 0; i < n; i++) {
+    if (done[i]) continue;
+    char day[11], other[11];
+    turn_day(&turns[i], day, today);
+
+    text.n = 0;
+    char *id = NULL;
+    sqlite3_bind_text(find, 1, session, -1, SQLITE_STATIC);
+    sqlite3_bind_text(find, 2, day, -1, SQLITE_STATIC);
+    if (sqlite3_step(find) == SQLITE_ROW) id = dup_text(sqlite3_column_text(find, 0));
+    sqlite3_reset(find);
+    if (id) {
+      sqlite3_bind_text(read, 1, id, -1, SQLITE_STATIC);
+      if (sqlite3_step(read) == SQLITE_ROW && sqlite3_column_text(read, 0))
+        buf_add(&text, (const char *)sqlite3_column_text(read, 0), (size_t)sqlite3_column_bytes(read, 0));
+      sqlite3_reset(read);
+    }
+
+    size_t first = i;
+    for (size_t j = i; j < n; j++) {
+      if (done[j]) continue;
+      turn_day(&turns[j], other, today);
+      if (strcmp(day, other)) continue;
+      buf_str(&text, "## ");
+      buf_str(&text, turns[j].role);
+      buf_str(&text, " ");
+      buf_str(&text, turns[j].ts);
+      buf_str(&text, "\n\n");
+      buf_add(&text, turns[j].body, turns[j].body_n);
+      buf_str(&text, "\n\n");
+    }
+
+    sqlite3_stmt *save = id ? save_old : save_new;
+    char comment[96], tag[32];
+    snprintf(comment, sizeof comment, "Session %s %s", sid, day);
+    snprintf(tag, sizeof tag, "project-sessions");
+    sqlite3_bind_text(save, 1, text.p, (int)text.n, SQLITE_STATIC);
+    if (id) {
+      sqlite3_bind_text(save, 2, id, -1, SQLITE_STATIC);
+    } else {
+      sqlite3_bind_text(save, 2, comment, -1, SQLITE_STATIC);
+      sqlite3_bind_text(save, 3, day, -1, SQLITE_STATIC);
+      sqlite3_bind_text(save, 4, project, -1, SQLITE_STATIC);
+    }
+    if (sqlite3_step(save) != SQLITE_ROW) die("cannot save the technote: %s", sqlite3_errmsg(db));
+    if (!id) id = dup_text(sqlite3_column_text(save, 0));
+    sqlite3_reset(save);
+
+    sqlite3_bind_text(day_in, 1, session, -1, SQLITE_STATIC);
+    sqlite3_bind_text(day_in, 2, day, -1, SQLITE_STATIC);
+    sqlite3_bind_text(day_in, 3, id, -1, SQLITE_STATIC);
+    if (sqlite3_step(day_in) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+    sqlite3_reset(day_in);
+
+    sqlite3_bind_text(doc, 1, project, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(doc, 2, repo_id);
+    sqlite3_bind_text(doc, 3, id, -1, SQLITE_STATIC);
+    sqlite3_bind_text(doc, 4, comment, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(doc, 5, (sqlite3_int64)text.n);
+    if (sqlite3_step(doc) != SQLITE_ROW) die("%s", sqlite3_errmsg(db));
+    sqlite3_int64 doc_id = sqlite3_column_int64(doc, 0);
+    sqlite3_int64 seq = sqlite3_column_int64(doc, 1);
+    while (sqlite3_step(doc) == SQLITE_ROW) {}
+    sqlite3_reset(doc);
+
+    for (size_t j = first; j < n; j++) {
+      if (done[j]) continue;
+      turn_day(&turns[j], other, today);
+      if (strcmp(day, other)) continue;
+      sqlite3_bind_int64(chunk, 1, doc_id);
+      sqlite3_bind_int64(chunk, 2, ++seq);
+      sqlite3_bind_text(chunk, 3, turns[j].role, -1, SQLITE_STATIC);
+      sqlite3_bind_text(chunk, 4, turns[j].ts, -1, SQLITE_STATIC);
+      if (*turns[j].uuid) sqlite3_bind_text(chunk, 5, turns[j].uuid, -1, SQLITE_STATIC);
+      else sqlite3_bind_null(chunk, 5);
+      sqlite3_bind_text(chunk, 6, turns[j].body, (int)turns[j].body_n, SQLITE_STATIC);
+      if (sqlite3_step(chunk) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+      sqlite3_reset(chunk);
+      done[j] = 1;
+      stored++;
+    }
+    free(id);
+  }
+  free(text.p);
+  free(done);
+  sqlite3_finalize(find);
+  sqlite3_finalize(read);
+  sqlite3_finalize(save_new);
+  sqlite3_finalize(save_old);
+  sqlite3_finalize(day_in);
+  sqlite3_finalize(doc);
+  sqlite3_finalize(chunk);
+
+  char hash[17];
+  head_hash(path, offset, hash);
+  sqlite3_stmt *pos = db_prepare(db, "UPDATE ctx_capture SET offset=?2, head_hash=?3 WHERE session=?1");
+  sqlite3_bind_text(pos, 1, session, -1, SQLITE_STATIC);
+  sqlite3_bind_int64(pos, 2, offset);
+  sqlite3_bind_text(pos, 3, hash, -1, SQLITE_STATIC);
+  if (sqlite3_step(pos) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+  sqlite3_finalize(pos);
+  db_exec(db, "COMMIT");
+  return stored;
+}
+
+/* Saves what is new in a transcript to the private repository and the index. */
+static int cmd_archive(const char *path) {
+  struct stat st;
+  if (stat(path, &st) != 0) die("cannot read %s: %s", path, strerror(errno));
+  sqlite3 *db = ctx_open();
+  open_private(db);
+
+  const char *base = strrchr(path, '/');
+  base = base ? base + 1 : path;
+  char session[128];
+  snprintf(session, sizeof session, "%.*s", (int)strcspn(base, "."), base);
+
+  sqlite3_int64 repo_id = 0;
+  {
+    sqlite3_stmt *q = db_prepare(db, "SELECT id FROM ctx_repo WHERE name='me'");
+    if (sqlite3_step(q) == SQLITE_ROW) repo_id = sqlite3_column_int64(q, 0);
+    sqlite3_finalize(q);
+  }
+  if (!repo_id) die("no private repository; run: ctx init");
+
+  long long offset = 0;
+  char *project = NULL;
+  {
+    sqlite3_stmt *q = db_prepare(db, "SELECT offset, head_hash, project FROM ctx_capture WHERE session=?1");
+    sqlite3_bind_text(q, 1, session, -1, SQLITE_STATIC);
+    if (sqlite3_step(q) == SQLITE_ROW) {
+      char hash[17];
+      offset = sqlite3_column_int64(q, 0);
+      project = dup_text(sqlite3_column_text(q, 2));
+      head_hash(path, offset, hash);
+      const char *old = (const char *)sqlite3_column_text(q, 1);
+      if ((long long)st.st_size < offset || !old || strcmp(old, hash)) offset = 0;
+    }
+    sqlite3_finalize(q);
+  }
+
+  FILE *f = fopen(path, "r");
+  if (!f) die("cannot open %s: %s", path, strerror(errno));
+  if (fseeko(f, (off_t)offset, SEEK_SET) != 0) die("cannot seek %s", path);
+
+  extractor e;
+  ex_open(&e);
+  char *line = NULL;
+  size_t cap = 0, nturns = 0, capturns = 0;
+  ssize_t len = 0;
+  turn_t *turns = NULL;
+  long stored = 0;
+  long long pos = offset, batch_start = offset;
+  int more = 1;
+  while (more) {
+    len = getline(&line, &cap, f);
+    int whole = len > 0 && line[len - 1] == '\n';
+    if (whole) {
+      pos += len;
+      if (!project) {
+        char *cwd = ex_cwd(&e, line, (size_t)len);
+        if (cwd) {
+          project = project_for(db, cwd);
+          free(cwd);
+        }
+      }
+      turn_t t = {0};
+      if (ex_line(&e, line, (size_t)len, &t)) {
+        if (nturns == capturns) {
+          capturns = capturns ? capturns * 2 : 256;
+          turns = realloc(turns, capturns * sizeof *turns);
+          if (!turns) die("out of memory");
+        }
+        turns[nturns++] = t;
+      }
+    } else {
+      more = 0; /* end of file, or a line still being written */
+    }
+    if (pos > batch_start && (!more || pos - batch_start >= BATCH_BYTES)) {
+      if (!project) project = dup_text((const unsigned char *)"unknown");
+      stored += archive_batch(db, session, path, project, repo_id, turns, nturns, pos);
+      for (size_t i = 0; i < nturns; i++) turn_free(&turns[i]);
+      nturns = 0;
+      batch_start = pos;
+    }
+  }
+  free(line);
+  free(turns);
+  free(project);
+  ex_close(&e);
+  fclose(f);
+  sqlite3_close(db);
+  printf("%ld turns archived\n", stored);
+  return 0;
+}
+
+/* Runs one SQL statement with libfossil ready, printing rows tab-separated. */
+static int cmd_sql(const char *sql) {
+  sqlite3 *db = ctx_open();
+  open_private(db);
+  sqlite3_stmt *q = db_prepare(db, sql);
+  int rc;
+  while ((rc = sqlite3_step(q)) == SQLITE_ROW) {
+    for (int i = 0; i < sqlite3_column_count(q); i++) {
+      const unsigned char *v = sqlite3_column_text(q, i);
+      printf("%s%s", i ? "\t" : "", v ? (const char *)v : "");
+    }
+    putchar('\n');
+  }
+  if (rc != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+  sqlite3_finalize(q);
+  sqlite3_close(db);
   return 0;
 }
 
 static int usage(void) {
   fputs("usage: ctx version\n"
         "       ctx init\n"
-        "       ctx extract TRANSCRIPT\n",
+        "       ctx extract TRANSCRIPT\n"
+        "       ctx archive TRANSCRIPT\n"
+        "       ctx sql STATEMENT\n",
         stderr);
   return 2;
 }
@@ -434,5 +835,7 @@ int main(int argc, char **argv) {
   if (argc == 2 && !strcmp(argv[1], "version")) return cmd_version();
   if (argc == 2 && !strcmp(argv[1], "init")) return cmd_init();
   if (argc == 3 && !strcmp(argv[1], "extract")) return cmd_extract(argv[2]);
+  if (argc == 3 && !strcmp(argv[1], "archive")) return cmd_archive(argv[2]);
+  if (argc == 3 && !strcmp(argv[1], "sql")) return cmd_sql(argv[2]);
   return usage();
 }
