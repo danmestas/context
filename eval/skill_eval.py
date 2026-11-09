@@ -410,7 +410,8 @@ def ctx_calls(body):
             command = json.loads(line[5:])["command"]
         except (ValueError, KeyError):
             continue
-        for m in re.finditer(r"(?:^|[;&|(]\s*)(?:\w+=\S+\s+)*(?:\S*/)?ctx\s+([a-z-]+)([^;&|\n]*)", command, re.M):
+        command = re.sub(r"<<-?\s*['\"]?(\w+)['\"]?.*?\n\s*\1\b", "", command, flags=re.S)  # heredoc bodies are data
+        for m in re.finditer(r"(?:^\s*|[;&|]\s*)(?:\w+=\S+\s+)*(?:\S*/)?ctx\s+([a-z-]+)([^;&|\n]*)", command, re.M):
             found.append((m.group(1), m.group(2).split()))
     return found
 
@@ -465,8 +466,11 @@ def cmd_author(a):
     for q in kept:
         q.update(project=a.project, id=f"{slug(a.project).lower()}-{sha(q['question'])[:8]}",
                  added=time.strftime("%Y-%m-%d"))
-    seen = {q["id"] for q in bank["questions"]}
-    bank["questions"] += [q for q in kept if q["id"] not in seen]
+    latest = load_bank()  # other projects may have been added while this one ran
+    latest["projects"][a.project] = bank["projects"][a.project]
+    seen = {q["id"] for q in latest["questions"]}
+    latest["questions"] += [q for q in kept if q["id"] not in seen]
+    bank = latest
     write_json(BANK, bank)
     print(f"drafted {len(drafted)}, kept {len(kept)}, bank now {len(bank['questions'])}")
 
