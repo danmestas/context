@@ -1035,10 +1035,15 @@ static char *sidecar(const char *suffix) {
   return p;
 }
 
-/* Runs `ctx CMD [ARG]` to completion. A failure affects only that run. */
+/* Runs `ctx CMD [ARG]` to completion. A failure affects only that run. fork
+ * clears alarms and exec keeps them, so the child is handed the time left:
+ * work must not outlive the deadline or the lock of the process that began it. */
 static void run_self(const char *cmd, const char *arg) {
+  unsigned left = alarm(0);
+  alarm(left);
   pid_t pid = fork();
   if (pid == 0) {
+    alarm(left);
     int null = open("/dev/null", O_WRONLY);
     if (null >= 0) dup2(null, 1); /* the caller reports its own summary */
     execl(self_path, self_path, cmd, arg, (char *)NULL);
