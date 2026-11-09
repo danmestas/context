@@ -6,9 +6,9 @@
 #define FSL_AMALGAMATION_BUILD 1
 #define FSL_PACKAGE_NAME "libfossil"
 #define FSL_LIBRARY_VERSION "0.6.1"
-#define FSL_LIB_VERSION_HASH "51fd6ddac830a1dadac8b4ac126b55e8861a618579c42efc23a7675682076447"
-#define FSL_LIB_VERSION_TIMESTAMP "2026-11-09 06:38:36.689 UTC"
-#define FSL_LIB_CONFIG_TIMESTAMP "2026-11-09 07:03 GMT"
+#define FSL_LIB_VERSION_HASH "ab34f5e39c293b3a515aac1252dc7a593d556a2b693cf568bc493881080d79bf"
+#define FSL_LIB_VERSION_TIMESTAMP "2026-11-09 23:16:24.829 UTC"
+#define FSL_LIB_CONFIG_TIMESTAMP "2026-11-09 23:16 GMT"
 #define FSL_AUX_SCHEMA "2015-01-24"
 #define FSL_CONTENT_SCHEMA "2"
 #define FOSSIL_RELEASE_VERSION_NUMBER 22700
@@ -898,6 +898,12 @@ FSL_EXPORT int fsl_input_f_FILE( void * state, void * dest, fsl_size_t * n );
    A fsl_input_f() implementation which requires that state be a
    readable file descriptor, in the form of an ([const] int*).  This
    function will not modify that value.
+
+   Like fsl_input_f_FILE(), it reads all *n bytes unless the input
+   ends first, so a short read means the end of the input, as
+   fsl_stream() and fsl_b_fill_from() assume. On a pipe or socket it
+   therefore blocks until *n bytes arrive or the writer closes its
+   end. A read interrupted by a signal is retried.
 */
 FSL_EXPORT int fsl_input_f_fd( void * state, void * dest, fsl_size_t * n );
 
@@ -9386,6 +9392,27 @@ FSL_EXPORT int fsl_cx_txn_level(fsl_cx * f);
 */
 FSL_EXPORT int fsl_cx_txn_begin(fsl_cx * f);
 /**
+   Like fsl_cx_txn_begin(), but also takes the write lock on each db
+   in roles, a mask of FSL_DBROLE_REPO and FSL_DBROLE_CKOUT, which is
+   attached and which the transaction has not write-locked already, as
+   fossil(1)'s BEGIN IMMEDIATE does. Start every transaction which will
+   write the repository or checkout db with this.
+
+   fsl_cx_txn_begin() starts a deferred transaction. When a deferred
+   transaction which has read a db then writes it while another
+   connection holds that db's write lock, SQLite returns SQLITE_BUSY at
+   once, without calling the busy handler, since waiting could
+   deadlock, and the write fails with FSL_RC_LOCKED. A transaction
+   which takes the lock before it reads waits in the busy handler for
+   the other writer instead. Inside a transaction which has already
+   read a db without write-locking it, taking that db's lock can still
+   fail at once.
+
+   On error, this ends the transaction level it began and updates f's
+   error state.
+*/
+FSL_EXPORT int fsl_cx_txn_begin_write(fsl_cx * f, int roles);
+/**
    Returns the same as passing fsl_cx_db() and the 2nd/3rd arguments
    to fsl_db_txn_end_v2() and propagates any db errors from that
    operation into f.
@@ -16950,7 +16977,8 @@ FSL_EXPORT int fsl_repo_rebuild(fsl_cx * f, fsl_rebuild_opt const * opt);
    not sync the WAL at each commit, so a power loss could instead leave the
    checkout db recording a check-in which the repo db has lost. While a
    checkout db is attached, libfossil sets the repo db to synchronous=FULL,
-   which syncs the WAL before the checkout db commits.
+   which syncs the WAL before the checkout db commit. SQLite can't change 
+   synchronous levels inside a transaction.
 
    Only the repo db can be in WAL mode. If libfossil finds a checkout db
    in WAL mode, libfossil resets the db back to DELETE on opening it. If
@@ -25081,6 +25109,14 @@ int fsl_sc_for_url( char const * zUrl, fsl_sc **pOut,  );
     to be kept abreast of things and will cause Grief and Suffering
     (on the client's part, not mine).
 
+    Begin a transaction which will write the repository or checkout db
+    with fsl_cx_txn_begin_write(), which takes those dbs' write locks
+    before the transaction reads them. A transaction begun with
+    fsl_cx_txn_begin() or fsl_db_txn_begin() takes a write lock at its
+    first write. If it has read that db by then and another connection
+    holds the lock, SQLite reports the db as locked at once, without
+    waiting for the busy timeout.
+
     Tip: implementing a "dry-run" mode for most fossil operations is
     trivial by starting a transaction before performing the
     operations. Many operations run in a transaction, but if the
@@ -26721,6 +26757,12 @@ int fsl_ckout_close( fsl_cx * const f );
   across the library.
 */
 
+
+#if defined(_WIN32) && !defined(WIN32_LEAN_AND_MEAN)
+/* Keep <windows.h> from including the old <winsock.h>, which
+   conflicts with the <winsock2.h> the native sync channel uses. */
+#  define WIN32_LEAN_AND_MEAN
+#endif
 
 /**
    Determine whether fsl__mutex_enter() and friends are no-ops.  If
@@ -28443,6 +28485,20 @@ bool fsl__db_is_borrowed(fsl_db const * const db);
 */
 int fsl__db_temp_drop(fsl_db * const db, char const * zTable);
 
+/**
+   Returns true if db's connection is inside a transaction or has a
+   statement running, e.g. a host's statement which called us through
+   a SQL function. A read-only operation which would open a
+   transaction only so that its several statements see one consistent
+   snapshot must skip that when this is true: the running statement
+   or the open transaction already holds the connection's read (or
+   write) lock, so no other connection can commit in between, and
+   SQLite refuses to open a savepoint while a writing statement is in
+   progress. Never use this to skip a transaction which protects
+   writes, including writes to caches and TEMP tables.
+*/
+bool fsl__db_in_statement_or_txn(fsl_db * const db);
+
 /** @internal
 
     Generates an fsl_appendf()-formatted message to stderr and
@@ -29796,18 +29852,6 @@ void fsl__cx_uninit_db(fsl_cx * const f, fsl_db * const db);
 */
 int fsl__cx_host_rollback_check(fsl_cx * const f);
 
-/**
-   Like fsl_cx_txn_begin(), but if this starts the outermost
-   transaction it also takes the repository's write lock at once, as
-   fossil(1)'s BEGIN IMMEDIATE does. A SAVEPOINT starts a deferred
-   transaction, and when one which has already read tries to write
-   while another connection is writing, SQLite returns SQLITE_BUSY at
-   once, without calling the busy handler, since waiting could
-   deadlock. Taking the lock before reading lets the busy handler wait
-   for the other writer instead. Requires an opened repository.
-*/
-int fsl__cx_txn_begin_write(fsl_cx * const f);
-
 /** @internal
 
     Attaches the given db file to f with the given role. This function "should"
@@ -30206,23 +30250,23 @@ int fsl__xfer_setup(fsl_cx * const f, fsl_xfer * const xf,
 
 /** @internal
 
-   Create a child process running shell command "zCmd". *pfdIn gets
-   assigned to the stdout from the child process.  (The caller reads
-   from *pfdIn in order to receive input from the child.) *ppOut gets
-   assigned to a FILE that becomes the standard input of the child
-   process.  (The caller writes to *ppOut in order to send text to the
-   child.) Note that *pfdIn is an unbuffered file descriptor, not a
-   FILE. The process ID of the child is written into *pChildPid.
+   Create a child process running command "zCmd". *pfdIn gets
+   assigned to the stdout from the child process. If zStdinFile is
+   not NULL the child reads its stdin from that file and *ppOut is
+   set to NULL; otherwise *ppOut is a FILE which becomes the child's
+   stdin. On Unix zCmd runs through /bin/sh; on Windows it runs
+   directly as a command line, without a shell. *pChildPid gets the
+   child's id for fsl__pclose2().
 
    On success the values returned via *pfdIn, *ppOut, and *pChildPid
-   must be passed to fsl_pclose2() to properly clean up.
+   must be passed to fsl__pclose2() to properly clean up.
 
    Return 0 on success, non-0 on error.
 
    @internal
 */
-int fsl__popen2(const char *zCmd, int *pfdIn, FILE **ppOut,
-                           int *pChildPid);
+int fsl__popen2(const char *zCmd, const char *zStdinFile,
+                int *pfdIn, FILE **ppOut, int *pChildPid);
 
 /** @internal
 
@@ -30231,11 +30275,9 @@ int fsl__popen2(const char *zCmd, int *pfdIn, FILE **ppOut,
    fsl__popen2()'s output parameters: the input file descriptor,
    output FILE handle, and child process PID.
 
-   Returns the child's exit status, or the negated number of the
-   signal which ended it, or 0 if its status cannot be determined.
-
-   On Windows platforms, killing of the child process is not
-   implemented. (Patches are welcomed.)
+   Blocks until the child exits. Returns the child's exit status, or
+   (on Unix) the negated number of the signal which ended it, or 0 if
+   its status cannot be determined.
 */
 int fsl__pclose2(int fdIn, FILE *pOut, int childPid);
 
@@ -30262,8 +30304,9 @@ struct fsl_xfcard {
   const fsl_xfcard_e type;
   /** The protocol-level name of this card, e.g. "file" or "cfile". */
   char const * const name;
-  /** A hash unique (in the context of fsl_xfcard) to this->name. */
-  const fsl_xfcard_hash_t hash;
+  /** A hash unique (in the context of fsl_xfcard) to this->name.
+      Not const: fsl__xfcard_search() computes it on first use. */
+  fsl_xfcard_hash_t hash;
 };
 typedef struct fsl_xfcard fsl_xfcard;
 
