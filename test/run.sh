@@ -347,6 +347,44 @@ for id in $("$CTX" sql "SELECT min(id) FROM ctx_audit_finding WHERE status='open
 "$CTX" audit --limit 0 > "$T/a3.txt" || fail "audit exits 0 when nothing is open"
 out=$("$CTX" audit --all --limit 0) || fail "allowed findings stay allowed on a full rescan"
 [ "$("$CTX" sql "SELECT count(*) FROM ctx_audit_run")" -ge 4 ] || fail "runs are counted over time"
+"$CTX" sql "UPDATE ctx_audit_finding SET status='open' WHERE rule='entropy'" >/dev/null
+"$CTX" audit --tickets --limit 0 > "$T/a4.txt" || true
+grep -q 'ticket .* Audit: entropy findings' "$T/a4.txt" || fail "findings become tickets"
+"$CTX" audit --tickets --limit 0 > "$T/a5.txt" || true
+if grep -q '^ticket ' "$T/a5.txt"; then fail "one ticket per rule at a time"; fi
+[ "$("$CTX" ticket ready --all | grep -c 'Audit: entropy')" = 1 ] || fail "the ticket is listed"
+
+# Tickets: created, listed by readiness, claimed once, and finished.
+export CTX_DB="$T/tickets.sqlite"
+"$CTX" init >/dev/null
+mkdir -p "$T/proj"; cd "$T/proj"
+A=$("$CTX" ticket new "First job" --acceptance "tests pass" --body "details here")
+B=$("$CTX" ticket new "Second job" --type Bug --blocked-by "$A")
+O=$("$CTX" ticket new "Elsewhere" --project other)
+[ "$("$CTX" ticket ready | wc -l | tr -d ' ')" = 1 ] || fail "a blocked ticket is not ready"
+"$CTX" ticket ready | grep -q "^$A proj Task First job" || fail "ready lists the ticket"
+[ "$("$CTX" ticket ready --all | wc -l | tr -d ' ')" = 2 ] || fail "ready --all"
+if "$CTX" ticket claim "$B" 2>/dev/null; then fail "a blocked ticket cannot be claimed"; fi
+"$CTX" ticket offer > "$T/offer.json"; python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert 'First job' in d['hookSpecificOutput']['additionalContext']; assert 'Elsewhere' not in d['hookSpecificOutput']['additionalContext']" "$T/offer.json" || fail "offer lists this project"
+[ -z "$(cd "$T" && mkdir -p idle && cd idle && "$CTX" ticket offer)" ] || fail "offer is silent with no work"
+python3 - "$CTX" "$A" <<'EOF' || fail "only one claim wins"
+import subprocess, sys
+ctx, a = sys.argv[1:3]
+ps = [subprocess.Popen([ctx, "ticket", "claim", a, "--as", f"agent{i}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) for i in range(8)]
+assert sum(p.wait() == 0 for p in ps) == 1
+EOF
+"$CTX" ticket show "$A" | grep -q 'Claimed' || fail "ticket is claimed"
+"$CTX" ticket show "$A" | grep -q '^assignee: agent' || fail "claim records who"
+"$CTX" ticket show "$A" | grep -q '^details here' || fail "show has the body"
+[ "$("$CTX" ticket ready | wc -l | tr -d ' ')" = 0 ] || fail "a claimed ticket is not ready"
+"$CTX" ticket done "$A" --result abc123 >/dev/null
+"$CTX" ticket show "$A" | grep -q '^result: abc123' || fail "done records the result"
+"$CTX" ticket ready | grep -q 'Second job' || fail "finishing a blocker readies the next"
+"$CTX" ticket drop "$O" --reason "not needed" >/dev/null
+[ "$("$CTX" ticket ready --all | wc -l | tr -d ' ')" = 1 ] || fail "dropped tickets leave the list"
+if "$CTX" ticket claim nosuch 2>/dev/null; then fail "unknown ticket"; fi
+if "$CTX" ticket new "bad type" --type Nope 2>/dev/null; then fail "ticket type is checked"; fi
+cd - >/dev/null
 
 # The skill eval harness works end to end with a stand-in for the model.
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"
