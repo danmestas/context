@@ -2,8 +2,8 @@
 
 ctx keeps agent sessions and knowledge durable, shares them between people and
 machines, and makes them cheap to search. It is being built as one C binary on
-SQLite and libfossil. So far it creates its database and archives agent
-transcripts, redacted, into a private repository; search comes next.
+SQLite and libfossil. So far it creates its database, archives agent
+transcripts, redacted, into a private repository, and searches them.
 
 ## What is here
 
