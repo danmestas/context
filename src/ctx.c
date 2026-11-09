@@ -5,12 +5,16 @@
  */
 #define _GNU_SOURCE /* memmem */
 #define _FILE_OFFSET_BITS 64
+#include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -1013,6 +1017,208 @@ static int cmd_sql(const char *sql) {
   return 0;
 }
 
+/* Background capture. A hook only appends to a spool file. One process at a
+ * time, chosen by a non-blocking file lock, turns the spool into archive runs,
+ * so hooks never wait and never contend for the database. */
+#define DRAIN_DEADLINE_SECS 3600
+#define SCAN_EVERY_SECS 3600
+
+static const char *self_path;
+
+static char *sidecar(const char *suffix) {
+  char *db = db_path();
+  size_t n = strlen(db) + strlen(suffix) + 1;
+  char *p = malloc(n);
+  if (!p) die("out of memory");
+  snprintf(p, n, "%s%s", db, suffix);
+  free(db);
+  return p;
+}
+
+/* Runs `ctx CMD [ARG]` to completion. A failure affects only that run. */
+static void run_self(const char *cmd, const char *arg) {
+  pid_t pid = fork();
+  if (pid == 0) {
+    int null = open("/dev/null", O_WRONLY);
+    if (null >= 0) dup2(null, 1); /* the caller reports its own summary */
+    execl(self_path, self_path, cmd, arg, (char *)NULL);
+    _exit(127);
+  }
+  if (pid > 0) {
+    int status;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+  }
+}
+
+static void drain_file(const char *work) {
+  FILE *f = fopen(work, "r");
+  if (!f) return;
+  char **seen = NULL;
+  size_t n = 0, cap_seen = 0, cap = 0;
+  char *line = NULL;
+  ssize_t len;
+  while ((len = getline(&line, &cap, f)) != -1) {
+    if (len && line[len - 1] == '\n') line[--len] = 0;
+    if (!len) continue;
+    int dup = 0;
+    for (size_t i = 0; i < n && !dup; i++) dup = !strcmp(seen[i], line);
+    if (dup) continue;
+    if (n == cap_seen) {
+      cap_seen = cap_seen ? cap_seen * 2 : 32;
+      seen = realloc(seen, cap_seen * sizeof *seen);
+      if (!seen) die("out of memory");
+    }
+    seen[n] = strdup(line);
+    if (!seen[n]) die("out of memory");
+    n++;
+  }
+  free(line);
+  fclose(f);
+  for (size_t i = 0; i < n; i++) {
+    run_self("archive", seen[i]);
+    free(seen[i]);
+  }
+  free(seen);
+  unlink(work);
+}
+
+static int exists(const char *path) {
+  struct stat st;
+  return stat(path, &st) == 0;
+}
+
+/* Runs a scan if none has run for a while. */
+static void scan_if_due(void) {
+  char *stamp = sidecar(".scan");
+  struct stat st;
+  if (stat(stamp, &st) != 0 || time(NULL) - st.st_mtime >= SCAN_EVERY_SECS) {
+    int fd = open(stamp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd >= 0) close(fd);
+    run_self("scan", NULL);
+  }
+  free(stamp);
+}
+
+/* Empties the spool unless another process already holds the lock. */
+static void drain(int scan) {
+  char *spool = sidecar(".spool"), *work = sidecar(".spool.work"), *lock = sidecar(".lock");
+  do {
+    int fd = open(lock, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (fd < 0 || flock(fd, LOCK_EX | LOCK_NB) != 0) {
+      if (fd >= 0) close(fd);
+      break; /* the holder rechecks the spool after it releases the lock */
+    }
+    if (exists(work)) drain_file(work); /* left by a run that died */
+    while (rename(spool, work) == 0) drain_file(work);
+    if (scan) scan_if_due();
+    scan = 0;
+    close(fd);
+  } while (exists(spool));
+  free(spool);
+  free(work);
+  free(lock);
+}
+
+/* Called by Claude Code's hooks with a JSON object on stdin. A hook must never
+ * disturb a session, so this prints nothing and always exits 0. */
+static int cmd_hook(void) {
+  buf in = {0};
+  char chunk[4096];
+  size_t got;
+  while ((got = fread(chunk, 1, sizeof chunk, stdin)) > 0) buf_add(&in, chunk, got);
+  if (!in.p) return 0;
+
+  sqlite3 *mem = db_open(":memory:");
+  sqlite3_stmt *q = db_prepare(mem,
+      "SELECT json_extract(?1,'$.transcript_path'), json_extract(?1,'$.hook_event_name')"
+      " WHERE json_valid(?1)");
+  sqlite3_bind_text(q, 1, in.p, (int)in.n, SQLITE_STATIC);
+  char *path = NULL;
+  int scan = 0;
+  if (sqlite3_step(q) == SQLITE_ROW && sqlite3_column_text(q, 0)) {
+    path = dup_text(sqlite3_column_text(q, 0));
+    const char *ev = (const char *)sqlite3_column_text(q, 1);
+    scan = ev && !strcmp(ev, "SessionStart");
+  }
+  sqlite3_finalize(q);
+  sqlite3_close(mem);
+  free(in.p);
+  if (!path || !*path) return 0;
+
+  char *spool = sidecar(".spool");
+  int fd = open(spool, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0600);
+  free(spool);
+  if (fd < 0) return 0;
+  size_t n = strlen(path);
+  path = realloc(path, n + 2);
+  if (!path) return 0;
+  path[n] = '\n';
+  if (write(fd, path, n + 1) < 0) { /* the periodic scan will catch this one */ }
+  close(fd);
+  free(path);
+
+  /* Return to the session at once; the work continues detached. */
+  pid_t pid = fork();
+  if (pid != 0) return 0;
+  setsid();
+  alarm(DRAIN_DEADLINE_SECS);
+  int null = open("/dev/null", O_RDWR);
+  if (null >= 0) {
+    dup2(null, 0);
+    dup2(null, 1);
+    dup2(null, 2);
+  }
+  drain(scan);
+  _exit(0);
+}
+
+/* Archives any transcript that has grown since it was last read. */
+static int cmd_scan(const char *root_arg) {
+  char root[4200];
+  if (root_arg) {
+    snprintf(root, sizeof root, "%s", root_arg);
+  } else {
+    const char *cfg = getenv("CLAUDE_CONFIG_DIR"), *home = getenv("HOME");
+    if (cfg && *cfg) snprintf(root, sizeof root, "%s/projects", cfg);
+    else if (home && *home) snprintf(root, sizeof root, "%s/.claude/projects", home);
+    else die("HOME is not set");
+  }
+  sqlite3 *db = ctx_open();
+  sqlite3_stmt *q = db_prepare(db, "SELECT offset FROM ctx_capture WHERE session = ?1");
+  DIR *top = opendir(root);
+  if (!top) die("cannot read %s: %s", root, strerror(errno));
+  long ran = 0;
+  struct dirent *p;
+  while ((p = readdir(top))) {
+    if (p->d_name[0] == '.') continue;
+    char dir[4600];
+    snprintf(dir, sizeof dir, "%s/%s", root, p->d_name);
+    DIR *d = opendir(dir);
+    if (!d) continue;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+      size_t n = strlen(e->d_name);
+      if (n < 7 || strcmp(e->d_name + n - 6, ".jsonl")) continue;
+      char path[5000];
+      snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+      struct stat st;
+      if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
+      sqlite3_bind_text(q, 1, e->d_name, (int)strcspn(e->d_name, "."), SQLITE_STATIC);
+      long long off = sqlite3_step(q) == SQLITE_ROW ? sqlite3_column_int64(q, 0) : -1;
+      sqlite3_reset(q);
+      if (off == (long long)st.st_size) continue;
+      run_self("archive", path);
+      ran++;
+    }
+    closedir(d);
+  }
+  closedir(top);
+  sqlite3_finalize(q);
+  sqlite3_close(db);
+  printf("%ld transcripts read\n", ran);
+  return 0;
+}
+
 static int usage(void) {
   fputs("usage: ctx version\n"
         "       ctx init\n"
@@ -1020,12 +1226,15 @@ static int usage(void) {
         "       ctx archive TRANSCRIPT\n"
         "       ctx search [--all] [--limit N] WORDS...\n"
         "       ctx turn ID [BEFORE [AFTER]] [--full]\n"
+        "       ctx scan [DIR]\n"
+        "       ctx hook\n"
         "       ctx sql STATEMENT\n",
         stderr);
   return 2;
 }
 
 int main(int argc, char **argv) {
+  self_path = argv[0];
   if (sqlite3_auto_extension((void (*)(void))fsl_sqlext_init) != SQLITE_OK)
     die("cannot register libfossil");
   if (argc == 2 && !strcmp(argv[1], "version")) return cmd_version();
@@ -1033,6 +1242,8 @@ int main(int argc, char **argv) {
   if (argc == 3 && !strcmp(argv[1], "extract")) return cmd_extract(argv[2]);
   if (argc == 3 && !strcmp(argv[1], "archive")) return cmd_archive(argv[2]);
   if (argc == 3 && !strcmp(argv[1], "sql")) return cmd_sql(argv[2]);
+  if (argc == 2 && !strcmp(argv[1], "hook")) return cmd_hook();
+  if ((argc == 2 || argc == 3) && !strcmp(argv[1], "scan")) return cmd_scan(argc == 3 ? argv[2] : NULL);
   if (argc >= 3 && !strcmp(argv[1], "search")) return cmd_search(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "turn")) return cmd_turn(argc - 2, argv + 2);
   return usage();
