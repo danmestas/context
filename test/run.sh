@@ -269,6 +269,9 @@ while alive and time.time() < end:
 assert not alive, "child stopped at the same deadline"
 EOF
 
+# The skill eval harness works end to end with a stand-in for the model.
+PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"
+
 # A missing file is an error.
 if "$CTX" extract "$T/none.jsonl" 2>/dev/null; then fail "missing file"; fi
 
