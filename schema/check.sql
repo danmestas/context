@@ -6,8 +6,31 @@ PRAGMA foreign_keys = ON;
 
 CREATE TEMP VIEW fail(x) AS SELECT abs(-9223372036854775808);
 
-INSERT INTO ctx_repo(id, project, name, path, scope)
-VALUES (1, 'zit', 'sources', '/r/zit/sources.fossil', 'shared');
+INSERT INTO ctx_repo(id, name, project, scope, remote)
+VALUES (1, 'zit', 'zit', 'shared', 'https://zeitforge.app/r/dmestas/zit');
+
+-- A private repository needs no project; a shared one must have one.
+INSERT INTO ctx_repo(id, name, scope) VALUES (2, 'me', 'private');
+SELECT CASE WHEN (SELECT count(*) FROM ctx_repo WHERE scope = 'private' AND project IS NULL) = 1
+            THEN 1 ELSE (SELECT x FROM fail) END;
+
+-- The longest root containing the directory wins, and a sibling prefix does not match.
+INSERT INTO ctx_project(root, project) VALUES
+  ('/p/a', 'outer'), ('/p/a/nested', 'inner'), ('/p/ab', 'sibling');
+CREATE TEMP VIEW find(cwd, project) AS
+  SELECT c.cwd, (SELECT project FROM ctx_project
+                 WHERE c.cwd = root OR substr(c.cwd, 1, length(root) + 1) = root || '/'
+                 ORDER BY length(root) DESC LIMIT 1)
+  FROM (SELECT '/p/a/nested/src' AS cwd UNION ALL SELECT '/p/a/src' UNION ALL SELECT '/p/ab' UNION ALL SELECT '/p/abc') c;
+SELECT CASE WHEN (SELECT group_concat(coalesce(project, '-')) FROM find) = 'inner,outer,sibling,-'
+            THEN 1 ELSE (SELECT x FROM fail) END;
+
+-- A transcript's days cascade with it, and a turn can be stored only once.
+INSERT INTO ctx_capture(session, path, project, offset) VALUES ('s1', '/t/s1.jsonl', 'zit', 10);
+INSERT INTO ctx_capture_day(session, day, technote) VALUES ('s1', '2026-11-09', 'tn1');
+DELETE FROM ctx_capture WHERE session = 's1';
+SELECT CASE WHEN (SELECT count(*) FROM ctx_capture_day) = 0
+            THEN 1 ELSE (SELECT x FROM fail) END;
 
 INSERT INTO ctx_doc(id, project, repo_id, kind, name, hash, size, mtime) VALUES
   (1, 'zit', 1, 'source', '_sources/spec.md', 'aaa', 10, 1),

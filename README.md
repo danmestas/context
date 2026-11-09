@@ -6,7 +6,8 @@ SQLite and libfossil. There is no working binary yet.
 
 ## What is here
 
-- `schema/index.sql`: the machine-wide search index, all of it derived.
+- `schema/index.sql`: ctx's tables in the machine's one SQLite file: the search
+  index, project mapping and capture positions.
 - `schema/ticket-table.sql`: the tickets agents and people work on, for each
   shared Fossil repository.
 - `schema/check.sql`: checks for the index schema.
