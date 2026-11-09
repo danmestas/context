@@ -1,6 +1,6 @@
 ---
 name: ctx
-description: Search the archive of past coding-agent sessions on this machine. Use when the answer may be in earlier work rather than the code - why something was decided, what was tried and failed, how an error was fixed before, what the user already said or asked for, or where earlier work stopped. Triggers on "why did we", "did we ever", "last time", "what happened with", "remind me", and on any error or subsystem that looks like it has history.
+description: Search the archive of past coding-agent sessions on this machine with `ctx search` and `ctx turn`. Use when the answer may be in earlier work rather than the code - why something was decided, what was tried and failed, how an error was fixed before, what the user already said or asked for, or where earlier work stopped. Triggers on "why did we", "did we ever", "last time", "what happened with", "remind me", and on any error or subsystem that looks like it has history. Use it even when the code or git log seems to explain things, since they rarely record what failed along the way.
 ---
 
 # ctx
@@ -8,7 +8,8 @@ description: Search the archive of past coding-agent sessions on this machine. U
 `ctx` keeps every session on this machine in a searchable archive, tool output
 included. The code shows what exists. The archive shows why, and what did not
 work. Search it before asking the user something they may already have said,
-and before retrying an approach that may already have failed.
+and before retrying an approach that may already have failed. A commit shows
+the change that landed, so for what went wrong or why, check here as well.
 
 ## Search
 
@@ -29,12 +30,17 @@ Search for what the session would have contained, not for the question:
 - Use exact names: function, file, flag, table, ticket number, branch.
 - Use the literal words of an error: `database locked SQLITE_BUSY`. Quotes do
   not make a phrase.
-- Use a few rare words. Every extra common word pulls in weaker matches, so
+- Use two or three rare words per search, and run several short searches
+  rather than one long one. Every extra word pulls in weaker matches, so
   `foreign_keys refused` beats
   `connection fails when foreign keys are turned on`.
+- The question's words may not be the session's. If `phone` finds nothing, try
+  `mobile`, `ios` or `safari`. Guess the names of the options that were
+  weighed, and how the person would have put it.
 - Results are not sorted by date, so check the date on each one.
-- If the results look wrong, change the words or raise `--limit`. Try at least
-  three different searches before saying the archive has nothing.
+- If the results look wrong, change the words or raise `--limit`. Before
+  saying the archive has nothing, try at least three searches with different
+  words and read around the best hits.
 - `why` and `because` are ignored. For a reason, search the thing decided plus
   a word such as `instead`, `dropped` or `reverted`, then read around the hit.
 
@@ -48,6 +54,15 @@ ctx turn ID 0 0 --full     # without cutting long output
 
 A snippet is rarely the answer. Read the turns after a hit: a plan is often
 reversed a few turns later, and the final word is what counts.
+
+BEFORE and AFTER are counts of neighboring turns, and those are the only `ctx`
+commands for reading. To find what a person asked for, read just the human side
+of a stretch. Tool output is also labeled `user`, so skip the turns that are
+output:
+
+```sh
+ctx turn ID 0 60 | grep -A3 -- '--- #[0-9]* user'
+```
 
 ## Using what you find
 
