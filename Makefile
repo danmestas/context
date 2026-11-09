@@ -34,7 +34,7 @@ build/sqlite3.o: $(VENDOR)/sqlite3.c | build
 	$(CC) $(CFLAGS) $(SQLITE) -w -c -o $@ $<
 
 build/libfossil.o: $(VENDOR)/libfossil.c | build
-	$(CC) $(CFLAGS) -DHAVE_LIBFOSSIL_CONFIG_H -w -I$(VENDOR) -c -o $@ $<
+	$(CC) $(CFLAGS) $(SQLITE) -DHAVE_LIBFOSSIL_CONFIG_H -w -I$(VENDOR) -c -o $@ $<
 
 test: ctx
 	sh test/run.sh

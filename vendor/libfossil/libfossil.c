@@ -16,9 +16,9 @@
 #define FSL_AMALGAMATION_BUILD 1
 #define FSL_PACKAGE_NAME "libfossil"
 #define FSL_LIBRARY_VERSION "0.6.1"
-#define FSL_LIB_VERSION_HASH "51fd6ddac830a1dadac8b4ac126b55e8861a618579c42efc23a7675682076447"
-#define FSL_LIB_VERSION_TIMESTAMP "2026-11-09 06:38:36.689 UTC"
-#define FSL_LIB_CONFIG_TIMESTAMP "2026-11-09 07:03 GMT"
+#define FSL_LIB_VERSION_HASH "ab34f5e39c293b3a515aac1252dc7a593d556a2b693cf568bc493881080d79bf"
+#define FSL_LIB_VERSION_TIMESTAMP "2026-11-09 23:16:24.829 UTC"
+#define FSL_LIB_CONFIG_TIMESTAMP "2026-11-09 23:16 GMT"
 #define FSL_AUX_SCHEMA "2015-01-24"
 #define FSL_CONTENT_SCHEMA "2"
 #define FOSSIL_RELEASE_VERSION_NUMBER 22700
@@ -908,6 +908,12 @@ FSL_EXPORT int fsl_input_f_FILE( void * state, void * dest, fsl_size_t * n );
    A fsl_input_f() implementation which requires that state be a
    readable file descriptor, in the form of an ([const] int*).  This
    function will not modify that value.
+
+   Like fsl_input_f_FILE(), it reads all *n bytes unless the input
+   ends first, so a short read means the end of the input, as
+   fsl_stream() and fsl_b_fill_from() assume. On a pipe or socket it
+   therefore blocks until *n bytes arrive or the writer closes its
+   end. A read interrupted by a signal is retried.
 */
 FSL_EXPORT int fsl_input_f_fd( void * state, void * dest, fsl_size_t * n );
 
@@ -9396,6 +9402,27 @@ FSL_EXPORT int fsl_cx_txn_level(fsl_cx * f);
 */
 FSL_EXPORT int fsl_cx_txn_begin(fsl_cx * f);
 /**
+   Like fsl_cx_txn_begin(), but also takes the write lock on each db
+   in roles, a mask of FSL_DBROLE_REPO and FSL_DBROLE_CKOUT, which is
+   attached and which the transaction has not write-locked already, as
+   fossil(1)'s BEGIN IMMEDIATE does. Start every transaction which will
+   write the repository or checkout db with this.
+
+   fsl_cx_txn_begin() starts a deferred transaction. When a deferred
+   transaction which has read a db then writes it while another
+   connection holds that db's write lock, SQLite returns SQLITE_BUSY at
+   once, without calling the busy handler, since waiting could
+   deadlock, and the write fails with FSL_RC_LOCKED. A transaction
+   which takes the lock before it reads waits in the busy handler for
+   the other writer instead. Inside a transaction which has already
+   read a db without write-locking it, taking that db's lock can still
+   fail at once.
+
+   On error, this ends the transaction level it began and updates f's
+   error state.
+*/
+FSL_EXPORT int fsl_cx_txn_begin_write(fsl_cx * f, int roles);
+/**
    Returns the same as passing fsl_cx_db() and the 2nd/3rd arguments
    to fsl_db_txn_end_v2() and propagates any db errors from that
    operation into f.
@@ -16960,7 +16987,8 @@ FSL_EXPORT int fsl_repo_rebuild(fsl_cx * f, fsl_rebuild_opt const * opt);
    not sync the WAL at each commit, so a power loss could instead leave the
    checkout db recording a check-in which the repo db has lost. While a
    checkout db is attached, libfossil sets the repo db to synchronous=FULL,
-   which syncs the WAL before the checkout db commits.
+   which syncs the WAL before the checkout db commit. SQLite can't change 
+   synchronous levels inside a transaction.
 
    Only the repo db can be in WAL mode. If libfossil finds a checkout db
    in WAL mode, libfossil resets the db back to DELETE on opening it. If
@@ -25091,6 +25119,14 @@ int fsl_sc_for_url( char const * zUrl, fsl_sc **pOut,  );
     to be kept abreast of things and will cause Grief and Suffering
     (on the client's part, not mine).
 
+    Begin a transaction which will write the repository or checkout db
+    with fsl_cx_txn_begin_write(), which takes those dbs' write locks
+    before the transaction reads them. A transaction begun with
+    fsl_cx_txn_begin() or fsl_db_txn_begin() takes a write lock at its
+    first write. If it has read that db by then and another connection
+    holds the lock, SQLite reports the db as locked at once, without
+    waiting for the busy timeout.
+
     Tip: implementing a "dry-run" mode for most fossil operations is
     trivial by starting a transaction before performing the
     operations. Many operations run in a transaction, but if the
@@ -26731,6 +26767,12 @@ int fsl_ckout_close( fsl_cx * const f );
   across the library.
 */
 
+
+#if defined(_WIN32) && !defined(WIN32_LEAN_AND_MEAN)
+/* Keep <windows.h> from including the old <winsock.h>, which
+   conflicts with the <winsock2.h> the native sync channel uses. */
+#  define WIN32_LEAN_AND_MEAN
+#endif
 
 /**
    Determine whether fsl__mutex_enter() and friends are no-ops.  If
@@ -28453,6 +28495,20 @@ bool fsl__db_is_borrowed(fsl_db const * const db);
 */
 int fsl__db_temp_drop(fsl_db * const db, char const * zTable);
 
+/**
+   Returns true if db's connection is inside a transaction or has a
+   statement running, e.g. a host's statement which called us through
+   a SQL function. A read-only operation which would open a
+   transaction only so that its several statements see one consistent
+   snapshot must skip that when this is true: the running statement
+   or the open transaction already holds the connection's read (or
+   write) lock, so no other connection can commit in between, and
+   SQLite refuses to open a savepoint while a writing statement is in
+   progress. Never use this to skip a transaction which protects
+   writes, including writes to caches and TEMP tables.
+*/
+bool fsl__db_in_statement_or_txn(fsl_db * const db);
+
 /** @internal
 
     Generates an fsl_appendf()-formatted message to stderr and
@@ -29806,18 +29862,6 @@ void fsl__cx_uninit_db(fsl_cx * const f, fsl_db * const db);
 */
 int fsl__cx_host_rollback_check(fsl_cx * const f);
 
-/**
-   Like fsl_cx_txn_begin(), but if this starts the outermost
-   transaction it also takes the repository's write lock at once, as
-   fossil(1)'s BEGIN IMMEDIATE does. A SAVEPOINT starts a deferred
-   transaction, and when one which has already read tries to write
-   while another connection is writing, SQLite returns SQLITE_BUSY at
-   once, without calling the busy handler, since waiting could
-   deadlock. Taking the lock before reading lets the busy handler wait
-   for the other writer instead. Requires an opened repository.
-*/
-int fsl__cx_txn_begin_write(fsl_cx * const f);
-
 /** @internal
 
     Attaches the given db file to f with the given role. This function "should"
@@ -30216,23 +30260,23 @@ int fsl__xfer_setup(fsl_cx * const f, fsl_xfer * const xf,
 
 /** @internal
 
-   Create a child process running shell command "zCmd". *pfdIn gets
-   assigned to the stdout from the child process.  (The caller reads
-   from *pfdIn in order to receive input from the child.) *ppOut gets
-   assigned to a FILE that becomes the standard input of the child
-   process.  (The caller writes to *ppOut in order to send text to the
-   child.) Note that *pfdIn is an unbuffered file descriptor, not a
-   FILE. The process ID of the child is written into *pChildPid.
+   Create a child process running command "zCmd". *pfdIn gets
+   assigned to the stdout from the child process. If zStdinFile is
+   not NULL the child reads its stdin from that file and *ppOut is
+   set to NULL; otherwise *ppOut is a FILE which becomes the child's
+   stdin. On Unix zCmd runs through /bin/sh; on Windows it runs
+   directly as a command line, without a shell. *pChildPid gets the
+   child's id for fsl__pclose2().
 
    On success the values returned via *pfdIn, *ppOut, and *pChildPid
-   must be passed to fsl_pclose2() to properly clean up.
+   must be passed to fsl__pclose2() to properly clean up.
 
    Return 0 on success, non-0 on error.
 
    @internal
 */
-int fsl__popen2(const char *zCmd, int *pfdIn, FILE **ppOut,
-                           int *pChildPid);
+int fsl__popen2(const char *zCmd, const char *zStdinFile,
+                int *pfdIn, FILE **ppOut, int *pChildPid);
 
 /** @internal
 
@@ -30241,11 +30285,9 @@ int fsl__popen2(const char *zCmd, int *pfdIn, FILE **ppOut,
    fsl__popen2()'s output parameters: the input file descriptor,
    output FILE handle, and child process PID.
 
-   Returns the child's exit status, or the negated number of the
-   signal which ended it, or 0 if its status cannot be determined.
-
-   On Windows platforms, killing of the child process is not
-   implemented. (Patches are welcomed.)
+   Blocks until the child exits. Returns the child's exit status, or
+   (on Unix) the negated number of the signal which ended it, or 0 if
+   its status cannot be determined.
 */
 int fsl__pclose2(int fdIn, FILE *pOut, int childPid);
 
@@ -30272,8 +30314,9 @@ struct fsl_xfcard {
   const fsl_xfcard_e type;
   /** The protocol-level name of this card, e.g. "file" or "cfile". */
   char const * const name;
-  /** A hash unique (in the context of fsl_xfcard) to this->name. */
-  const fsl_xfcard_hash_t hash;
+  /** A hash unique (in the context of fsl_xfcard) to this->name.
+      Not const: fsl__xfcard_search() computes it on first use. */
+  fsl_xfcard_hash_t hash;
 };
 typedef struct fsl_xfcard fsl_xfcard;
 
@@ -32809,6 +32852,11 @@ static void fsl__cpu_times(uint64_t *piUser, uint64_t *piKernel,
     struct timespec sNow;
     clock_gettime(CLOCK_REALTIME, &sNow);
     *pWall = (uint64_t)sNow.tv_sec*1000000 + sNow.tv_nsec/1000;
+#elif defined(_WIN32)
+    FILETIME ft; /* 100ns units since 1601 */
+    GetSystemTimeAsFileTime(&ft);
+    *pWall = ((((uint64_t)ft.dwHighDateTime)<<32)
+              + (uint64_t)ft.dwLowDateTime) / 10;
 #else
     *pWall = 0;
 #endif
@@ -33154,7 +33202,7 @@ int fsl__fdgets(int fdIn, unsigned char * pOut, fsl_size_t nOut,
   *pnOut = 0;
   for( ; 0==rc && i<nOut-1; ++i){
     pOut[i] = 0;
-    ssize_t const rn = read(fdIn, &pOut[i], 1);
+    fsl_int_t const rn = read(fdIn, &pOut[i], 1);
     if( -1==rn ){
       //MARKER(("read falure: %s\n", fsl_rc_cstr(fsl_errno_to_rc(errno, FSL_RC_IO))));
       return fsl_errno_to_rc(errno, FSL_RC_IO);
@@ -33209,9 +33257,9 @@ void fsl__lib_hosted(void){
 static void fsl__atexit(void){
   Fsl.sq3StaticMaster = 0;
 #if FSL_ENABLE_MUTEX
-  if( FslCx.mutex ){
-    sqlite3_mutex_free( FslCx.mutex );
-    FslCx.mutex = 0;
+  if( Fsl.mutex ){
+    sqlite3_mutex_free( Fsl.mutex );
+    Fsl.mutex = 0;
   }
 #endif
   if( Fsl.azTempDirs ){
@@ -33267,11 +33315,11 @@ static void fsl__libinit(enum fsl__libinit_e what){
   switch( what ){
     case FSL__LIBINIT_MUTEX:
 #if FSL_ENABLE_MUTEX
-      if( !FslCx.mutex ){
+      if( !Fsl.mutex ){
         sqlite3_mutex_enter(Fsl.sq3StaticMaster);
-        if( !FslCx.mutex ){
-          FslCx.mutex = sqlite3_mutex_alloc(SQLITE_MUTEX_FAST);
-          if( !FslCx.mutex ){
+        if( !Fsl.mutex ){
+          Fsl.mutex = sqlite3_mutex_alloc(SQLITE_MUTEX_FAST);
+          if( !Fsl.mutex ){
             sqlite3_mutex_leave(Fsl.sq3StaticMaster);
             fsl_report_oom;
             fsl__fatal(FSL_RC_OOM, "Cannot allocate libfossil mutex")/*does not return*/;
@@ -33319,14 +33367,15 @@ void fsl__mutex_enter(void){
 #if FSL_ENABLE_MUTEX
   fsl__libinit(FSL__LIBINIT_MUTEX);
   assert( Fsl.mutex );
-  sqlite3_mutex_enter(FslCx.mutex);
+  sqlite3_mutex_enter(Fsl.mutex);
 #endif
 }
 
 bool fsl__mutex_held(void){
-#if FSL_ENABLE_MUTEX
-  assert( FslCx.mutex );
-  return FslCx.mutex && 0!=sqlite3_mutex_held( FslCx.mutex );
+#if FSL_ENABLE_MUTEX && defined(SQLITE_DEBUG)
+  /* SQLite defines sqlite3_mutex_held() only in SQLITE_DEBUG builds. */
+  assert( Fsl.mutex );
+  return Fsl.mutex && 0!=sqlite3_mutex_held( Fsl.mutex );
 #else
   return true/*this is how sqlite3 does it*/;
 #endif
@@ -33335,7 +33384,7 @@ bool fsl__mutex_held(void){
 void fsl__mutex_leave(void){
 #if FSL_ENABLE_MUTEX
   assert( fsl__mutex_held() );
-  sqlite3_mutex_leave( FslCx.mutex );
+  sqlite3_mutex_leave( Fsl.mutex );
 #endif
 }
 
@@ -33360,6 +33409,7 @@ void fsl_to_hex(unsigned char const * digest, fsl_size_t nDigest,
   zBuf[j] = 0;
 }
 
+#if !defined(NDEBUG)
 int fsl__bprc(int rc){
   if( rc ){
     //assert(!"here");
@@ -33368,6 +33418,7 @@ int fsl__bprc(int rc){
   }
   return rc;
 }
+#endif
 
 int fsl_enum_search(char const *word, fsl_strlen_t nWord,
                     char const * const *aList, fsl_int_t nList){
@@ -33630,9 +33681,14 @@ static int fsl__annotate_file(fsl_cx * const f,
   bool openedTransaction = false;
   fsl_db * const db = fsl_needs_repo(f);
   if(!db) return FSL_RC_NOT_A_REPO;
-  rc = fsl_cx_txn_begin(f);
-  if(rc) return rc;
-  openedTransaction = true;
+  if( !fsl__db_in_statement_or_txn(db) ){
+    /* Read consistency only: see fsl__db_in_statement_or_txn(). The
+       TEMP ancestor table filled below is scratch, emptied by every
+       fsl__init_ancestor(), so its writes need no transaction. */
+    rc = fsl_cx_txn_begin(f);
+    if(rc) return rc;
+    openedTransaction = true;
+  }
 
   rc = fsl_db_get_id(db, &fnid,
                      "SELECT fnid FROM {{dbname.repo}}.filename WHERE name=%Q %s",
@@ -33785,7 +33841,6 @@ static int fsl__annotate_file(fsl_cx * const f,
   if(openedTransaction) fsl_cx_txn_end(f, rc!=0);
   return rc;
   dberr:
-  assert(openedTransaction);
   assert(rc!=0);
   fsl_stmt_finalize(&q);
   fsl_b_clear(&step);
@@ -35744,7 +35799,9 @@ int fsl_cx_format_FILE(fsl_cx * f, FILE * tgt,
 #include <assert.h>
 
 /* All for/around getpass(). Yes, it's deprecated. */
-#include <unistd.h>
+#if FSL_PLATFORM_IS_UNIX
+#  include <unistd.h>
+#endif
 #include <stdlib.h> /* free() */
 #include <errno.h>
 
@@ -38262,7 +38319,7 @@ int fsl_checkin_enqueue(fsl_cx * f, fsl_checkin_queue_opt const * opt){
   fsl_id_bag const * const vfileIds =
     opt->vfileIds ? opt->vfileIds : &_vfileIds;
   bool openedTransaction = false;
-  int rc = fsl_cx_txn_begin(f);
+  int rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_CKOUT);
   if(rc) goto end;
   openedTransaction = true;
   if(opt->vfileIds){
@@ -38324,7 +38381,7 @@ int fsl_checkin_enqueue(fsl_cx * f, fsl_checkin_queue_opt const * opt){
 
 int fsl_checkin_dequeue(fsl_cx * const f, fsl_checkin_queue_opt const * opt){
   if(!fsl_needs_ckout(f)) return FSL_RC_NOT_A_CKOUT;
-  int rc = fsl_cx_txn_begin(f);
+  int rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_CKOUT);
   if(rc) return rc;
   fsl_id_bag list = fsl_id_bag_empty;
   fsl_b * canon = 0;
@@ -39403,7 +39460,7 @@ int fsl_checkin_commit(fsl_cx * f, fsl_checkin_opt const * opt,
 #define RC if(rc) goto end
 
   fsl_deck_init(f, d, FSL_SATYPE_CHECKIN);
-  rc = fsl_cx_txn_begin(f);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_REPO | FSL_DBROLE_CKOUT);
   RC;
   inTrans = true;
   //TODO (2025-08-06): assert( fsl_cx_txn_level(f)>0 );
@@ -40114,7 +40171,7 @@ int fsl_ckout_unmanage(fsl_cx * const f, fsl_ckout_unmanage_opt const * opt){
                           __func__);
   }
   assert(vid>=0);
-  rc = fsl_db_txn_begin(db);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_CKOUT);
   if(rc) goto dberr;
   inTrans = true;
   if(opt->vfileIds){
@@ -41486,7 +41543,7 @@ int fsl_repo_ckout(fsl_cx * f, fsl_ckup_opt const * cOpt){
   fsl_confirmer oldConfirm = fsl_confirmer_empty;
   if(!dbR) return f->error.code;
   else if(!fsl_needs_ckout(f)) return f->error.code;
-  rc = fsl_cx_txn_begin(f);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_CKOUT);
   if(rc) return rc;
   rec.tgtDir = fsl__cx_scratchpad(f);
   if(cOpt->confirmer.callback){
@@ -41662,7 +41719,7 @@ static int fsl__ckout_update_impl(fsl_cx * f, fsl_ckup_opt const *cuOpt){
     goto end;
   }
 
-  rc = fsl_db_txn_begin(dbC);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_CKOUT);
   if(rc) goto dberr;
   inTrans = true;
   if(cuOpt->scanForChanges){
@@ -42757,7 +42814,7 @@ static int fsl__ckout_revert_impl( fsl_cx * const f,
       assert(0==*zNorm);
     }
   }
-  rc = fsl_cx_txn_begin(f);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_CKOUT);
   if(rc) goto end;
   inTrans = true;
   if(opt->scanForChanges){
@@ -43191,7 +43248,7 @@ int fsl_ckout_rename(fsl_cx * const f, fsl_ckout_rename_opt const * opt){
                         "Expecting 1 or more source files/directories.");
     goto end;
   }
-  rc = fsl_cx_txn_begin(f);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_CKOUT);
   if(rc) goto end;
   inTrans = true;
   rc = fsl_ckout_filename_check(f, opt->relativeToCwd, opt->dest,
@@ -43381,7 +43438,7 @@ int fsl_ckout_rename_revert(fsl_cx * const f, char const *zNewName,
   if(!dbC) return FSL_RC_NOT_A_CKOUT;
   rc = fsl_ckout_filename_check(f, relativeToCwd, zNewName, bufFName);
   if(rc) goto end;
-  rc = fsl_cx_txn_begin(f);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_CKOUT);
   if(rc) goto end;
   inTrans = true;
   rc = fsl_cx_prepare(f, &q,
@@ -43525,9 +43582,7 @@ static int fsl__cfs_os_read(void * state, char const * zName, fsl_b * tgt){
 static int fsl__cfs_os_write(void * state, char const * zName,
                              void const * src, fsl_size_t n){
   fsl_b b = fsl_b_empty;
-  (void)state;
-  b.mem = (unsigned char *)src;
-  b.capacity = b.used = n;
+  fsl_b_external(&b, src, n);
   return fsl_b_to_filename(&b, zName);
 }
 static int fsl__cfs_os_unlink(void * state, char const * zName){
@@ -43796,17 +43851,18 @@ static int fsl__cfs_mkdir(fsl_cx * const f, char const *zName,
 
 int fsl__cfs_mkdir_for_file(fsl_cx * const f, char const *zName,
                             bool forceFlag){
-  fsl_b b = fsl_b_empty;
+  fsl_b * const b = fsl_cx_b_borrow(f);
   fsl_size_t n, i;
   char * zCan;
   int rc;
   /* As fsl_mkdir_for_file(). */
+  if( !b ) return f->error.code;
   n = fsl_strlen(zName);
   if( n==0 ) return FSL_RC_RANGE;
   else if( n<2 ) return 0;
-  rc = fsl_file_canonical_name(zName, &b, true);
-  zCan = fsl_b_str(&b);
-  n = b.used;
+  rc = fsl_file_canonical_name(zName, b, true);
+  zCan = fsl_b_str(b);
+  n = b->used;
   for( i = 1; 0==rc && i<n; ++i ){
     if( '/'==zCan[i] ){
 #if defined(_WIN32) || defined(__CYGWIN__)
@@ -43819,7 +43875,7 @@ int fsl__cfs_mkdir_for_file(fsl_cx * const f, char const *zName,
       zCan[i] = '/';
     }
   }
-  fsl_b_clear(&b);
+  fsl_cx_b_return(f, b);
   return rc;
 }
 
@@ -43830,6 +43886,12 @@ int fsl__cfs_exec_set(fsl_cx * const f, char const *zName, bool isExec){
   /* As fsl_file_exec_set(): only regular files have the bit. */
   {
     int const rc = fsl__cfs_stat(f, zName, &fst, true);
+    if( FSL_RC_NOT_FOUND==rc ){
+      /* The storage answers for a missing file as it would without
+         this check: fsl_file_exec_set() fails on Unix but is a no-op
+         returning 0 on Windows. */
+      return s->xExecSet(s->state, zName, isExec);
+    }
     if( rc ) return rc;
   }
   if( FSL_FSTAT_TYPE_FILE!=fst.type ) return 0;
@@ -44216,7 +44278,7 @@ static int fsl__stash_save_impl(fsl_cx * const f,
     goto end;
   }
 
-  rc = fsl_cx_txn_begin(f);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_CKOUT);
   if(rc) goto end;
   inTxn = true;
   rc = fsl__stash_tables(f, db);
@@ -44468,7 +44530,7 @@ static int fsl__stash_apply_impl(fsl_cx * const f,
   bool haveSfile = false;
   int rc;
   if(!db) return FSL_RC_NOT_A_CKOUT;
-  rc = fsl_cx_txn_begin(f);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_CKOUT);
   if(rc) return rc;
   /* From here on the transaction is ours to end. */
   rc = fsl__stash_tables(f, db);
@@ -44596,7 +44658,7 @@ static int fsl__stash_drop_impl(fsl_cx * const f, fsl_id_t stashId){
   rc = fsl__stash_tables(f, db);
   if(rc) return rc;
   if(stashId<0){
-    rc = fsl_cx_txn_begin(f);
+    rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_CKOUT);
     if(rc) return rc;
     rc = fsl_cx_exec_multi(f, "DELETE FROM {{dbname.ckout}}.stash; DELETE FROM {{dbname.ckout}}.stashfile;");
     {
@@ -44610,7 +44672,7 @@ static int fsl__stash_drop_impl(fsl_cx * const f, fsl_id_t stashId){
     return fsl_cx_err_set(f, FSL_RC_NOT_FOUND,
                           "No such stash: %" FSL_ID_T_PFMT, stashId);
   }
-  rc = fsl_cx_txn_begin(f);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_CKOUT);
   if(rc) return rc;
   rc = fsl_cx_exec_multi(f,
     "DELETE FROM {{dbname.ckout}}.stash WHERE stashid=%" FSL_ID_T_PFMT ";"
@@ -45074,7 +45136,7 @@ int fsl__undo_begin(fsl_cx * const f, char const * zLabel,
   if(zLabel){
     /* One transaction, so that a failure cannot leave the snapshot's
        stash behind in the stash list. */
-    rc = fsl_cx_txn_begin(f);
+    rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_CKOUT);
     if(!rc){
       rc = fsl__undo_capture(f, "new", zLabel);
       int const rc2 = fsl_cx_txn_end(f, !!rc);
@@ -45332,7 +45394,7 @@ int fsl_undo(fsl_cx * const f, bool redo, bool force){
     rc = f->error.code;
     goto end;
   }
-  rc = fsl_cx_txn_begin(f);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_CKOUT);
   if(rc) goto end;
   inTxn = true;
   rc = fsl__undo_tables(f);
@@ -45586,7 +45648,7 @@ int fsl_bisect_mark(fsl_cx * const f, fsl_bisect_e verdict, fsl_id_t rid){
          negative. */
       fsl_id_t const logged = FSL_BISECT_GOOD==verdict ? rid : -rid;
       if(fsl__bisect_vvar_id(f, zKey)==rid) return 0;
-      rc = fsl_cx_txn_begin(f);
+      rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_CKOUT);
       if(rc) return rc;
       rc = fsl__bisect_vvar_set_id(f, zKey, rid);
       if(!rc) rc = fsl_cx_exec(f,
@@ -45641,7 +45703,7 @@ int fsl_bisect_undo(fsl_cx * const f){
     while(*z && *z!=' ') ++z;
   }
   keep = (fsl_size_t)(z - zLog);
-  rc = fsl_cx_txn_begin(f);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_CKOUT);
   if(!rc){
     rc = fsl_cx_exec(f, "UPDATE {{dbname.ckout}}.vvar SET value=substr(value,1,%d)"
                      " WHERE name='bisect-log'", (int)keep);
@@ -48125,9 +48187,11 @@ int fsl_content_get( fsl_cx * const f, fsl_id_t rid,
     }
     fsl_b_reuse(tgt);
     ++ac->metrics.misses;
-    if( 0==fsl_cx_txn_level(f) ){
+    if( 0==fsl_cx_txn_level(f) && !fsl__db_in_statement_or_txn(f->dbMain) ){
       /* The chain is read in several statements, and another
-         connection may change it between them. */
+         connection may change it between them. Not when a running
+         statement or an open transaction already prevents that, as
+         when called from a host's SQL function. */
       rc = fsl_cx_txn_begin(f);
       if(rc) return rc;
       ownTxn = true;
@@ -48587,7 +48651,7 @@ int fsl__content_put_ex( fsl_cx * const f,
                           "blobs may not exceed %d bytes in size.",
                           (int)MaxSize);
   }
-  rc = fsl_cx_txn_begin(f);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_REPO);
   if(rc){
     fsl__bprc(rc);
     goto end;
@@ -48965,7 +49029,7 @@ int fsl__phantom_new( fsl_cx * const f, fsl_uuid_cstr uuid,
     return fsl_cx_err_set(f, FSL_RC_SHUNNED,
                           "UUID is shunned: %s", uuid);
   }
-  rc = fsl_cx_txn_begin(f);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_REPO);
   if(rc){
     fsl__cx_stmt_yield(f, q);
     return rc;
@@ -49018,7 +49082,7 @@ int fsl__content_undeltify(fsl_cx * const f, fsl_id_t rid){
     return fsl_cx_err_set(f, FSL_RC_RANGE, "Cannot undeltify "
                           "invalid rid %" FSL_ID_T_PFMT ".", rid);
   }
-  rc = fsl_cx_txn_begin(f);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_REPO);
   if(rc){
     fsl__cx_stmt_yield(f, q);
     return rc;
@@ -49214,7 +49278,7 @@ int fsl__repo_shun_artifacts(fsl_cx * const f){
   fsl_db * db = f ? fsl_cx_db_repo(f) : NULL;
   if(!f) return FSL_RC_MISUSE;
   else if(!db) return FSL_RC_NOT_A_REPO;
-  rc = fsl_db_txn_begin(db);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_REPO);
   if(rc) return fsl_cx_uplift_db_error2(f, db, rc);
   rc = fsl_db_exec_multi(db,
                          "CREATE TEMP TABLE IF NOT EXISTS "
@@ -49265,7 +49329,7 @@ int fsl_content_make_public(fsl_cx * const f, fsl_id_t rid){
 #endif
   int rc;
   if( !fsl_content_is_private(f, rid) ) return 0;
-  rc = fsl_cx_txn_begin(f);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_REPO);
   if( rc ) return rc;
   /* As fossil(1)'s publish command does: the artifact goes into
      unsent and unclustered so that the next sync offers it to
@@ -49516,7 +49580,6 @@ int fsl__shunned_remove(fsl_cx * const f){
 }
 
 #undef MARKER
-#undef fsl__bprc
 /* end of file src/content.c */
 /* start of file src/config.c */
 /* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
@@ -50729,8 +50792,10 @@ int fsl__config_receive(fsl_cx * const f, char const * zName,
     if( 0==(settingMask & groupMask) ) return 0;
   }
 
-  rc = fsl_b_appendf(&sql, "INSERT OR IGNORE INTO \"%s\"(\"%s\",mtime",
-                          pType->zTable, pType->zPrimKey);
+  rc = fsl_b_append(&sql, "INSERT OR IGNORE INTO ", -1);
+  if( !rc ) rc = fsl__db_table_name(db, FSL_DBROLE_REPO, pType->zTable,
+                                    true, &sql);
+  if( !rc ) rc = fsl_b_appendf(&sql, "(\"%s\",mtime", pType->zPrimKey);
   for( i = 2; !rc && i < nToken; i += 2 ){
     rc = fsl_b_appendf(&sql, ",\"%s\"", azToken[i]);
   }
@@ -50757,8 +50822,10 @@ int fsl__config_receive(fsl_cx * const f, char const * zName,
     ** that same login would want to update already exists with a
     ** NULL mtime before any sync ever happens. */
     fsl_b_reuse(&sql);
-    rc = fsl_b_appendf(&sql, "UPDATE \"%s\" SET mtime=%s",
-                            pType->zTable, azToken[0]);
+    rc = fsl_b_append(&sql, "UPDATE ", -1);
+    if( !rc ) rc = fsl__db_table_name(db, FSL_DBROLE_REPO, pType->zTable,
+                                      true, &sql);
+    if( !rc ) rc = fsl_b_appendf(&sql, " SET mtime=%s", azToken[0]);
     for( i = 2; !rc && i < nToken; i += 2 ){
       rc = fsl_b_appendf(&sql, ", \"%s\"=%s", azToken[i], azToken[i+1]);
     }
@@ -53492,6 +53559,10 @@ static int fsl__cx_ckout_journal_mode(fsl_cx * const f){
    to synchronous=NORMAL. A check-in commits a WAL repository db before the
    checkout db, so a power loss after the checkout db commits can lose the
    check-in from the repository db.
+
+   SQLite cannot change synchronous levels inside a transaction. For a
+   repository db in WAL mode, fsl_checkin_commit() will refuse check-ins
+   until the checkout db is attached again outside a transaction.
 */
 int fsl__cx_repo_sync_full(fsl_cx * const f){
   fsl_db * const db = f->dbMain;
@@ -53499,6 +53570,7 @@ int fsl__cx_repo_sync_full(fsl_cx * const f){
   if( fsl__db_repo_prefix(db) ){
     return 0 /* the host's main db, whose settings are the host's */;
   }
+  if( !sqlite3_get_autocommit(db->dbh) ) return 0;
   rc = fsl_db_exec(db, "PRAGMA %s.synchronous=FULL",
                    fsl__db_schema(db, FSL_DBROLE_REPO));
   return rc ? fsl_cx_uplift_db_error2(f, db, rc) : 0;
@@ -55367,12 +55439,33 @@ int fsl_cx_txn_begin(fsl_cx * const f){
   return 0;
 }
 
-int fsl__cx_txn_begin_write(fsl_cx * const f){
-  int rc = fsl_cx_txn_begin(f);
-  if( 0==rc && 1==fsl_db_txn_level(f->dbMain) ){
-    rc = fsl_cx_exec(f, "UPDATE {{dbname.repo}}.config SET name=name WHERE 0");
-    if( rc ) fsl_cx_txn_end_v2(f, false, false);
+/**
+   Takes the write lock on the db with role r unless the transaction
+   holds it already. An UPDATE of zTable which matches no rows takes the
+   lock without changing the db.
+*/
+static int fsl__cx_txn_lock(fsl_cx * const f, fsl_dbrole_e r){
+  char const * const zSchema = fsl__db_schema(f->dbMain, r);
+  if( SQLITE_TXN_WRITE==sqlite3_txn_state(f->dbMain->dbh, zSchema) ){
+    return 0;
   }
+  /* Through the placeholders, so that a checkout whose tables live in
+     the host's main db under a prefix locks its own vvar. */
+  return FSL_DBROLE_CKOUT==r
+    ? fsl_cx_exec(f, "UPDATE {{dbname.ckout}}.vvar SET name=name WHERE 0")
+    : fsl_cx_exec(f, "UPDATE {{dbname.repo}}.config SET name=name WHERE 0");
+}
+
+int fsl_cx_txn_begin_write(fsl_cx * const f, int roles){
+  int rc = fsl_cx_txn_begin(f);
+  if( rc ) return rc;
+  if( (roles & FSL_DBROLE_REPO) && fsl_cx_db_repo(f) ){
+    rc = fsl__cx_txn_lock(f, FSL_DBROLE_REPO);
+  }
+  if( 0==rc && (roles & FSL_DBROLE_CKOUT) && fsl_cx_db_ckout(f) ){
+    rc = fsl__cx_txn_lock(f, FSL_DBROLE_CKOUT);
+  }
+  if( rc ) fsl_cx_txn_end_v2(f, false, false);
   return rc;
 }
 
@@ -56532,6 +56625,16 @@ void fsl__db_borrow(fsl_db * const db, sqlite3 * const dbh){
 
 bool fsl__db_is_borrowed(fsl_db const * const db){
   return !!(db->impl.flags & FSL__DB_F_BORROWED);
+}
+
+bool fsl__db_in_statement_or_txn(fsl_db * const db){
+  sqlite3_stmt * st = NULL;
+  if( !db->dbh ) return false;
+  if( !sqlite3_get_autocommit(db->dbh) ) return true;
+  while( NULL!=(st = sqlite3_next_stmt(db->dbh, st)) ){
+    if( sqlite3_stmt_busy(st) ) return true;
+  }
+  return false;
 }
 
 int fsl__db_temp_drop(fsl_db * const db, char const * zTable){
@@ -63741,7 +63844,7 @@ int fsl__deck_crosslink( fsl_deck /* const */ * const d ){
        libfossil. */
     return 0;
   }
-  rc = fsl_cx_txn_begin(f);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_REPO);
   if(rc) goto end;
   if(FSL_SATYPE_CHECKIN==d->type
      && d->B.uuid && !d->B.baseline){
@@ -65566,7 +65669,7 @@ int fsl_deck_save( fsl_deck * const d, bool isPrivate ){
   fsl_b_reuse(buf);
   /* Start the transaction before generating the output: that can load
      the baseline, which creates a phantom for a missing one. */
-  rc = fsl_db_txn_begin(db);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_REPO);
   if(rc){
     return fsl_cx_uplift_db_error2(f, db, rc);
   }
@@ -65824,7 +65927,7 @@ int fsl__crosslink_begin(fsl_cx * const f){
     return fsl_cx_err_set(f, FSL_RC_MISUSE,
                           "Crosslink is already running.");
   }
-  rc = fsl_cx_txn_begin(f);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_REPO);
   if(rc) return rc;
   rc = fsl_cx_exec_multi(f,
      "CREATE TEMP TABLE IF NOT EXISTS "
@@ -66443,12 +66546,12 @@ int fsl_delta_create2( unsigned char const *zSrc, fsl_size_t lenSrc,
   }
   /* Add the target file size to the beginning of the delta
   */
-#ifdef OUT
-#undef OUT
+#ifdef DELTA_OUT
+#undef DELTA_OUT
 #endif
-#define OUT(BLOB,LEN) rc=out(outState, BLOB, LEN); if(0 != rc) {fsl_free(collide); return rc;} else (void)0
-#define OUTCH(CHAR) OUT(CHAR,1)
-#define PINT(I) intBuf = theBuf; olen=fsl__delta_int_put(I, &intBuf); OUT(theBuf,olen)
+#define DELTA_OUT(BLOB,LEN) rc=out(outState, BLOB, LEN); if(0 != rc) {fsl_free(collide); return rc;} else (void)0
+#define OUTCH(CHAR) DELTA_OUT(CHAR,1)
+#define PINT(I) intBuf = theBuf; olen=fsl__delta_int_put(I, &intBuf); DELTA_OUT(theBuf,olen)
   PINT(lenOut);
   OUTCH("\n");
 
@@ -66459,7 +66562,7 @@ int fsl_delta_create2( unsigned char const *zSrc, fsl_size_t lenSrc,
   if( lenSrc<=NHASH ){
     PINT(lenOut);
     OUTCH(":");
-    OUT(zOut,lenOut);
+    DELTA_OUT(zOut,lenOut);
     PINT((fsl__delta_checksum(zOut, lenOut)));
     OUTCH(";");
     return 0;
@@ -66575,7 +66678,7 @@ int fsl_delta_create2( unsigned char const *zSrc, fsl_size_t lenSrc,
           /* Add an insert command before the copy */
           PINT(bestLitsz);
           OUTCH(":");
-          OUT(zOut+base, bestLitsz);
+          DELTA_OUT(zOut+base, bestLitsz);
           base += bestLitsz;
           DEBUG2( printf("insert %d\n", bestLitsz); )
         }
@@ -66599,7 +66702,7 @@ int fsl_delta_create2( unsigned char const *zSrc, fsl_size_t lenSrc,
            matches.  Do an "insert" for everything that does not match */
         PINT(lenOut-base);
         OUTCH(":");
-        OUT(zOut+base, lenOut-base);
+        DELTA_OUT(zOut+base, lenOut-base);
         base = lenOut;
         break;
       }
@@ -66616,14 +66719,14 @@ int fsl_delta_create2( unsigned char const *zSrc, fsl_size_t lenSrc,
   if( base<lenOut ){
     PINT(lenOut-base);
     OUTCH(":");
-    OUT(zOut+base, lenOut-base);
+    DELTA_OUT(zOut+base, lenOut-base);
   }
   /* Output the final checksum record. */
   PINT(fsl__delta_checksum(zOut, lenOut));
   OUTCH(";");
   return 0;
 #undef PINT
-#undef OUT
+#undef DELTA_OUT
 #undef OUTCH
 }
 
@@ -70897,6 +71000,7 @@ int fsl__foci_register(fsl_cx * const f, fsl_db * const db){
 # if !defined(ELOOP)
 #  define ELOOP 114 /* Missing in MinGW */
 # endif
+# include <sys/utime.h> /* _utimbuf, _wutime() */
 #else
 # include <unistd.h> /* access(2), readlink(2) */
 # include <sys/types.h>
@@ -71483,7 +71587,9 @@ int fsl_errno_to_rc(int errNo, int dflt){
     case EACCES:
     case EBUSY:
     case EPERM:
+#if defined(EDQUOT)
     case EDQUOT:
+#endif
     case EAGAIN:
     case ETXTBSY:
       return FSL_RC_ACCESS;
@@ -72867,6 +72973,8 @@ void fsl_glob_list_clear( fsl_list * const globList ){
 
 #if FSL_PLATFORM_IS_UNIX
 #  include <unistd.h>
+#elif FSL_PLATFORM_IS_WINDOWS
+#  include <io.h> /* read() */
 #else
 #  error "don't know which #include to use for read(2)."
 #endif
@@ -72944,7 +73052,7 @@ int fsl_output_f_fd( void * state, void const * src, fsl_size_t n ){
 #endif
   int const fd = *((int*)state);
   while( n ){
-    ssize_t const wn = write(fd, src, n);
+    fsl_int_t const wn = write(fd, src, n);
     if( wn<0 ){
       if( EINTR==errno ) continue;
       return fsl_errno_to_rc(errno, FSL_RC_IO);
@@ -72973,13 +73081,22 @@ int fsl_input_f_FILE( void * state, void * dest, fsl_size_t * n ){
 int fsl_input_f_fd( void * state, void * dest, fsl_size_t * n ){
   if( !*n ) return FSL_RC_RANGE;
   int const fd = *((int*)state);
-  ssize_t const rn = read( fd, dest, *n );
-  if( rn<0 ){
-    return fsl_errno_to_rc(errno, FSL_RC_IO);
-  }else{
-    *n = (fsl_size_t)rn;
-    return 0;
+  fsl_size_t got = 0;
+  /* Fill *n bytes unless the input ends first, as fread() does for
+     fsl_input_f_FILE(): fsl_stream() and fsl_b_fill_from() take a
+     short read as the end, and a pipe returns only what is
+     available so far. */
+  while( got < *n ){
+    fsl_int_t const rn = read( fd, (unsigned char *)dest + got, *n - got );
+    if( rn<0 ){
+      if( EINTR==errno ) continue;
+      return fsl_errno_to_rc(errno, FSL_RC_IO);
+    }
+    if( 0==rn ) break;
+    got += (fsl_size_t)rn;
   }
+  *n = got;
+  return 0;
 }
 
 void fsl_finalizer_f_FILE( void * state fsl__unused, void * mem ){
@@ -74977,7 +75094,7 @@ static int fsl__ckout_merge_impl(fsl_cx * const f,
                           "Cannot use the baselineRid option "
                           "with a cherry-pick merge.");
   }
-  if(!rc) rc = fsl_cx_txn_begin(f);
+  if(!rc) rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_CKOUT);
   if(rc) goto end;
   inTrans = true;
   if((pid = opt->baselineRid)>0){
@@ -76286,53 +76403,27 @@ void fsl_cx_listener_replace(fsl_cx * f, fsl_msg_listener const *pNew,
 #if FSL_PLATFORM_IS_WINDOWS
 #include <windows.h>
 #include <fcntl.h>
+#include <io.h> /* _open_osfhandle(), close() */
 #else
+#include <fcntl.h> /* open() */
 #include <unistd.h>
 #include <signal.h>
 #include <sys/wait.h>
 #endif
 
-/*
-   The following macros are used to cast pointers to integers and
-   integers to pointers.  The way you do this varies from one compiler
-   to the next, so we have developed the following set of #if statements
-   to generate appropriate macros for a wide range of compilers.
-
-   The correct "ANSI" way to do this is to use the intptr_t type.
-   Unfortunately, that typedef is not available on all compilers, or
-   if it is available, it requires an #include of specific headers
-   that vary from one machine to the next.
-
-   This code is copied out of SQLite.
-*/
-#if defined(__PTRDIFF_TYPE__)  /* This case should work for GCC */
-# define INT_TO_PTR(X)  ((void*)(__PTRDIFF_TYPE__)(X))
-# define PTR_TO_INT(X)  ((int)(__PTRDIFF_TYPE__)(X))
-#elif !defined(__GNUC__)       /* Works for compilers other than LLVM */
-# define INT_TO_PTR(X)  ((void*)&((char*)0)[X])
-# define PTR_TO_INT(X)  ((int)(((char*)X)-(char*)0))
-#elif defined(HAVE_STDINT_H)   /* Use this case if we have ANSI headers */
-# define INT_TO_PTR(X)  ((void*)(intptr_t)(X))
-# define PTR_TO_INT(X)  ((int)(intptr_t)(X))
-#else                          /* Generates a warning - but it always works */
-# define INT_TO_PTR(X)  ((void*)(X))
-# define PTR_TO_INT(X)  ((int)(X))
-#endif
-
-
 #if FSL_PLATFORM_IS_WINDOWS
 /*
-   On windows, create a child process and specify the stdin, stdout,
-   and stderr channels for that process to use.
-
-   Return the number of errors.
+   On Windows, create a child process running the command line zCmd
+   directly (no shell), with the given standard handles. On success
+   *phProcess is the child's process handle, which the caller must
+   close. Returns 0 on success, non-0 on error.
 */
 static int win32_create_child_process(
-  wchar_t *zCmd,       /* The command that the child process will run */
+  wchar_t *zCmd,       /* The command line the child process will run */
   HANDLE hIn,          /* Standard input */
   HANDLE hOut,         /* Standard output */
   HANDLE hErr,         /* Standard error */
-  DWORD *pChildPid     /* OUT: Child process handle */
+  HANDLE *phProcess    /* OUT: Child process handle */
 ){
   STARTUPINFOW si;
   PROCESS_INFORMATION pi;
@@ -76359,76 +76450,113 @@ static int win32_create_child_process(
      &si,   /* Startup Info */
      &pi    /* Process Info */
   );
-  if( rc ){
-    CloseHandle( pi.hProcess );
-    CloseHandle( pi.hThread );
-    *pChildPid = pi.dwProcessId;
-  }else{
-    //fsl__fatal(FSL_RC_ERROR, "cannot create child process");
-    rc = FSL_RC_ERROR;
-  }
-  return rc!=0;
+  if( !rc ) return 1;
+  CloseHandle( pi.hThread );
+  *phProcess = pi.hProcess;
+  return 0;
 }
 #endif
 
 /**
-   Create a child process running shell command "zCmd".  *ppOut gets
-   assigned to a FILE that becomes the standard input of the child
-   process.  (The caller writes to *ppOut in order to send text to the
-   child.)  *pfdIn gets assigned to the stdout from the child process.
-   (The caller reads from *pfdIn in order to receive input from the
-   child.)  Note that *pfdIn is an unbuffered file descriptor, not a
-   FILE.  The process ID of the child is written into *pChildPid.
+   Create a child process running command "zCmd". *pfdIn gets
+   assigned to the stdout from the child process. (The caller reads
+   from *pfdIn in order to receive input from the child.) Note that
+   *pfdIn is an unbuffered file descriptor, not a FILE.
+
+   If zStdinFile is not NULL, the child reads its standard input from
+   that file and *ppOut is set to NULL. Otherwise *ppOut gets assigned
+   to a FILE that becomes the standard input of the child process.
+   (The caller writes to *ppOut in order to send text to the child.)
+
+   On Unix zCmd runs through /bin/sh. On Windows it is run directly
+   by CreateProcessW() as a command line, so it may not use shell
+   features such as redirections.
+
+   *pChildPid identifies the child for fsl__pclose2(): on Unix it is
+   the process id, on Windows the process handle, which Windows
+   guarantees fits in 32 bits.
 
    On success the values returned via *pfdIn, *ppOut, and *pChildPid
-   must be passed to fsl_pclose2() to properly clean up.
+   must be passed to fsl__pclose2() to properly clean up.
 
    Return 0 on success, non-0 on error.
 */
-int fsl__popen2(const char *zCmd, int *pfdIn, FILE **ppOut, int *pChildPid){
+int fsl__popen2(const char *zCmd, const char *zStdinFile,
+                int *pfdIn, FILE **ppOut, int *pChildPid){
 #if FSL_PLATFORM_IS_WINDOWS
-  /* FIXME: port these win32_fatal_error() bits to error codes. */
-  HANDLE hStdinRd, hStdinWr, hStdoutRd, hStdoutWr, hStderr;
+  HANDLE hStdinRd = INVALID_HANDLE_VALUE, hStdinWr = INVALID_HANDLE_VALUE;
+  HANDLE hStdoutRd, hStdoutWr, hStderr, hProcess = NULL;
   SECURITY_ATTRIBUTES saAttr;
-  DWORD childPid = 0;
-  int fd;
+  wchar_t * zW = NULL;
+  int fd, rc = 0;
 
+  *pfdIn = -1;
+  *ppOut = NULL;
+  *pChildPid = 0;
   saAttr.nLength = sizeof(saAttr);
   saAttr.bInheritHandle = TRUE;
   saAttr.lpSecurityDescriptor = NULL;
   hStderr = GetStdHandle(STD_ERROR_HANDLE);
+  if( zStdinFile ){
+    wchar_t * const zF = fsl_utf8_to_unicode(zStdinFile);
+    if( !zF ) return FSL_RC_OOM;
+    hStdinRd = CreateFileW(zF, GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE
+                           | FILE_SHARE_DELETE,
+                           &saAttr, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+    fsl_free(zF);
+    if( INVALID_HANDLE_VALUE==hStdinRd ) return FSL_RC_IO;
+  }else if( !CreatePipe(&hStdinRd, &hStdinWr, &saAttr, 4096) ){
+    return FSL_RC_IO;
+  }else{
+    SetHandleInformation( hStdinWr, HANDLE_FLAG_INHERIT, FALSE);
+  }
   if( !CreatePipe(&hStdoutRd, &hStdoutWr, &saAttr, 4096) ){
-    //win32_fatal_error("cannot create pipe for stdout");
+    CloseHandle(hStdinRd);
+    if( INVALID_HANDLE_VALUE!=hStdinWr ) CloseHandle(hStdinWr);
     return FSL_RC_IO;
   }
   SetHandleInformation( hStdoutRd, HANDLE_FLAG_INHERIT, FALSE);
-
-  if( !CreatePipe(&hStdinRd, &hStdinWr, &saAttr, 4096) ){
-    //win32_fatal_error("cannot create pipe for stdin");
-    return FSL_RC_IO;
+  zW = fsl_utf8_to_unicode(zCmd);
+  if( !zW ) rc = FSL_RC_OOM;
+  else if( win32_create_child_process(zW, hStdinRd, hStdoutWr, hStderr,
+                                      &hProcess) ){
+    rc = FSL_RC_ERROR;
   }
-  SetHandleInformation( hStdinWr, HANDLE_FLAG_INHERIT, FALSE);
-
-  win32_create_child_process(fsl_utf8_to_unicode(zCmd),
-                             hStdinRd, hStdoutWr, hStderr,&childPid);
-  *pChildPid = childPid;
-  *pfdIn = _open_osfhandle(PTR_TO_INT(hStdoutRd), 0);
-  fd = _open_osfhandle(PTR_TO_INT(hStdinWr), 0);
-  *ppOut = _fdopen(fd, "w");
+  fsl_free(zW);
   CloseHandle(hStdinRd);
   CloseHandle(hStdoutWr);
+  if( rc ){
+    CloseHandle(hStdoutRd);
+    if( INVALID_HANDLE_VALUE!=hStdinWr ) CloseHandle(hStdinWr);
+    return rc;
+  }
+  *pChildPid = (int)(intptr_t)hProcess;
+  *pfdIn = _open_osfhandle((intptr_t)hStdoutRd, 0);
+  if( INVALID_HANDLE_VALUE!=hStdinWr ){
+    fd = _open_osfhandle((intptr_t)hStdinWr, 0);
+    *ppOut = _fdopen(fd, "w");
+  }
   return 0;
 #else
   int rc;
-  int pin[2], pout[2];
-  *pfdIn = 0;
+  int pin[2], pout[2] = {-1, -1};
+  int fdStdin = -1;
+  *pfdIn = -1;
   *ppOut = 0;
   *pChildPid = 0;
 
-  if( pipe(pin)<0 ){
-    return fsl_errno_to_rc(errno, FSL_RC_ERROR);
+  if( zStdinFile ){
+    fdStdin = open(zStdinFile, O_RDONLY);
+    if( fdStdin<0 ) return fsl_errno_to_rc(errno, FSL_RC_IO);
   }
-  if( pipe(pout)<0 ){
+  if( pipe(pin)<0 ){
+    rc = fsl_errno_to_rc(errno, FSL_RC_ERROR);
+    if( fdStdin>=0 ) close(fdStdin);
+    return rc;
+  }
+  if( fdStdin<0 && pipe(pout)<0 ){
     rc = fsl_errno_to_rc(errno, FSL_RC_ERROR);
     close(pin[0]);
     close(pin[1]);
@@ -76439,8 +76567,11 @@ int fsl__popen2(const char *zCmd, int *pfdIn, FILE **ppOut, int *pChildPid){
     rc = fsl_errno_to_rc(errno, FSL_RC_ERROR);
     close(pin[0]);
     close(pin[1]);
-    close(pout[0]);
-    close(pout[1]);
+    if( fdStdin>=0 ) close(fdStdin);
+    else{
+      close(pout[0]);
+      close(pout[1]);
+    }
     *pChildPid = 0;
     return rc;
   }
@@ -76448,10 +76579,15 @@ int fsl__popen2(const char *zCmd, int *pfdIn, FILE **ppOut, int *pChildPid){
     int fd;
     /* This is the child process */
     close(0);
-    fd = dup(pout[0]);
+    if( fdStdin>=0 ){
+      fd = dup(fdStdin);
+      close(fdStdin);
+    }else{
+      fd = dup(pout[0]);
+      close(pout[0]);
+      close(pout[1]);
+    }
     if( fd!=0 ) { /* nop */ };
-    close(pout[0]);
-    close(pout[1]);
     close(1);
     fd = dup(pin[1]);
     if( fd!=1 ) { /* nop */ };
@@ -76467,8 +76603,12 @@ int fsl__popen2(const char *zCmd, int *pfdIn, FILE **ppOut, int *pChildPid){
     /* This is the parent process */
     close(pin[1]);
     *pfdIn = pin[0];
-    close(pout[0]);
-    *ppOut = fdopen(pout[1], "w");
+    if( fdStdin>=0 ){
+      close(fdStdin);
+    }else{
+      close(pout[0]);
+      *ppOut = fdopen(pout[1], "w");
+    }
     return 0;
   }
 #endif
@@ -76478,21 +76618,28 @@ int fsl__popen2(const char *zCmd, int *pfdIn, FILE **ppOut, int *pChildPid){
    Close the connection to a child process previously created using
    fsl__popen2(). All 3 arguments are assumed to values returned via
    fsl__popen2()'s output parameters: the input file descriptor,
-   output FILE handle, and child process PID.
+   output FILE handle (may be NULL), and the child's id.
 
    This blocks until the child exits, and returns its exit status, or
-   the negated number of the signal that ended the child. It returns 0
-   if the child's status cannot be determined. This used to kill the
-   child but in the normal case that is never needed.  Consider
-   extending this function to request a kill if child appears to have
-   a network hang.
+   (on Unix) the negated number of the signal that ended the child.
+   It returns 0 if the child's status cannot be determined. This used
+   to kill the child but in the normal case that is never needed.
+   Consider extending this function to request a kill if child
+   appears to have a network hang.
 */
 int fsl__pclose2(int fdIn, FILE *pOut, int childPid){
 #if FSL_PLATFORM_IS_WINDOWS
-  /* Not implemented. Patches welcomed. */
+  /* childPid is the process handle from fsl__popen2(). */
+  HANDLE const hProcess = (HANDLE)(intptr_t)childPid;
+  DWORD code = 0;
   close(fdIn);
   if(pOut) fclose(pOut);
-  return 0;
+  if( hProcess ){
+    WaitForSingleObject(hProcess, INFINITE);
+    if( !GetExitCodeProcess(hProcess, &code) ) code = 0;
+    CloseHandle(hProcess);
+  }
+  return (int)code;
 #elif 1
   int wp, rc = 0;
   close(fdIn);
@@ -76518,8 +76665,6 @@ int fsl__pclose2(int fdIn, FILE *pOut, int childPid){
 #endif
 }
 
-#undef PTR_TO_INT
-#undef INT_TO_PTR
 /* end of file src/popen.c */
 /* start of file src/pq.c */
 /* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */ 
@@ -79388,7 +79533,7 @@ int fsl_repo_rebuild(fsl_cx * const f, fsl_rebuild_opt const * opt){
   if( !db ) return FSL_RC_NOT_A_REPO;
   if( !opt ) opt = &fsl_rebuild_opt_empty;
 #if 0
-  rc = fsl_cx_txn_begin(f);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_REPO);
   if(0==rc){
     rc = fsl__rebuild(f, opt);
     int const rc2 =
@@ -80132,7 +80277,6 @@ int fsl_repo_project_code( fsl_cx * f, char const **pOut ){
 
 
 #undef MARKER
-#undef fsl__bprc
 /* end of file src/repo.c */
 /* start of file src/sc.c */
 /* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
@@ -80161,6 +80305,10 @@ int fsl_repo_project_code( fsl_cx * f, char const **pOut ){
 
 #if FSL_PLATFORM_IS_UNIX
 #  include <unistd.h>
+#  include <fcntl.h>
+#  include <sys/stat.h>
+#elif FSL_PLATFORM_IS_WINDOWS
+#  include <io.h> /* open(), read() */
 #  include <fcntl.h>
 #  include <sys/stat.h>
 #else
@@ -80489,8 +80637,9 @@ static int fsl_sc_popen_xSubmit(fsl_sc * const ch,
   }
   if( rc ) goto end;
   fsl_xfer_debugf(ch->xfer, "Command line: %b", &st->cmd);
-  rc = fsl__popen2(fsl_b_cstr(&st->cmd), &st->process.fdStdOut,
-                   &st->process.fStdIn, &st->process.pid);
+  rc = fsl__popen2(fsl_b_cstr(&st->cmd), st->request.filename,
+                   &st->process.fdStdOut, &st->process.fStdIn,
+                   &st->process.pid);
   if( rc ){
     rc = fsl_xfer_errorf(ch->xfer, rc, "Could not run external command: %b",
                          &st->cmd);
@@ -80582,10 +80731,11 @@ static int fsl_sc_popen_xSubmit(fsl_sc * const ch,
 
     case fsl_sc_popen_e_fd:
       /*  Buffer the response via st->response.filename so we can
-          later stream input from the binary's stdout. For whatever
-          reason, this mode is failing with "file not found" for the
-          response file, whether we use (curl ... --output FILE) or
-          (curl ... > FILE). */
+          later stream input from the binary's stdout. This mode does
+          not work: it was failing with "file not found" for the
+          response file, and the commands no longer write that file
+          themselves, so nothing fills it. Use
+          fsl_sc_popen_e_filebuf. */
       assert( st->response.filename );
       assert( st->response.fd<0 );
       st->response.fd = open(st->response.filename, O_RDONLY);
@@ -80751,15 +80901,15 @@ static int fsl_sc_popen_xRead(fsl_sc * const ch, fsl_b * tgt, fsl_int_t howMuch)
           fsl_b_err_clear(tgt);
           while( 0==rc && howMuch > 0 ){
             size_t const n = (howMuch>=Sz ? Sz : (size_t)howMuch);
-            ssize_t const rd = fp
-              ? (ssize_t)fread(buf, n, 1, fp)
-              : read(fdIn, buf, n);
+            fsl_int_t const rd = fp
+              ? (fsl_int_t)fread(buf, n, 1, fp)
+              : (fsl_int_t)read(fdIn, buf, n);
             if( fp && 1!=rd && feof(fp) ){
               rc = fsl_xfer_errorf(ch->xfer, FSL_RC_IO,
                                    "unexpected end of response: "
                                    "%" FSL_INT_T_PFMT " bytes still "
                                    "expected", howMuch);
-            }else if( fp ? 1!=rd : (ssize_t)-1==rd ){
+            }else if( fp ? 1!=rd : -1==rd ){
               //MARKER(("errno=%s\n", strerror(errno)));
               rc = fsl_xfer_errorf(ch->xfer,
                                    fsl_errno_to_rc(errno, FSL_RC_IO),
@@ -80871,10 +81021,8 @@ static int fsl_sc_popen_curl_buildCommandLine(fsl_sc * const ch,
     if( bName->errCode ) return bName->errCode;
   }
 
-  if( st->response.filename ){
-    fsl_b_esc_arg_v2(b, err, "--output", false);
-    fsl_b_esc_arg_v2(b, err, st->response.filename, true);
-  }
+  /* curl writes the response to stdout, which the channel copies to
+     the response file: see fsl_sc_popen_xSubmit(). */
 
   if( !b->errCode && bLoginCard ){
     /* The card holds the user name from the URL, so it is
@@ -80935,12 +81083,9 @@ static int fsl_sc_popen_fth_buildCommandLine(fsl_sc * ch,
   fsl_b_esc_arg_v2(b, err, st->bin.location, true);
   fsl_b_esc_arg_v2(b, err, "test-http", false);
   fsl_b_esc_arg_v2(b, err, ch->url.path, true);
-  fsl_b_append(b, " < ", 3);
-  fsl_b_esc_arg_v2(b, err, st->request.filename, true);
-  if( st->response.filename ){
-    fsl_b_append( b, " > ", 3);
-    fsl_b_esc_arg_v2(b, err, st->response.filename, true);
-  }
+  /* No redirections: fsl__popen2() gives the command the request
+     file as its stdin, and the channel copies its stdout to the
+     response file. See fsl_sc_popen_xSubmit(). */
 #if FSL_PLATFORM_IS_UNIX
   if( FSL_SC_F_SUPPRESS_STDERR & ch->flags ){
     fsl_b_append(b, " 2>/dev/null", 12);
@@ -81040,12 +81185,9 @@ static int fsl_sc_popen_ssh_buildCommandLine(fsl_sc * ch,
   fsl_b_esc_arg_v2(b, err,
                    ('/'==ch->url.path[0] && ch->url.path[1])
                    ? ch->url.path+1 : ch->url.path, true);
-  fsl_b_append(b, " < ", 3);
-  fsl_b_esc_arg_v2(b, err, st->request.filename, true);
-  if( st->response.filename ){
-    fsl_b_append( b, " > ", 3);
-    fsl_b_esc_arg_v2(b, err, st->response.filename, true);
-  }
+  /* No redirections: fsl__popen2() gives the command the request
+     file as its stdin, and the channel copies its stdout to the
+     response file. See fsl_sc_popen_xSubmit(). */
 #if FSL_PLATFORM_IS_UNIX
   if( FSL_SC_F_SUPPRESS_STDERR & ch->flags ){
     fsl_b_append(b, " 2>/dev/null", 12);
@@ -81250,7 +81392,16 @@ end:
    read().
    =================================================================== */
 #if defined(_WIN32)
-#  error "Native channel targets POSIX; port the socket layer for Win32."
+#  include <winsock2.h>
+#  include <ws2tcpip.h>
+#  include <limits.h>
+#  if defined(_MSC_VER)
+#    pragma comment(lib, "ws2_32")
+#  endif
+   /* <ws2def.h> defines BIGENDIAN, which sha1.c reads as the host
+      byte order. Windows is always little-endian. */
+#  undef BIGENDIAN
+#  undef LITTLEENDIAN
 #else
 #  include <poll.h>
 #  include <arpa/inet.h>
@@ -81270,6 +81421,40 @@ end:
 #  include <openssl/evp.h>
 #  include <openssl/x509.h>
 #  include <openssl/x509v3.h>
+#endif
+
+/*
+** The few places where Winsock differs from POSIX sockets. A socket
+** is kept in an int: Windows guarantees a SOCKET's value fits in 32
+** bits, and OpenSSL's SSL_set_fd() takes an int there too. Winsock
+** reports errors through WSAGetLastError() rather than errno, so
+** fsl__sock_errno() copies a failed call's error into errno, as the
+** nearest errno value, and the code below handles both alike.
+*/
+#if defined(_WIN32)
+#  define fsl__sock_close(S) closesocket((SOCKET)(S))
+#  define poll WSAPoll
+#  undef gai_strerror
+#  define gai_strerror gai_strerrorA
+static void fsl__sock_errno(void){
+  switch( WSAGetLastError() ){
+    case WSAEINTR: errno = EINTR; break;
+    case WSAEWOULDBLOCK:
+    case WSAETIMEDOUT: errno = EAGAIN; break;
+    case WSAECONNREFUSED: errno = ECONNREFUSED; break;
+    case WSAECONNRESET: errno = ECONNRESET; break;
+    case WSAECONNABORTED: errno = ECONNABORTED; break;
+    case WSAENETUNREACH: errno = ENETUNREACH; break;
+    case WSAEHOSTUNREACH: errno = EHOSTUNREACH; break;
+    default: errno = EIO; break;
+  }
+}
+/* send() and recv() take an int length on Windows. */
+#  define FSL__SOCK_LEN(N) ((int)((N)>INT_MAX ? INT_MAX : (N)))
+#else
+#  define fsl__sock_close(S) close(S)
+#  define fsl__sock_errno() ((void)0)
+#  define FSL__SOCK_LEN(N) ((size_t)(N))
 #endif
 
 /* Per-channel private state, hung off fsl_sc::impl.p. */
@@ -81587,6 +81772,14 @@ static void fsl_sc_tls_close(fsl_sc_socket_state *st){
 }
 #endif /* FSL_NATIVE_TLS_OPENSSL */
 
+#if defined(_WIN32)
+/* Windows has no SIGPIPE: a write to a closed socket fails. */
+typedef struct { int unused; } fsl_sc_sigpipe_state;
+static void fsl_sc_sigpipe_block(fsl_sc_sigpipe_state *s){ (void)s; }
+static void fsl_sc_sigpipe_restore(fsl_sc_sigpipe_state const *s){
+  (void)s;
+}
+#else
 /*
 ** Writing to a socket whose peer has closed it raises SIGPIPE, which
 ** kills the process by default. OpenSSL writes with write(2), so
@@ -81623,6 +81816,7 @@ static void fsl_sc_sigpipe_restore(fsl_sc_sigpipe_state const *s){
   pthread_sigmask(SIG_SETMASK, &s->old, NULL);
   errno = savedErrno;
 }
+#endif /* SIGPIPE handling */
 
 /*
 ** Open a TCP connection to host:port, set TCP_NODELAY, and (for https)
@@ -81669,11 +81863,12 @@ static int fsl_sc_socket_connect(fsl_sc *ch){
                            : "");
   }
   for( p=ai; p; p=p->ai_next ){
-    int fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
-    if( fd<0 ){ lastErrno = errno; continue; }
-    if( connect(fd, p->ai_addr, p->ai_addrlen)<0 ){
+    int fd = (int)socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+    if( fd<0 ){ fsl__sock_errno(); lastErrno = errno; continue; }
+    if( connect(fd, p->ai_addr, (int)p->ai_addrlen)<0 ){
+      fsl__sock_errno();
       lastErrno = errno;
-      close(fd);
+      fsl__sock_close(fd);
       continue;
     }
     { int on = 1; setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,
@@ -81681,11 +81876,17 @@ static int fsl_sc_socket_connect(fsl_sc *ch){
     {
       /* Bounds every read and write, including the TLS handshake
          and the TLS reads, which do not poll(). */
+#if defined(_WIN32)
+      DWORD const ms = (DWORD)fsl_sc_socket_timeout(ch) * 1000;
+      setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (char const*)&ms, sizeof(ms));
+      setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, (char const*)&ms, sizeof(ms));
+#else
       struct timeval tv;
       tv.tv_sec = fsl_sc_socket_timeout(ch);
       tv.tv_usec = 0;
       setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (void*)&tv, sizeof(tv));
       setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, (void*)&tv, sizeof(tv));
+#endif
     }
     st->fd = fd;
     break;
@@ -81707,7 +81908,7 @@ static int fsl_sc_socket_connect(fsl_sc *ch){
     if( rc ){
       /* Else a later submit() would find the socket connected and
          write to it with no TLS session. */
-      close(st->fd);
+      fsl__sock_close(st->fd);
       st->fd = -1;
     }
     if( FSL_RC_ACCESS==rc ){
@@ -81720,7 +81921,7 @@ static int fsl_sc_socket_connect(fsl_sc *ch){
                              url->host, zPort, zErr);
     }
 #else
-    close(st->fd);
+    fsl__sock_close(st->fd);
     st->fd = -1;
     return fsl_xfer_error(ch->xfer, FSL_RC_MISUSE,
                           "https requires building with FSL_NATIVE_TLS_OPENSSL.");
@@ -81746,7 +81947,8 @@ static int fsl_sc_socket_write_all(fsl_sc *ch, void const *p, fsl_size_t n){
       fsl_snprintf(zErr, sizeof(zErr), "TLS write failed");
 #endif
     }else{
-      got = (fsl_int_t)send(st->fd, z, (size_t)n, 0);
+      got = (fsl_int_t)send(st->fd, z, FSL__SOCK_LEN(n), 0);
+      if( got<0 ) fsl__sock_errno();
     }
     if( got<0 && errno==EINTR ) continue;
     if( got<=0 ){
@@ -82095,6 +82297,7 @@ static int fsl_sc_socket_slurp_response(fsl_sc *ch){
       int nPoll;
       pfd.fd = st->fd; pfd.events = POLLIN;
       nPoll = poll(&pfd, 1, fsl_sc_socket_timeout(ch)*1000);
+      if( nPoll<0 ) fsl__sock_errno();
       if( nPoll<0 && errno==EINTR ) continue;
       if( nPoll<0 ){
         rc = fsl_xfer_errorf(ch->xfer, FSL_RC_IO,
@@ -82104,7 +82307,8 @@ static int fsl_sc_socket_slurp_response(fsl_sc *ch){
       }
       timedOut = 0==nPoll;
       if( !timedOut ){
-        got = (fsl_int_t)recv(st->fd, buf, sizeof(buf), 0);
+        got = (fsl_int_t)recv(st->fd, buf, FSL__SOCK_LEN(sizeof(buf)), 0);
+        if( got<0 ) fsl__sock_errno();
         if( got<0 && errno==EINTR ) continue;
       }
     }
@@ -82140,7 +82344,7 @@ static int fsl_sc_socket_slurp_response(fsl_sc *ch){
 #if defined(FSL_NATIVE_TLS_OPENSSL)
   if( st->tls ) fsl_sc_tls_close(st);
 #endif
-  if( st->fd>=0 ){ close(st->fd); st->fd = -1; }
+  if( st->fd>=0 ){ fsl__sock_close(st->fd); st->fd = -1; }
   if( 0==rc ) rc = fsl_sc_socket_dechunk_if_needed(ch);
   st->inCursor = 0;
   st->responseLoaded = true;
@@ -82324,11 +82528,14 @@ static void fsl_sc_socket_xCleanup(fsl_sc *ch){
       fsl_sc_sigpipe_restore(&sp);
     }
 #endif
-    if( st->fd>=0 ) close(st->fd);
+    if( st->fd>=0 ) fsl__sock_close(st->fd);
     fsl_b_clear(&st->out);
     fsl_b_clear(&st->in);
     fsl_free(st);
     ch->impl.p = 0;
+#if defined(_WIN32)
+    WSACleanup() /* pairs with fsl_sc_socket_state_init() */;
+#endif
   }
 }
 
@@ -82353,6 +82560,17 @@ int fsl_sc_socket_state_init(fsl_sc *ch){
   assert( ch->impl.type == &fsl_sc_socket_type_marker );
   st = (fsl_sc_socket_state*)fsl_malloc(sizeof(fsl_sc_socket_state));
   if( !st ) return FSL_RC_OOM;
+#if defined(_WIN32)
+  {
+    /* Winsock counts WSAStartup() calls; xCleanup() makes the
+       matching WSACleanup(). */
+    WSADATA wsa;
+    if( WSAStartup(MAKEWORD(2,2), &wsa) ){
+      fsl_free(st);
+      return FSL_RC_IO;
+    }
+  }
+#endif
   memset(st, 0, sizeof(*st));
   st->fd = -1;
   st->out = fsl_b_empty;
@@ -86149,7 +86367,7 @@ int fsl_branch_create(fsl_cx * f, fsl_branch_opt const * opt, fsl_id_t * newRid 
   if(rc) goto end;
 
 #if 1
-  rc = fsl_cx_txn_begin(f);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_REPO);
   if(rc) goto end;
   else{
     /* cancel all other symbolic tags (branch tags) */
@@ -86450,12 +86668,15 @@ static int fsl__tkt_scratch_auth(void * pState, int op, char const * z1,
    the stand-ins gives REFERENCES clauses the prefix, and renaming
    zSql's tables once the stand-ins are dropped fails if a trigger or
    view names a table which zSql did not make, which in f's db would be
-   a table of the repository's or the host's. A schema which makes
-   anything else (a TEMP object, a virtual table, whose module
-   arguments name tables which no rename follows, a trigger on a table
-   it did not make), or fails there, e.g. as it tries to reach beyond
-   that connection (fsl__tkt_scratch_auth()), is refused too, with
-   FSL_RC_CONSISTENCY.
+   a table of the repository's or the host's. No rename follows the
+   name of a view, so a view or trigger which names one of zSql's
+   views, which in f's db would bind to whatever the host has by that
+   name, fails that way too: the views already have their final names
+   by then. A schema which makes anything else (a TEMP object, a
+   virtual table, whose module arguments name tables which no rename
+   follows, a trigger on a table it did not make or on a view), or
+   fails there, e.g. as it tries to reach beyond that connection
+   (fsl__tkt_scratch_auth()), is refused too, with FSL_RC_CONSISTENCY.
 */
 static int fsl__ticket_schema_install_prefixed(fsl_cx * const f,
                                                char const * zPre,
@@ -86584,6 +86805,32 @@ static int fsl__ticket_schema_install_prefixed(fsl_cx * const f,
     zWhy = "it makes a trigger on a table which it does not make";
   }
   if(!rc && !zWhy && drop->used) rc = fsl_db_exec_multi(&s, "%b", drop);
+  if(!rc && !zWhy && fsl_db_exists(&s, "SELECT 1 FROM main.sqlite_schema t,"
+                                   " main.sqlite_schema v WHERE"
+                                   " t.type='trigger' AND v.type='view'"
+                                   " AND v.name=t.tbl_name")){
+    zWhy = "it makes a trigger on a view";
+  }
+  if(!rc && !zWhy){
+    /* The views take their final names now, so that the renames below
+       fail if anything still names one of them. */
+    fsl_b_reuse(sql);
+    rc = fsl_db_prepare(&s, &q, "SELECT sql, name FROM main.sqlite_schema"
+                        " WHERE type='view'");
+    while(!rc && FSL_RC_STEP_ROW==fsl_stmt_step(&q)){
+      char const * const z = fsl_stmt_g_text(&q, 1, NULL);
+      char * const zNew = fsl_mprintf("%s%s", zPre, z);
+      rc = zNew ? fsl__repo_copy_sql(sql, fsl_stmt_g_text(&q, 0, NULL),
+                                     "main", zNew)
+        : FSL_RC_OOM;
+      fsl_free(zNew);
+      if(!rc) rc = fsl_b_appendf(sql, ";\nDROP VIEW main.%!Q;\n", z);
+    }
+    fsl_stmt_finalize(&q);
+    if(!rc && sql->used && fsl_db_exec_multi(&s, "%b", sql)){
+      zWhy = fsl_b_cstr(&s.error.msg);
+    }
+  }
   if(!rc && !zWhy){
     fsl_b_reuse(ren);
     rc = fsl_db_prepare(&s, &q, "SELECT name FROM main.sqlite_schema"
@@ -86616,7 +86863,8 @@ static int fsl__ticket_schema_install_prefixed(fsl_cx * const f,
   if(!rc && !zWhy){
     fsl_b_reuse(sql);
     rc = fsl_db_prepare(&s, &q,
-      "SELECT sql, CASE WHEN type='table' THEN name ELSE %Q||name END"
+      "SELECT sql, CASE WHEN type IN ('table','view') THEN name"
+      " ELSE %Q||name END"
       " FROM main.sqlite_schema WHERE sql IS NOT NULL"
       " AND name NOT GLOB 'sqlite_*' ORDER BY type<>'table', rowid", zPre);
     while(!rc && FSL_RC_STEP_ROW==fsl_stmt_step(&q)){
@@ -86796,7 +87044,7 @@ static int fsl__ticket_insert(fsl_deck * const d, fsl_id_t tktId,
   fsl_size_t i;
   //char const * zMimetype = NULL;
   fsl_stmt q = fsl_stmt_empty;
-  char aUsed[cf->used];
+  char * aUsed = 0;
   assert(rid>0 && f!=NULL && db);
   if(0==tktId){
     rc = fsl_cx_exec_multi(f, "INSERT INTO {{dbname.repo}}.ticket(tkt_uuid, tkt_mtime) "
@@ -86811,6 +87059,12 @@ static int fsl__ticket_insert(fsl_deck * const d, fsl_id_t tktId,
     rc = fsl_b_append(sql1, ", tkt_ctime=coalesce(tkt_ctime,?1)", -1);
   }
   if(rc) goto end;
+  /* Not a VLA: MSVC does not have them. */
+  aUsed = fsl_malloc(cf->used ? cf->used : 1);
+  if(!aUsed){
+    rc = FSL_RC_OOM;
+    goto end;
+  }
   memset(aUsed, 0, cf->used);
   for(i = 0; 0==rc && i < d->J.used; ++i){
     fsl_card_J const * const dJC = (fsl_card_J*)d->J.list[i];
@@ -86896,6 +87150,7 @@ static int fsl__ticket_insert(fsl_deck * const d, fsl_id_t tktId,
   }
   end:
   fsl_stmt_finalize(&q);
+  fsl_free(aUsed);
   fsl__cx_scratchpad_yield(f, sql1);
   fsl__cx_scratchpad_yield(f, sql2);
   fsl__cx_scratchpad_yield(f, sql3);
@@ -88028,7 +88283,14 @@ start:
     case e_Err: break;
 
     case e_Start:
-      if( '/' == *z || '.' == *z ){
+      if( '/' == *z || '.' == *z
+#if defined(_WIN32)
+          /* A drive-letter path, e.g. C:/x or C:\x, is a file, not a
+             URL with a one-letter scheme. */
+          || (z+2<zEnd && fsl_isalpha(z[0]) && ':'==z[1]
+              && ('/'==z[2] || '\\'==z[2]))
+#endif
+          ){
         u->scheme = bstr;
         fsl_b_append(b, "file\0", 5);
         state = e_Slashes;
@@ -88431,13 +88693,25 @@ bool fsl_url_next_query_arg(fsl_url const * u, char const **zCursor,
 #endif
 
 #ifdef _WIN32
+/* Converts from the ANSI code page to UTF-8 with the Win32 API rather
+   than sqlite3_win32_mbcs_to_utf8(), which is not in the API table a
+   loadable SQLite extension sees. */
 char *fsl_mbcs_to_utf8(const char *zMbcs){
-  extern char *sqlite3_win32_mbcs_to_utf8(const char*);
-  return sqlite3_win32_mbcs_to_utf8(zMbcs);
+  int const nWide = MultiByteToWideChar(CP_ACP, 0, zMbcs, -1, 0, 0);
+  wchar_t *zWide;
+  char *zUtf = 0;
+  if( nWide<=0 ) return 0;
+  zWide = (wchar_t *)fsl_malloc( nWide * sizeof(wchar_t) );
+  if( !zWide ) return 0;
+  if( MultiByteToWideChar(CP_ACP, 0, zMbcs, -1, zWide, nWide)>0 ){
+    zUtf = fsl_unicode_to_utf8(zWide);
+  }
+  fsl_free(zWide);
+  return zUtf;
 }
 
-void fossil_mbcs_free(char *zOld){
-  sqlite3_free(zOld);
+void fsl_mbcs_free(char *zOld){
+  fsl_free(zOld);
 }
 #endif /* _WIN32 */
 
@@ -88741,7 +89015,7 @@ int fsl_vfile_load(fsl_cx * const f, fsl_id_t vid,
   if(vid<=0) vid = f->db.ckout.rid;
   assert(vid>=0);
 
-  rc = fsl_cx_txn_begin(f);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_CKOUT);
   if(rc) return rc;
   rc = fsl_db_exists2(dbC, &alreadyHad,
                       "SELECT 1 FROM {{dbname.ckout}}.vfile "
@@ -88915,7 +89189,7 @@ int fsl_vfile_changes_scan(fsl_cx * const f, fsl_id_t vid, unsigned cksigFlags){
   rootLen = fsl_strlen(f->db.ckout.dir);
   assert(rootLen);
 
-  rc = fsl_cx_txn_begin(f);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_CKOUT);
   if(rc){
     fsl__cx_scratchpad_yield(f, fileCksum);
     return rc;
@@ -90171,18 +90445,6 @@ const fsl_xfer fsl_xfer_empty = {
 
 /** @internal
 
-   Slightly-convenience form of fsl_xfcard_hash_step_ch() which takes
-   its 3rd argument as an unquoted word.
-
-   The first invocation for a given WORD must pass 0 for H and I. Each
-   subsequent call must pass the result the previous call as its H, an
-   incremented-by-1 I value, and the same WORD.
-*/
-#define fsl_xfcard_hash_step(H,I,WORD) \
-  fsl_xfcard_hash_step_ch(H,I,(#WORD[I]))
-
-/** @internal
-
    Very simple hash which has proven to be collision-free for
    several dozen keywords in a live scripting engine.
 
@@ -90191,7 +90453,7 @@ const fsl_xfer fsl_xfer_empty = {
    for the full input set.
 
    Aside from the current implementation, these variations of
-   fsl_xfcard_hash_step have worked out in prior testing:
+   fsl_xfcard_hash_step_ch() have worked out in prior testing:
 
    - ((H << 1) + 100*I + I*CHAR - I* (fsl_xfcard_LowestIdChar - 1))
    - ((H << 1) + 45*I + CHAR - fsl_xfcard_LowestIdChar - 1)
@@ -90203,23 +90465,6 @@ static fsl_xfcard_hash_t fsl_xfcard_hash( unsigned const char * word );
 
 /** Non-unsigned-qualified C-string convenience form of fsl_xfcard_hash(). */
 #define fsl_xfcard_hashS(WORD) fsl_xfcard_hash((unsigned const char *)WORD)
-
-/** @internal
-
-   Compile-time hashers for words of length 1..11.
-*/
-#define fsl_xfcard_hash_1(W) fsl_xfcard_hash_step(0,0,W)
-#define fsl_xfcard_hash_2(W) fsl_xfcard_hash_step(fsl_xfcard_hash_1(W),1,W)
-#define fsl_xfcard_hash_3(W) fsl_xfcard_hash_step(fsl_xfcard_hash_2(W),2,W)
-#define fsl_xfcard_hash_4(W) fsl_xfcard_hash_step(fsl_xfcard_hash_3(W),3,W)
-#define fsl_xfcard_hash_5(W) fsl_xfcard_hash_step(fsl_xfcard_hash_4(W),4,W)
-#define fsl_xfcard_hash_6(W) fsl_xfcard_hash_step(fsl_xfcard_hash_5(W),5,W)
-#define fsl_xfcard_hash_7(W) fsl_xfcard_hash_step(fsl_xfcard_hash_6(W),6,W)
-#define fsl_xfcard_hash_8(W) fsl_xfcard_hash_step(fsl_xfcard_hash_7(W),7,W)
-#define fsl_xfcard_hash_9(W) fsl_xfcard_hash_step(fsl_xfcard_hash_8(W),8,W)
-#define fsl_xfcard_hash_10(W) fsl_xfcard_hash_step(fsl_xfcard_hash_9(W),9,W)
-#define fsl_xfcard_hash_11(W) fsl_xfcard_hash_step(fsl_xfcard_hash_10(W),10,W)
-#define fsl_xfcard_hash_N(N,W) fsl_xfcard_hash_ ## N(W)
 
 #define fsl__xfer__check_rc if(xf->rc) return xf->rc
 
@@ -91681,7 +91926,7 @@ int fsl__xfer_submit( fsl_xfer * const xf ){
   if( splitTxn && 0==fsl_cx_txn_level(xf->f) ){
     /* Reopen even after a failed exchange: the caller ends the
        transaction. */
-    int rc2 = fsl__cx_txn_begin_write(xf->f);
+    int rc2 = fsl_cx_txn_begin_write(xf->f, FSL_DBROLE_REPO);
     if( 0==rc2 ) rc2 = fsl__crosslink_begin(xf->f);
     if( rc2 && 0==xf->rc ) xf->rc = rc2;
   }
@@ -92850,7 +93095,10 @@ fsl_xfcard const * fsl__xfcard_search(unsigned char const * z){
   static fsl_xfcard obh[fsl_xfcard_e_COUNT] = {
     /* !!! Must be in fsl_xfcard_e order !!! */
     {.type=fsl_xfcard_e_unknown, .name="<unknown>", .hash=0},
-#define E(T,LEN) {.type=fsl_xfcard_e_ ## T, .name=#T, .hash=fsl_xfcard_hash_N(LEN,T) },
+    /* .hash is filled in below, on first use: a hash computed from
+       a string literal at compile time is not a constant expression
+       in ISO C, and MSVC rejects it. */
+#define E(T,LEN) {.type=fsl_xfcard_e_ ## T, .name=#T, .hash=0},
     fsl_xfcard_map(E)
 #undef E
   };
@@ -92881,6 +93129,9 @@ fsl_xfcard const * fsl__xfcard_search(unsigned char const * z){
     assert( fsl_xfcard_MaxCardNameLen == fsl_strlen(obh[fsl_xfcard_e_clone_seqno].name) );
     assert( fsl_xfcard_e_unknown==obh[0].type );
     assert( 0==obh[0].hash );
+    for(int i = 1; i < fsl_xfcard_e_COUNT; ++i){
+      obh[i].hash = fsl_xfcard_hash((unsigned char const *)obh[i].name);
+    }
 
     qsort( obh, fsl_xfcard_e_COUNT, sizeof(obh[0]), fsl__xfcard_cmp_hash);
 
@@ -92895,10 +93146,6 @@ fsl_xfcard const * fsl__xfcard_search(unsigned char const * z){
       assert( fsl_strlen(obh[i].name) <= fsl_xfcard_MaxCardNameLen );
       assert( i ? (obh[i-1].hash < obh[i].hash) : 1 );
     }
-    /** Assert that the fsl_xfcard_hash_#() macros produce the same results as
-        fsl_xfcard_hash(). */
-    assert( fsl_xfcard_hash_5(cfile) == fsl_xfcard_hashS("cfile"));
-    assert( fsl_xfcard_hashS("clone_seqno") == fsl_xfcard_hash_11(clone_seqno) );
     assert( 0 == fsl_xfcard_hashS("abc!nope") );
 #  if 0
     MARKER(("fsl_xfcards sorted by hash:\n"));
@@ -93485,7 +93732,7 @@ again:
         fsl_cx * const f = xf->f;
         int rc2 = fsl__crosslink_end(f, 0);
         if( 0==rc2 ) rc2 = fsl_cx_txn_end_v2(f, true, false);
-        if( 0==rc2 ) rc2 = fsl__cx_txn_begin_write(f);
+        if( 0==rc2 ) rc2 = fsl_cx_txn_begin_write(f, FSL_DBROLE_REPO);
         if( 0==rc2 ) rc2 = fsl__crosslink_begin(f);
         if( rc2 ) return xf->rc = rc2;
       }
@@ -93557,7 +93804,7 @@ int fsl_sync_client(fsl_cx * const f,
     return fsl_error_set(err, FSL_RC_MISUSE,
                          "Sync requires a peer URL.");
   }
-  rc = fsl__cx_txn_begin_write(f);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_REPO);
   if( rc ) goto end;
   openedTxn = true;
   fsl__xfer_config_almost_copy(config_, &config);
@@ -94068,20 +94315,7 @@ void fsl__xfer_config_almost_copy(fsl_xfer_config const *src,
 #undef fsl_xfcard_LowestIdChar
 #undef fsl_xfcard_MaxCardNameLen
 #undef fsl_xfcard_hash_step_ch
-#undef fsl_xfcard_hash_step
 #undef fsl_xfcard_hashS
-#undef fsl_xfcard_hash_1
-#undef fsl_xfcard_hash_2
-#undef fsl_xfcard_hash_3
-#undef fsl_xfcard_hash_4
-#undef fsl_xfcard_hash_5
-#undef fsl_xfcard_hash_6
-#undef fsl_xfcard_hash_7
-#undef fsl_xfcard_hash_8
-#undef fsl_xfcard_hash_9
-#undef fsl_xfcard_hash_10
-#undef fsl_xfcard_hash_11
-#undef fsl_xfcard_hash_N
 #undef fsl__xfer__check_rc
 /* end of file src/xfer.c */
 /* start of file src/zip.c */
@@ -94875,6 +95109,7 @@ int fsl_repo_zip_sym_to_filename( fsl_cx * const f, char const * sym,
 
   SELECT fsl_open('repo:lib', 'me', json_object('create', 1));
   SELECT fsl_import('other.fossil', 'repo:other');  -- a copy of a file
+  SELECT fsl_clone('https://example.org/x', 'repo:x');  -- or a remote
   SELECT fsl_use('lib');
   SELECT fsl_checkout('db:draft');
   UPDATE fslfiles_draft SET content='...' WHERE name='doc.md';
@@ -94892,6 +95127,9 @@ int fsl_repo_zip_sym_to_filename( fsl_cx * const f, char const * sym,
   nothing to ATTACH, but a ROLLBACK would take with it the TEMP views
   and libfossil's TEMP state which opening adds. fsl_import() and
   fsl_export() need no transaction either, as they ATTACH the file.
+  fsl_clone(URL, 'repo:NAME') makes one from a remote repository, all
+  or nothing, through a temporary file beside the host db, so that the
+  host is only locked for the final copy.
 
   See fsl_cx_host_db() for what binding a connection involves.
 */
@@ -96174,16 +96412,24 @@ static void fslext_release(FslExt * const ext){
 
 /**
    The name of f's repository, as fsl_repos lists it: the schema name
-   of a file repository ("repo", "repo_2", ...) or the NAME of a
-   repo:NAME one. Sets *pn to its length: a NAME is part of its table
-   prefix, "fslrepo_NAME_", and not NUL-terminated.
+   of a file repository ("repo", "repo_2", ...), the NAME of a
+   repo:NAME one, or the whole table prefix of another host repository,
+   which a checkout can record (see fsl_repo_open_host()). Sets *pn to
+   its length: a NAME is part of its table prefix, "fslrepo_NAME_",
+   and not NUL-terminated.
 */
 static char const * fslext_name(fsl_cx * const f, fsl_size_t * const pn){
   char const * const zPre = fsl__db_repo_prefix(f->dbMain);
   char const * z;
   if( zPre ){
-    *pn = fsl_strlen(zPre) - (sizeof(FSLEXT_REPO_PREFIX)-1) - 1;
-    return zPre + sizeof(FSLEXT_REPO_PREFIX)-1;
+    fsl_size_t const n = fsl_strlen(zPre);
+    fsl_size_t const nP = sizeof(FSLEXT_REPO_PREFIX)-1;
+    if( n>nP+1 && 0==fsl_strncmp(zPre, FSLEXT_REPO_PREFIX, nP) ){
+      *pn = n - nP - 1;
+      return zPre + nP;
+    }
+    *pn = n;
+    return zPre;
   }
   z = fsl__db_schema(f->dbMain, FSL_DBROLE_REPO);
   *pn = fsl_strlen(z);
@@ -98460,7 +98706,7 @@ static int fslext_commit_ckout(fsl_cx * const f, FslextWc * const w,
   qOpt.filename = ".";
   qOpt.relativeToCwd = false;
   qOpt.scanForChanges = true;
-  rc = fsl__cx_txn_begin_write(f);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_REPO | FSL_DBROLE_CKOUT);
   if( rc ) return rc;
   /* Check inside the transaction, which holds the write lock, so that
      no other connection's check-in can come between. Another
@@ -98614,7 +98860,7 @@ static void fslext_commit(sqlite3_context *cx, int argc, sqlite3_value **argv){
     }
     goto end;
   }
-  rc = fsl__cx_txn_begin_write(f);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_REPO);
   if( rc ) goto end;
   if( hasParent ){
     fsl_id_t parentRid = 0;
@@ -98839,7 +99085,7 @@ static void fslext_tag(sqlite3_context *cx, int argc, sqlite3_value **argv){
   }
   /* Take the write lock first, so that a concurrent writer is waited
      for, not reported as SQLITE_BUSY. */
-  rc = fsl__cx_txn_begin_write(f);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_REPO);
   if( 0==rc ){
     rc = fsl_tag_sym(f, type, zTarget, zName, zValue, zUser,
                      fsl_db_julian_now(fsl_cx_db_repo(f)), &newId);
@@ -98987,28 +99233,71 @@ static void fslext_sync(sqlite3_context *cx, int argc, sqlite3_value **argv){
 
 /*
   fsl_clone(URL, FILE [, OPTIONS])
+  fsl_clone(URL, 'repo:NAME' [, OPTIONS])
 
   Clones URL into the new repository FILE, using its own connection,
   and returns FILE. It needs no fsl_open(). OPTIONS is a JSON object
   with fsl_sync()'s "password", "save" and "private".
+
+  'repo:NAME' clones into a temporary file beside this connection's
+  main db (see the top of this file), so that nothing holds the host's
+  write lock during the network exchange, and fsl_import()s that, in
+  one short transaction, opened as fsl_open('repo:NAME') does. It
+  deletes the file and returns 'repo:NAME'. Any failure leaves no
+  trace of repo:NAME, though a process which dies during the clone
+  leaves the file, named after the host db with a suffix of
+  "-fslclone-" and a random number. It needs room for the whole
+  repository there, a main db which is a file and, as fsl_open(), no
+  transaction. If repo:NAME exists, that is only found out at the
+  import, after the clone.
 */
 static void fslext_clone(sqlite3_context *cx, int argc, sqlite3_value **argv){
   char const * const zUrl = (char const *)sqlite3_value_text(argv[0]);
   char const * const zFile = (char const *)sqlite3_value_text(argv[1]);
+  FslExt * const ext = sqlite3_user_data(cx);
   fsl_clone_config cc = fsl_clone_config_empty;
   fsl_error err = fsl_error_empty;
+  char zRepo[FSLEXT_WC_NAME_MAX+1];
+  int const repoKind = fslext_repo_name(zFile, zRepo);
   char * zPw = NULL;
+  char * zTmp = NULL;
   int rc;
   if( !zUrl || !*zUrl || !zFile || !*zFile ){
     sqlite3_result_error(cx, "fsl_clone() requires a URL and a "
                          "file name.", -1);
+    return;
+  }else if( repoKind<0 ){
+    sqlite3_result_error(cx, FSLEXT_REPO_NAME_ERR, -1);
+    return;
+  }else if( repoKind>0 && !fslext_open_ok(cx, ext, "fsl_clone") ){
+    return;
+  }else if( repoKind>0 && fslext_find(ext, zFile) ){
+    fslext_already_open(cx, zRepo);
     return;
   }
   if( argc>2 && SQLITE_NULL!=sqlite3_value_type(argv[2])
       && !fslext_xfer_opts(cx, argv[2], &cc.xfer, NULL, &zPw) ){
     return;
   }
-  cc.repo.filename = zFile;
+  if( repoKind>0 ){
+    char const * const zHost = sqlite3_db_filename(ext->db, "main");
+    sqlite3_uint64 nRand;
+    if( !zHost || !*zHost ){
+      sqlite3_result_error(cx, "fsl_clone() into a repo:NAME repository "
+                           "needs a main db which is a file.", -1);
+      fsl_free(zPw);
+      return;
+    }
+    sqlite3_randomness((int)sizeof(nRand), &nRand);
+    zTmp = fsl_mprintf("%s-fslclone-%016llx", zHost,
+                       (unsigned long long)nRand);
+    if( !zTmp ){
+      sqlite3_result_error_nomem(cx);
+      fsl_free(zPw);
+      return;
+    }
+  }
+  cc.repo.filename = zTmp ? zTmp : zFile;
   cc.repo.allowOverwrite = false;
   cc.repo.commitMessage = NULL;
   fsl_b_external(&cc.xfer.url, zUrl, -1);
@@ -99021,11 +99310,28 @@ static void fslext_clone(sqlite3_context *cx, int argc, sqlite3_value **argv){
                                      : fsl_rc_cstr(rc));
     sqlite3_result_error(cx, z ? z : "fsl_clone() failed", -1);
     sqlite3_free(z);
+  }else if( zTmp ){
+    fsl_cx * f = NULL;
+    char * const zPre = fsl_mprintf(FSLEXT_REPO_PREFIX "%s_", zRepo);
+    rc = zPre ? fsl_cx_init(&f, NULL) : FSL_RC_OOM;
+    if( rc ){
+      fslext_error(cx, f, rc);
+      fsl_cx_finalize(f);
+    }else{
+      rc = fsl_cx_host_db(f, ext->db);
+      if( 0==rc ) rc = fsl_repo_import(f, zTmp, zPre);
+      fslext_open_finish(cx, ext, f, rc, argv[1]);
+    }
+    fsl_free(zPre);
+    /* Only here: if fsl_clone() failed, it removed what it made, and
+       the file may not be its own. */
+    fsl_file_unlink(zTmp);
   }else{
     sqlite3_result_value(cx, argv[1]);
   }
   fsl_error_clear(&err);
   fsl_free(zPw);
+  fsl_free(zTmp);
 }
 
 /**
@@ -99471,7 +99777,7 @@ static void fslext_checkout(sqlite3_context *cx, int argc,
     cOpt.scanForChanges = true;
     cOpt.callback = fslext_checkout_f;
     cOpt.callbackState = &written;
-    rc = fsl_cx_txn_begin(f);
+    rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_CKOUT);
     if( 0==rc ){
       rc = fsl_repo_ckout(f, &cOpt);
       if( 0==rc ) rc = fsl_cx_txn_end(f, false);
@@ -99651,7 +99957,7 @@ static void fslext_update(sqlite3_context *cx, int argc,
   if( !f || !fslext_autocommit(cx, "fsl_update") ) return;
   if( argc>1 && !fslext_dry_run_opt(cx, argv[1], &dryRun) ) return;
   files.s = sqlite3_str_new(NULL);
-  rc = fsl_cx_txn_begin(f);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_CKOUT);
   if( 0==rc ){
     rc = zVersion
       ? fsl_sym_to_rid(f, zVersion, FSL_SATYPE_CHECKIN, &rid)
@@ -99757,7 +100063,7 @@ static void fslext_merge(sqlite3_context *cx, int argc,
     return;
   }
   files.s = sqlite3_str_new(NULL);
-  rc = fsl_cx_txn_begin(f);
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_CKOUT);
   if( 0==rc ){
     rc = fsl_sym_to_rid(f, zVersion, FSL_SATYPE_CHECKIN, &mOpt.mergeRid);
     if( 0==rc ){
