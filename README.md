@@ -1,0 +1,23 @@
+# context
+
+ctx keeps agent sessions and knowledge durable, shares them between people and
+machines, and makes them cheap to search. It is being built as one C binary on
+SQLite and libfossil. There is no working binary yet.
+
+## What is here
+
+- `schema/index.sql`: the machine-wide search index, all of it derived.
+- `schema/ticket-table.sql`: the tickets agents and people work on, for each
+  shared Fossil repository.
+- `schema/check.sql`: checks for the index schema.
+- `bench/`: a retrieval bench that scores grep and BM25, with the metrics in SQL.
+
+Source documents are check-ins, the compiled wiki is Fossil wiki in Markdown,
+work items are tickets, and session transcripts are technotes in a per-person
+repository.
+
+## The bench
+
+`bench/run.sh` reads pinned corpus copies and their labels from
+`~/projects/ctx-corpora` (or `CTX_CORPORA`). It needs ripgrep and a `sqlite3` that
+can load extensions, so on macOS use Homebrew's rather than `/usr/bin/sqlite3`.
