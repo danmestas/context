@@ -3903,9 +3903,19 @@ static void sessions_from_remote(sqlite3 *db) {
         const char *nl = strchr(p, '\n');
         int head = 0;
         char r[16], ts[40];
-        if (!strncmp(p, "## ", 3) && sscanf(p + 3, "%15s %39s", r, ts) == 2 && (!strcmp(r, "user") || !strcmp(r, "assistant")) &&
-            strlen(ts) >= 19 && ts[4] == '-' && ts[10] == 'T')
-          head = 1;
+        char line[96];
+        size_t ll = nl ? (size_t)(nl - p) : strlen(p);
+        snprintf(line, sizeof line, "%.*s", (int)(ll < sizeof line - 1 ? ll : sizeof line - 1), p);
+        int got = !strncmp(line, "## ", 3) ? sscanf(line + 3, "%15s %39s", r, ts) : 0; /* this line only */
+        if (got >= 1 && (!strcmp(r, "user") || !strcmp(r, "assistant"))) {
+          size_t len = nl ? (size_t)(nl - p) : strlen(p);
+          if (got == 1 && len <= 3 + strlen(r) + 1) { /* a turn with no timestamp */
+            ts[0] = 0;
+            head = 1;
+          } else if (got == 2 && strlen(ts) >= 19 && ts[4] == '-' && ts[10] == 'T') {
+            head = 1;
+          }
+        }
         if (head || !*p) {
           if (start) {
             size_t len = (size_t)(p - start);
