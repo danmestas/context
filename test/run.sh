@@ -285,6 +285,14 @@ with open(sys.argv[1], "w") as f:
 EOF
 "$CTX" archive "$R" >/dev/null
 [ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE body LIKE '%[REDACTED] end'")" = 30 ] || fail "every prefixed rule redacts"
+G="$T/cc002222-glued.jsonl"
+python3 - "$G" <<'EOF'
+import json, sys
+glued = "AS" + "IA" + "ABCDEFGHIJKLMNOP" + "np" + "m_" + "x" * 36
+open(sys.argv[1], "w").write(json.dumps({"uuid": "gl-1", "timestamp": "2026-06-03T01:00:00Z", "cwd": "/w/r", "message": {"role": "user", "content": "keys " + glued + " end"}}) + "\n")
+EOF
+"$CTX" archive "$G" >/dev/null
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE turn='gl-1' AND body LIKE '%xxxxxxxxxxxx%'")" = 0 ] || fail "a token glued to another is still redacted"
 [ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE body LIKE '%aB3dE6gH9%' OR body LIKE '%AB3DE6GH9%' OR body LIKE '%abc123abc123%'")" = 0 ] || fail "a value was stored"
 
 # Secret manager output is redacted even with no recognizable prefix.
@@ -299,6 +307,7 @@ EOF
 "$CTX" archive "$D" >/dev/null
 [ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE body LIKE '%plainvalue%'")" = 0 ] || fail "secret manager output is redacted"
 [ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE turn='dj-1' AND body LIKE '%keep this text%'")" = 1 ] || fail "ordinary raw fields stay"
+"$CTX" sql "SELECT body FROM ctx_chunk WHERE turn='dj-1'" | grep -q '"computed":"\[REDACTED\]"' || fail "the redaction marker is written"
 
 # Audit finds what got into storage, and shows only where and what shape.
 export CTX_DB="$T/audit.sqlite"
