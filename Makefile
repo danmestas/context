@@ -137,6 +137,7 @@ dist: build/ctx.o build/libfossil.o build/sqlite3.o
 	sed -i.bak 's/@VERSION@/$(VERSION)/' build/dist/$(DIST)/.claude-plugin/plugin.json && rm build/dist/$(DIST)/.claude-plugin/plugin.json.bak
 	cp -R skill/ctx skill/ctx-wiki build/dist/$(DIST)/skills/
 	cp plugin/INSTALL.md build/dist/$(DIST)/README.md
+	cp LICENSE build/dist/$(DIST)/LICENSE
 	cp $(VENDOR)/LICENSE build/dist/$(DIST)/LICENSE.libfossil
 	build/dist/$(DIST)/bin/ctx version
 	cd build/dist && tar czf $(DIST).tar.gz $(DIST) && \

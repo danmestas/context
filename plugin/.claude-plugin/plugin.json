@@ -6,6 +6,7 @@
   "author": {
     "name": "Dan Mestas"
   },
+  "license": "BSD-2-Clause",
   "keywords": [
     "sessions",
     "search",
