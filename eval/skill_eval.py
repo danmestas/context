@@ -148,10 +148,26 @@ def spawn(cmd, cwd, env, deadline):
                           preexec_fn=lambda: signal.alarm(deadline))
 
 
+VIA = {}     # environment for every model call, from --via: another endpoint and its model names
+YOLO = False  # --yolo: no permission checks, so no allow list to deny commands
+
+
+def model_env(env):
+    """env with the --via endpoint applied."""
+    env = dict(env)
+    env.update(VIA)
+    return env
+
+
+def route():
+    """Which models answered, without any secret: compare refuses to mix routes."""
+    return {k: VIA[k] for k in sorted(VIA) if k.startswith("ANTHROPIC_DEFAULT_") or k == "ANTHROPIC_BASE_URL"} or None
+
+
 def claude(prompt, model, fmt, tools, allow=(), dirs=()):
     cmd = [CLAUDE, "-p", prompt, "--model", model, "--setting-sources", "project", "--no-session-persistence",
-           "--settings", SETTINGS, "--strict-mcp-config", "--permission-mode", "dontAsk", "--output-format", fmt,
-           "--tools", tools]
+           "--settings", SETTINGS, "--strict-mcp-config", "--permission-mode", "bypassPermissions" if YOLO else "dontAsk",
+           "--output-format", fmt, "--tools", tools]
     if fmt == "stream-json":
         cmd.append("--verbose")
     for d in dirs:
@@ -218,7 +234,7 @@ class Workspace:
         return dst
 
     def env(self, with_ctx, db=None):
-        env = dict(os.environ)
+        env = model_env(os.environ)
         hide = os.path.dirname(CTX)
         env["PATH"] = ":".join(p for p in env.get("PATH", "").split(":") if p != hide)
         env.pop("CTX_DB", None)
@@ -244,7 +260,7 @@ def breaches(inputs, own):
 
 def digest(stdout, cond, own):
     r = dict(tools=0, ctx=0, skill=0, breach=[], result=None, ok=False, new=0, cached=0, secs=0, turns=0,
-             denials=0, cost=0)
+             denials=0, denied=[], cost=0)
     uses, inputs = {}, []
     for line in stdout.splitlines():
         try:
@@ -268,7 +284,8 @@ def digest(stdout, cond, own):
             r.update(ok=d.get("subtype") == "success", result=d.get("result"), turns=d.get("num_turns", 0),
                      secs=round(d.get("duration_ms", 0) / 1000), cost=d.get("total_cost_usd") or 0,
                      new=u["input_tokens"] + u.get("cache_creation_input_tokens", 0) + u["output_tokens"],
-                     cached=u.get("cache_read_input_tokens", 0), denials=len(d.get("permission_denials") or []))
+                     cached=u.get("cache_read_input_tokens", 0), denials=len(d.get("permission_denials") or []),
+                     denied=[f"{x.get('tool_name')} {json.dumps(x.get('tool_input'))[:120]}" for x in d.get("permission_denials") or []])
     if cond != "B":
         r["breach"] = breaches(inputs, own)
     return r
@@ -334,7 +351,7 @@ def cmd_run(a):
             rows = list(ex.map(job, items))
     write_json(f"{out}/runs.json", rows)
     write_json(f"{out}/meta.json", dict(skill=skill_id, set=a.set, conds=conds, model=a.model, at=time.time(),
-                                        questions=[q["id"] for q in qs]))
+                                        questions=[q["id"] for q in qs], via=route(), yolo=YOLO))
     bad = sum(not r["ok"] for r in rows)
     void = sum(bool(r["breach"]) for r in rows)
     print(out)
@@ -363,7 +380,7 @@ def grade(paths, model):
         prompt = GRADE.format(key=json.dumps([k for k in key if k["id"] in ids_in], indent=0), answers=json.dumps(part, indent=0))
         for _ in range(3):
             with tempfile.TemporaryDirectory(dir=HOME) as cwd:
-                p = spawn(claude(prompt, model, "json", ""), cwd, dict(os.environ), LONG_DEADLINE)
+                p = spawn(claude(prompt, model, "json", ""), cwd, model_env(os.environ), LONG_DEADLINE)
             try:
                 found = {x["answer_id"]: x["grade"] for x in parse_array(json.loads(p.stdout)["result"])}
             except (ValueError, KeyError, TypeError):
@@ -428,6 +445,11 @@ def cmd_report(a):
 
 
 def cmd_compare(a):
+    def how(path):
+        m = json.load(open(f"{path}/meta.json"))
+        return (m.get("model"), m.get("via"), m.get("yolo", False))
+    if how(a.old) != how(a.new):
+        sys.exit(f"the runs used different models or permissions: {how(a.old)} against {how(a.new)}")
     told, pold = table(a.old) if os.path.exists(f"{a.old}/grades.json") else (None, None)
     tnew, pnew = table(a.new) if os.path.exists(f"{a.new}/grades.json") else (None, None)
     if told is None or tnew is None or pold != pnew:
@@ -548,6 +570,9 @@ def cmd_author(a):
 def main():
     ap = argparse.ArgumentParser(prog="skill_eval")
     ap.add_argument("--bank", help="question bank file, if not ~/.ctx/eval/questions.json")
+    ap.add_argument("--via", help="a Claude Code settings file whose env routes every model call elsewhere,"
+                                  " such as a proxy to cheaper models")
+    ap.add_argument("--yolo", action="store_true", help="run answers without permission checks")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("author", help="add reviewed questions for a project to the bank")
     p.add_argument("--project", required=True, help="the project name ctx knows it by")
@@ -582,6 +607,10 @@ def main():
     p.add_argument("--examples", type=int, default=8)
     p.set_defaults(fn=cmd_usage)
     a = ap.parse_args()
+    global VIA, YOLO
+    if a.via:
+        VIA = {k: str(v) for k, v in json.load(open(os.path.expanduser(a.via))).get("env", {}).items()}
+    YOLO = a.yolo
     if a.bank:
         global BANK
         BANK = os.path.abspath(a.bank)

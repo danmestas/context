@@ -27,12 +27,14 @@
 
 #define CTX_VERSION "0.0.1"
 #define CTX_USER_VERSION 2    /* PRAGMA user_version once initialized */
-#define CTX_DERIVED_VERSION 2 /* raise when schema/index.sql changes; ctx then rebuilds */
+#define CTX_DERIVED_VERSION 3 /* raise when schema/index.sql changes; ctx then rebuilds */
 
 /* A tool's output is kept up to this size at each end; the middle is cut. */
 #define TOOL_KEEP (16 * 1024)
 
 int fsl_sqlext_init(sqlite3 *db, char **err, const sqlite3_api_routines *api); /* as libfossil defines it */
+static void rules_index(sqlite3 *db);
+static long rules_import(sqlite3 *db);
 char *fsl_sha3sum_cstr(const char *in, long long len);
 void fsl_free(void *p);
 
@@ -135,6 +137,7 @@ static int cmd_init(const char *clone) {
     sqlite3_step(q);
     sqlite3_finalize(q);
     sessions_from_remote(db, 0);
+    rules_index(db);
   }
   printf("%s\n", path);
   sqlite3_close(db);
@@ -1063,8 +1066,8 @@ static int search_run(sqlite3 *db, const char *match, const char *project, int l
       " FROM ctx_chunk_fts"
       " JOIN ctx_chunk c ON c.id = ctx_chunk_fts.rowid"
       " JOIN ctx_doc d ON d.id = c.doc_id"
-      " WHERE ctx_chunk_fts MATCH ?1 AND (?2 IS NULL OR coalesce(c.project, d.project) = ?2)";
-  static const char current[] = " AND (?4 OR coalesce(d.status, '') NOT IN ('superseded', 'retracted', 'retired'))";
+      " WHERE ctx_chunk_fts MATCH ?1 AND (?2 IS NULL OR coalesce(c.project, d.project) IN (?2, '*'))";
+  static const char current[] = " AND (?4 OR coalesce(d.status, '') NOT IN ('superseded', 'retracted', 'retired', 'replaced', 'expired'))";
   static const char then[] =
       " AND ?4 IS NOT NULL AND ((d.kind = 'session' AND substr(c.at, 1, 10) <= ?5)"
       "  OR (d.kind = 'source' AND EXISTS (SELECT 1 FROM ctx_source_meta m WHERE m.doc_id = d.id AND m.added_at <= ?5"
@@ -1696,8 +1699,10 @@ static int cmd_scan(const char *root_arg) {
   closedir(top);
   sqlite3_finalize(q);
   relabel_speakers(db);
+  long rules = rules_import(db);
   sqlite3_close(db);
   printf("%ld transcripts read\n", ran);
+  if (rules) printf("%ld rules changed\n", rules);
   return 0;
 }
 
@@ -4281,7 +4286,9 @@ static void sessions_from_remote(sqlite3 *db, int all) {
       " (SELECT substr(pt.tagname, 5) FROM fslrepo_me_tagxref px JOIN fslrepo_me_tag pt ON pt.tagid = px.tagid"
       "   WHERE px.rid = e.objid AND pt.tagname GLOB 'sym-*' AND pt.tagname <> 'sym-session' LIMIT 1)"
       " FROM fslrepo_me_event e JOIN fslrepo_me_tag t ON t.tagid = e.tagid JOIN fslrepo_me_blob b ON b.rid = e.objid"
-      " WHERE e.type = 'e' GROUP BY t.tagname");
+      " WHERE e.type = 'e' AND NOT EXISTS (SELECT 1 FROM fslrepo_me_tagxref x JOIN fslrepo_me_tag rt ON rt.tagid = x.tagid"
+      "   WHERE x.rid = e.objid AND rt.tagname = 'sym-rule')" /* rules are not sessions */
+      " GROUP BY t.tagname");
   while (sqlite3_step(q) == SQLITE_ROW) {
     notes = realloc(notes, (n + 1) * sizeof *notes);
     if (!notes) die("out of memory");
@@ -4429,7 +4436,10 @@ static int cmd_sync(int argc, char **argv) {
   for (size_t i = 0; i < n; i++) {
     int bad = sync_one(db, t[i].name, t[i].remote, 0);
     failed += bad;
-    if (!bad && !strcmp(t[i].name, "me")) sessions_from_remote(db, 0);
+    if (!bad && !strcmp(t[i].name, "me")) {
+      sessions_from_remote(db, 0);
+      rules_index(db); /* rules from other machines */
+    }
     free(t[i].name);
     free(t[i].remote);
     free(t[i].project);
@@ -4585,6 +4595,484 @@ static int cmd_inject(void) {
 
 /* ctx rebuild: drops every derived table and recomputes it from the repositories:
  * sessions from technotes, and each project's sources and wiki. State is untouched. */
+/* Rules: standing instructions the person gave, kept on purpose. Each is a technote
+ * in the private repository tagged "rule", so an edit keeps history and it syncs.
+ * Its text starts with "key: value" lines, then a blank line, then the rule:
+ *   key      what identifies it: a memory file's path, or manual:HEX for ctx remember
+ *   project  the project it applies to, or * for every project
+ *   source   the file it was read from; origin  the session it was said in
+ *   until    the date it stops applying; status  retired or replaced; by, reason
+ * Claude Code's memory files and CLAUDE.md files are imported on every scan; a file
+ * that is gone retires its rule. The index is built from the technotes. */
+
+/* The value of header line NAME, copied into out; "" when absent. */
+static void rule_field(const char *text, const char *name, char *out, size_t cap) {
+  size_t nl = strlen(name);
+  *out = 0;
+  for (const char *p = text; p && *p && *p != '\n';) {
+    const char *e = strchr(p, '\n');
+    size_t ll = e ? (size_t)(e - p) : strlen(p);
+    if (ll > nl + 1 && !strncmp(p, name, nl) && p[nl] == ':') {
+      const char *v = p + nl + 1;
+      while (*v == ' ') v++;
+      size_t vl = (size_t)(p + ll - v);
+      snprintf(out, cap, "%.*s", (int)(vl < cap - 1 ? vl : cap - 1), v);
+      return;
+    }
+    p = e ? e + 1 : NULL;
+  }
+}
+
+static const char *rule_body(const char *text) {
+  const char *b = strstr(text, "\n\n");
+  return b ? b + 2 : "";
+}
+
+/* A one-line title for a rule: a memory file's frontmatter description, or its first
+ * line of text. */
+static void rule_title(const char *body, char *out, size_t cap) {
+  const char *p = body;
+  if (!strncmp(p, "---\n", 4)) {
+    const char *end = strstr(p + 4, "\n---");
+    const char *d = strstr(p + 4, "\ndescription:");
+    if (d && (!end || d < end)) {
+      d += 13;
+      while (*d == ' ' || *d == '"') d++;
+      size_t n = strcspn(d, "\n");
+      while (n && (d[n - 1] == '"' || d[n - 1] == ' ')) n--;
+      snprintf(out, cap, "%.*s", (int)n, d);
+      return;
+    }
+    if (end) p = end + 4;
+  }
+  while (*p == '\n' || *p == ' ' || *p == '#') p++;
+  snprintf(out, cap, "%.*s", (int)strcspn(p, "\n"), p);
+}
+
+typedef struct {
+  const char *key, *project, *source, *origin, *until, *status, *by, *reason, *body;
+} rule_t;
+
+/* Saves a rule unless its technote already says the same. Returns 1 if saved. */
+static int rule_save(sqlite3 *db, const rule_t *r) {
+  buf text = {0};
+  const char *names[] = {"key", "project", "source", "origin", "until", "status", "by", "reason"};
+  const char *vals[] = {r->key, r->project, r->source, r->origin, r->until, r->status, r->by, r->reason};
+  for (int i = 0; i < 8; i++) {
+    if (!vals[i] || !*vals[i]) continue;
+    buf_str(&text, names[i]);
+    buf_str(&text, ": ");
+    for (const char *v = vals[i]; *v; v++) buf_add(&text, *v == '\n' ? " " : v, 1); /* one line each */
+    buf_str(&text, "\n");
+  }
+  buf_str(&text, "\n");
+  buf_str(&text, r->body);
+  buf_add(&text, "", 1);
+  char *id = NULL;
+  sqlite3_stmt *q = db_prepare(db, "SELECT technote FROM ctx_rule WHERE key = ?1");
+  sqlite3_bind_text(q, 1, r->key, -1, SQLITE_STATIC);
+  if (sqlite3_step(q) == SQLITE_ROW) id = dup_text(sqlite3_column_text(q, 0));
+  sqlite3_finalize(q);
+  if (id) {
+    q = db_prepare(db, "SELECT fsl_technote(?1) IS ?2");
+    sqlite3_bind_text(q, 1, id, -1, SQLITE_STATIC);
+    sqlite3_bind_text(q, 2, text.p, -1, SQLITE_STATIC);
+    int same = sqlite3_step(q) == SQLITE_ROW && sqlite3_column_int(q, 0);
+    sqlite3_finalize(q);
+    if (same) { free(id); free(text.p); return 0; }
+  }
+  char first[110], title[120];
+  rule_title(r->body, first, sizeof first);
+  snprintf(title, sizeof title, "rule: %s", first);
+  q = db_prepare(db, id ? "SELECT fsl_technote_save(?1, json_object('id', ?2))"
+                        : "SELECT fsl_technote_save(?1, json_object('comment', ?3, 'mimetype', 'text/x-markdown', 'tags', json_array('rule')))");
+  sqlite3_bind_text(q, 1, text.p, -1, SQLITE_STATIC);
+  if (id) sqlite3_bind_text(q, 2, id, -1, SQLITE_STATIC);
+  else sqlite3_bind_text(q, 3, title, -1, SQLITE_STATIC);
+  if (sqlite3_step(q) != SQLITE_ROW) die("cannot save rule %s: %s", r->key, sqlite3_errmsg(db));
+  if (!id) id = dup_text(sqlite3_column_text(q, 0));
+  sqlite3_finalize(q);
+  q = db_prepare(db, "INSERT OR REPLACE INTO ctx_rule(key, technote) VALUES (?1, ?2)");
+  sqlite3_bind_text(q, 1, r->key, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 2, id, -1, SQLITE_STATIC);
+  sqlite3_step(q);
+  sqlite3_finalize(q);
+  free(id);
+  free(text.p);
+  return 1;
+}
+
+/* Rebuilds the rule documents from the rule technotes, every machine's. A rule past
+ * its until date is expired. Two technotes with one key: the newer wins. */
+static void rules_index(sqlite3 *db) {
+  open_private(db);
+  db_exec(db, "SELECT fsl_use('repo:me')");
+  sqlite3_int64 repo = db_int(db, "SELECT id FROM ctx_repo WHERE name = 'me'");
+  db_exec(db, "BEGIN IMMEDIATE;"
+              "DELETE FROM ctx_chunk WHERE doc_id IN (SELECT id FROM ctx_doc WHERE kind = 'rule');"
+              "DELETE FROM ctx_doc WHERE kind = 'rule';");
+  sqlite3_stmt *notes = db_prepare(db,
+      "SELECT substr(t.tagname, 7), b.uuid, max(e.mtime), CAST(fsl_technote(substr(t.tagname, 7)) AS TEXT)"
+      " FROM fslrepo_me_event e JOIN fslrepo_me_tag t ON t.tagid = e.tagid JOIN fslrepo_me_blob b ON b.rid = e.objid"
+      " WHERE e.type = 'e' AND EXISTS (SELECT 1 FROM fslrepo_me_tagxref x JOIN fslrepo_me_tag rt ON rt.tagid = x.tagid"
+      "   WHERE x.rid = e.objid AND rt.tagname = 'sym-rule')"
+      " GROUP BY t.tagname ORDER BY 3");
+  sqlite3_stmt *doc = db_prepare(db,
+      "INSERT INTO ctx_doc(project, repo_id, kind, name, title, hash, status, size, mtime)"
+      " VALUES (?1, ?2, 'rule', ?3, ?4, ?5, nullif(?6, ''), ?7, unixepoch())"
+      " ON CONFLICT (project, kind, name) DO UPDATE SET title = excluded.title, hash = excluded.hash,"
+      " status = excluded.status, size = excluded.size RETURNING id");
+  sqlite3_stmt *drop = db_prepare(db, "DELETE FROM ctx_chunk WHERE doc_id = ?1");
+  sqlite3_stmt *chunk = db_prepare(db, "INSERT INTO ctx_chunk(doc_id, seq, heading, project, body) VALUES (?1, 0, ?4, ?2, ?3)");
+  sqlite3_stmt *key = db_prepare(db, "INSERT OR REPLACE INTO ctx_rule(key, technote) VALUES (?1, ?2)");
+  sqlite3_stmt *past = db_prepare(db, "SELECT ?1 <> '' AND ?1 < date('now')");
+  sqlite3_stmt *older = db_prepare(db, "DELETE FROM ctx_chunk WHERE doc_id IN (SELECT id FROM ctx_doc WHERE kind = 'rule' AND name = ?1)");
+  sqlite3_stmt *older_doc = db_prepare(db, "DELETE FROM ctx_doc WHERE kind = 'rule' AND name = ?1");
+  while (sqlite3_step(notes) == SQLITE_ROW) {
+    const char *id = (const char *)sqlite3_column_text(notes, 0), *text = (const char *)sqlite3_column_text(notes, 3);
+    if (!text) continue;
+    char k[600], project[200], status[40], until[40];
+    rule_field(text, "key", k, sizeof k);
+    rule_field(text, "project", project, sizeof project);
+    rule_field(text, "status", status, sizeof status);
+    rule_field(text, "until", until, sizeof until);
+    if (!*k) continue;
+    if (!*project) snprintf(project, sizeof project, "*");
+    sqlite3_bind_text(past, 1, until, -1, SQLITE_STATIC);
+    if (!*status && sqlite3_step(past) == SQLITE_ROW && sqlite3_column_int(past, 0)) snprintf(status, sizeof status, "expired");
+    sqlite3_reset(past);
+    const char *body = rule_body(text);
+    char title[200];
+    rule_title(body, title, sizeof title);
+    const char *shortname = strncmp(k, "manual:", 7) ? (strrchr(k, '/') ? strrchr(k, '/') + 1 : k) : k + 7;
+    sqlite3_bind_text(older, 1, k, -1, SQLITE_STATIC); /* one rule per key: the newest technote, whatever project it names */
+    sqlite3_step(older);
+    sqlite3_reset(older);
+    sqlite3_bind_text(older_doc, 1, k, -1, SQLITE_STATIC);
+    sqlite3_step(older_doc);
+    sqlite3_reset(older_doc);
+    sqlite3_bind_text(doc, 1, project, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(doc, 2, repo);
+    sqlite3_bind_text(doc, 3, k, -1, SQLITE_STATIC);
+    sqlite3_bind_text(doc, 4, title, -1, SQLITE_STATIC);
+    sqlite3_bind_text(doc, 5, (const char *)sqlite3_column_text(notes, 1), -1, SQLITE_STATIC);
+    sqlite3_bind_text(doc, 6, status, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(doc, 7, (sqlite3_int64)strlen(body));
+    if (sqlite3_step(doc) != SQLITE_ROW) die("%s", sqlite3_errmsg(db));
+    sqlite3_int64 d = sqlite3_column_int64(doc, 0);
+    sqlite3_reset(doc);
+    sqlite3_bind_int64(drop, 1, d);
+    sqlite3_step(drop);
+    sqlite3_reset(drop);
+    sqlite3_bind_int64(chunk, 1, d);
+    sqlite3_bind_text(chunk, 2, project, -1, SQLITE_STATIC);
+    sqlite3_bind_text(chunk, 3, body, -1, SQLITE_STATIC);
+    sqlite3_bind_text(chunk, 4, shortname, -1, SQLITE_STATIC); /* what a search result shows */
+    sqlite3_step(chunk);
+    sqlite3_reset(chunk);
+    sqlite3_bind_text(key, 1, k, -1, SQLITE_STATIC);
+    sqlite3_bind_text(key, 2, id, -1, SQLITE_STATIC);
+    sqlite3_step(key);
+    sqlite3_reset(key);
+  }
+  sqlite3_finalize(notes);
+  sqlite3_finalize(doc);
+  sqlite3_finalize(drop);
+  sqlite3_finalize(chunk);
+  sqlite3_finalize(key);
+  sqlite3_finalize(past);
+  sqlite3_finalize(older);
+  sqlite3_finalize(older_doc);
+  db_exec(db, "COMMIT");
+}
+
+/* Claude Code names a project folder after its path with every '/' as '-', so
+ * "-Users-x-projects-darkish-factory" may be /Users/x/projects/darkish-factory or
+ * /Users/x/projects/darkish/factory. Tries both at each '-', keeping only prefixes that
+ * exist, and writes the last component of the deepest match. */
+static int slug_path(const char *rest, char *path, size_t len, size_t cap, char *out, size_t outcap) {
+  if (!*rest) {
+    struct stat st;
+    if (stat(path, &st) || !S_ISDIR(st.st_mode)) return 0;
+    const char *b = strrchr(path, '/');
+    snprintf(out, outcap, "%s", b ? b + 1 : path);
+    return 1;
+  }
+  size_t n = strcspn(rest, "-");
+  const char *next = rest[n] ? rest + n + 1 : rest + n;
+  for (int join = 0; join < 2; join++) { /* '/' first, then '-' */
+    if (len + n + 2 >= cap) return 0;
+    path[len] = join ? '-' : '/';
+    memcpy(path + len + 1, rest, n);
+    path[len + 1 + n] = 0;
+    if (!join && len) { /* the segment just closed must exist */
+      path[len] = 0;
+      struct stat st;
+      int ok = !stat(path, &st) && S_ISDIR(st.st_mode);
+      path[len] = '/';
+      if (!ok) continue;
+    }
+    if (!join && !len) { path[0] = '/'; }
+    if (slug_path(next, path, len + 1 + n, cap, out, outcap)) return 1;
+    if (!len) break; /* the root has no '-' form */
+  }
+  path[len] = 0;
+  return 0;
+}
+
+/* The project a memory folder belongs to: whatever this machine archived from the
+ * transcripts beside it, or the session the memory says it came from, or the folder
+ * its name stands for. */
+static void memory_project(sqlite3 *db, const char *dir, const char *origin, char *out, size_t cap) {
+  sqlite3_stmt *q = db_prepare(db,
+      "SELECT project FROM (SELECT project, count(*) n FROM ctx_capture WHERE path GLOB ?1 || '/*' GROUP BY 1"
+      " UNION ALL SELECT project, 0 FROM ctx_capture WHERE session = ?2) ORDER BY n DESC LIMIT 1");
+  sqlite3_bind_text(q, 1, dir, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 2, origin, -1, SQLITE_STATIC);
+  if (sqlite3_step(q) == SQLITE_ROW) snprintf(out, cap, "%s", sqlite3_column_text(q, 0));
+  else {
+    const char *slug = strrchr(dir, '/');
+    slug = slug ? slug + 1 : dir;
+    char path[4200] = "";
+    if (*slug != '-' || !slug_path(slug + 1, path, 0, sizeof path, out, cap)) {
+      /* the folder is gone: drop the home folder and a projects folder, keep the rest whole */
+      const char *home = getenv("HOME"), *r = slug;
+      char hs[600] = "";
+      if (home) {
+        snprintf(hs, sizeof hs, "%s-", home);
+        for (char *c = hs; *c; c++) if (*c == '/' || *c == '.') *c = '-';
+      }
+      if (*hs && !strncmp(r, hs, strlen(hs))) r += strlen(hs);
+      static const char *const box[] = {"projects-", "Documents-GitHub-", "src-", "code-", NULL};
+      for (int i = 0; box[i]; i++) if (!strncmp(r, box[i], strlen(box[i])) && r[strlen(box[i])]) { r += strlen(box[i]); break; }
+      snprintf(out, cap, "%s", r);
+    }
+  }
+  sqlite3_finalize(q);
+}
+
+static int import_file(sqlite3 *db, const char *path, const char *project, const char *origin) {
+  size_t n = 0;
+  char *data = slurp(path, &n);
+  if (!data || !n) { free(data); return 0; }
+  buf clean = {0};
+  add_redacted(&clean, data, n); /* the same rules as transcripts */
+  buf_add(&clean, "", 1);
+  rule_t r = {.key = path, .project = project, .source = path, .origin = origin, .body = clean.p};
+  int saved = rule_save(db, &r);
+  free(clean.p);
+  free(data);
+  return saved;
+}
+
+/* Imports CLAUDE.md files and Claude Code memory files as rules, and retires the
+ * rules whose file is gone. Returns how many changed. */
+static long rules_import(sqlite3 *db) {
+  const char *home = getenv("HOME"), *cfg = getenv("CLAUDE_CONFIG_DIR");
+  char base[4200], path[5000];
+  if (cfg && *cfg) snprintf(base, sizeof base, "%s", cfg);
+  else if (home && *home) snprintf(base, sizeof base, "%s/.claude", home);
+  else return 0;
+  open_private(db);
+  db_exec(db, "SELECT fsl_use('repo:me')");
+  db_exec(db, "CREATE TEMP TABLE IF NOT EXISTS seen_rule(key TEXT PRIMARY KEY) WITHOUT ROWID; DELETE FROM temp.seen_rule");
+  sqlite3_stmt *seen = db_prepare(db, "INSERT OR IGNORE INTO temp.seen_rule VALUES (?1)");
+  long changed = 0;
+  db_exec(db, "BEGIN IMMEDIATE");
+  snprintf(path, sizeof path, "%s/CLAUDE.md", base);
+  if (exists(path)) {
+    changed += import_file(db, path, "*", "");
+    sqlite3_bind_text(seen, 1, path, -1, SQLITE_TRANSIENT);
+    sqlite3_step(seen);
+    sqlite3_reset(seen);
+  }
+  sqlite3_stmt *roots = db_prepare(db, "SELECT root, project FROM ctx_project");
+  while (sqlite3_step(roots) == SQLITE_ROW) {
+    static const char *const names[] = {"CLAUDE.md", "AGENTS.md", NULL};
+    for (int i = 0; names[i]; i++) {
+      snprintf(path, sizeof path, "%s/%s", sqlite3_column_text(roots, 0), names[i]);
+      if (!exists(path)) continue;
+      changed += import_file(db, path, (const char *)sqlite3_column_text(roots, 1), "");
+      sqlite3_bind_text(seen, 1, path, -1, SQLITE_TRANSIENT);
+      sqlite3_step(seen);
+      sqlite3_reset(seen);
+    }
+  }
+  sqlite3_finalize(roots);
+  snprintf(path, sizeof path, "%s/projects", base);
+  DIR *top = opendir(path);
+  struct dirent *p;
+  while (top && (p = readdir(top))) {
+    if (p->d_name[0] == '.') continue;
+    char dir[4600], mem[4700];
+    snprintf(dir, sizeof dir, "%s/%s", path, p->d_name);
+    snprintf(mem, sizeof mem, "%s/memory", dir);
+    DIR *d = opendir(mem);
+    struct dirent *e;
+    while (d && (e = readdir(d))) {
+      size_t n = strlen(e->d_name);
+      if (n < 4 || strcmp(e->d_name + n - 3, ".md") || !strcmp(e->d_name, "MEMORY.md")) continue; /* MEMORY.md is an index */
+      char file[4900], origin[80] = "", project[200];
+      snprintf(file, sizeof file, "%s/%s", mem, e->d_name);
+      size_t fl = 0;
+      char *head = slurp(file, &fl);
+      if (head) { /* the frontmatter names the session it was written in */
+        const char *o = strstr(head, "originSessionId:");
+        if (o) sscanf(o + 16, " %79[0-9a-fA-F-]", origin);
+        free(head);
+      }
+      memory_project(db, dir, origin, project, sizeof project);
+      changed += import_file(db, file, project, origin);
+      sqlite3_bind_text(seen, 1, file, -1, SQLITE_TRANSIENT);
+      sqlite3_step(seen);
+      sqlite3_reset(seen);
+    }
+    if (d) closedir(d);
+  }
+  if (top) closedir(top);
+  sqlite3_finalize(seen);
+  /* an imported file that is gone retires its rule */
+  sqlite3_stmt *gone = db_prepare(db,
+      "SELECT r.key, d.project, CAST(fsl_technote(r.technote) AS TEXT) FROM ctx_rule r JOIN ctx_doc d ON d.kind = 'rule' AND d.name = r.key"
+      " WHERE r.key NOT GLOB 'manual:*' AND r.key NOT IN (SELECT key FROM temp.seen_rule) AND d.status IS NULL");
+  while (sqlite3_step(gone) == SQLITE_ROW) {
+    const char *text = (const char *)sqlite3_column_text(gone, 2);
+    if (!text) continue;
+    char origin[80], src[600];
+    rule_field(text, "origin", origin, sizeof origin);
+    rule_field(text, "source", src, sizeof src);
+    rule_t r = {.key = (const char *)sqlite3_column_text(gone, 0), .project = (const char *)sqlite3_column_text(gone, 1),
+                .source = src, .origin = origin, .status = "retired", .reason = "its file was removed", .body = rule_body(text)};
+    changed += rule_save(db, &r);
+  }
+  sqlite3_finalize(gone);
+  db_exec(db, "COMMIT");
+  if (changed) rules_index(db);
+  return changed;
+}
+
+/* ctx remember TEXT [--project P] [--until DATE]
+ * ctx rules [--all] [--project P] | import | retire KEY --reason WHY [--by KEY] */
+static int cmd_remember(int argc, char **argv) {
+  const char *text = NULL, *project = NULL, *until = NULL;
+  for (int i = 0; i < argc; i++) {
+    if (!strcmp(argv[i], "--project") && i + 1 < argc) project = argv[++i];
+    else if (!strcmp(argv[i], "--until") && i + 1 < argc) until = argv[++i];
+    else if (!text) text = argv[i];
+    else die("usage: ctx remember TEXT [--project P] [--until DATE]");
+  }
+  if (!text || !*text) die("usage: ctx remember TEXT [--project P] [--until DATE]");
+  sqlite3 *db = ctx_open();
+  if (until) require_date(db, "--until", until);
+  char *proj = project ? dup_text((const unsigned char *)project) : current_project(db);
+  char key[40];
+  sqlite3_stmt *q = db_prepare(db, "SELECT 'manual:' || lower(hex(randomblob(6)))");
+  sqlite3_step(q);
+  snprintf(key, sizeof key, "%s", sqlite3_column_text(q, 0));
+  sqlite3_finalize(q);
+  buf clean = {0};
+  add_redacted(&clean, text, strlen(text));
+  buf_add(&clean, "\n", 2);
+  const char *session = getenv("CTX_SESSION");
+  open_private(db);
+  db_exec(db, "SELECT fsl_use('repo:me')");
+  db_exec(db, "BEGIN IMMEDIATE");
+  rule_t r = {.key = key, .project = proj, .origin = session ? session : "", .until = until, .body = clean.p};
+  rule_save(db, &r);
+  db_exec(db, "COMMIT");
+  rules_index(db);
+  printf("%s %s%s%s\n", key + 7, proj, until ? " until " : "", until ? until : "");
+  free(clean.p);
+  free(proj);
+  sqlite3_close(db);
+  return 0;
+}
+
+static int cmd_rules(int argc, char **argv) {
+  sqlite3 *db = ctx_open();
+  if (argc >= 1 && !strcmp(argv[0], "import")) {
+    long n = rules_import(db);
+    rules_index(db);
+    printf("%ld rules changed, %d active\n", n, db_int(db, "SELECT count(*) FROM ctx_doc WHERE kind = 'rule' AND status IS NULL"));
+    sqlite3_close(db);
+    return 0;
+  }
+  if (argc >= 2 && !strcmp(argv[0], "retire")) {
+    const char *k = argv[1], *reason = NULL, *by = NULL;
+    for (int i = 2; i < argc; i++) {
+      if (!strcmp(argv[i], "--reason") && i + 1 < argc) reason = argv[++i];
+      else if (!strcmp(argv[i], "--by") && i + 1 < argc) by = argv[++i];
+      else die("usage: ctx rules retire KEY --reason WHY [--by KEY]");
+    }
+    if (!reason || !*reason) die("a retirement needs --reason");
+    char full[600] = "";
+    sqlite3_stmt *f = db_prepare(db, "SELECT name, count(*) OVER () FROM ctx_doc WHERE kind = 'rule'"
+                                     " AND (name = ?1 OR name = 'manual:' || ?1 OR name GLOB '*/' || ?1) LIMIT 1");
+    sqlite3_bind_text(f, 1, k, -1, SQLITE_STATIC);
+    if (sqlite3_step(f) == SQLITE_ROW) {
+      if (sqlite3_column_int(f, 1) > 1) die("%s names more than one rule; use its full key", k);
+      snprintf(full, sizeof full, "%s", sqlite3_column_text(f, 0));
+    }
+    sqlite3_finalize(f);
+    if (!*full) die("no rule %s", k);
+    char *by_full = NULL;
+    if (by) {
+      sqlite3_stmt *q = db_prepare(db, "SELECT name, count(*) OVER () FROM ctx_doc WHERE kind = 'rule'"
+                                       " AND (name = ?1 OR name = 'manual:' || ?1 OR name GLOB '*/' || ?1) LIMIT 1");
+      sqlite3_bind_text(q, 1, by, -1, SQLITE_STATIC);
+      if (sqlite3_step(q) != SQLITE_ROW) die("no rule %s", by);
+      if (sqlite3_column_int(q, 1) > 1) die("%s names more than one rule; use its full key", by);
+      by_full = dup_text(sqlite3_column_text(q, 0));
+      sqlite3_finalize(q);
+    }
+    open_private(db);
+    db_exec(db, "SELECT fsl_use('repo:me')");
+    sqlite3_stmt *q = db_prepare(db, "SELECT d.project, CAST(fsl_technote(r.technote) AS TEXT) FROM ctx_rule r"
+                                     " JOIN ctx_doc d ON d.kind = 'rule' AND d.name = r.key WHERE r.key = ?1");
+    sqlite3_bind_text(q, 1, full, -1, SQLITE_STATIC);
+    if (sqlite3_step(q) != SQLITE_ROW || !sqlite3_column_text(q, 1)) die("no rule %s", k);
+    const char *text = (const char *)sqlite3_column_text(q, 1);
+    char src[600], origin[80], until[40];
+    rule_field(text, "source", src, sizeof src);
+    rule_field(text, "origin", origin, sizeof origin);
+    rule_field(text, "until", until, sizeof until);
+    rule_t r = {.key = full, .project = (const char *)sqlite3_column_text(q, 0), .source = src, .origin = origin, .until = until,
+                .status = by ? "replaced" : "retired", .by = by_full, .reason = reason, .body = rule_body(text)};
+    db_exec(db, "BEGIN IMMEDIATE");
+    rule_save(db, &r);
+    db_exec(db, "COMMIT");
+    sqlite3_finalize(q);
+    rules_index(db);
+    printf("%s %s\n", k, by ? "replaced" : "retired");
+    free(by_full);
+    sqlite3_close(db);
+    return 0;
+  }
+  int all = 0;
+  const char *project = NULL;
+  for (int i = 0; i < argc; i++) {
+    if (!strcmp(argv[i], "--all")) all = 1;
+    else if (!strcmp(argv[i], "--project") && i + 1 < argc) project = argv[++i];
+    else die("usage: ctx rules [--all] [--project P] | import | retire KEY --reason WHY [--by KEY]");
+  }
+  char *proj = project ? dup_text((const unsigned char *)project) : current_project(db);
+  sqlite3_stmt *q = db_prepare(db,
+      "SELECT CASE WHEN name GLOB 'manual:*' THEN substr(name, 8) ELSE replace(name, rtrim(name, replace(name, '/', '')), '') END,"
+      " project, coalesce(status, ''), title"
+      " FROM ctx_doc WHERE kind = 'rule' AND (?1 OR status IS NULL) AND (?2 OR project IN (?3, '*'))"
+      " ORDER BY project = '*', project, name");
+  sqlite3_bind_int(q, 1, all);
+  sqlite3_bind_int(q, 2, all && !project);
+  sqlite3_bind_text(q, 3, proj, -1, SQLITE_STATIC);
+  while (sqlite3_step(q) == SQLITE_ROW)
+    printf("%s  %s%s%s  %s\n", sqlite3_column_text(q, 0), sqlite3_column_text(q, 1), *sqlite3_column_text(q, 2) ? " " : "",
+           sqlite3_column_text(q, 2), sqlite3_column_text(q, 3));
+  sqlite3_finalize(q);
+  free(proj);
+  sqlite3_close(db);
+  return 0;
+}
+
 static const char *const derived_objects[] = {
     "VIEW ctx_stale_wiki", "VIEW ctx_ready_ticket", "TRIGGER ctx_chunk_ai", "TRIGGER ctx_chunk_ad", "TRIGGER ctx_chunk_au",
     "TABLE ctx_chunk_fts", "TABLE ctx_link", "TABLE ctx_citation", "TABLE ctx_source_meta", "TABLE ctx_supersession",
@@ -4604,6 +5092,7 @@ static void rebuild_derived(sqlite3 *db) {
   db_exec(db, v);
   db_exec(db, "COMMIT");
   sessions_from_remote(db, 1);
+  rules_index(db);
   char **projects = NULL;
   size_t n = 0;
   sqlite3_stmt *q = db_prepare(db, "SELECT project FROM ctx_repo WHERE scope = 'shared' ORDER BY project");
@@ -4651,6 +5140,8 @@ static int usage(void) {
         "       ctx rebuild\n"
         "       ctx inject\n"
         "       ctx stats [--weeks N]\n"
+        "       ctx remember TEXT [--project P] [--until DATE]\n"
+        "       ctx rules [--all] [--project P] | import | retire KEY --reason WHY [--by KEY]\n"
         "       ctx sql STATEMENT\n",
         stderr);
   return 2;
@@ -4682,6 +5173,8 @@ int main(int argc, char **argv) {
   if (argc >= 3 && !strcmp(argv[1], "search")) return cmd_search(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "turn")) return cmd_turn(argc - 2, argv + 2);
   if (argc >= 2 && !strcmp(argv[1], "stats")) return cmd_stats(argc - 2, argv + 2);
+  if (argc >= 3 && !strcmp(argv[1], "remember")) return cmd_remember(argc - 2, argv + 2);
+  if (argc >= 2 && !strcmp(argv[1], "rules")) return cmd_rules(argc - 2, argv + 2);
   return usage();
 }
 #endif

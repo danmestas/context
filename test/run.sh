@@ -5,6 +5,8 @@ set -eu
 CTX=${CTX:-$PWD/ctx}
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT INT TERM
+CLAUDE_CONFIG_DIR="$T/claude"; export CLAUDE_CONFIG_DIR # never the real transcripts, memory or CLAUDE.md
+mkdir -p "$CLAUDE_CONFIG_DIR"
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
@@ -167,6 +169,49 @@ grep -q '4 turns in 1 technotes now say tool or meta, not user; 1 request copies
 [ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE heading='user'")" = 2 ] || fail "a rebuild keeps the correction"
 CLAUDE_CONFIG_DIR="$T/relcfg" "$CTX" scan 2>"$T/rel.err" >/dev/null
 [ ! -s "$T/rel.err" ] || fail "relabel runs once: $(cat "$T/rel.err")"
+
+# Rules: CLAUDE.md and memory files are imported, ctx remember adds one, and each can
+# expire, be replaced or be retired without being erased.
+export CTX_DB="$T/memrules.sqlite"
+"$CTX" init >/dev/null
+RC="$T/rulecfg"
+mkdir -p "$RC/projects/-w-rp/memory"
+printf 'Never push straight to main.\n' > "$RC/CLAUDE.md"
+printf -- '---\nname: notam-mono\noriginSessionId: d00d0001-0000-0000-0000-000000000001\n---\n\nRaw NOTAM text is always monospaced. Token ghp_abcdefghijklmnopqrstuvwxyz0123456789 here.\n' > "$RC/projects/-w-rp/memory/notam-mono.md"
+printf -- '- [notam-mono](notam-mono.md) - index line\n' > "$RC/projects/-w-rp/memory/MEMORY.md"
+printf '{"uuid":"r-1","timestamp":"2026-11-01T10:00:00Z","cwd":"/w/rp","message":{"role":"user","content":"hello"}}\n' > "$RC/projects/-w-rp/d00d0001-0000-0000-0000-000000000001.jsonl"
+"$CTX" archive "$RC/projects/-w-rp/d00d0001-0000-0000-0000-000000000001.jsonl" >/dev/null
+CLAUDE_CONFIG_DIR="$RC" "$CTX" rules import | grep -q '^2 rules changed, 2 active' || fail "import CLAUDE.md and a memory file"
+"$CTX" rules --project rp > "$T/rules.txt"
+grep -q 'rp .*Raw NOTAM' "$T/rules.txt" 2>/dev/null || grep -q 'notam-mono' "$T/rules.txt" || fail "a memory file belongs to the project its transcripts are in: $(cat "$T/rules.txt")"
+grep -q '\*  Never push straight to main' "$T/rules.txt" || fail "CLAUDE.md applies to every project: $(cat "$T/rules.txt")"
+"$CTX" search --all monospaced | grep -q '^#[0-9]* rp rule' || fail "a rule is searchable"
+"$CTX" search --all ghp_abcdefghijklmnop 2>/dev/null | grep -q rule && fail "a secret in a memory file is redacted"
+CLAUDE_CONFIG_DIR="$RC" "$CTX" rules import | grep -q '^0 rules changed' || fail "an unchanged file changes nothing"
+K1=$("$CTX" remember "Add a changelog entry when we cut a release" --project rp --until 2099-01-01 | cut -d' ' -f1)
+K2=$("$CTX" remember "Bump versions by x.x.1 until out of beta" --project rp --until 2020-01-01 | cut -d' ' -f1)
+"$CTX" rules --project rp | grep -q "^$K1  rp  Add a changelog" || fail "remember: $("$CTX" rules --project rp)"
+"$CTX" rules --project rp | grep -q "x.x.1" && fail "an expired rule is not active"
+"$CTX" rules --all --project rp | grep -q "^$K2  rp expired" || fail "an expired rule is kept: $("$CTX" rules --all --project rp)"
+"$CTX" search --all beta 2>/dev/null | grep -q rule && fail "search leaves an expired rule out"
+"$CTX" search --all --history beta | grep -q rule || fail "--history brings an expired rule back"
+K3=$("$CTX" remember "Add a changelog entry and a release note when we cut a release" --project rp | cut -d' ' -f1)
+if "$CTX" rules retire "$K1" 2>/dev/null; then fail "a retirement needs a reason"; fi
+"$CTX" rules retire "$K1" --reason "release notes too" --by "$K3" | grep -q replaced || fail "replace a rule"
+"$CTX" rules --all --project rp | grep -q "^$K1  rp replaced" || fail "a replaced rule is kept and marked"
+printf -- '---\nname: notam-mono\noriginSessionId: d00d0001-0000-0000-0000-000000000001\n---\n\nRaw NOTAM text is monospaced, like Jeppesen.\n' > "$RC/projects/-w-rp/memory/notam-mono.md"
+CLAUDE_CONFIG_DIR="$RC" "$CTX" rules import | grep -q '^1 rules changed' || fail "an edited file makes a new version"
+"$CTX" search --all jeppesen | grep -q rule || fail "the new version is searchable"
+N=$("$CTX" sql "SELECT technote FROM ctx_rule WHERE key LIKE '%notam-mono.md'")
+[ "$("$CTX" sql "SELECT count(*) FROM fslrepo_me_tagxref x JOIN fslrepo_me_tag t ON t.tagid = x.tagid WHERE t.tagname = 'event-$N'")" = 2 ] || fail "the old version stays in history"
+rm "$RC/projects/-w-rp/memory/notam-mono.md"
+CLAUDE_CONFIG_DIR="$RC" "$CTX" rules import >/dev/null
+"$CTX" rules --all --project rp | grep -q 'notam-mono.md  rp retired' || fail "a removed file retires its rule: $("$CTX" rules --all --project rp)"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_doc WHERE kind='session' AND id IN (SELECT doc_id FROM ctx_chunk WHERE body LIKE '%changelog%')")" = 0 ] || fail "a rule is not a session"
+B=$("$CTX" sql "SELECT count(*) FROM ctx_doc WHERE kind='rule'")
+"$CTX" rebuild >/dev/null
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_doc WHERE kind='rule'")" = "$B" ] || fail "a rebuild keeps the rules"
+"$CTX" sql "SELECT count(*) FROM ctx_doc WHERE kind='session' AND name IN (SELECT technote FROM ctx_rule)" | grep -qx 0 || fail "a rebuild does not read rules as sessions"
 
 # Stats count what agents really ran: searches, misses, reads and skill loads, not mentions.
 export CTX_DB="$T/stats.sqlite"
@@ -815,10 +860,12 @@ cp "$T/hub.fossil" "$T/hub.before"
 "$CTX" remote me "$T/hub.fossil" | grep -q 'copied' && fail "an existing remote is never overwritten"
 cmp -s "$T/hub.fossil" "$T/hub.before" || fail "an existing remote is left as it is"
 TK=$("$CTX" ticket new "Shared work" --project syncproj)
+"$CTX" remember "Quokka migrations run on Tuesdays" --project syncproj >/dev/null
 "$CTX" sync >/dev/null || fail "first machine syncs"
 export CTX_DB="$T/m2.sqlite"
 "$CTX" init --clone "$T/hub.fossil" | grep -q '1 sessions from other machines indexed' || fail "a clone indexes the other machine's sessions"
 "$CTX" search --all quokka | grep -q 'quokka' || fail "the other machine's session is searchable"
+"$CTX" rules --project syncproj | grep -q 'Quokka migrations' || fail "a rule syncs to another machine"
 [ "$("$CTX" sql "SELECT remote FROM ctx_repo WHERE name='me'")" = "$T/hub.fossil" ] || fail "a clone remembers its remote"
 if "$CTX" init --clone "$T/hub.fossil" 2>/dev/null; then fail "a private repository is cloned once"; fi
 export CTX_DB="$T/m1.sqlite"
@@ -866,7 +913,7 @@ CTX_DB=/nonexistent/x.sqlite "$CTX" inject < /dev/null || fail "inject never fai
 export CTX_DB="$T/rebuild.sqlite"
 "$CTX" init >/dev/null
 [ "$("$CTX" sql "PRAGMA user_version")" = 2 ] || fail "a new file is at the current version"
-[ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 2 ] || fail "derived version recorded"
+[ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 3 ] || fail "derived version recorded"
 printf '{"uuid":"rb-1","timestamp":"2026-09-01T10:00:00Z","cwd":"/w/rb","message":{"role":"user","content":"the capybara rollout"}}\n{"uuid":"rb-2","timestamp":"2026-09-01T10:00:05Z","cwd":"/w/rb","message":{"role":"assistant","content":"rolled out the capybara"}}\n' > "$T/ab12cd99-rb.jsonl"
 "$CTX" archive "$T/ab12cd99-rb.jsonl" >/dev/null
 RT=$("$CTX" ticket new "Kept across a rebuild" --project rb)
@@ -881,7 +928,7 @@ before=$("$CTX" search --all capybara | grep -c '^#')
 "$CTX" sql "UPDATE ctx_meta SET value='1' WHERE key='derived_version'" >/dev/null
 "$CTX" search --all capybara 2>"$T/rb.err" >/dev/null
 grep -q 'rebuilding it once' "$T/rb.err" || fail "an old index is rebuilt on open"
-[ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 2 ] || fail "then it is current"
+[ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 3 ] || fail "then it is current"
 "$CTX" search --all capybara 2>"$T/rb2.err" >/dev/null; [ -s "$T/rb2.err" ] && fail "and is not rebuilt again"
 # A file from before versioning upgrades in place, without a rebuild.
 "$CTX" sql "DROP TABLE ctx_meta" >/dev/null; "$CTX" sql "PRAGMA user_version = 1" >/dev/null
