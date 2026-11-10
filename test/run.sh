@@ -441,7 +441,7 @@ inco() { "$CTX" sql "SELECT fsl_open('$T/ix/co', 'tester'), fsl_use('repo:kb'), 
 inrepo "fsl_checkout('$T/ix/co')" >/dev/null
 mkdir -p "$T/ix/co/sources/sub"
 printf '# Design\n\nThe cache TTL is 30\nseconds in production.\n\n## Other\n\nUnrelated walrus text.\n' > "$T/ix/co/sources/sub/design.md"
-printf '{"origin":"x"}\n' > "$T/ix/co/sources/sub/design.md.origin.json"
+python3 -c "import hashlib,json,sys; p=sys.argv[1]; json.dump(dict(origin='x', sha3=hashlib.sha3_256(open(p,'rb').read()).hexdigest()), open(p+'.origin.json','w'))" "$T/ix/co/sources/sub/design.md"
 inco "fsl_add('sources')" >/dev/null
 inco "fsl_commit('{\"comment\":\"add source\"}')" >/dev/null
 CI=$(inrepo "fsl_resolve('trunk')")
@@ -470,12 +470,12 @@ t = open(p).read().replace("'", "''")
 subprocess.run([ctx, "sql", f"SELECT fsl_open('repo:kb','tester'), fsl_use('repo:kb'), fsl_wiki_save('Cache', '{t}', 'text/x-markdown')"], check=True, capture_output=True)
 EOF
 inrepo "fsl_wiki_save('Other Page', '# Other', 'text/x-markdown')" >/dev/null
-out=$(cd "$T/ix/root" && "$CTX" index); echo "$out" | grep -q '^1 sources, 2 wiki pages, 3 changed, 3 citations, 1 failing' || fail "index counts: $out"
+out=$(cd "$T/ix/root" && "$CTX" index); echo "$out" | grep -q '^1 sources, 2 wiki pages, 3 changed, 3 citations, 2 failing' || fail "index counts: $out"
 "$CTX" sql "SELECT count(*) FROM ctx_doc WHERE name LIKE '%origin.json'" | grep -q '^0' || fail "origin files are not indexed as sources"
 q() { "$CTX" sql "$1"; }
 [ "$(q "SELECT status FROM ctx_citation WHERE ref='a'")" = ok ] || fail "a quote is found across a line break"
 [ "$(q "SELECT status FROM ctx_citation WHERE ref='b'")" = quote-missing ] || fail "a missing quote is caught"
-[ "$(q "SELECT status FROM ctx_citation WHERE ref='c'")" = unchecked ] || fail "a session citation awaits checking"
+[ "$(q "SELECT status FROM ctx_citation WHERE ref='c'")" = no-source ] || fail "a citation to a session not in this repository fails"
 [ "$(q "SELECT ci FROM ctx_citation WHERE ref='a'")" = "$CI" ] || fail "citation pins the check-in"
 [ "$(q "SELECT length(file_hash) FROM ctx_citation WHERE ref='a'")" = 64 ] || fail "citation pins a full hash"
 [ "$(q "SELECT count(*) FROM ctx_link WHERE kind='links_to'")" = 2 ] || fail "page links, ignoring code"
@@ -502,6 +502,104 @@ export CTX_DB="$T/index2.sqlite"
 (cd "$T/ix/root" && "$CTX" project add kb2 --root "$T/other" --import "$T/ix/upstream.fossil" >/dev/null)
 "$CTX" project pull kb2 --from "$T/ix/upstream.fossil" | grep -q 'received' || fail "pull"
 if "$CTX" project pull kb2 2>/dev/null; then fail "pull needs a source"; fi
+
+# The write gate: a page saves only if its whole provenance chain holds.
+export CTX_DB="$T/wiki.sqlite"
+"$CTX" init >/dev/null
+mkdir -p "$T/wk/co" "$T/wk/root"
+cd "$T/wk/root"
+"$CTX" project add kb >/dev/null
+w_repo() { "$CTX" sql "SELECT fsl_open('repo:kb', 'tester'), fsl_use('repo:kb'), $1" | cut -f3-; }
+w_co() { "$CTX" sql "SELECT fsl_open('$T/wk/co', 'tester'), fsl_use('repo:kb'), $1" | cut -f3-; }
+w_repo "fsl_checkout('$T/wk/co')" >/dev/null
+mkdir -p "$T/wk/co/sources"
+printf 'The cache TTL is 30 seconds.\nEvictions run nightly.\n' > "$T/wk/co/sources/a.md"
+printf 'The cache TTL is 30 seconds.\n' > "$T/wk/co/sources/noorigin.md"
+"$CTX" project add tmpsrc --root "$T/wk/co" >/dev/null
+(cd "$T/wk/co" && "$CTX" source add sources/a.md --origin https://example.test/a --class evergreen --as a.md >/dev/null)
+"$CTX" sql "DELETE FROM ctx_project WHERE project='tmpsrc'" >/dev/null
+w_co "fsl_add('sources')" >/dev/null
+w_co "fsl_commit('{\"comment\":\"sources\"}')" >/dev/null
+CI=$(w_repo "fsl_resolve('trunk')")
+NOTE=$(w_repo "fsl_technote_save('We chose a thirty second TTL.', '{\"comment\":\"note\"}')")
+TK=$(w_repo "fsl_ticket_new('{\"title\":\"Evictions are nightly\",\"status\":\"Open\"}')")
+PRIV=$("$CTX" sql "SELECT fsl_technote_save('private words here')" | tail -1)
+page() { python3 - "$T/wk/p.md" "$CI" "$NOTE" "$TK" "$PRIV" "$1" <<'EOF'
+import sys
+out, ci, note, tk, priv, case = sys.argv[1:7]
+good = f"""# Cache
+
+Entries live thirty seconds.[^a] Evictions are nightly.[^b]
+
+- Items expire.[^a]
+
+See [Self](/wiki?name=Cache).
+
+```
+Code is not a claim here at all.
+```
+
+[^a]: "The cache TTL is 30 seconds." [a](/file?name=sources/a.md&ci={ci}&txt=1&ln=1)
+[^b]: "Evictions run nightly." [a](/file?name=sources/a.md&ci={ci})
+"""
+extra = {
+ "good": "",
+ "uncited": "This paragraph states a claim with nothing behind it.\n",
+ "quote": f'Bad claim here today.[^x]\n\n[^x]: "Never written anywhere." [a](/file?name=sources/a.md&ci={ci})\n',
+ "short": f'Short pin claim here.[^x]\n\n[^x]: "The cache TTL is 30 seconds." [a](/file?name=sources/a.md&ci={ci[:12]})\n',
+ "wiki": 'Wiki as evidence here.[^x]\n\n[^x]: "Entries live." [p](/wiki?name=Cache)\n',
+ "dead": "Go to [Gone](/wiki?name=Nowhere).\n",
+ "undefined": "A marker without a note.[^zz]\n",
+ "synth1": "Synthesis: one source alone.[^a]\n",
+ "synth2": "Synthesis: both sources together.[^a][^b]\n",
+ "origin": f'No origin claim here.[^x]\n\n[^x]: "The cache TTL is 30 seconds." [n](/file?name=sources/noorigin.md&ci={ci})\n',
+ "session": f'A session said this.[^s] And a ticket said that.[^t]\n\n[^s]: "chose a thirty second" [n](/technote/{note})\n[^t]: "Evictions are nightly" [t](/tktview/{tk})\n',
+ "private": f'From a private session.[^p]\n\n[^p]: "private words" [n](/technote/{priv})\n',
+ "oversize": "Long claim.[^a] " + "x" * 33000 + "\n",
+}[case]
+open(out, "w").write(good.replace("[^a]: ", extra + "\n[^a]: ", 1) if extra else good)
+EOF
+}
+refused() { page "$1"; if "$CTX" wiki save Cache "$T/wk/p.md" --model m > "$T/wk/o.txt" 2>&1; then fail "gate let through: $1"; fi; grep -q "$2" "$T/wk/o.txt" || fail "gate reason for $1: $(cat "$T/wk/o.txt")"; }
+[ "$(w_repo "fsl_wiki('Cache') IS NULL")" = 1 ] || fail "no page yet"
+page good
+if "$CTX" wiki save Cache "$T/wk/p.md" 2>/dev/null; then fail "--model is required"; fi
+"$CTX" wiki save Cache "$T/wk/p.md" --model test-model --ticket abc --session sess1 | grep -q '^saved Cache' || fail "a good page saves"
+refused uncited 'no citation: This paragraph'
+refused quote 'quote-missing'
+refused short 'full check-in hash'
+refused wiki 'must cite a source'
+refused dead 'does not exist: Nowhere'
+refused undefined 'zz\] is not a quoted'
+refused synth1 'synthesis must cite'
+refused origin 'no-origin'
+refused private 'no-source'
+refused oversize 'over 32 KB'
+page synth2; "$CTX" wiki save Cache "$T/wk/p.md" --model m >/dev/null || fail "synthesis citing both saves"
+page session; "$CTX" wiki save Cache "$T/wk/p.md" --model m >/dev/null || fail "session and ticket citations verify"
+TEXT=$(w_repo "fsl_wiki('Cache')")
+page good; "$CTX" wiki save Cache "$T/wk/p.md" --model test-model --ticket abc --session sess1 | grep -q 'removed claim: "chose a thirty' || fail "dropped claims are reported"
+w_repo "fsl_wiki('Cache')" > "$T/wk/saved.md"
+grep -q '^## Provenance' "$T/wk/saved.md" && grep -q 'Compiled by: test-model' "$T/wk/saved.md" && grep -q 'Ticket: abc' "$T/wk/saved.md" || fail "provenance block"
+grep -q "^- \[${CI%${CI#????????????????}}\] sources/a.md" "$T/wk/saved.md" || fail "sources section pins the check-in"
+[ "$(grep -c '^## Provenance' "$T/wk/saved.md")" = 1 ] || fail "provenance is replaced, not repeated"
+if grep -q sess1 "$T/wk/saved.md"; then fail "a shared page must not name a private session"; fi
+[ "$("$CTX" sql "SELECT session FROM ctx_wiki_log ORDER BY id DESC LIMIT 1")" = sess1 ] || fail "session is in the private log"
+UUID=$("$CTX" sql "SELECT b.uuid FROM fslrepo_kb_blob b JOIN fslrepo_kb_tagxref x ON x.rid=b.rid JOIN fslrepo_kb_tag t ON t.tagid=x.tagid WHERE t.tagname='wiki-Cache' ORDER BY x.mtime DESC, b.rid DESC LIMIT 1")
+w_repo "cast(fsl_content('$UUID') as text)" | grep -q '^N text/x-markdown' || fail "saved as Markdown"
+"$CTX" wiki why Cache > "$T/wk/why.txt"
+grep -q '^\[^a\] Entries live thirty seconds' "$T/wk/why.txt" || fail "why shows the claim: $(head -3 "$T/wk/why.txt")"
+grep -q 'quote: "The cache TTL is 30 seconds."' "$T/wk/why.txt" || fail "why shows the quote"
+grep -q 'origin: https://example.test/a, retrieved' "$T/wk/why.txt" || fail "why reaches the origin"
+"$CTX" source uses a.md | grep -q '^2 claims depend on sources/a.md' || fail "source uses counts claims"
+"$CTX" wiki check > "$T/wk/c.txt" || fail "check passes: $(cat "$T/wk/c.txt")"
+grep -q '^0 problems' "$T/wk/c.txt" || fail "check is clean"
+printf 'Replaced entirely.\n' > "$T/wk/co/sources/a.md"
+w_co "fsl_commit('{\"comment\":\"change\"}')" >/dev/null
+if "$CTX" wiki check > "$T/wk/c2.txt"; then fail "a stale page fails the check"; fi
+grep -q 'Cache: stale, source changed: sources/a.md' "$T/wk/c2.txt" || fail "stale is named"
+"$CTX" source uses a.md | grep -q 'older version' || fail "uses shows an older pin"
+cd - >/dev/null
 
 # The skill eval harness works end to end with a stand-in for the model.
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"

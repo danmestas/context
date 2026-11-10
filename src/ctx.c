@@ -2138,8 +2138,11 @@ static void source_walk(sqlite3 *db, const char *root, const char *rel, source_t
   closedir(d);
 }
 
+static int source_uses(int argc, char **argv);
+
 static int cmd_source(int argc, char **argv) {
   if (argc >= 1 && !strcmp(argv[0], "add")) return source_add(argc - 1, argv + 1);
+  if (argc >= 1 && !strcmp(argv[0], "uses")) return source_uses(argc - 1, argv + 1);
   if (argc >= 1 && !strcmp(argv[0], "check")) {
     const char *project = argc == 3 && !strcmp(argv[1], "--project") ? argv[2] : NULL;
     if (argc != 1 && !project) die("usage: ctx source check [--project P]");
@@ -2283,6 +2286,32 @@ static void citation_line(sqlite3 *db, sqlite3_stmt *add, const char *line) {
       size_t n = (size_t)sqlite3_column_bytes(f, 0);
       hash = sha3_hex(data ? data : "", n);
       char *hay = squeeze(data ? data : "", n), *needle = squeeze(q + 1, (size_t)(qend - q - 1));
+      status = *needle && strstr(hay, needle) ? "ok" : "quote-missing";
+      free(hay);
+      free(needle);
+    } else {
+      status = "no-source";
+    }
+    sqlite3_finalize(f);
+    if (!strcmp(status, "ok") && !strcmp(kind, "source")) { /* the chain continues to the source's origin */
+      char meta[1200];
+      snprintf(meta, sizeof meta, "%s%s", path, ORIGIN_SUFFIX);
+      f = db_prepare(db, "SELECT json_extract(o, '$.sha3'), json_extract(o, '$.origin') FROM (SELECT CAST(fsl_file(?1, ?2) AS TEXT) o)");
+      sqlite3_bind_text(f, 1, ci, -1, SQLITE_STATIC);
+      sqlite3_bind_text(f, 2, meta, -1, SQLITE_STATIC);
+      if (sqlite3_step(f) != SQLITE_ROW || !sqlite3_column_text(f, 1) || !*sqlite3_column_text(f, 1)) status = "no-origin";
+      else if (!sqlite3_column_text(f, 0) || strcmp((const char *)sqlite3_column_text(f, 0), hash)) status = "origin-mismatch";
+      sqlite3_finalize(f);
+    }
+  } else if (path && (!strcmp(kind, "session") || !strcmp(kind, "ticket"))) {
+    /* only this repository is consulted, so a shared page cannot cite a private session */
+    sqlite3_stmt *f = db_prepare(db, !strcmp(kind, "session")
+        ? "SELECT fsl_technote(?1)"
+        : "SELECT coalesce(json_extract(t, '$.title'), '') || ' ' || coalesce(json_extract(t, '$.comment'), '') FROM (SELECT fsl_ticket(?1) t) WHERE t IS NOT NULL");
+    sqlite3_bind_text(f, 1, path, -1, SQLITE_STATIC);
+    if (sqlite3_step(f) == SQLITE_ROW && sqlite3_column_text(f, 0)) {
+      const char *data = (const char *)sqlite3_column_text(f, 0);
+      char *hay = squeeze(data, strlen(data)), *needle = squeeze(q + 1, (size_t)(qend - q - 1));
       status = *needle && strstr(hay, needle) ? "ok" : "quote-missing";
       free(hay);
       free(needle);
@@ -2463,6 +2492,17 @@ static void remove_tree(const char *path) {
   rmdir(path);
 }
 
+static void index_prepare(sqlite3 *db) {
+  db_exec(db,
+          "CREATE TABLE IF NOT EXISTS ctx_citation(id INTEGER PRIMARY KEY, doc_id INTEGER NOT NULL, ref TEXT NOT NULL, quote TEXT NOT NULL,"
+          " target_kind TEXT NOT NULL, target TEXT, ci TEXT, file_hash TEXT, status TEXT NOT NULL) STRICT;"
+          "CREATE INDEX IF NOT EXISTS ctx_citation_target ON ctx_citation(target_kind, target);"
+          "CREATE INDEX IF NOT EXISTS ctx_citation_doc ON ctx_citation(doc_id);"
+          "CREATE TEMP TABLE IF NOT EXISTS seen(kind TEXT, name TEXT, PRIMARY KEY (kind, name));"
+          "CREATE TEMP TABLE IF NOT EXISTS cite(ref, quote, target_kind, target, ci, file_hash, status);"
+          "CREATE TEMP TABLE IF NOT EXISTS pagelink(page PRIMARY KEY);");
+}
+
 static int cmd_index(int argc, char **argv) {
   const char *project_opt = argc == 2 && !strcmp(argv[0], "--project") ? argv[1] : NULL;
   if (argc && !project_opt) die("usage: ctx index [--project P]");
@@ -2475,14 +2515,7 @@ static int cmd_index(int argc, char **argv) {
   if (sqlite3_step(q) != SQLITE_ROW) die("no project %s; run: ctx project add", project);
   sqlite3_int64 repo_id = sqlite3_column_int64(q, 0);
   sqlite3_finalize(q);
-  db_exec(db,
-          "CREATE TABLE IF NOT EXISTS ctx_citation(id INTEGER PRIMARY KEY, doc_id INTEGER NOT NULL, ref TEXT NOT NULL, quote TEXT NOT NULL,"
-          " target_kind TEXT NOT NULL, target TEXT, ci TEXT, file_hash TEXT, status TEXT NOT NULL) STRICT;"
-          "CREATE INDEX IF NOT EXISTS ctx_citation_target ON ctx_citation(target_kind, target);"
-          "CREATE INDEX IF NOT EXISTS ctx_citation_doc ON ctx_citation(doc_id);"
-          "CREATE TEMP TABLE seen(kind TEXT, name TEXT, PRIMARY KEY (kind, name));"
-          "CREATE TEMP TABLE cite(ref, quote, target_kind, target, ci, file_hash, status);"
-          "CREATE TEMP TABLE pagelink(page PRIMARY KEY);");
+  index_prepare(db);
   open_project(db, repo);
   long files = 0, changed = 0, pages = 0;
   char tmp[4400], *side = sidecar(".index.XXXXXX");
@@ -2548,6 +2581,401 @@ static int cmd_index(int argc, char **argv) {
   return 0;
 }
 
+/* The wiki. ctx wiki save is the only way a page is written, and it refuses a page
+ * whose provenance does not hold. Nothing here needs a model. */
+#define PAGE_MAX (32 * 1024)
+
+static int refuse(const char *fmt, const char *a, const char *b) {
+  fputs("refused: ", stdout);
+  printf(fmt, a, b);
+  putchar('\n');
+  return 1;
+}
+
+static int cite_defined(sqlite3 *db, const char *ref, size_t n) {
+  sqlite3_stmt *q = db_prepare(db, "SELECT count(*) FROM temp.cite WHERE ref = ?1");
+  sqlite3_bind_text(q, 1, ref, (int)n, SQLITE_STATIC);
+  sqlite3_step(q);
+  int have = sqlite3_column_int(q, 0);
+  sqlite3_finalize(q);
+  return have;
+}
+
+/* Words outside links: a line of pure navigation states no claim. */
+static int prose_words(const char *b) {
+  int words = 0, in = 0, skip = 0;
+  for (const char *p = b; *p; p++) {
+    if (*p == '[' ) { skip++; in = 0; continue; }
+    if (*p == ']' && skip) {
+      skip--;
+      if (p[1] == '(') {
+        const char *e = strchr(p, ')');
+        if (e) p = e;
+      }
+      continue;
+    }
+    if (skip) continue;
+    int w = c_alnum((unsigned char)*p);
+    if (w && !in) words++;
+    in = w;
+  }
+  return words;
+}
+
+static int block_check(sqlite3 *db, const char *block) {
+  if (!*block) return 0;
+  int bad = 0, markers = 0;
+  for (const char *p = strstr(block, "[^"); p; p = strstr(p + 2, "[^")) {
+    const char *e = strchr(p, ']');
+    if (!e) break;
+    if (e[1] == ':') continue;
+    markers++;
+    if (!cite_defined(db, p + 2, (size_t)(e - p - 2))) {
+      char ref[64];
+      snprintf(ref, sizeof ref, "%.*s", (int)(e - p - 2), p + 2);
+      bad += refuse("[^%s] is not a quoted citation%s", ref, "");
+    }
+  }
+  char head[64];
+  snprintf(head, sizeof head, "%s", block);
+  if (!strncmp(block, "Synthesis:", 10)) {
+    if (markers < 2) bad += refuse("synthesis must cite each source it draws on: %s%s", head, "");
+  } else if (!markers && prose_words(block) >= 4) {
+    bad += refuse("no citation: %s%s", head, "");
+  }
+  return bad;
+}
+
+/* Every claim has a citation. Headings, code and footnotes are not claims. */
+static int body_check(sqlite3 *db, const char *text) {
+  int bad = 0, fenced = 0;
+  buf block = {0};
+  for (const char *p = text; *p;) {
+    const char *nl = strchr(p, '\n');
+    size_t n = nl ? (size_t)(nl - p) : strlen(p);
+    int blank = 1;
+    for (size_t i = 0; i < n; i++) blank = blank && c_space((unsigned char)p[i]);
+    int fence = n >= 3 && !strncmp(p, "```", 3);
+    int item = n >= 2 && ((p[0] == '-' || p[0] == '*') && p[1] == ' ');
+    if (fence) fenced = !fenced;
+    if (fence || fenced || blank || p[0] == '#' || !strncmp(p, "[^", 2) || item) {
+      buf_add(&block, "", 1);
+      bad += block_check(db, block.p);
+      block.n = 0;
+    }
+    if (!fence && !fenced && !blank && p[0] != '#' && strncmp(p, "[^", 2)) {
+      buf_add(&block, item ? p + 2 : p, item ? n - 2 : n);
+      buf_add(&block, " ", 1);
+      if (item) {
+        buf_add(&block, "", 1);
+        bad += block_check(db, block.p);
+        block.n = 0;
+      }
+    }
+    if (!nl) break;
+    p = nl + 1;
+  }
+  buf_add(&block, "", 1);
+  bad += block_check(db, block.p);
+  free(block.p);
+  return bad;
+}
+
+/* ctx generates these sections, so a page's own copy is dropped. */
+static size_t generated_at(const char *t) {
+  static const char *const heads[] = {"## Sources\n", "## Provenance\n", NULL};
+  size_t best = strlen(t);
+  for (int k = 0; heads[k]; k++)
+    for (const char *p = strstr(t, heads[k]); p; p = strstr(p + 1, heads[k]))
+      if (p == t || p[-1] == '\n') {
+        if ((size_t)(p - t) < best) best = (size_t)(p - t);
+        break;
+      }
+  return best;
+}
+
+static void project_of(sqlite3 *db, const char *opt, char **project, char repo[80], sqlite3_int64 *id) {
+  *project = opt ? dup_text((const unsigned char *)opt) : current_project(db);
+  repo_name(*project, repo, 80);
+  sqlite3_stmt *q = db_prepare(db, "SELECT id FROM ctx_repo WHERE name = ?1 AND scope = 'shared'");
+  sqlite3_bind_text(q, 1, repo, -1, SQLITE_STATIC);
+  if (sqlite3_step(q) != SQLITE_ROW) die("no project %s; run: ctx project add", *project);
+  *id = sqlite3_column_int64(q, 0);
+  sqlite3_finalize(q);
+}
+
+static int wiki_save(int argc, char **argv) {
+  const char *name = NULL, *file = NULL, *model = NULL, *ticket = "none", *project_opt = NULL, *session = getenv("CTX_SESSION");
+  for (int i = 0; i < argc; i++) {
+    if (!strncmp(argv[i], "--", 2)) {
+      if (i + 1 >= argc) die("%s needs a value", argv[i]);
+      const char *o = argv[i], *v = argv[++i];
+      if (!strcmp(o, "--model")) model = v;
+      else if (!strcmp(o, "--ticket")) ticket = v;
+      else if (!strcmp(o, "--project")) project_opt = v;
+      else if (!strcmp(o, "--session")) session = v;
+      else die("unknown option %s", o);
+    } else if (!name) name = argv[i];
+    else if (!file) file = argv[i];
+    else die("usage: ctx wiki save NAME FILE --model M [--ticket ID]");
+  }
+  if (!name || !file) die("usage: ctx wiki save NAME FILE --model M [--ticket ID]");
+  if (!model || !*model) die("--model is required: say what compiled this page");
+  size_t n = 0;
+  char *raw = slurp(file, &n);
+  if (!raw) die("cannot read %s: %s", file, strerror(errno));
+  raw = realloc(raw, n + 1);
+  if (!raw) die("out of memory");
+  raw[n] = 0;
+  raw[generated_at(raw)] = 0;
+  sqlite3 *db = ctx_open();
+  char *project, repo[80];
+  sqlite3_int64 repo_id;
+  project_of(db, project_opt, &project, repo, &repo_id);
+  index_prepare(db);
+  open_project(db, repo);
+  wiki_parse(db, raw);
+  int bad = 0;
+  if (strlen(raw) > PAGE_MAX) bad += refuse("the page is over %s%s", "32 KB", "");
+  bad += body_check(db, raw);
+  sqlite3_stmt *q = db_prepare(db, "SELECT ref, target_kind, coalesce(target, ''), coalesce(ci, ''), status FROM temp.cite");
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    const char *ref = (const char *)sqlite3_column_text(q, 0), *kind = (const char *)sqlite3_column_text(q, 1);
+    const char *ci = (const char *)sqlite3_column_text(q, 3), *status = (const char *)sqlite3_column_text(q, 4);
+    if (!strcmp(kind, "unknown")) bad += refuse("[^%s] must cite a source, code, session or ticket, not this link%s", ref, "");
+    else if ((!strcmp(kind, "source") || !strcmp(kind, "code")) && strlen(ci) < 40) bad += refuse("[^%s] must pin a full check-in hash%s", ref, "");
+    else if (strcmp(status, "ok")) bad += refuse("[^%s]: %s", ref, status);
+  }
+  sqlite3_finalize(q);
+  char **links = NULL;
+  size_t nl = 0;
+  q = db_prepare(db, "SELECT page FROM temp.pagelink");
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    links = realloc(links, (nl + 1) * sizeof *links);
+    if (!links) die("out of memory");
+    links[nl++] = dup_text(sqlite3_column_text(q, 0));
+  }
+  sqlite3_finalize(q);
+  for (size_t i = 0; i < nl; i++) {
+    q = db_prepare(db, "SELECT fsl_wiki(?1) IS NOT NULL");
+    sqlite3_bind_text(q, 1, links[i], -1, SQLITE_STATIC);
+    int ok = strcmp(links[i], name) == 0 || (sqlite3_step(q) == SQLITE_ROW && sqlite3_column_int(q, 0));
+    sqlite3_finalize(q);
+    if (!ok) bad += refuse("link to a page that does not exist: %s%s", links[i], "");
+    free(links[i]);
+  }
+  free(links);
+  if (bad) {
+    printf("%d problems; nothing was saved\n", bad);
+    sqlite3_close(db);
+    return 1;
+  }
+  /* What this edit dropped: LLMs lose detail while smoothing prose. */
+  q = db_prepare(db,
+      "SELECT c.quote FROM ctx_citation c JOIN ctx_doc d ON d.id = c.doc_id WHERE d.project = ?1 AND d.kind = 'wiki' AND d.name = ?2"
+      " AND c.quote NOT IN (SELECT quote FROM temp.cite)");
+  sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 2, name, -1, SQLITE_STATIC);
+  while (sqlite3_step(q) == SQLITE_ROW) printf("removed claim: \"%.70s\"\n", sqlite3_column_text(q, 0));
+  sqlite3_finalize(q);
+  buf page = {0};
+  size_t len = strlen(raw);
+  while (len && c_space((unsigned char)raw[len - 1])) len--;
+  buf_add(&page, raw, len);
+  buf_str(&page, "\n\n## Sources\n\n");
+  long sources = 0;
+  q = db_prepare(db, "SELECT DISTINCT substr(ci, 1, 16), target FROM temp.cite WHERE ci IS NOT NULL ORDER BY target");
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    buf_str(&page, "- [");
+    buf_str(&page, (const char *)sqlite3_column_text(q, 0));
+    buf_str(&page, "] ");
+    buf_str(&page, (const char *)sqlite3_column_text(q, 1));
+    buf_str(&page, "\n");
+    sources++;
+  }
+  sqlite3_finalize(q);
+  q = db_prepare(db, "SELECT printf('\n## Provenance\n\n- Compiled by: %s\n- Ticket: %s\n- Saved: %s by %s\n', ?1, ?2, date('now'), ?3)");
+  sqlite3_bind_text(q, 1, model, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 2, ticket, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 3, person(), -1, SQLITE_STATIC);
+  sqlite3_step(q);
+  buf_str(&page, (const char *)sqlite3_column_text(q, 0));
+  sqlite3_finalize(q);
+  buf_add(&page, "", 1);
+  q = db_prepare(db, "SELECT fsl_wiki_save(?1, ?2, 'text/x-markdown')");
+  sqlite3_bind_text(q, 1, name, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 2, page.p, -1, SQLITE_STATIC);
+  if (sqlite3_step(q) != SQLITE_ROW) die("cannot save the page: %s", sqlite3_errmsg(db));
+  char *version = dup_text(sqlite3_column_text(q, 0));
+  sqlite3_finalize(q);
+  doc_store(db, project, repo_id, "wiki", name, page.p, strlen(page.p), 1);
+  db_exec(db, "CREATE TABLE IF NOT EXISTS ctx_wiki_log(id INTEGER PRIMARY KEY, project TEXT NOT NULL, page TEXT NOT NULL, version TEXT NOT NULL,"
+              " model TEXT NOT NULL, ticket TEXT NOT NULL, session TEXT, at TEXT NOT NULL) STRICT");
+  q = db_prepare(db, "INSERT INTO ctx_wiki_log(project, page, version, model, ticket, session, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))");
+  sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 2, name, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 3, version, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 4, model, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 5, ticket, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 6, session, -1, SQLITE_STATIC);
+  sqlite3_step(q);
+  sqlite3_finalize(q);
+  printf("saved %s %.12s, %ld sources\n", name, version, sources);
+  sqlite3_close(db);
+  return 0;
+}
+
+static int wiki_check(int argc, char **argv) {
+  const char *project_opt = argc == 2 && !strcmp(argv[0], "--project") ? argv[1] : NULL;
+  if (argc && !project_opt) die("usage: ctx wiki check [--project P]");
+  int rc = cmd_index(argc, argv);
+  if (rc) return rc;
+  sqlite3 *db = ctx_open();
+  char *project = project_opt ? dup_text((const unsigned char *)project_opt) : current_project(db);
+  int bad = 0, orphans = 0;
+  sqlite3_stmt *q = db_prepare(db, "SELECT d.name, c.ref, c.status, coalesce(c.target, '') FROM ctx_citation c JOIN ctx_doc d ON d.id = c.doc_id"
+                                   " WHERE d.project = ?1 AND c.status <> 'ok' ORDER BY 1, 2");
+  sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    printf("%s: [^%s] %s: %s\n", sqlite3_column_text(q, 0), sqlite3_column_text(q, 1), sqlite3_column_text(q, 2), sqlite3_column_text(q, 3));
+    bad++;
+  }
+  sqlite3_finalize(q);
+  q = db_prepare(db, "SELECT page, source FROM ctx_stale_wiki WHERE project = ?1 ORDER BY 1, 2");
+  sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    printf("%s: stale, source changed: %s\n", sqlite3_column_text(q, 0), sqlite3_column_text(q, 1));
+    bad++;
+  }
+  sqlite3_finalize(q);
+  q = db_prepare(db, "SELECT d.name, l.dst_name FROM ctx_link l JOIN ctx_doc d ON d.id = l.src_id WHERE d.project = ?1 AND l.kind = 'links_to'"
+                     " AND NOT EXISTS (SELECT 1 FROM ctx_doc t WHERE t.project = d.project AND t.kind = 'wiki' AND t.name = l.dst_name) ORDER BY 1, 2");
+  sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    printf("%s: dead link: %s\n", sqlite3_column_text(q, 0), sqlite3_column_text(q, 1));
+    bad++;
+  }
+  sqlite3_finalize(q);
+  q = db_prepare(db, "SELECT d.name FROM ctx_doc d WHERE d.project = ?1 AND d.kind = 'wiki' AND NOT EXISTS (SELECT 1 FROM ctx_link l JOIN ctx_doc s ON s.id = l.src_id"
+                     " WHERE s.project = d.project AND l.kind = 'links_to' AND l.dst_name = d.name AND s.id <> d.id) ORDER BY 1");
+  sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    printf("orphan: %s\n", sqlite3_column_text(q, 0));
+    orphans++;
+  }
+  sqlite3_finalize(q);
+  printf("%d problems, %d orphans\n", bad, orphans);
+  free(project);
+  sqlite3_close(db);
+  return bad ? 1 : 0;
+}
+
+/* The sentence a footnote marker closes. */
+static void claim_of(const char *text, const char *ref, char *out, size_t cap) {
+  char marker[80];
+  snprintf(marker, sizeof marker, "[^%s]", ref);
+  out[0] = 0;
+  size_t m = strlen(marker);
+  for (const char *p = strstr(text, marker); p; p = strstr(p + 1, marker)) {
+    if (p[m] == ':') continue;
+    const char *a = p;
+    while (a > text && a[-1] != '\n' && !(a[-1] == ' ' && a > text + 1 && a[-2] == '.')) a--;
+    /* the marker's own sentence ends at p, so step past an earlier marker */
+    while (*a == '[' && a[1] == '^') {
+      const char *e = strchr(a, ']');
+      if (!e || e >= p) break;
+      a = e + 1;
+      while (*a == ' ') a++;
+    }
+    snprintf(out, cap, "%.*s", (int)(p - a), a);
+    return;
+  }
+}
+
+static int wiki_why(int argc, char **argv) {
+  if (argc < 1) die("usage: ctx wiki why PAGE [--project P]");
+  const char *name = argv[0], *project_opt = argc == 3 && !strcmp(argv[1], "--project") ? argv[2] : NULL;
+  sqlite3 *db = ctx_open();
+  char *project, repo[80];
+  sqlite3_int64 repo_id;
+  project_of(db, project_opt, &project, repo, &repo_id);
+  (void)repo_id;
+  index_prepare(db);
+  open_project(db, repo);
+  sqlite3_stmt *q = db_prepare(db, "SELECT fsl_wiki(?1)");
+  sqlite3_bind_text(q, 1, name, -1, SQLITE_STATIC);
+  if (sqlite3_step(q) != SQLITE_ROW || !sqlite3_column_text(q, 0)) die("no page %s", name);
+  char *text = dup_text(sqlite3_column_text(q, 0));
+  sqlite3_finalize(q);
+  q = db_prepare(db, "SELECT c.ref, c.quote, c.target_kind, coalesce(c.target, ''), coalesce(c.ci, ''), coalesce(c.file_hash, ''), c.status"
+                     " FROM ctx_citation c JOIN ctx_doc d ON d.id = c.doc_id WHERE d.project = ?1 AND d.kind = 'wiki' AND d.name = ?2 ORDER BY c.id");
+  sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 2, name, -1, SQLITE_STATIC);
+  int found = 0;
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    found++;
+    const char *ref = (const char *)sqlite3_column_text(q, 0), *kind = (const char *)sqlite3_column_text(q, 2);
+    const char *target = (const char *)sqlite3_column_text(q, 3), *ci = (const char *)sqlite3_column_text(q, 4);
+    char claim[600];
+    claim_of(text, ref, claim, sizeof claim);
+    printf("[^%s] %s\n  quote: \"%s\"\n", ref, claim, sqlite3_column_text(q, 1));
+    if (*ci) printf("  %s: %s @ %.12s, sha3 %.12s, %s\n", kind, target, ci, sqlite3_column_text(q, 5), sqlite3_column_text(q, 6));
+    else printf("  %s: %s, %s\n", kind, target, sqlite3_column_text(q, 6));
+    if (!strcmp(kind, "source") && *ci) {
+      char meta[1200];
+      snprintf(meta, sizeof meta, "%s%s", target, ORIGIN_SUFFIX);
+      sqlite3_stmt *o = db_prepare(db, "SELECT json_extract(o, '$.origin'), json_extract(o, '$.retrieved'), json_extract(o, '$.how'), json_extract(o, '$.class'), json_extract(o, '$.added_by')"
+                                       " FROM (SELECT CAST(fsl_file(?1, ?2) AS TEXT) o)");
+      sqlite3_bind_text(o, 1, ci, -1, SQLITE_STATIC);
+      sqlite3_bind_text(o, 2, meta, -1, SQLITE_STATIC);
+      if (sqlite3_step(o) == SQLITE_ROW && sqlite3_column_text(o, 0))
+        printf("  origin: %s, retrieved %s, %s, %s, added by %s\n", sqlite3_column_text(o, 0), sqlite3_column_text(o, 1), sqlite3_column_text(o, 2), sqlite3_column_text(o, 3), sqlite3_column_text(o, 4));
+      sqlite3_finalize(o);
+    }
+  }
+  sqlite3_finalize(q);
+  if (!found) printf("no citations indexed for %s; run: ctx index\n", name);
+  free(text);
+  sqlite3_close(db);
+  return 0;
+}
+
+static int cmd_wiki(int argc, char **argv) {
+  if (argc >= 1 && !strcmp(argv[0], "save")) return wiki_save(argc - 1, argv + 1);
+  if (argc >= 1 && !strcmp(argv[0], "check")) return wiki_check(argc - 1, argv + 1);
+  if (argc >= 1 && !strcmp(argv[0], "why")) return wiki_why(argc - 1, argv + 1);
+  die("usage: ctx wiki save NAME FILE --model M [--ticket ID] | check | why PAGE");
+  return 2;
+}
+
+/* Which claims depend on a source: the question a supersession has to answer. */
+static int source_uses(int argc, char **argv) {
+  if (argc < 1) die("usage: ctx source uses PATH [--project P]");
+  const char *path = argv[0], *project_opt = argc == 3 && !strcmp(argv[1], "--project") ? argv[2] : NULL;
+  char full[1200];
+  snprintf(full, sizeof full, "%s%s", strncmp(path, "sources/", 8) ? "sources/" : "", path);
+  sqlite3 *db = ctx_open();
+  char *project = project_opt ? dup_text((const unsigned char *)project_opt) : current_project(db);
+  index_prepare(db);
+  sqlite3_stmt *q = db_prepare(db,
+      "SELECT d.name, c.ref, substr(coalesce(c.ci, ''), 1, 12), c.status,"
+      " CASE WHEN c.file_hash = (SELECT s.hash FROM ctx_doc s WHERE s.project = d.project AND s.kind = 'source' AND s.name = c.target) THEN 'current' ELSE 'older version' END"
+      " FROM ctx_citation c JOIN ctx_doc d ON d.id = c.doc_id WHERE d.project = ?1 AND c.target IN (?2, ?3) ORDER BY 1, 2");
+  sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 2, full, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 3, path, -1, SQLITE_STATIC);
+  int n = 0;
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    printf("%s [^%s] @ %s, %s, %s\n", sqlite3_column_text(q, 0), sqlite3_column_text(q, 1), sqlite3_column_text(q, 2), sqlite3_column_text(q, 3), sqlite3_column_text(q, 4));
+    n++;
+  }
+  sqlite3_finalize(q);
+  printf("%d claims depend on %s\n", n, full);
+  free(project);
+  sqlite3_close(db);
+  return 0;
+}
+
 static int usage(void) {
   fputs("usage: ctx version\n"
         "       ctx init\n"
@@ -2558,8 +2986,9 @@ static int usage(void) {
         "       ctx audit [--all] [--known] [--tickets] [--limit N] | --allow ID [NOTE]\n"
         "       ctx ticket new|ready|show|claim|done|drop|offer ...\n"
         "       ctx project add NAME [--root DIR] [--import FILE] [--remote URL] | list | pull NAME [--from URL]\n"
-        "       ctx source add FILE --origin WHERE --class CLASS [--as PATH] | check\n"
+        "       ctx source add FILE --origin WHERE --class CLASS [--as PATH] | uses PATH | check\n"
         "       ctx index [--project P]\n"
+        "       ctx wiki save NAME FILE --model M [--ticket ID] | check | why PAGE\n"
         "       ctx scan [DIR]\n"
         "       ctx hook\n"
         "       ctx sql STATEMENT\n",
@@ -2582,6 +3011,7 @@ int main(int argc, char **argv) {
   if (argc >= 3 && !strcmp(argv[1], "ticket")) return cmd_ticket(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "project")) return cmd_project(argc - 2, argv + 2);
   if (argc >= 2 && !strcmp(argv[1], "index")) return cmd_index(argc - 2, argv + 2);
+  if (argc >= 3 && !strcmp(argv[1], "wiki")) return cmd_wiki(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "source")) return cmd_source(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "search")) return cmd_search(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "turn")) return cmd_turn(argc - 2, argv + 2);
