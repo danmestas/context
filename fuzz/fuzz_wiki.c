@@ -8,7 +8,8 @@ int LLVMFuzzerTestOneInput(const unsigned char *data, size_t n) {
   if (!db) {
     sqlite3_auto_extension((void (*)(void))fsl_sqlext_init); /* as main does */
     db = db_open(":memory:");
-    db_exec(db, "CREATE TABLE ctx_doc(id INTEGER PRIMARY KEY, project, kind, name, status, hash);");
+    db_exec(db, ctx_state_schema);
+    db_exec(db, ctx_schema);
     index_prepare(db);
   }
   char *t = malloc(n + 1);

@@ -3,9 +3,9 @@
 #define CTX_NO_MAIN
 #include "../src/ctx.c"
 
-static void count(void *ctx, const char *role, const char *at, const char *body, size_t n) {
+static void count(void *ctx, const char *role, const char *at, const char *uuid, const char *body, size_t n) {
   size_t *total = ctx;
-  if (!role || !at || (n && !body)) __builtin_trap();
+  if (!role || !at || !uuid || (n && !body)) __builtin_trap();
   *total += n;
 }
 

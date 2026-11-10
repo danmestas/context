@@ -109,7 +109,7 @@ EOF
 [ "$("$CTX" sql "SELECT project FROM ctx_capture")" = src ] || fail "project falls back to the directory name"
 [ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk_fts WHERE ctx_chunk_fts MATCH 'zebras'")" = 1 ] || fail "search finds a turn"
 "$CTX" sql "SELECT fsl_technote(technote) FROM ctx_capture_day WHERE day='2026-03-01'" | grep -q 'first answer' || fail "technote body"
-"$CTX" sql "SELECT fsl_technote(technote) FROM ctx_capture_day WHERE day='2026-03-01'" | grep -q '^## assistant 2026-03-01T10:00:05Z$' || fail "technote heading"
+"$CTX" sql "SELECT fsl_technote(technote) FROM ctx_capture_day WHERE day='2026-03-01'" | grep -q '^## assistant 2026-03-01T10:00:05Z [A-Za-z0-9-][A-Za-z0-9-]*$' || fail "technote heading"
 
 # New turns append to the same day's technote.
 echo '{"uuid":"a-4","timestamp":"2026-03-02T09:30:00Z","message":{"role":"assistant","content":"later reply"}}' >> "$A"
@@ -782,6 +782,33 @@ printf '%s' "$out" | grep -q 'why does the flamingo' && fail "the current sessio
 [ -z "$(inj aa000004-now 'please run the tests again')" ] || fail "a prompt with no strong match gets nothing"
 [ -z "$(echo 'not json' | "$CTX" inject)" ] || fail "junk input gets nothing"
 CTX_DB=/nonexistent/x.sqlite "$CTX" inject < /dev/null || fail "inject never fails a prompt"
+
+# Rebuild: derived tables come back from the repositories; state is untouched.
+export CTX_DB="$T/rebuild.sqlite"
+"$CTX" init >/dev/null
+[ "$("$CTX" sql "PRAGMA user_version")" = 2 ] || fail "a new file is at the current version"
+[ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 2 ] || fail "derived version recorded"
+printf '{"uuid":"rb-1","timestamp":"2026-09-01T10:00:00Z","cwd":"/w/rb","message":{"role":"user","content":"the capybara rollout"}}\n{"uuid":"rb-2","timestamp":"2026-09-01T10:00:05Z","cwd":"/w/rb","message":{"role":"assistant","content":"rolled out the capybara"}}\n' > "$T/ab12cd99-rb.jsonl"
+"$CTX" archive "$T/ab12cd99-rb.jsonl" >/dev/null
+RT=$("$CTX" ticket new "Kept across a rebuild" --project rb)
+before=$("$CTX" search --all capybara | grep -c '^#')
+"$CTX" rebuild | tail -1 | grep -q '^2 turns' || fail "rebuild reindexes the sessions"
+[ "$("$CTX" search --all capybara | grep -c '^#')" = "$before" ] || fail "search finds the same turns after a rebuild"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE turn IN ('rb-1','rb-2')")" = 2 ] || fail "turn ids survive a rebuild"
+"$CTX" archive "$T/ab12cd99-rb.jsonl" | grep -q '^0 turns' || fail "nothing is stored twice after a rebuild"
+"$CTX" ticket show "$RT" | grep -q 'Kept across' || fail "tickets are state"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_capture")" = 1 ] || fail "capture state is kept"
+# An index from an older version is rebuilt on open, once.
+"$CTX" sql "UPDATE ctx_meta SET value='1' WHERE key='derived_version'" >/dev/null
+"$CTX" search --all capybara 2>"$T/rb.err" >/dev/null
+grep -q 'rebuilding it once' "$T/rb.err" || fail "an old index is rebuilt on open"
+[ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 2 ] || fail "then it is current"
+"$CTX" search --all capybara 2>"$T/rb2.err" >/dev/null; [ -s "$T/rb2.err" ] && fail "and is not rebuilt again"
+# A file from before versioning upgrades in place, without a rebuild.
+"$CTX" sql "DROP TABLE ctx_meta" >/dev/null; "$CTX" sql "PRAGMA user_version = 1" >/dev/null
+"$CTX" search --all capybara 2>"$T/rb3.err" | grep -q capybara || fail "an unversioned file still works"
+[ -s "$T/rb3.err" ] && fail "an unversioned file is upgraded without a rebuild"
+[ "$("$CTX" sql "PRAGMA user_version")" = 2 ] || fail "and is marked current"
 
 # The skill eval harness works end to end with a stand-in for the model.
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"

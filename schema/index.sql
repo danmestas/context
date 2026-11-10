@@ -1,59 +1,13 @@
--- The ctx tables in the machine's one SQLite file, ~/.ctx/ctx.sqlite. The Fossil
--- repositories live in the same file as libfossil host repositories (repo:NAME).
---
--- State, kept across a rebuild: ctx_project, ctx_repo, ctx_capture.
--- Derived, cleared and rebuilt from the repositories and project files, and never
--- synced: ctx_doc, ctx_chunk, ctx_chunk_fts, ctx_link.
---
--- ctx_audit_* and ctx_citation are created by the commands that use them.
+-- Derived: everything here is computed from the repositories and can be dropped and
+-- rebuilt at any time, with ctx rebuild. When this file changes in a way old tables
+-- cannot follow, raise CTX_DERIVED_VERSION in src/ctx.c and ctx rebuilds on next open
+-- instead of migrating. State lives in state.sql. Every statement is idempotent.
 --
 -- What lives in the Fossil repositories, not here:
 --   source documents   check-ins in the project's shared repository
 --   compiled wiki      Fossil wiki pages, mimetype text/x-markdown, same repository
 --   work items         tickets, same repository (see ticket-table.sql)
 --   session transcripts  technotes in a per-person repository
-
-PRAGMA user_version = 1;
-
--- Which project a working directory belongs to. The longest root that contains the
--- directory wins, so a nested project is found before its parent:
---   SELECT project FROM ctx_project
---   WHERE @cwd = root OR substr(@cwd, 1, length(root) + 1) = root || '/'
---   ORDER BY length(root) DESC LIMIT 1;
-CREATE TABLE ctx_project(
-  root    TEXT PRIMARY KEY,
-  project TEXT NOT NULL
-) STRICT, WITHOUT ROWID;
-CREATE INDEX ctx_project_name ON ctx_project(project);
-
--- One row per repository in this file. Each project has one shared repository; each
--- person has one private repository, which belongs to no project.
-CREATE TABLE ctx_repo(
-  id      INTEGER PRIMARY KEY,
-  name    TEXT NOT NULL UNIQUE,  -- the NAME in repo:NAME
-  project TEXT,
-  scope   TEXT NOT NULL CHECK (scope IN ('shared', 'private')),
-  remote  TEXT,                  -- sync URL; NULL never leaves the machine
-  CHECK (scope = 'private' OR project IS NOT NULL)
-) STRICT;
-
--- How far each transcript has been archived. Offsets are bytes into the file;
--- head_hash is of its first 64 KB, so a replaced file is noticed and read again.
-CREATE TABLE ctx_capture(
-  session   TEXT PRIMARY KEY,
-  path      TEXT NOT NULL,
-  project   TEXT NOT NULL,
-  offset    INTEGER NOT NULL DEFAULT 0,
-  head_hash TEXT
-) STRICT;
-
--- The technote holding one session's turns for one UTC day.
-CREATE TABLE ctx_capture_day(
-  session  TEXT NOT NULL REFERENCES ctx_capture(session) ON DELETE CASCADE,
-  day      TEXT NOT NULL,
-  technote TEXT NOT NULL,
-  PRIMARY KEY (session, day)
-) STRICT, WITHOUT ROWID;
 
 -- One row per indexed thing, at the version last indexed.
 --   kind      name
@@ -62,7 +16,7 @@ CREATE TABLE ctx_capture_day(
 --   session   technote id
 --   ticket    ticket uuid
 --   code      path relative to the project root
-CREATE TABLE ctx_doc(
+CREATE TABLE IF NOT EXISTS ctx_doc(
   id       INTEGER PRIMARY KEY,
   project  TEXT NOT NULL,
   repo_id  INTEGER REFERENCES ctx_repo(id) ON DELETE CASCADE,  -- NULL for code on disk
@@ -75,12 +29,12 @@ CREATE TABLE ctx_doc(
   mtime    INTEGER NOT NULL,
   UNIQUE (project, kind, name)
 ) STRICT;
-CREATE INDEX ctx_doc_repo ON ctx_doc(repo_id);
-CREATE INDEX ctx_doc_hash ON ctx_doc(hash);
+CREATE INDEX IF NOT EXISTS ctx_doc_repo ON ctx_doc(repo_id);
+CREATE INDEX IF NOT EXISTS ctx_doc_hash ON ctx_doc(hash);
 
 -- The searchable unit: a session turn, a heading section, or a ticket's text.
 -- A document is rebuilt by deleting its chunks and inserting new ones.
-CREATE TABLE ctx_chunk(
+CREATE TABLE IF NOT EXISTS ctx_chunk(
   id      INTEGER PRIMARY KEY,
   doc_id  INTEGER NOT NULL REFERENCES ctx_doc(id) ON DELETE CASCADE,
   seq     INTEGER NOT NULL,
@@ -91,22 +45,22 @@ CREATE TABLE ctx_chunk(
   body    TEXT NOT NULL,
   UNIQUE (doc_id, seq)
 ) STRICT;
-CREATE UNIQUE INDEX ctx_chunk_turn ON ctx_chunk(turn) WHERE turn IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS ctx_chunk_turn ON ctx_chunk(turn) WHERE turn IS NOT NULL;
 
-CREATE VIRTUAL TABLE ctx_chunk_fts USING fts5(
+CREATE VIRTUAL TABLE IF NOT EXISTS ctx_chunk_fts USING fts5(
   heading, body,
   content = 'ctx_chunk', content_rowid = 'id',
   tokenize = "porter unicode61 tokenchars '_'"
 );
 
-CREATE TRIGGER ctx_chunk_ai AFTER INSERT ON ctx_chunk BEGIN
+CREATE TRIGGER IF NOT EXISTS ctx_chunk_ai AFTER INSERT ON ctx_chunk BEGIN
   INSERT INTO ctx_chunk_fts(rowid, heading, body) VALUES (new.id, new.heading, new.body);
 END;
-CREATE TRIGGER ctx_chunk_ad AFTER DELETE ON ctx_chunk BEGIN
+CREATE TRIGGER IF NOT EXISTS ctx_chunk_ad AFTER DELETE ON ctx_chunk BEGIN
   INSERT INTO ctx_chunk_fts(ctx_chunk_fts, rowid, heading, body)
   VALUES ('delete', old.id, old.heading, old.body);
 END;
-CREATE TRIGGER ctx_chunk_au AFTER UPDATE OF heading, body ON ctx_chunk BEGIN
+CREATE TRIGGER IF NOT EXISTS ctx_chunk_au AFTER UPDATE OF heading, body ON ctx_chunk BEGIN
   INSERT INTO ctx_chunk_fts(ctx_chunk_fts, rowid, heading, body)
   VALUES ('delete', old.id, old.heading, old.body);
   INSERT INTO ctx_chunk_fts(rowid, heading, body) VALUES (new.id, new.heading, new.body);
@@ -119,7 +73,7 @@ END;
 --   compiled_from  a wiki page's source, pinned to the source version in dst_hash
 --   cites          a citation of a source, session or ticket, pinned when it can be
 --   blocked_by     a ticket that must finish before this one
-CREATE TABLE ctx_link(
+CREATE TABLE IF NOT EXISTS ctx_link(
   src_id   INTEGER NOT NULL REFERENCES ctx_doc(id) ON DELETE CASCADE,
   kind     TEXT NOT NULL CHECK (kind IN ('links_to', 'compiled_from', 'cites', 'blocked_by')),
   dst_kind TEXT NOT NULL CHECK (dst_kind IN ('source', 'wiki', 'session', 'ticket', 'code')),
@@ -127,11 +81,11 @@ CREATE TABLE ctx_link(
   dst_hash TEXT,
   PRIMARY KEY (src_id, kind, dst_kind, dst_name)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX ctx_link_dst ON ctx_link(dst_kind, dst_name);
+CREATE INDEX IF NOT EXISTS ctx_link_dst ON ctx_link(dst_kind, dst_name);
 
 -- Wiki pages built from a source that has since changed or disappeared.
 -- This is the recompile list; the agent does the compiling.
-CREATE VIEW ctx_stale_wiki AS
+CREATE VIEW IF NOT EXISTS ctx_stale_wiki AS
 SELECT w.project,
        w.name AS page,
        l.dst_name AS source,
@@ -145,7 +99,7 @@ WHERE l.kind = 'compiled_from'
   AND (s.id IS NULL OR l.dst_hash IS NOT s.hash);
 
 -- Open tickets with nothing in the way. An unknown blocker counts as unfinished.
-CREATE VIEW ctx_ready_ticket AS
+CREATE VIEW IF NOT EXISTS ctx_ready_ticket AS
 SELECT t.project,
        t.name AS ticket,
        t.title
@@ -161,3 +115,48 @@ WHERE t.kind = 'ticket'
       AND l.kind = 'blocked_by'
       AND (b.id IS NULL OR b.status NOT IN ('Done', 'Dropped'))
   );
+
+-- A wiki page's citations: each claim's quote, pinned to a check-in and file hash.
+CREATE TABLE IF NOT EXISTS ctx_citation(
+  id          INTEGER PRIMARY KEY,
+  doc_id      INTEGER NOT NULL,
+  ref         TEXT NOT NULL,
+  quote       TEXT NOT NULL,
+  target_kind TEXT NOT NULL,
+  target      TEXT,
+  ci          TEXT,
+  file_hash   TEXT,
+  status      TEXT NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS ctx_citation_target ON ctx_citation(target_kind, target);
+CREATE INDEX IF NOT EXISTS ctx_citation_doc ON ctx_citation(doc_id);
+
+-- A source's recorded origin, class and validity, from its NAME.origin.json.
+CREATE TABLE IF NOT EXISTS ctx_source_meta(
+  doc_id       INTEGER PRIMARY KEY,
+  class        TEXT,
+  review_after TEXT,
+  valid_from   TEXT,
+  valid_until  TEXT,
+  added_at     TEXT,
+  origin       TEXT,
+  risk         TEXT
+) STRICT;
+
+-- The current state of each superseded source, folded from sources/SUPERSEDED.jsonl.
+CREATE TABLE IF NOT EXISTS ctx_supersession(
+  project  TEXT NOT NULL,
+  old      TEXT NOT NULL,
+  new      TEXT,
+  relation TEXT NOT NULL,
+  reason   TEXT,
+  by_whom  TEXT,
+  at       TEXT,
+  PRIMARY KEY (project, old)
+) STRICT;
+
+-- Technotes indexed as sessions, at the version indexed.
+CREATE TABLE IF NOT EXISTS ctx_remote_note(
+  technote TEXT PRIMARY KEY,
+  version  TEXT NOT NULL
+) STRICT;

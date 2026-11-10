@@ -1,5 +1,5 @@
 -- Checks that the index schema behaves. Run after index.sql in one sqlite3 session:
---   sqlite3 :memory: -bail -cmd '.read schema/index.sql' '.read schema/check.sql'
+--   sqlite3 :memory: -bail -cmd '.read schema/state.sql' -cmd '.read schema/index.sql' '.read schema/check.sql'
 -- A failed check stops the run with an integer overflow error.
 
 PRAGMA foreign_keys = ON;
