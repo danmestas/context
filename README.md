@@ -7,8 +7,10 @@ transcripts, redacted, into a private repository, and searches them.
 
 ## What is here
 
-- `schema/index.sql`: ctx's tables in the machine's one SQLite file: the search
-  index, project mapping and capture positions.
+- `schema/state.sql`: the tables in the machine's one SQLite file that are kept:
+  project mapping, capture positions, audit results and the wiki log.
+- `schema/index.sql`: the tables derived from the repositories, such as the search
+  index and citations. `ctx rebuild` drops and rebuilds them.
 - `schema/ticket-table.sql`: the tickets agents and people work on, for each
   shared Fossil repository.
 - `schema/check.sql`: checks for the index schema.
@@ -32,6 +34,20 @@ repository.
 
 `make` builds `./ctx` from the SQLite and libfossil sources in `vendor/`, and
 `make test` checks it. It needs a C compiler and zlib.
+
+`make check` runs everything CI runs: the suite, the suite again under
+AddressSanitizer and UndefinedBehaviorSanitizer, a short fuzz of the redactor and
+the parsers where a clang with libFuzzer exists, the suite and the saved fuzz
+inputs under [Fil-C](https://fil-c.org) on Linux (`tools/filc.sh` fetches a pinned
+release), and the bench and schema checks. It also needs python3 and sqlite3.
+
+## Releases
+
+A release archive is a Claude Code plugin: `bin/ctx`, the `ctx` and `ctx-wiki`
+skills, and the hooks that archive each session. `make dist` builds one for this
+machine in `build/dist/`; `tools/dist-linux.sh` builds the Linux one for this
+machine's architecture in Ubuntu 22.04 under docker, so it runs on glibc 2.34 or
+later. `plugin/INSTALL.md` becomes the archive's README and says how to install it.
 
 ## The bench
 
