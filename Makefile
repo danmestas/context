@@ -87,7 +87,8 @@ fuzz-ci:
 	@if [ -n "$(FUZZCC)" ]; then $(MAKE) fuzz FUZZ_SECONDS=20; else echo "fuzz-ci: no clang with libFuzzer on this runner; fuzzing skipped"; fi
 fuzz: $(FUZZERS:%=build/fuzz/%)
 	for f in $(FUZZERS); do mkdir -p build/fuzz/corpus-$$f; \
-	  ASAN_OPTIONS=detect_leaks=0 build/fuzz/$$f -max_total_time=$(FUZZ_SECONDS) -max_len=65536 -print_final_stats=1 build/fuzz/corpus-$$f fuzz/seed/$$f 2>&1 | tail -4 || exit 1; done
+	  ASAN_OPTIONS=detect_leaks=0 build/fuzz/$$f -max_total_time=$(FUZZ_SECONDS) -max_len=65536 -print_final_stats=1 build/fuzz/corpus-$$f fuzz/seed/$$f > build/fuzz/$$f.log 2>&1; \
+	  s=$$?; tail -4 build/fuzz/$$f.log; [ $$s = 0 ] || { echo "fuzz: $$f failed; see build/fuzz/$$f.log" >&2; exit 1; }; done
 
 # Fil-C (fil-c.org, Linux only) makes every out-of-bounds access, use after free and
 # bad cast a crash. The suite and every saved fuzz input run under it. Fil-C ships no
