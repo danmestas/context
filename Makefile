@@ -11,7 +11,7 @@ LDLIBS += -ldl
 endif
 
 ctx: build/ctx.o build/libfossil.o build/sqlite3.o
-	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 build:
 	mkdir -p build
@@ -89,7 +89,35 @@ fuzz: $(FUZZERS:%=build/fuzz/%)
 	for f in $(FUZZERS); do mkdir -p build/fuzz/corpus-$$f; \
 	  ASAN_OPTIONS=detect_leaks=0 build/fuzz/$$f -max_total_time=$(FUZZ_SECONDS) -max_len=65536 -print_final_stats=1 build/fuzz/corpus-$$f fuzz/seed/$$f 2>&1 | tail -4 || exit 1; done
 
-clean:
-	rm -rf build ctx ctx-san
+# Fil-C (fil-c.org, Linux only) makes every out-of-bounds access, use after free and
+# bad cast a crash. The suite and every saved fuzz input run under it. Fil-C ships no
+# zlib: build one with it and point FILC_LDFLAGS (and FILC_CFLAGS for zlib.h) at it.
+FILCC ?= $(shell command -v filcc 2>/dev/null)
+FILC_CFLAGS ?=
+FILC_LDFLAGS ?=
+FILC = $(FILCC) -O2 $(FILC_CFLAGS)
+build/filc/libfossil.o: $(VENDOR)/libfossil.c
+	@test -n "$(FILCC)" || { echo "no Fil-C compiler; set FILCC" >&2; exit 1; }
+	mkdir -p build/filc
+	$(FILC) $(SQLITE) -DHAVE_LIBFOSSIL_CONFIG_H -w -I$(VENDOR) -c -o $@ $<
+build/filc/sqlite3.o: $(VENDOR)/sqlite3.c
+	@test -n "$(FILCC)" || { echo "no Fil-C compiler; set FILCC" >&2; exit 1; }
+	mkdir -p build/filc
+	$(FILC) $(SQLITE) -w -c -o $@ $<
+build/filc/ctx.o: src/ctx.c build/schema.h build/state_schema.h build/ticket_schema.h
+	mkdir -p build/filc
+	$(FILC) -Wall -Wextra -I$(VENDOR) -Ibuild -c -o $@ $<
+ctx-filc: build/filc/ctx.o build/filc/libfossil.o build/filc/sqlite3.o
+	$(FILC) $(FILC_LDFLAGS) -o $@ $^ $(LDLIBS)
+build/filc/replay-%: fuzz/fuzz_%.c fuzz/replay.c src/ctx.c build/filc/libfossil.o build/filc/sqlite3.o build/schema.h build/state_schema.h build/ticket_schema.h
+	$(FILC) -w -I$(VENDOR) -Ibuild $(FILC_LDFLAGS) -o $@ $< fuzz/replay.c build/filc/libfossil.o build/filc/sqlite3.o $(LDLIBS)
+filc: ctx-filc $(FUZZERS:%=build/filc/replay-%)
+	CTX=$(PWD)/ctx-filc sh test/run.sh
+	for f in $(FUZZERS); do printf '%s: ' $$f; build/filc/replay-$$f fuzz/seed/$$f build/fuzz/corpus-$$f || exit 1; done
+filc-ci:
+	@if [ -n "$(FILCC)" ]; then $(MAKE) filc; else echo "filc-ci: no Fil-C compiler on this runner; Fil-C run skipped"; fi
 
-.PHONY: test clean sanitize fuzz fuzz-ci
+clean:
+	rm -rf build ctx ctx-san ctx-filc
+
+.PHONY: test clean sanitize fuzz fuzz-ci filc filc-ci
