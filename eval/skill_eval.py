@@ -472,8 +472,14 @@ def ctx_calls(body):
     return found
 
 
+def known_commands(ctx=None):
+    """The subcommands ctx lists in its own usage text, so the list cannot fall behind."""
+    p = subprocess.run([ctx or CTX], capture_output=True, text=True)
+    return set(re.findall(r"^\s*(?:usage: )?ctx ([a-z]+)", p.stderr + p.stdout, re.M))
+
+
 def cmd_usage(a):
-    known = {"version", "init", "extract", "archive", "search", "turn", "scan", "hook", "sql", "ticket", "audit"}
+    known = known_commands()
     sql = ("SELECT json_object('project', a.project, 'at', substr(a.at,1,10), 'body', a.body, 'next', substr(b.body,1,300))"
            " FROM ctx_chunk a LEFT JOIN ctx_chunk b ON b.doc_id = a.doc_id AND b.seq = a.seq + 1"
            " WHERE a.heading = 'assistant' AND a.body LIKE '%Bash {%ctx %'"

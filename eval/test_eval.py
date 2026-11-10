@@ -88,6 +88,9 @@ assert "FAIL: score dropped" in cli("compare", good, bad, ok=False)
 assert "PASS" in cli("compare", bad, good)
 assert "tokens rose" in cli("compare", good, cost, ok=False)
 assert "ctx commands by agents" in cli("usage")
+known = se.known_commands(os.path.abspath(sys.argv[1]))
+assert {"wiki", "source", "project", "index", "sync", "remote", "rebuild", "search", "turn"} <= known, known
+assert "nonsense" not in known
 # Documents: S and W get the same tools; only W can find the wiki.
 sw = cli("run", "--set", "all", "--cond", "S,W", "--skill", skill, "--name", "docs").strip()
 rows = json.load(open(f"{sw}/runs.json"))

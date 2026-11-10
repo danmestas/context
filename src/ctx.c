@@ -5,6 +5,7 @@
  */
 #define _GNU_SOURCE /* memmem */
 #define _FILE_OFFSET_BITS 64
+#include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <math.h>
@@ -638,12 +639,16 @@ static void schema_ensure(sqlite3 *db) {
   }
 }
 
+static void sql_ctx_calls(sqlite3_context *cx, int argc, sqlite3_value **argv);
+
 static sqlite3 *ctx_open(void) {
   char *path = db_path();
   sqlite3 *db = db_open(path);
   free(path);
   if (db_int(db, "PRAGMA user_version") == 0) die("no ctx database here; run: ctx init");
   schema_ensure(db);
+  /* ctx_calls(body, sub): for ctx stats, and for anyone asking ctx sql the same question */
+  sqlite3_create_function(db, "ctx_calls", 2, SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, sql_ctx_calls, NULL, NULL);
   return db;
 }
 
@@ -1153,6 +1158,144 @@ static int cmd_turn(int argc, char **argv) {
   sqlite3_finalize(q);
   sqlite3_close(db);
   if (!found) die("no turn #%d", nums[0]);
+  return 0;
+}
+
+/* Stats. A turn records each shell call as a line "Bash {json input}". These count
+ * the times a command really ran `ctx SUB`: at the start of the command or after
+ * ; & | or (, past VAR=value words, by any path to ctx. A mention in an argument,
+ * such as grep 'ctx search', or a line inside a heredoc is not a call. */
+static int count_ctx_runs(const char *cmd, size_t n, const char *sub) {
+  size_t sl = strlen(sub);
+  int count = 0;
+  char term[64] = ""; /* while set, lines are heredoc data until this one */
+  for (size_t ls = 0; ls < n;) {
+    size_t le = ls;
+    while (le < n && cmd[le] != '\n') le++;
+    if (*term) {
+      size_t a = ls, b = le;
+      while (a < b && (cmd[a] == ' ' || cmd[a] == '\t')) a++;
+      while (b > a && (cmd[b - 1] == ' ' || cmd[b - 1] == '\t' || cmd[b - 1] == '\r')) b--;
+      if (b - a == strlen(term) && !memcmp(cmd + a, term, b - a)) *term = 0;
+      ls = le + 1;
+      continue;
+    }
+    int at_start = 1;
+    for (size_t i = ls; i < le; i++) {
+      char c = cmd[i];
+      if (c == ';' || c == '&' || c == '|' || c == '(' || c == ')') { at_start = 1; continue; }
+      if (c == ' ' || c == '\t') continue;
+      if (c == '<' && i + 1 < le && cmd[i + 1] == '<' && !*term) { /* a heredoc starts after this line */
+        size_t j = i + 2;
+        while (j < le && (cmd[j] == '-' || cmd[j] == ' ' || cmd[j] == '\'' || cmd[j] == '"')) j++;
+        size_t k = 0;
+        while (j < le && k + 1 < sizeof term && (isalnum((unsigned char)cmd[j]) || cmd[j] == '_')) term[k++] = cmd[j++];
+        term[k] = 0;
+      }
+      size_t w = i + 1; /* one word; cmd[i] is not a separator, so the scan always moves on */
+      while (w < le && !strchr(" \t;&|()", cmd[w])) w++;
+      if (at_start) {
+        const char *eq = memchr(cmd + i, '=', w - i);
+        if (eq && !memchr(cmd + i, '/', (size_t)(eq - (cmd + i)))) { i = w - 1; continue; } /* VAR=value */
+        size_t base = i;
+        for (size_t k = i; k < w; k++) if (cmd[k] == '/') base = k + 1;
+        static const char *const lead[] = {"do", "then", "else", "time", "nohup", "env", "exec", "command", "!", NULL};
+        int is_lead = 0;
+        for (int k = 0; lead[k]; k++)
+          if (w - i == strlen(lead[k]) && !memcmp(cmd + i, lead[k], w - i)) is_lead = 1;
+        if (is_lead) { i = w - 1; continue; } /* the next word is still a command */
+        if (w - base == 3 && !memcmp(cmd + base, "ctx", 3)) {
+          size_t s = w;
+          while (s < le && (cmd[s] == ' ' || cmd[s] == '\t')) s++;
+          size_t e = s;
+          while (e < le && islower((unsigned char)cmd[e])) e++;
+          if (e - s == sl && !memcmp(cmd + s, sub, sl)) count++;
+        }
+        at_start = 0;
+      }
+      i = w - 1;
+    }
+    ls = le + 1;
+  }
+  return count;
+}
+
+/* ctx_calls(body, sub): how many times the turn's shell calls ran `ctx SUB`. */
+static void sql_ctx_calls(sqlite3_context *cx, int argc, sqlite3_value **argv) {
+  (void)argc;
+  const char *body = (const char *)sqlite3_value_text(argv[0]), *sub = (const char *)sqlite3_value_text(argv[1]);
+  if (!body || !sub) { sqlite3_result_int(cx, 0); return; }
+  const char *stop = body + sqlite3_value_bytes(argv[0]);
+  int total = 0;
+  buf cmd = {0};
+  for (const char *line = body; line && line < stop;) { /* a command's newlines are escaped, so it is one line */
+    const char *end = memchr(line, '\n', (size_t)(stop - line));
+    size_t len = end ? (size_t)(end - line) : (size_t)(stop - line);
+    if (len > 6 && !memcmp(line, "Bash {", 6)) {
+      const char *p = memmem(line, len, "\"command\":\"", 11);
+      if (p) {
+        cmd.n = 0;
+        p += 11;
+        for (; p < stop && *p != '"'; p++) {
+          char c = *p;
+          if (c == '\\' && p + 1 < stop) {
+            c = *++p;
+            if (c == 'n') c = '\n';
+            else if (c == 't') c = '\t';
+            else if (c == 'u') { c = '?'; p += p + 4 < stop ? 4 : 0; }
+          }
+          buf_add(&cmd, &c, 1);
+        }
+        total += count_ctx_runs(cmd.p ? cmd.p : "", cmd.n, sub);
+      }
+    }
+    line = end ? end + 1 : NULL;
+  }
+  free(cmd.p);
+  sqlite3_result_int(cx, total);
+}
+
+/* ctx stats [--weeks N]: how agents used ctx, per week and per project, from the
+ * archive alone. A miss is a search answered with "no matches". */
+static int cmd_stats(int argc, char **argv) {
+  int weeks = 8;
+  for (int i = 0; i < argc; i++) {
+    if (!strcmp(argv[i], "--weeks") && i + 1 < argc) weeks = atoi(argv[++i]);
+    else die("usage: ctx stats [--weeks N]");
+  }
+  if (weeks <= 0) die("--weeks must be a positive number");
+  sqlite3 *db = ctx_open();
+  char since[32];
+  snprintf(since, sizeof since, "-%d days", weeks * 7);
+  /* one pass over the window; the reply to a search is the next turn, found by (doc_id, seq) */
+  sqlite3_stmt *q = db_prepare(db,
+      "CREATE TEMP TABLE s AS SELECT c.doc_id, c.seq, coalesce(c.project, d.project) AS project,"
+      " date(c.at, '-6 days', 'weekday 1') AS week," /* the Monday on or before */
+      " CASE WHEN c.heading = 'assistant' AND c.body LIKE '%ctx %' THEN ctx_calls(c.body, 'search') ELSE 0 END AS searches,"
+      " CASE WHEN c.heading = 'assistant' AND c.body LIKE '%ctx %' THEN ctx_calls(c.body, 'turn') ELSE 0 END AS reads,"
+      " c.heading = 'assistant' AND c.body LIKE '%Skill {\"skill\":\"ctx\"}%' AS skill, 0 AS miss"
+      " FROM ctx_chunk c JOIN ctx_doc d ON d.id = c.doc_id WHERE d.kind = 'session' AND c.at >= date('now', ?1)");
+  sqlite3_bind_text(q, 1, since, -1, SQLITE_STATIC);
+  if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+  sqlite3_finalize(q);
+  db_exec(db, "UPDATE temp.s SET miss = EXISTS (SELECT 1 FROM main.ctx_chunk r WHERE r.doc_id = s.doc_id AND r.seq = s.seq + 1"
+              " AND r.body LIKE '%ctx: no matches%') WHERE searches > 0");
+  static const char *const group[2] = {"week", "project"};
+  for (int g = 0; g < 2; g++) {
+    char sql[512];
+    snprintf(sql, sizeof sql,
+             "SELECT %s, count(DISTINCT doc_id), sum(searches), sum(miss), sum(reads), sum(skill) FROM temp.s"
+             " GROUP BY 1 ORDER BY %s",
+             group[g], g ? "3 DESC, 2 DESC, 1" : "1");
+    printf("%s%-24s %12s %8s %10s %6s %11s\n", g ? "\n" : "", g ? "project" : "week of", "session days", "searches",
+           "no matches", "reads", "skill loads");
+    q = db_prepare(db, sql);
+    while (sqlite3_step(q) == SQLITE_ROW)
+      printf("%-24.24s %12d %8d %10d %6d %11d\n", sqlite3_column_text(q, 0), sqlite3_column_int(q, 1), sqlite3_column_int(q, 2),
+             sqlite3_column_int(q, 3), sqlite3_column_int(q, 4), sqlite3_column_int(q, 5));
+    sqlite3_finalize(q);
+  }
+  sqlite3_close(db);
   return 0;
 }
 
@@ -4048,6 +4191,21 @@ static int cmd_remote(int argc, char **argv) {
   sqlite3_step(q);
   sqlite3_finalize(q);
   if (!sqlite3_changes(db)) die("no repository for %s", argv[0]);
+  /* A local file that does not exist yet becomes a copy of this repository, ready
+   * for other machines to clone or for a server to serve. One that exists is kept. */
+  if (!strstr(argv[1], "://") && !exists(argv[1])) {
+    if (!open_repo(db, repo)) die("cannot open repo:%s: %s", repo, sqlite3_errmsg(db));
+    mkdirs(argv[1]);
+    char handle[96];
+    snprintf(handle, sizeof handle, "repo:%s", repo);
+    q = db_prepare(db, "SELECT fsl_export(?1, ?2)");
+    sqlite3_bind_text(q, 1, handle, -1, SQLITE_STATIC);
+    sqlite3_bind_text(q, 2, argv[1], -1, SQLITE_STATIC);
+    if (sqlite3_step(q) != SQLITE_ROW) die("cannot write %s: %s", argv[1], sqlite3_errmsg(db));
+    sqlite3_finalize(q);
+    if (chmod(argv[1], 0600)) die("cannot make %s private: %s", argv[1], strerror(errno)); /* it holds every session */
+    printf("copied %s to %s\n", handle, argv[1]);
+  }
   printf("%s syncs with %s\n", argv[0], argv[1]);
   sqlite3_close(db);
   return 0;
@@ -4317,6 +4475,7 @@ static int usage(void) {
         "       ctx hook\n"
         "       ctx rebuild\n"
         "       ctx inject\n"
+        "       ctx stats [--weeks N]\n"
         "       ctx sql STATEMENT\n",
         stderr);
   return 2;
@@ -4347,6 +4506,7 @@ int main(int argc, char **argv) {
   if (argc >= 3 && !strcmp(argv[1], "source")) return cmd_source(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "search")) return cmd_search(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "turn")) return cmd_turn(argc - 2, argv + 2);
+  if (argc >= 2 && !strcmp(argv[1], "stats")) return cmd_stats(argc - 2, argv + 2);
   return usage();
 }
 #endif

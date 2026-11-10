@@ -130,6 +130,40 @@ mv "$A.new" "$A"
 [ "$("$CTX" archive "$A")" = "1 turns archived" ] || fail "replaced file"
 [ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk")" = 6 ] || fail "duplicate turns after replacement"
 
+# Stats count what agents really ran: searches, misses, reads and skill loads, not mentions.
+export CTX_DB="$T/stats.sqlite"
+"$CTX" init >/dev/null
+python3 - "$T/cafe0001-stats.jsonl" <<'EOF'
+import datetime, json, sys
+now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+n = 0
+def line(role, content):
+    global n
+    n += 1
+    return json.dumps({"uuid": f"s-{n}", "timestamp": now, "cwd": "/work/statsproj", "message": {"role": role, "content": content}})
+bash = lambda c: [{"type": "tool_use", "name": "Bash", "input": {"command": c}}]
+result = lambda t: [{"type": "tool_result", "content": t}]
+rows = [
+    line("user", "what did we decide"),
+    line("assistant", bash("cd /work && ctx search heron timeout")),
+    line("user", result("ctx: no matches")),
+    line("assistant", bash("CTX_DB=/x ~/.local/bin/ctx search zebra; ctx turn 12 2 5")),
+    line("user", result("#12 statsproj session user 2026-11-10")),
+    line("assistant", bash("grep -n 'ctx search' README.md")),
+    line("assistant", bash("(cd /w && ctx search yak) || echo \"$(date)\"")),
+    line("assistant", bash("for q in a b; do ctx search $q; done")),
+    line("assistant", bash("python3 - <<'PY'\nprint('ctx search inside a heredoc')\nPY\nctx turn 4")),
+    line("assistant", [{"type": "tool_use", "name": "Skill", "input": {"skill": "ctx"}}]),
+]
+open(sys.argv[1], "w").write("\n".join(rows) + "\n")
+EOF
+"$CTX" archive "$T/cafe0001-stats.jsonl" >/dev/null
+"$CTX" stats > "$T/stats.txt" || fail "stats runs"
+grep -qE '^statsproj +1 +4 +1 +2 +1$' "$T/stats.txt" || fail "stats by project: $(cat "$T/stats.txt")"
+grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2} +1 +4 +1 +2 +1$' "$T/stats.txt" || fail "stats by week: $(cat "$T/stats.txt")"
+if "$CTX" stats --weeks 0 2>/dev/null; then fail "weeks must be positive"; fi
+export CTX_DB="$T/arc.sqlite"
+
 # A secret never reaches the repository or the index.
 K="$T/ef567890-session.jsonl"
 python3 - "$K" <<'EOF'
@@ -735,8 +769,13 @@ export CTX_DB="$T/m1.sqlite"
 "$CTX" init >/dev/null
 printf '{"uuid":"sy-1","timestamp":"2026-08-01T10:00:00Z","cwd":"/w/syncproj","message":{"role":"user","content":"the quokka migration plan"}}\n' > "$T/ab12cd34-sync.jsonl"
 "$CTX" archive "$T/ab12cd34-sync.jsonl" >/dev/null
-"$CTX" sql "SELECT fsl_export('repo:me', '$T/hub.fossil')" >/dev/null
+"$CTX" remote me "$T/hubdir/sub/hub.fossil" | grep -q 'copied repo:me' || fail "a remote that does not exist yet is created from this machine"
+[ "$(ls -l "$T/hubdir/sub/hub.fossil" | cut -c1-10)" = "-rw-------" ] || fail "the copy of the private archive is private"
 "$CTX" remote me "$T/hub.fossil" >/dev/null
+[ -s "$T/hub.fossil" ] || fail "the copy is written"
+cp "$T/hub.fossil" "$T/hub.before"
+"$CTX" remote me "$T/hub.fossil" | grep -q 'copied' && fail "an existing remote is never overwritten"
+cmp -s "$T/hub.fossil" "$T/hub.before" || fail "an existing remote is left as it is"
 TK=$("$CTX" ticket new "Shared work" --project syncproj)
 "$CTX" sync >/dev/null || fail "first machine syncs"
 export CTX_DB="$T/m2.sqlite"

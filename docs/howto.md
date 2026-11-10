@@ -330,11 +330,12 @@ directory's.
 Each repository syncs with a Fossil server over plain http, so use a private
 network or an ssh tunnel; ctx has no TLS.
 
-A remote must hold a copy of the same repository. For your private archive, export
-it once on the first machine and serve that file:
+A remote must hold a copy of the same repository. Give `ctx remote` a local file
+that does not exist yet and it writes that copy, readable only by you; one that
+exists is never overwritten. Serve the file, or reach it as a file:
 
 ```sh
-ctx sql "SELECT fsl_export('repo:me', '/srv/ctx/me.fossil')"
+ctx remote me /srv/ctx/me.fossil                # writes the copy and syncs with it
 fossil server --port 8080 /srv/ctx/me.fossil    # on the host; or zit serve
 ssh -N -L 8080:127.0.0.1:8080 host              # on each machine
 ctx remote me http://127.0.0.1:8080/
@@ -381,6 +382,17 @@ itself on first use; the kept tables are upgraded in place. A rebuild of a large
 archive takes a minute or two.
 
 ## Measure and improve the skill
+
+```sh
+ctx stats              # the last 8 weeks
+ctx stats --weeks 26
+```
+
+`ctx stats` shows, per week and per project, how many sessions ran and how often
+agents used ctx in them: searches, searches that found nothing, `ctx turn` reads
+and loads of the `ctx` skill. It counts commands agents really ran, not mentions
+of them, from the archive alone, so it is free to run weekly. A project with many
+sessions and no searches is where the skill is not being reached for.
 
 `eval/skill_eval.py` measures the `ctx` skill against a private bank of questions
 about past work, with blind grading and a held-out set, so a change to the skill
