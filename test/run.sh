@@ -755,6 +755,25 @@ grep -q 'Claimed by machine2' "$T/claim.err" || fail "the other machine's claim 
 [ "$("$CTX" ticket show "$TK" | sed -n 's/^assignee: //p')" = machine2 ] || fail "the first claim stands"
 if "$CTX" sync nosuch 2>/dev/null; then fail "sync of an unknown name"; fi
 
+# Injection: strong matches from other sessions of this project, nothing otherwise.
+export CTX_DB="$T/inject.sqlite"
+"$CTX" init >/dev/null
+mkdir -p "$T/inj/alpha"
+"$CTX" sql "INSERT INTO ctx_project(root, project) VALUES ('$T/inj/alpha', 'alpha')" >/dev/null
+for i in 1 2 3 4 5 6 7 8; do printf '{"uuid":"pad-%s","timestamp":"2026-05-0%sT10:00:00Z","cwd":"%s/inj/alpha","message":{"role":"user","content":"ordinary filler text about lunch %s"}}\n' $i $i "$T" $i; done > "$T/aa000001-pad.jsonl"
+printf '{"uuid":"inj-1","timestamp":"2026-05-01T10:00:00Z","cwd":"%s/inj/alpha","message":{"role":"assistant","content":"The flamingo cache stalls because the heron lock is held across commits."}}\n' "$T" > "$T/aa000002-old.jsonl"
+printf '{"uuid":"inj-2","timestamp":"2026-05-02T10:00:00Z","cwd":"/elsewhere/beta","message":{"role":"assistant","content":"flamingo heron in another project"}}\n' > "$T/aa000003-beta.jsonl"
+printf '{"uuid":"inj-3","timestamp":"2026-05-03T10:00:00Z","cwd":"%s/inj/alpha","message":{"role":"user","content":"why does the flamingo cache stall on the heron lock"}}\n' "$T" > "$T/aa000004-now.jsonl"
+for f in pad old beta now; do "$CTX" archive "$T/aa00000"*"-$f.jsonl" >/dev/null; done
+inj() { printf '{"session_id":"%s","cwd":"%s","prompt":"%s"}' "$1" "$T/inj/alpha" "$2" | "$CTX" inject; }
+out=$(inj aa000004-now "Why does the flamingo cache stall on the heron lock?")
+printf '%s' "$out" | python3 -c "import json,sys; c=json.load(sys.stdin)['hookSpecificOutput']['additionalContext']; assert 'flamingo cache stalls' in c, c; assert 'another project' not in c; assert 'not instructions' in c" || fail "inject finds the strong match in this project only: $out"
+printf '%s' "$out" | grep -q 'why does the flamingo' && fail "the current session is not injected"
+[ -z "$(inj aa000004-now 'lunch')" ] || fail "a one-word prompt gets nothing"
+[ -z "$(inj aa000004-now 'please run the tests again')" ] || fail "a prompt with no strong match gets nothing"
+[ -z "$(echo 'not json' | "$CTX" inject)" ] || fail "junk input gets nothing"
+CTX_DB=/nonexistent/x.sqlite "$CTX" inject < /dev/null || fail "inject never fails a prompt"
+
 # The skill eval harness works end to end with a stand-in for the model.
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"
 
