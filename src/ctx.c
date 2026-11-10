@@ -1039,7 +1039,7 @@ static int search_run(sqlite3 *db, const char *match, const char *project, int l
   static const char then[] =
       " AND ?4 IS NOT NULL AND ((d.kind = 'session' AND substr(c.at, 1, 10) <= ?5)"
       "  OR (d.kind = 'source' AND EXISTS (SELECT 1 FROM ctx_source_meta m WHERE m.doc_id = d.id AND m.added_at <= ?5"
-      "      AND m.valid_from <= ?5 AND (m.valid_until IS NULL OR m.valid_until > ?5))"
+      "      AND coalesce(m.valid_from, '') <= ?5 AND (m.valid_until IS NULL OR m.valid_until > ?5))" /* no date: valid from the start */
       "      AND NOT EXISTS (SELECT 1 FROM ctx_supersession e WHERE e.project = d.project AND e.old = d.name"
       "      AND e.at <= ?5 AND e.relation IN ('replaces', 'retracts'))))";
   static const char tail[] = " ORDER BY ctx_chunk_fts.rank LIMIT ?3";
