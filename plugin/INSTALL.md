@@ -41,5 +41,5 @@ claude plugin uninstall ctx@ctx
 
 The archive in `~/.ctx` stays until you delete it.
 
-`LICENSE.libfossil` covers the libfossil code built into `bin/ctx`; SQLite is in the
-public domain.
+ctx is under the BSD 2-Clause license in `LICENSE`. `LICENSE.libfossil` covers
+the libfossil code built into `bin/ctx`; SQLite is in the public domain.
