@@ -47,6 +47,8 @@ See [Eviction](/wiki?name=Eviction).
 - Do not write `## Sources` or `## Provenance`. `ctx` generates them.
 - Keep a page under 32 KB and to one topic.
 - Do not state anything the sources do not say. Leave out what you cannot support.
+- Keep the source's hedges, scope and credit. If it says "my inference", "practitioner report", "only on news",
+  "verify this" or names who found it, the claim says so too. Dropping these was the most common error in review.
 
 ## Saving
 
@@ -65,7 +67,7 @@ the sources no longer support them.
 ```sh
 ctx wiki publish                # regenerates the index and health pages
 ctx wiki check                  # must report 0 problems
-ctx wiki why "Page Name"        # read it: does each quote support its claim?
+ctx wiki why "Page Name"        # read every claim beside its quote, and fix any that says more than the quote
 ctx ticket done ID --result "Page Name"
 ```
 
