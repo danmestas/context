@@ -1,0 +1,1 @@
+Bash {"command":"cd /x && ctx search a; python3 - <<'PY'\nctx turn 1\nPY\nctx turn 2"}

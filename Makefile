@@ -67,7 +67,7 @@ sanitize: ctx-san
 # Fuzzing needs a clang with libFuzzer. FUZZ_SECONDS each, seeded from fuzz/seed.
 FUZZCC ?= $(shell for c in /opt/homebrew/opt/llvm/bin/clang clang; do echo 'int LLVMFuzzerTestOneInput(const unsigned char*d,unsigned long n){return 0;}' | $$c -fsanitize=fuzzer -x c - -o /dev/null 2>/dev/null && { echo $$c; break; }; done)
 FUZZ_SECONDS ?= 60
-FUZZERS = redact extract wiki notes
+FUZZERS = redact extract wiki notes stats
 # Objects for the fuzzers are built by the fuzzing compiler; its sanitizer runtime differs.
 build/fuzz/libfossil.o: $(VENDOR)/libfossil.c
 	@test -n "$(FUZZCC)" || { echo "no clang with libFuzzer; set FUZZCC" >&2; exit 1; }

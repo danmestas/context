@@ -1,0 +1,1 @@
+(cd /w && ctx search yak) || echo "$(date)"
