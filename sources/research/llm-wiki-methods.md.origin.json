@@ -1,0 +1,15 @@
+{
+    "name": "research/llm-wiki-methods.md",
+    "sha3": "f0dc288eb15d9efc9a539cead2e957268f8669dbf391d38ff4ea1a49666b6c70",
+    "size": 10572,
+    "origin": "web research by agent, sources cited inside",
+    "retrieved": "2026-11-10",
+    "how": "agent-research",
+    "class": "perishable",
+    "review_after": "2027-05-09",
+    "valid_from": "2026-11-09",
+    "valid_until": null,
+    "added_by": "dmestas",
+    "added_at": "2026-11-10",
+    "risk": null
+}

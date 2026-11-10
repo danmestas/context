@@ -1,0 +1,15 @@
+{
+    "name": "research/tracedecay-temporal-store.md",
+    "sha3": "5f7f281327e1e4eead58f1556b1df39fbb4c21853fe86b1348beb181a0e043dd",
+    "size": 6355,
+    "origin": "https://github.com/ScriptedAlchemy/tracedecay read by agent",
+    "retrieved": "2026-11-10",
+    "how": "agent-research",
+    "class": "versioned",
+    "review_after": null,
+    "valid_from": "2026-11-09",
+    "valid_until": null,
+    "added_by": "dmestas",
+    "added_at": "2026-11-10",
+    "risk": null
+}
