@@ -1,0 +1,14 @@
+{
+  "name": "ctx",
+  "description": "ctx: archive and search agent sessions, with a cited wiki and tickets",
+  "owner": {
+    "name": "Dan Mestas"
+  },
+  "plugins": [
+    {
+      "name": "ctx",
+      "source": "./",
+      "description": "Session archive, search, wiki and tickets in one binary"
+    }
+  ]
+}

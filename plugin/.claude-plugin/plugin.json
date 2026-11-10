@@ -1,0 +1,16 @@
+{
+  "name": "ctx",
+  "displayName": "ctx",
+  "version": "@VERSION@",
+  "description": "Archives agent sessions, redacted, into a private Fossil repository and makes them searchable; keeps a cited wiki and tickets per project",
+  "author": {
+    "name": "Dan Mestas"
+  },
+  "keywords": [
+    "sessions",
+    "search",
+    "fossil",
+    "sqlite",
+    "wiki"
+  ]
+}

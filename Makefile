@@ -117,7 +117,42 @@ filc: ctx-filc $(FUZZERS:%=build/filc/replay-%)
 filc-ci:
 	@if [ -n "$(FILCC)" ]; then $(MAKE) filc; else echo "filc-ci: no Fil-C compiler on this runner; Fil-C run skipped"; fi
 
+# A release archive is a Claude Code plugin: bin/ctx, the skills and the hooks.
+# On Linux zlib is linked statically, so the binary needs only the C library.
+VERSION := $(shell sed -n 's/^\#define CTX_VERSION "\(.*\)"/\1/p' src/ctx.c)
+OS      := $(shell uname -s | tr A-Z a-z)
+ARCH    := $(shell uname -m | sed 's/aarch64/arm64/')
+DIST     = ctx-$(VERSION)-$(OS)-$(ARCH)
+ifeq ($(OS),linux)
+DIST_LDLIBS = -l:libz.a -lpthread -lm -ldl
+else
+DIST_LDLIBS = $(LDLIBS)
+endif
+dist: build/ctx.o build/libfossil.o build/sqlite3.o
+	rm -rf build/dist/$(DIST) && mkdir -p build/dist/$(DIST)/bin build/dist/$(DIST)/skills
+	$(CC) $(CFLAGS) $(LDFLAGS) -o build/dist/$(DIST)/bin/ctx $^ $(DIST_LDLIBS)
+	strip build/dist/$(DIST)/bin/ctx
+	cp -R plugin/.claude-plugin plugin/hooks build/dist/$(DIST)/
+	sed -i.bak 's/@VERSION@/$(VERSION)/' build/dist/$(DIST)/.claude-plugin/plugin.json && rm build/dist/$(DIST)/.claude-plugin/plugin.json.bak
+	cp -R skill/ctx skill/ctx-wiki build/dist/$(DIST)/skills/
+	cp plugin/INSTALL.md build/dist/$(DIST)/README.md
+	cp $(VENDOR)/LICENSE build/dist/$(DIST)/LICENSE.libfossil
+	build/dist/$(DIST)/bin/ctx version
+	cd build/dist && tar czf $(DIST).tar.gz $(DIST) && \
+	  { command -v sha256sum >/dev/null && sha256sum $(DIST).tar.gz || shasum -a 256 $(DIST).tar.gz; } > $(DIST).tar.gz.sha256
+	@cat build/dist/$(DIST).tar.gz.sha256
+
+# Everything CI runs, from a fresh clone: make check.
+SQLITE3 ?= $(firstword $(wildcard /opt/homebrew/opt/sqlite/bin/sqlite3 /usr/local/opt/sqlite/bin/sqlite3) sqlite3)
+check: test sanitize fuzz-ci
+	sh tools/filc.sh
+	python3 bench/check_corpus.py
+	bash -n bench/run.sh
+	python3 -c "import sqlite3; sqlite3.connect(':memory:').executescript(open('bench/schema.sql').read())"
+	$(SQLITE3) :memory: -bail -cmd '.read schema/state.sql' -cmd '.read schema/index.sql' '.read schema/check.sql'
+	@echo "check: everything passed"
+
 clean:
 	rm -rf build ctx ctx-san ctx-filc
 
-.PHONY: test clean sanitize fuzz fuzz-ci filc filc-ci
+.PHONY: check test clean sanitize fuzz fuzz-ci filc filc-ci dist

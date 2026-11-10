@@ -1,0 +1,13 @@
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [
+        { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/ctx\" hook", "async": true },
+        { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/ctx\" ticket offer", "timeout": 3 }
+      ] }
+    ],
+    "Stop": [ { "hooks": [ { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/ctx\" hook", "async": true } ] } ],
+    "PreCompact": [ { "hooks": [ { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/ctx\" hook", "async": true } ] } ],
+    "SessionEnd": [ { "hooks": [ { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/ctx\" hook", "async": true } ] } ]
+  }
+}
