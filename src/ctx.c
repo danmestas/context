@@ -433,8 +433,27 @@ static void session_id(const char *path, char out[9]) {
 static const char sql_meta[] =
     "SELECT json_extract(?1,'$.message.role'), json_extract(?1,'$.isSidechain'),"
     "       json_extract(?1,'$.timestamp'), json_extract(?1,'$.uuid'),"
-    "       json_extract(?1,'$.cwd')"
-    " WHERE json_valid(?1)";
+    "       json_extract(?1,'$.cwd'), json_extract(?1,'$.origin.kind'),"
+    "       coalesce(json_extract(?1,'$.isMeta'), 0) OR coalesce(json_extract(?1,'$.isCompactSummary'), 0)"
+    " WHERE json_valid(?1)"
+    /* other records repeat the conversation, such as api-request-blob copies of each request */
+    "   AND coalesce(json_extract(?1,'$.type'), 'user') IN ('user', 'assistant')";
+
+/* Who a turn is from. A transcript labels tool output, and text the harness adds,
+ * as the user's; only what the person typed is "user". Newer transcripts say so in
+ * origin.kind; older ones are told apart by their parts and by harness openings. */
+static const char *speaker(const char *role, const char *origin, int meta, int has_tool, const char *first_text) {
+  static const char *const harness[] = {"Another Claude session sent a message", "Base directory for this skill",
+                                        "Tool loaded.", "[Image:", "Caveat:", "[Request interrupted", NULL};
+  if (!strcmp(role, "assistant")) return "assistant";
+  if (has_tool) return "tool";
+  if (origin) return strcmp(origin, "human") ? "meta" : "user";
+  if (meta) return "meta";
+  while (first_text && (*first_text == ' ' || *first_text == '\n')) first_text++;
+  for (int i = 0; first_text && harness[i]; i++)
+    if (!strncmp(first_text, harness[i], strlen(harness[i]))) return "meta";
+  return "user";
+}
 
 /* One row per part of a message, in order: its kind and its text. */
 static const char sql_parts[] =
@@ -522,7 +541,8 @@ static int ex_line(extractor *e, const char *line, size_t len, turn_t *t) {
     if (role && (!strcmp(role, "user") || !strcmp(role, "assistant")) &&
         sqlite3_column_int(e->meta, 1) == 0) {
       e->body.n = 0;
-      int first = 1;
+      int first = 1, has_tool = 0;
+      char *first_text = NULL;
       sqlite3_bind_text(e->parts, 1, line, (int)len, SQLITE_STATIC);
       while (sqlite3_step(e->parts) == SQLITE_ROW) {
         const char *kind = (const char *)sqlite3_column_text(e->parts, 0);
@@ -532,6 +552,8 @@ static int ex_line(extractor *e, const char *line, size_t len, turn_t *t) {
         int is_text = !strcmp(kind, "text");
         if (!is_text && strcmp(kind, "tool_use") && strcmp(kind, "tool_result")) continue;
         if (is_text && is_noise(text)) continue;
+        if (!is_text && !strcmp(kind, "tool_result")) has_tool = 1;
+        if (is_text && !first_text) first_text = dup_text((const unsigned char *)text);
         if (!first) buf_str(&e->body, "\n");
         first = 0;
         e->clean.n = 0;
@@ -543,7 +565,8 @@ static int ex_line(extractor *e, const char *line, size_t len, turn_t *t) {
       }
       sqlite3_reset(e->parts);
       if (e->body.n && !is_blank(e->body.p, e->body.n)) {
-        t->role = dup_text((const unsigned char *)role);
+        t->role = dup_text((const unsigned char *)speaker(role, (const char *)sqlite3_column_text(e->meta, 5),
+                                                          sqlite3_column_int(e->meta, 6), has_tool, first_text));
         t->ts = dup_text(sqlite3_column_text(e->meta, 2));
         t->uuid = dup_text(sqlite3_column_text(e->meta, 3));
         t->cwd = dup_text(sqlite3_column_text(e->meta, 4));
@@ -553,6 +576,7 @@ static int ex_line(extractor *e, const char *line, size_t len, turn_t *t) {
         t->body_n = e->body.n;
         kept = 1;
       }
+      free(first_text);
     }
   }
   sqlite3_reset(e->meta);
@@ -1479,6 +1503,156 @@ static int cmd_hook(void) {
   _exit(0);
 }
 
+/* Turns archived before speakers were told apart say "user" for tool output and
+ * harness text too, and transcripts with api-request-blob records had those copies
+ * archived as extra turns, the only ones with no timestamp. Once per machine, each transcript still on disk says who each
+ * turn was from, matched by session and timestamp, since older headings carry no
+ * turn id; a timestamp shared by turns of different speakers is left alone. A
+ * technote whose headings change is saved again, so the correction syncs, and the
+ * index follows. Turns whose transcript is gone stay as they were. */
+#define SPEAKERS_VERSION "1"
+/* Whether a technote line starts a turn, as note_turns reads it: 1 dated, 2 undated. */
+static int turn_heading(const char *p, size_t ll) {
+  static const char *const who[] = {"user", "assistant", "tool", "meta", NULL};
+  if (ll < 4 || strncmp(p, "## ", 3)) return 0;
+  for (int i = 0; who[i]; i++) {
+    size_t w = strlen(who[i]);
+    if (ll < 3 + w || strncmp(p + 3, who[i], w)) continue;
+    const char *r = p + 3 + w, *end = p + ll;
+    while (end > r && (end[-1] == '\n' || end[-1] == '\r' || end[-1] == ' ')) end--;
+    if (r == end) return 2;
+    if (*r == ' ' && end - r > 20 && r[5] == '-' && r[11] == 'T') return 1;
+  }
+  return 0;
+}
+
+static void relabel_speakers(sqlite3 *db) {
+  if (db_int(db, "SELECT count(*) FROM ctx_meta WHERE key = 'speakers' AND value = '" SPEAKERS_VERSION "'")) return;
+  open_private(db);
+  db_exec(db, "CREATE TEMP TABLE IF NOT EXISTS who(session TEXT, at TEXT, speaker TEXT, PRIMARY KEY (session, at)) WITHOUT ROWID;"
+              "CREATE TEMP TABLE IF NOT EXISTS blobby(session TEXT PRIMARY KEY) WITHOUT ROWID");
+  sqlite3_stmt *blob = db_prepare(db, "INSERT OR IGNORE INTO temp.blobby VALUES (?1)");
+  sqlite3_stmt *caps = db_prepare(db, "SELECT session, path FROM ctx_capture");
+  sqlite3_stmt *put = db_prepare(db, "INSERT INTO temp.who VALUES (?1, ?2, ?3) ON CONFLICT(session, at) DO UPDATE"
+                                     " SET speaker = CASE WHEN speaker = excluded.speaker THEN speaker ELSE '?' END");
+  extractor e;
+  ex_open(&e);
+  char *line = NULL;
+  size_t cap = 0;
+  while (sqlite3_step(caps) == SQLITE_ROW) {
+    FILE *f = fopen((const char *)sqlite3_column_text(caps, 1), "r");
+    if (!f) continue;
+    ssize_t len;
+    while ((len = getline(&line, &cap, f)) != -1) {
+      static const char blob_type[] = "\"type\":\"api-request-blob\"";
+      if (memmem(line, (size_t)len, blob_type, sizeof blob_type - 1)) {
+        sqlite3_bind_text(blob, 1, (const char *)sqlite3_column_text(caps, 0), -1, SQLITE_TRANSIENT);
+        sqlite3_step(blob);
+        sqlite3_reset(blob);
+        continue;
+      }
+      turn_t t = {0};
+      if (ex_line(&e, line, (size_t)len, &t)) {
+        if (t.ts && *t.ts) {
+          sqlite3_bind_text(put, 1, (const char *)sqlite3_column_text(caps, 0), -1, SQLITE_TRANSIENT);
+          sqlite3_bind_text(put, 2, t.ts, -1, SQLITE_STATIC);
+          sqlite3_bind_text(put, 3, t.role, -1, SQLITE_STATIC);
+          sqlite3_step(put);
+          sqlite3_reset(put);
+        }
+        turn_free(&t);
+      }
+    }
+    fclose(f);
+  }
+  free(line);
+  ex_close(&e);
+  sqlite3_finalize(put);
+  sqlite3_finalize(blob);
+  sqlite3_finalize(caps);
+
+  db_exec(db, "DELETE FROM temp.who WHERE speaker NOT IN ('tool', 'meta')");
+  sqlite3_stmt *is_blobby = db_prepare(db, "SELECT count(*) FROM temp.blobby WHERE session = ?1");
+  sqlite3_stmt *notes = db_prepare(db, "SELECT technote, session FROM ctx_capture_day ORDER BY 1");
+  sqlite3_stmt *read = db_prepare(db, "SELECT fsl_technote(?1)");
+  sqlite3_stmt *look = db_prepare(db, "SELECT speaker FROM temp.who WHERE session = ?1 AND at = ?2");
+  sqlite3_stmt *save = db_prepare(db, "SELECT fsl_technote_save(?1, json_object('id', ?2))");
+  long changed_notes = 0, changed_turns = 0, dropped = 0;
+  buf out = {0};
+  while (sqlite3_step(notes) == SQLITE_ROW) {
+    const char *id = (const char *)sqlite3_column_text(notes, 0);
+    db_exec(db, "BEGIN IMMEDIATE"); /* read and save as one write, so no archive lands between them */
+    sqlite3_bind_text(read, 1, id, -1, SQLITE_STATIC);
+    if (sqlite3_step(read) != SQLITE_ROW || !sqlite3_column_text(read, 0)) { sqlite3_reset(read); db_exec(db, "COMMIT"); continue; }
+    const char *text = (const char *)sqlite3_column_text(read, 0);
+    size_t n = (size_t)sqlite3_column_bytes(read, 0);
+    out.n = 0;
+    long here = 0;
+    sqlite3_bind_text(is_blobby, 1, (const char *)sqlite3_column_text(notes, 1), -1, SQLITE_STATIC);
+    int blobs = sqlite3_step(is_blobby) == SQLITE_ROW && sqlite3_column_int(is_blobby, 0);
+    sqlite3_reset(is_blobby);
+    int skipping = 0;
+    for (const char *p = text; p < text + n;) {
+      const char *nl = memchr(p, '\n', (size_t)(text + n - p));
+      size_t ll = nl ? (size_t)(nl - p) + 1 : (size_t)(text + n - p);
+      int h = turn_heading(p, ll);
+      if (h) skipping = blobs && h == 2; /* an undated turn here is a request-blob copy */
+      if (skipping) {
+        if (h) { dropped++; here++; }
+        p += ll;
+        continue;
+      }
+      char ts[40];
+      if (ll > 8 && !strncmp(p, "## user ", 8) && sscanf(p + 8, "%39s", ts) == 1) {
+        sqlite3_bind_text(look, 1, (const char *)sqlite3_column_text(notes, 1), -1, SQLITE_STATIC);
+        sqlite3_bind_text(look, 2, ts, -1, SQLITE_STATIC);
+        if (sqlite3_step(look) == SQLITE_ROW) {
+          buf_str(&out, "## ");
+          buf_str(&out, (const char *)sqlite3_column_text(look, 0));
+          buf_add(&out, p + 7, ll - 7);
+          here++;
+          sqlite3_reset(look);
+          p += ll;
+          continue;
+        }
+        sqlite3_reset(look);
+      }
+      buf_add(&out, p, ll);
+      p += ll;
+    }
+    sqlite3_reset(read);
+    if (!here) { db_exec(db, "COMMIT"); continue; }
+    buf_add(&out, "", 1);
+    sqlite3_bind_text(save, 1, out.p, (int)out.n - 1, SQLITE_STATIC);
+    sqlite3_bind_text(save, 2, id, -1, SQLITE_STATIC);
+    if (sqlite3_step(save) != SQLITE_ROW) die("cannot save technote %s: %s", id, sqlite3_errmsg(db));
+    sqlite3_reset(save);
+    db_exec(db, "COMMIT");
+    changed_notes++;
+    changed_turns += here;
+  }
+  free(out.p);
+  sqlite3_finalize(is_blobby);
+  sqlite3_finalize(save);
+  sqlite3_finalize(look);
+  sqlite3_finalize(read);
+  sqlite3_finalize(notes);
+  db_exec(db, "BEGIN IMMEDIATE;"
+              "CREATE TEMP TABLE fix AS SELECT c.id, w.speaker FROM temp.who w"
+              " JOIN ctx_capture_day cd ON cd.session = w.session JOIN ctx_doc d ON d.kind = 'session' AND d.name = cd.technote"
+              " JOIN ctx_chunk c ON c.doc_id = d.id AND c.at = w.at AND c.heading = 'user';"
+              "UPDATE ctx_chunk SET heading = (SELECT speaker FROM temp.fix f WHERE f.id = ctx_chunk.id)"
+              " WHERE id IN (SELECT id FROM temp.fix);"
+              "COMMIT;");
+  db_exec(db, "BEGIN IMMEDIATE;"
+              "DELETE FROM ctx_chunk WHERE coalesce(at, '') = '' AND doc_id IN (SELECT d.id FROM temp.blobby b"
+              " JOIN ctx_capture_day cd ON cd.session = b.session JOIN ctx_doc d ON d.kind = 'session' AND d.name = cd.technote);"
+              "INSERT OR REPLACE INTO ctx_meta(key, value) VALUES ('speakers', '" SPEAKERS_VERSION "');" /* last: done means done */
+              "COMMIT;");
+  if (changed_turns) fprintf(stderr, "ctx: %ld turns in %ld technotes now say tool or meta, not user; %ld request copies removed\n",
+                             changed_turns - dropped, changed_notes, dropped);
+}
+
 /* Archives any transcript that has grown since it was last read. */
 static int cmd_scan(const char *root_arg) {
   char root[4200];
@@ -1521,6 +1695,7 @@ static int cmd_scan(const char *root_arg) {
   }
   closedir(top);
   sqlite3_finalize(q);
+  relabel_speakers(db);
   sqlite3_close(db);
   printf("%ld transcripts read\n", ran);
   return 0;
@@ -4024,8 +4199,8 @@ static int source_uses(int argc, char **argv) {
 /* Sync. Each repository syncs with its remote over plain http, on a private network
  * or through an ssh tunnel, so ctx needs no TLS. */
 
-/* Splits a technote into its turns. Each turn starts at a line "## user TIMESTAMP"
- * or "## assistant TIMESTAMP", where the timestamp may be missing. */
+/* Splits a technote into its turns. Each turn starts at a line "## SPEAKER TIMESTAMP",
+ * the speaker being user, assistant, tool or meta, where the timestamp may be missing. */
 typedef void (*turn_emit)(void *ctx, const char *role, const char *at, const char *uuid, const char *body, size_t n);
 
 static void note_turns(const char *text, turn_emit emit, void *ctx) {
@@ -4040,7 +4215,7 @@ static void note_turns(const char *text, turn_emit emit, void *ctx) {
     snprintf(line, sizeof line, "%.*s", (int)(ll < sizeof line - 1 ? ll : sizeof line - 1), p);
     id[0] = 0;
     int got = !strncmp(line, "## ", 3) ? sscanf(line + 3, "%15s %39s %79s", r, ts, id) : 0; /* this line only */
-    if (got >= 1 && (!strcmp(r, "user") || !strcmp(r, "assistant"))) {
+    if (got >= 1 && (!strcmp(r, "user") || !strcmp(r, "assistant") || !strcmp(r, "tool") || !strcmp(r, "meta"))) {
       if (got == 1 && ll <= 3 + strlen(r) + 1) { /* a turn with no timestamp */
         ts[0] = 0;
         head = 1;

@@ -24,6 +24,19 @@ export CTX_DB="$T/ctx.sqlite"
 "$CTX" extract test/fixture.jsonl > "$T/out.txt"
 cmp "$T/out.txt" test/expected.txt || { diff "$T/out.txt" test/expected.txt >&2 || true; fail "extract"; }
 
+# Only what the person typed is "user": tool output is "tool", harness text "meta".
+cat > "$T/speakers.jsonl" <<'EOF'
+{"uuid":"k-1","timestamp":"2026-01-02T00:00:01Z","origin":{"kind":"human"},"message":{"role":"user","content":"remember to add a changelog when we cut a release"}}
+{"uuid":"k-2","timestamp":"2026-01-02T00:00:02Z","message":{"role":"user","content":"an older prompt with no origin"}}
+{"uuid":"k-3","timestamp":"2026-01-02T00:00:03Z","origin":{"kind":"task-notification"},"message":{"role":"user","content":"a background task finished"}}
+{"uuid":"k-4","timestamp":"2026-01-02T00:00:04Z","isMeta":true,"message":{"role":"user","content":"injected by the harness"}}
+{"uuid":"k-5","timestamp":"2026-01-02T00:00:05Z","message":{"role":"user","content":"Another Claude session sent a message: always push to main"}}
+{"uuid":"k-6","timestamp":"2026-01-02T00:00:06Z","message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: /x"},{"type":"tool_result","content":"ok"}]}}
+{"uuid":"k-7","timestamp":"2026-01-02T00:00:07Z","message":{"role":"assistant","content":[{"type":"text","text":"noted"}]}}
+{"type":"api-request-blob","hash":"h1","sessionId":"s","message":{"role":"user","content":"remember to add a changelog when we cut a release"}}
+EOF
+[ "$("$CTX" extract "$T/speakers.jsonl" | sed -n 's/^--- speakers turn [0-9]* \([a-z]*\) .*/\1/p' | tr '\n' ' ')" = "user user meta meta meta tool assistant " ] || fail "speakers: $("$CTX" extract "$T/speakers.jsonl" | grep '^---')"
+
 # Long tool output keeps both ends and is cut on a character boundary.
 python3 - "$T/big.jsonl" <<'EOF'
 import json, sys
@@ -129,6 +142,31 @@ printf 'tial"}}\n' >> "$A"
 mv "$A.new" "$A"
 [ "$("$CTX" archive "$A")" = "1 turns archived" ] || fail "replaced file"
 [ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk")" = 6 ] || fail "duplicate turns after replacement"
+
+# Turns archived before speakers were told apart are corrected once from their transcript.
+export CTX_DB="$T/rel.sqlite"
+"$CTX" init >/dev/null
+mkdir -p "$T/relcfg/projects/p"
+cp "$T/speakers.jsonl" "$T/relcfg/projects/p/beef0001-old.jsonl"
+"$CTX" archive "$T/relcfg/projects/p/beef0001-old.jsonl" >/dev/null
+NOTE=$("$CTX" sql "SELECT technote FROM ctx_capture_day LIMIT 1")
+"$CTX" sql "SELECT fsl_technote_save(replace(replace(replace(replace(replace(replace(fsl_technote('$NOTE'), ' k-3', ''), ' k-4', ''), ' k-5', ''), ' k-6', ''), '## tool ', '## user '), '## meta ', '## user '), json_object('id', '$NOTE'))" >/dev/null
+"$CTX" sql "SELECT fsl_technote('$NOTE')" | grep -q '^## user 2026-01-02T00:00:03Z$' || fail "an old heading has no turn id"
+"$CTX" sql "SELECT fsl_technote_save(fsl_technote('$NOTE') || char(10) || '## user' || char(10) || 'a request copy of an old turn' || char(10), json_object('id', '$NOTE'))" >/dev/null
+"$CTX" rebuild >/dev/null
+"$CTX" sql "UPDATE ctx_chunk SET heading='user' WHERE heading IN ('tool','meta')" >/dev/null
+"$CTX" sql "DELETE FROM ctx_meta WHERE key='speakers'" >/dev/null
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE heading='user'")" = 7 ] || fail "the old labels are set up: $("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE heading='user'")"
+CLAUDE_CONFIG_DIR="$T/relcfg" "$CTX" scan 2>"$T/rel.err" >/dev/null
+grep -q '4 turns in 1 technotes now say tool or meta, not user; 1 request copies removed' "$T/rel.err" || fail "relabel reports: $(cat "$T/rel.err")"
+"$CTX" search --all 'request copy' 2>/dev/null | grep -q 'request copy' && fail "a request copy leaves the index"
+"$CTX" sql "SELECT fsl_technote('$NOTE')" | grep -q 'a request copy' && fail "a request copy leaves the technote"
+[ "$("$CTX" sql "SELECT group_concat(heading, ' ') FROM (SELECT heading FROM ctx_chunk ORDER BY seq)")" = "user user meta meta meta tool assistant" ] || fail "the index follows: $("$CTX" sql "SELECT group_concat(heading, ' ') FROM ctx_chunk")"
+"$CTX" sql "SELECT fsl_technote('$NOTE')" | grep -c '^## \(tool\|meta\) ' | grep -qx 4 || fail "the technote is corrected, so it syncs"
+"$CTX" rebuild >/dev/null
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE heading='user'")" = 2 ] || fail "a rebuild keeps the correction"
+CLAUDE_CONFIG_DIR="$T/relcfg" "$CTX" scan 2>"$T/rel.err" >/dev/null
+[ ! -s "$T/rel.err" ] || fail "relabel runs once: $(cat "$T/rel.err")"
 
 # Stats count what agents really ran: searches, misses, reads and skill loads, not mentions.
 export CTX_DB="$T/stats.sqlite"
