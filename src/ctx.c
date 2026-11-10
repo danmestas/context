@@ -3028,6 +3028,17 @@ static int wiki_check(int argc, char **argv) {
   return bad ? 1 : 0;
 }
 
+/* Whether the '.' at p ends a sentence, rather than an abbreviation such as "vs." */
+static int sentence_end(const char *text, const char *p) {
+  static const char *const abbrev[] = {"vs", "e.g", "i.e", "etc", "cf", "approx", "fig", "no", "dr", "mr", "ms", NULL};
+  const char *w = p;
+  while (w > text && (c_alnum((unsigned char)w[-1]) || w[-1] == '.')) w--;
+  size_t n = (size_t)(p - w);
+  for (int k = 0; abbrev[k]; k++)
+    if (strlen(abbrev[k]) == n && at_ci(w, n, 0, abbrev[k])) return 0;
+  return n != 1 || !(w[0] >= 'A' && w[0] <= 'Z'); /* an initial, as in "J. Smith" */
+}
+
 /* The sentence a footnote marker closes. */
 static void claim_of(const char *text, const char *ref, char *out, size_t cap) {
   char marker[80];
@@ -3037,14 +3048,19 @@ static void claim_of(const char *text, const char *ref, char *out, size_t cap) {
   for (const char *p = strstr(text, marker); p; p = strstr(p + 1, marker)) {
     if (p[m] == ':') continue;
     const char *a = p;
-    while (a > text && a[-1] != '\n' && !(a[-1] == ' ' && a > text + 1 && a[-2] == '.')) a--;
-    /* the marker's own sentence ends at p, so step past an earlier marker */
+    while (a > text && a[-1] != '\n') {
+      if (a - text >= 2 && a[-1] == ' ' && (a[-2] == '!' || a[-2] == '?' || (a[-2] == '.' && sentence_end(text, a - 2)) || a[-2] == ']')) break;
+      a--;
+    }
+    while (*a == ' ') a++;
+    /* a marker closing the previous sentence is not part of this one */
     while (*a == '[' && a[1] == '^') {
       const char *e = strchr(a, ']');
       if (!e || e >= p) break;
       a = e + 1;
       while (*a == ' ') a++;
     }
+    if (!strncmp(a, "- ", 2) || !strncmp(a, "* ", 2)) a += 2;
     snprintf(out, cap, "%.*s", (int)(p - a), a);
     return;
   }
@@ -3074,7 +3090,7 @@ static int wiki_why(int argc, char **argv) {
     found++;
     const char *ref = (const char *)sqlite3_column_text(q, 0), *kind = (const char *)sqlite3_column_text(q, 2);
     const char *target = (const char *)sqlite3_column_text(q, 3), *ci = (const char *)sqlite3_column_text(q, 4);
-    char claim[600];
+    char claim[4096];
     claim_of(text, ref, claim, sizeof claim);
     printf("[^%s] %s\n  quote: \"%s\"\n", ref, claim, sqlite3_column_text(q, 1));
     if (*ci) printf("  %s: %s @ %.12s, sha3 %.12s, %s\n", kind, target, ci, sqlite3_column_text(q, 5), sqlite3_column_text(q, 6));

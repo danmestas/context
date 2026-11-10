@@ -36,6 +36,10 @@ READ_ONLY = ["Bash(git log*)", "Bash(git show*)", "Bash(git grep*)", "Bash(ls*)"
              "Bash(wc*)", "Bash(cut*)", "Bash(sort*)", "Bash(uniq*)", "Bash(grep*)", "Bash(rg*)", "Bash(find*)",
              "Bash(cd*)", "Bash(echo*)", "Bash(cat*)", "Bash(sed*)", "Bash(awk*)", "Bash(tr*)", "Bash(xargs*)"]
 
+ASK_DOCS = ("A teammate asks about this project's documents: {q}\n\n"
+            "Find the answer from whatever sources you have here. If you cannot find it, say you do not know "
+            "rather than guessing. Reply with the answer in under 120 words and name the evidence you relied on.")
+
 ASK = ("A teammate asks about past work on this project: {q}\n\n"
        "Find the answer from whatever sources you have here. If you cannot find it, say you do not know "
        "rather than guessing. Reply with the answer in under 120 words and name the evidence you relied on.")
@@ -175,20 +179,50 @@ class Workspace:
     def __exit__(self, *_):
         shutil.rmtree(self.dir, ignore_errors=True)
 
+    def wiki_files(self, cwd):
+        """Writes each current wiki page to wiki/NAME.md, for condition F."""
+        if os.path.isdir(f"{cwd}/wiki"):
+            return
+        os.makedirs(f"{cwd}/wiki")
+        env = dict(os.environ, CTX_DB=self.snap)
+        names = subprocess.run([CTX, "sql", "SELECT d.name, r.name FROM ctx_doc d JOIN ctx_repo r ON r.id = d.repo_id"
+                                " WHERE d.kind = 'wiki' AND coalesce(d.status, '') <> 'retired'"],
+                               env=env, capture_output=True, text=True).stdout.splitlines()
+        for line in names:
+            page, repo = line.split("\t")
+            text = subprocess.run([CTX, "sql", f"SELECT fsl_open('repo:{repo}', 'eval'), fsl_use('repo:{repo}'), fsl_wiki('" + page.replace("'", "''") + "')"],
+                                  env=env, capture_output=True, text=True).stdout
+            body = "\t".join(text.split("\t")[2:]) if "\t" in text else text
+            with open(f"{cwd}/wiki/{re.sub(r'[^A-Za-z0-9._-]+', '-', page)}.md", "w") as f:
+                f.write(body)
+
+    def without_wiki(self):
+        """A second frozen copy with the wiki taken out of the index, for condition S."""
+        path = f"{self.dir}/snap-nowiki.sqlite"
+        if not os.path.exists(path):
+            shutil.copy(self.snap, path)
+            env = dict(os.environ, CTX_DB=path)
+            for sql in ("DELETE FROM ctx_chunk WHERE doc_id IN (SELECT id FROM ctx_doc WHERE kind = 'wiki')",
+                        "DELETE FROM ctx_doc WHERE kind = 'wiki'"):
+                p = subprocess.run([CTX, "sql", sql], env=env, capture_output=True, text=True)
+                if p.returncode:
+                    sys.exit(f"cannot remove the wiki: {p.stderr}")
+        return path
+
     def repo(self, cond, project, source):
         dst = f"{self.dir}/repos/{cond}/{project}"
         if not os.path.exists(dst):
             shutil.copytree(source, dst, symlinks=True, ignore=SKIP)
         return dst
 
-    def env(self, with_ctx):
+    def env(self, with_ctx, db=None):
         env = dict(os.environ)
         hide = os.path.dirname(CTX)
         env["PATH"] = ":".join(p for p in env.get("PATH", "").split(":") if p != hide)
         env.pop("CTX_DB", None)
         if with_ctx:
             env["PATH"] = f"{self.bin}:{env['PATH']}"
-            env["CTX_DB"] = self.snap
+            env["CTX_DB"] = db or self.snap
         return env
 
 
@@ -258,7 +292,7 @@ def cmd_run(a):
             q, cond = item
             project = bank["projects"][q["project"]]
             cwd = w.repo(cond, q["project"], project["repo"])
-            prompt = ASK.format(q=q["question"])
+            prompt = (ASK_DOCS if cond in "SWF" else ASK).format(q=q["question"])
             allow, dirs = list(READ_ONLY), []
             if cond == "B":
                 dirs = glob.glob(os.path.expanduser(f"~/.claude/projects/{slug(project['sessions'])}*"))
@@ -266,8 +300,11 @@ def cmd_run(a):
                 allow += ["Bash(jq*)", "Bash(python3*)"]
             if cond == "C":
                 allow.append("Bash(ctx *)")
+            if cond in "SWF":  # same tools; only the wiki differs: W in the index, F as files, S neither
+                allow += ["Bash(ctx search *)", "Bash(ctx turn *)"]
+            db = w.without_wiki() if cond in "SF" else None
             p = spawn(claude(prompt, a.model, "stream-json", "Bash,Read,Grep,Glob,Skill", allow, dirs), cwd,
-                      w.env(cond == "C"), RUN_DEADLINE)
+                      w.env(cond in "CSWF", db), RUN_DEADLINE)
             r = digest(p.stdout, cond, own)
             r.update(qid=q["id"], cond=cond, project=q["project"], kind=q["kind"])
             return r
@@ -275,7 +312,9 @@ def cmd_run(a):
         for q in qs:  # copies are made up front so parallel jobs never race
             for cond in conds:
                 cwd = w.repo(cond, q["project"], bank["projects"][q["project"]]["repo"])
-                if cond == "C":
+                if cond == "F":
+                    w.wiki_files(cwd)
+                if cond in "CSWF":
                     os.makedirs(f"{cwd}/.claude/skills/ctx", exist_ok=True)
                     with open(f"{cwd}/.claude/skills/ctx/SKILL.md", "w") as f:
                         f.write(skill)
@@ -305,19 +344,26 @@ def grade(paths, model):
     used = {r["qid"] for _, r in entries}
     key = [{k: gold[q][k] for k in ("id", "question", "answer", "must_include")} for q in sorted(used)]
     answers = [{"answer_id": i, "question_id": e[1]["qid"], "answer": mask(e[1]["result"])} for i, e in ids.items()]
-    prompt = GRADE.format(key=json.dumps(key, indent=0), answers=json.dumps(answers, indent=0))
+    got = {}
+    batch = 25  # one call cannot reliably grade more; batches share the key and the shuffle
+    for start in range(0, len(answers), batch):
+        part = answers[start:start + batch]
+        want = {x["answer_id"] for x in part}
+        ids_in = {x["question_id"] for x in part}
+        prompt = GRADE.format(key=json.dumps([k for k in key if k["id"] in ids_in], indent=0), answers=json.dumps(part, indent=0))
+        for _ in range(3):
+            with tempfile.TemporaryDirectory(dir=HOME) as cwd:
+                p = spawn(claude(prompt, model, "json", ""), cwd, dict(os.environ), LONG_DEADLINE)
+            try:
+                found = {x["answer_id"]: x["grade"] for x in parse_array(json.loads(p.stdout)["result"])}
+            except (ValueError, KeyError, TypeError):
+                continue
+            if want <= set(found) and {found[k] for k in want} <= set(VALUE):
+                got.update({k: found[k] for k in want})
+                break
+        else:
+            sys.exit("the grader did not grade every answer")
     pass_id = sha(f"{paths}{time.time()}")[:12]
-    for _ in range(3):
-        with tempfile.TemporaryDirectory(dir=HOME) as cwd:
-            p = spawn(claude(prompt, model, "json", ""), cwd, dict(os.environ), LONG_DEADLINE)
-        try:
-            got = {x["answer_id"]: x["grade"] for x in parse_array(json.loads(p.stdout)["result"])}
-        except (ValueError, KeyError):
-            continue
-        if set(got) == set(ids) and set(got.values()) <= set(VALUE):
-            break
-    else:
-        sys.exit("the grader did not grade every answer")
     per = {path: {} for path in paths}
     for i, (path, r) in ids.items():
         per[path][f"{r['qid']}.{r['cond']}"] = got[i]
@@ -485,6 +531,7 @@ def cmd_author(a):
 
 def main():
     ap = argparse.ArgumentParser(prog="skill_eval")
+    ap.add_argument("--bank", help="question bank file, if not ~/.ctx/eval/questions.json")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("author", help="add reviewed questions for a project to the bank")
     p.add_argument("--project", required=True, help="the project name ctx knows it by")
@@ -495,7 +542,7 @@ def main():
     p.set_defaults(fn=cmd_author)
     p = sub.add_parser("run", help="answer questions in fresh isolated processes")
     p.add_argument("--set", choices=("dev", "holdout", "all"), default="dev")
-    p.add_argument("--cond", default="C", help="A repo only, B grep over transcripts, C the skill")
+    p.add_argument("--cond", default="C", help="A repo only, B grep over transcripts, C the skill; for documents, S sources only, W wiki in the index, F wiki as files")
     p.add_argument("--skill", default=DEFAULT_SKILL)
     p.add_argument("--only", help="comma-separated question ids")
     p.add_argument("--name")
@@ -519,6 +566,9 @@ def main():
     p.add_argument("--examples", type=int, default=8)
     p.set_defaults(fn=cmd_usage)
     a = ap.parse_args()
+    if a.bank:
+        global BANK
+        BANK = os.path.abspath(a.bank)
     os.makedirs(HOME, mode=0o700, exist_ok=True)
     a.fn(a)
 

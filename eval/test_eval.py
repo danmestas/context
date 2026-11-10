@@ -88,4 +88,9 @@ assert "FAIL: score dropped" in cli("compare", good, bad, ok=False)
 assert "PASS" in cli("compare", bad, good)
 assert "tokens rose" in cli("compare", good, cost, ok=False)
 assert "ctx commands by agents" in cli("usage")
+# Documents: S and W get the same tools; only W can find the wiki.
+sw = cli("run", "--set", "all", "--cond", "S,W", "--skill", skill, "--name", "docs").strip()
+rows = json.load(open(f"{sw}/runs.json"))
+assert sorted(r["cond"] for r in rows) == ["S", "S", "S", "W", "W", "W"], rows
+assert "--bank" in subprocess.run([sys.executable, f"{HERE}/skill_eval.py", "-h"], capture_output=True, text=True).stdout
 print("eval tests passed")
