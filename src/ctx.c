@@ -2947,13 +2947,16 @@ static int wiki_commit(sqlite3 *db, const char *project, sqlite3_int64 repo_id, 
   buf_add(&page, raw, len);
   buf_str(&page, "\n\n## Sources\n\n");
   long sources = 0;
-  q = db_prepare(db, "SELECT DISTINCT substr(ci, 1, 16), target FROM temp.cite WHERE ci IS NOT NULL ORDER BY target");
+  /* A Markdown link to /info/ is what makes Fossil list this page on the check-in. */
+  q = db_prepare(db, "SELECT DISTINCT target, substr(ci, 1, 12), ci FROM temp.cite WHERE ci IS NOT NULL ORDER BY target");
   while (sqlite3_step(q) == SQLITE_ROW) {
     buf_str(&page, "- [");
     buf_str(&page, (const char *)sqlite3_column_text(q, 0));
-    buf_str(&page, "] ");
+    buf_str(&page, " @ ");
     buf_str(&page, (const char *)sqlite3_column_text(q, 1));
-    buf_str(&page, "\n");
+    buf_str(&page, "](/info/");
+    buf_str(&page, (const char *)sqlite3_column_text(q, 2));
+    buf_str(&page, ")\n");
     sources++;
   }
   sqlite3_finalize(q);

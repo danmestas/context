@@ -579,7 +579,7 @@ TEXT=$(w_repo "fsl_wiki('Cache')")
 page good; "$CTX" wiki save Cache "$T/wk/p.md" --model test-model --ticket abc --session sess1 | grep -q 'removed claim: "chose a thirty' || fail "dropped claims are reported"
 w_repo "fsl_wiki('Cache')" > "$T/wk/saved.md"
 grep -q '^## Provenance' "$T/wk/saved.md" && grep -q 'Compiled by: test-model' "$T/wk/saved.md" && grep -q 'Ticket: abc' "$T/wk/saved.md" || fail "provenance block"
-grep -q "^- \[${CI%${CI#????????????????}}\] sources/a.md" "$T/wk/saved.md" || fail "sources section pins the check-in"
+grep -q "^- \[sources/a.md @ ${CI%${CI#????????????}}\](/info/$CI)" "$T/wk/saved.md" || fail "sources section links the check-in"
 [ "$(grep -c '^## Provenance' "$T/wk/saved.md")" = 1 ] || fail "provenance is replaced, not repeated"
 if grep -q sess1 "$T/wk/saved.md"; then fail "a shared page must not name a private session"; fi
 [ "$("$CTX" sql "SELECT session FROM ctx_wiki_log ORDER BY id DESC LIMIT 1")" = sess1 ] || fail "session is in the private log"
