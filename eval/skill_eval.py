@@ -200,13 +200,15 @@ class Workspace:
         """A second frozen copy with the wiki taken out of the index, for condition S."""
         path = f"{self.dir}/snap-nowiki.sqlite"
         if not os.path.exists(path):
-            shutil.copy(self.snap, path)
-            env = dict(os.environ, CTX_DB=path)
+            part = path + ".part"  # renamed into place only when complete
+            shutil.copy(self.snap, part)
+            env = dict(os.environ, CTX_DB=part)
             for sql in ("DELETE FROM ctx_chunk WHERE doc_id IN (SELECT id FROM ctx_doc WHERE kind = 'wiki')",
                         "DELETE FROM ctx_doc WHERE kind = 'wiki'"):
                 p = subprocess.run([CTX, "sql", sql], env=env, capture_output=True, text=True)
                 if p.returncode:
                     sys.exit(f"cannot remove the wiki: {p.stderr}")
+            os.rename(part, path)
         return path
 
     def repo(self, cond, project, source):
@@ -324,6 +326,8 @@ def cmd_run(a):
                     os.makedirs(f"{cwd}/.claude/skills/ctx", exist_ok=True)
                     with open(f"{cwd}/.claude/skills/ctx/SKILL.md", "w") as f:
                         f.write(skill)
+        if set(conds) & set("SF"):  # made before the parallel runs, which share it
+            w.without_wiki()
         items = [(q, c) for q in qs for c in conds]
         random.Random(7).shuffle(items)
         with cf.ThreadPoolExecutor(a.jobs) as ex:
