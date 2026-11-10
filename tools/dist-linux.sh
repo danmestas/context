@@ -1,11 +1,13 @@
 #!/bin/sh
-# Builds the Linux release archive for this machine's architecture inside Ubuntu 22.04,
-# so the binary needs only glibc 2.34 or later. Needs docker. The archive and its
-# checksum land in build/dist/.
+# Builds a Linux release archive inside Ubuntu 22.04, so the binary needs only glibc
+# 2.34 or later. Needs docker. With no argument it builds for docker's own
+# architecture; "amd64" or "arm64" picks one, emulated if docker can. The archive and
+# its checksum land in build/dist/.
 set -eu
 IMAGE=${CTX_DIST_IMAGE:-ubuntu:22.04}
+PLATFORM=${1:+--platform=linux/$1}
 mkdir -p build/dist
-docker run --rm -v "$PWD:/src:ro" -v "$PWD/build/dist:/out" "$IMAGE" sh -euc '
+docker run --rm $PLATFORM -v "$PWD:/src:ro" -v "$PWD/build/dist:/out" "$IMAGE" sh -euc '
   export DEBIAN_FRONTEND=noninteractive; apt-get update -qq >/dev/null && apt-get install -y -qq gcc make zlib1g-dev >/dev/null
   cp -R /src /tmp/ctx && cd /tmp/ctx && rm -rf build ctx ctx-san ctx-filc
   make dist >/dev/null

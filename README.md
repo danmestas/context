@@ -45,9 +45,9 @@ release), and the bench and schema checks. It also needs python3 and sqlite3.
 
 A release archive is a Claude Code plugin: `bin/ctx`, the `ctx` and `ctx-wiki`
 skills, and the hooks that archive each session. `make dist` builds one for this
-machine in `build/dist/`; `tools/dist-linux.sh` builds the Linux one for this
-machine's architecture in Ubuntu 22.04 under docker, so it runs on glibc 2.34 or
-later. `plugin/INSTALL.md` becomes the archive's README and says how to install it.
+machine in `build/dist/`; `tools/dist-linux.sh [amd64|arm64]` builds a Linux one
+in Ubuntu 22.04 under docker, so it runs on glibc 2.34 or later; docker on an Apple
+Silicon Mac builds both. `plugin/INSTALL.md` becomes the archive's README and says how to install it.
 
 ## The bench
 
