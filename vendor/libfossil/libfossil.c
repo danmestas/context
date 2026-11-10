@@ -16,9 +16,9 @@
 #define FSL_AMALGAMATION_BUILD 1
 #define FSL_PACKAGE_NAME "libfossil"
 #define FSL_LIBRARY_VERSION "0.6.1"
-#define FSL_LIB_VERSION_HASH "ab34f5e39c293b3a515aac1252dc7a593d556a2b693cf568bc493881080d79bf"
-#define FSL_LIB_VERSION_TIMESTAMP "2026-11-09 23:16:24.829 UTC"
-#define FSL_LIB_CONFIG_TIMESTAMP "2026-11-09 23:16 GMT"
+#define FSL_LIB_VERSION_HASH "e84af25d7914297f0a86b73e947fc8ccc02e33b0df66f1de910debbab2e3e64c"
+#define FSL_LIB_VERSION_TIMESTAMP "2026-11-10 15:55:59.881 UTC"
+#define FSL_LIB_CONFIG_TIMESTAMP "2026-11-10 15:56 GMT"
 #define FSL_AUX_SCHEMA "2015-01-24"
 #define FSL_CONTENT_SCHEMA "2"
 #define FOSSIL_RELEASE_VERSION_NUMBER 22700
@@ -8600,8 +8600,8 @@ FSL_EXPORT int fsl_outputfv( fsl_cx * f, char const * fmt, va_list args );
 
    - "user.name": gets replaced with fsl_cx_user_guess().
 
-   - "dbname.repo", "dbname.ckout", "repotable.NAME",
-     "ckouttable.NAME", "temp.NAME" and "tempname.NAME": get replaced
+   - "dbname.repo", "dbname.ckout", "bare.repo.NAME",
+     "bare.ckout.NAME", "temp.NAME" and "bare.temp.NAME": get replaced
      with the names of the repository's and checkout's schemas, of the
      repository resp. checkout table NAME and of f's own TEMP table
      NAME on f's db connection, as the fsl_db SQL functions do (see
@@ -10510,22 +10510,22 @@ FSL_EXPORT void fsl_db_err_reset( fsl_db * db );
    {{temp.NAME}} with the TEMP table NAME of db's context ("temp.NAME"
    for the first context on db's connection, "temp.fslN_NAME" for the
    Nth); and
-   {{tempname.NAME}} with that table's name without the "temp."
-   schema, for where SQLite wants a bare name, as in
-   "CREATE INDEX {{temp.x_idx}} ON {{tempname.x}}(a)"; and
-   {{ckouttable.NAME}} and {{repotable.NAME}} with the checkout resp.
+   {{bare.temp.NAME}} with that table's bare name, without the "temp."
+   schema, for where SQLite wants one, as in
+   "CREATE INDEX {{temp.x_idx}} ON {{bare.temp.x}}(a)"; and
+   {{bare.ckout.NAME}} and {{bare.repo.NAME}} with the checkout resp.
    repository table NAME without its schema, for the same uses, e.g.
-   "ON {{ckouttable.vmerge}}".
+   "ON {{bare.ckout.vmerge}}".
 
    A context's checkout tables may instead be tables of a host's main
    db whose names have a prefix P
    (fsl_repo_open_ckout_opt::hostTablePrefix). Then
    "{{dbname.ckout}}.NAME" as a whole becomes main."PNAME",
-   {{ckouttable.NAME}} becomes "PNAME", and a {{dbname.ckout}} which
+   {{bare.ckout.NAME}} becomes "PNAME", and a {{dbname.ckout}} which
    is not followed by ".NAME" (NAME being of [A-Za-z0-9_] characters)
    is an error (FSL_RC_MISUSE), since it cannot name a prefixed
    table. The same goes for the repository's tables, with
-   {{dbname.repo}} and {{repotable.NAME}}, while they are prefixed
+   {{dbname.repo}} and {{bare.repo.NAME}}, while they are prefixed
    tables of a host's main db (fsl_repo_open_host()). Without a
    prefix, the expansions are as described above, e.g. "ckout.NAME"
    and "NAME". Other text in double braces is left as is. The same applies to every fsl_db
@@ -11800,7 +11800,7 @@ FSL_EXPORT void fsl_cx_host_db_closing( fsl_cx * f );
    functions.
 */
 FSL_EXPORT int fsl_sqlext_init(fsl_db_t * db, char ** pzErrMsg,
-                               void const * pApi);
+                               sqlite3_api_routines const * pApi);
 
 /**
    Expects fmt to be a SELECT-style query. For each row in the
@@ -16149,7 +16149,7 @@ FSL_EXPORT char const * fsl_schema_config(void);
 
    The SQL names the repository's schema with the placeholder
    {{dbname.repo}}, and tables in REFERENCES and index ON clauses with
-   {{repotable.NAME}}, so it is meant to be passed as the format string
+   {{bare.repo.NAME}}, so it is meant to be passed as the format string
    of fsl_db_exec_multi() or fsl_cx_exec_multi(), which expand them for
    the database or context. Passed as data (e.g. via "%s"), or to plain
    sqlite3, it does not run as is. It does not set the repository db's
@@ -16166,7 +16166,7 @@ FSL_EXPORT char const * fsl_schema_repo1(void);
    held in the primary "static" schemas. These parts are
    occassionally recreated, e.g. via a 'rebuild' of a repository.
 
-   Uses the {{dbname.repo}} and {{repotable.NAME}} placeholders: see
+   Uses the {{dbname.repo}} and {{bare.repo.NAME}} placeholders: see
    fsl_schema_repo1() for how to run it.
 
    TODO: add optional (fsl_size_t*) to return the length.
@@ -16176,7 +16176,7 @@ FSL_EXPORT char const * fsl_schema_repo2(void);
 /**
    Returns the raw SQL code for a Fossil checkout database.
 
-   Uses the {{dbname.ckout}} and {{ckouttable.NAME}} placeholders: see
+   Uses the {{dbname.ckout}} and {{bare.ckout.NAME}} placeholders: see
    fsl_schema_repo1() for how to run it. It does not set the checkout
    db's PRAGMA application_id (252006674, 'FSLC'), which libfossil
    sets separately for a checkout db file of its own.
@@ -16199,7 +16199,7 @@ FSL_EXPORT char const * fsl_schema_ticket(void);
    Returns the raw SQL code for the "forum" parts of a Fossil
    repository database.
 
-   Uses the {{dbname.repo}} and {{repotable.NAME}} placeholders: see
+   Uses the {{dbname.repo}} and {{bare.repo.NAME}} placeholders: see
    fsl_schema_repo1() for how to run it.
 
    TODO: add optional (fsl_size_t*) to return the length.
@@ -30851,12 +30851,12 @@ char const * fsl__db_schema(fsl_db const * const db, fsl_dbrole_e r);
    {{X}}) for db to b: "dbname.repo" and "dbname.ckout" become the
    schema names (fsl__db_schema()), and "temp.NAME" becomes the TEMP
    table NAME of db's context, "temp.NAME" for a connection's first
-   context and "temp.fslN_NAME" for its Nth, and "tempname.NAME" that
+   context and "temp.fslN_NAME" for its Nth, and "bare.temp.NAME" that
    name without its schema, for e.g. CREATE INDEX's ON clause.
-   "ckouttable.NAME" becomes the checkout table NAME without its
+   "bare.ckout.NAME" becomes the checkout table NAME without its
    schema, for the same uses: NAME, or "PNAME" (quoted) while db's
    checkout tables are prefixed with P (fsl__db_ckout_prefix()).
-   "repotable.NAME" does the same for a repository table
+   "bare.repo.NAME" does the same for a repository table
    (fsl__db_repo_prefix()).
 
    zTail, if not NULL, is the NUL-terminated text after the token's
@@ -31077,7 +31077,7 @@ bool fsl__db_table_has_column(fsl_db * const db, fsl_dbrole_e r,
 
    fsl_b_appendf(b, zFmt, ...) after replacing the schema placeholders
    ({{dbname.repo}}, {{dbname.ckout}}, {{temp.NAME}},
-   {{tempname.NAME}}, see fsl__db_schema_token()) in zFmt, never in
+   {{bare.temp.NAME}}, see fsl__db_schema_token()) in zFmt, never in
    the values formatted into it, for db. For SQL built up in a buffer
    and then prepared as a "%b" argument, which the fsl_db SQL
    functions do not expand.
@@ -31113,6 +31113,15 @@ int fsl__ticket_schema_qualify(fsl_db * const db, char const * zIn,
    code, with f's error state set.
 */
 int fsl__ticket_schema_install(fsl_cx * const f, char const * zSql);
+
+/** @internal
+
+   Checks that a repository with table prefix zPre can be made in the
+   main db of db's connection: that the prefix overlaps no recorded
+   one and that main has no object whose name starts with it, ignoring
+   case. Returns 0 or an error code, with f's error state set.
+*/
+int fsl__repo_host_free_check(fsl_cx * f, fsl_db * db, char const * zPre);
 
 /** @internal
 
@@ -35704,7 +35713,7 @@ static int fsl__cx_format_token(void * state, char const * zTok,
       break;
   }
   /* {{dbname.repo}}, {{dbname.ckout}}, {{temp.NAME}} and
-     {{tempname.NAME}}, as for the fsl_db SQL functions. Their names
+     {{bare.temp.NAME}}, as for the fsl_db SQL functions. Their names
      contain no '%'. */
   (void)escPct;
   int const rc = fsl__db_schema_token(f->dbMain, zTok, n, NULL, NULL, b);
@@ -44124,7 +44133,7 @@ static char const * const fsl__stash_schema =
   "  ctime TIMESTAMP"
   ");"
   "CREATE TABLE IF NOT EXISTS {{dbname.ckout}}.stashfile("
-  "  stashid INTEGER REFERENCES {{ckouttable.stash}},"
+  "  stashid INTEGER REFERENCES {{bare.ckout.stash}},"
   "  isAdded BOOLEAN,"
   "  isRemoved BOOLEAN,"
   "  isExec BOOLEAN,"
@@ -44168,9 +44177,9 @@ static int fsl__stash_tables(fsl_cx * const f, fsl_db * const db){
   }
   /* Tables from before 2019-01-19: rebuild them with hash columns. */
   rc = fsl_cx_exec_multi(f,
-    "ALTER TABLE {{dbname.ckout}}.stash RENAME TO {{ckouttable.old_stash}};"
+    "ALTER TABLE {{dbname.ckout}}.stash RENAME TO {{bare.ckout.old_stash}};"
     "ALTER TABLE {{dbname.ckout}}.stashfile"
-    " RENAME TO {{ckouttable.old_stashfile}};");
+    " RENAME TO {{bare.ckout.old_stashfile}};");
   if(!rc) rc = fsl_cx_exec_multi(f, fsl__stash_schema);
   if(!rc) rc = fsl_cx_exec_multi(f,
     "INSERT INTO {{dbname.ckout}}.stash(stashid,vid,hash,comment,ctime)"
@@ -56723,22 +56732,22 @@ int fsl__db_schema_token(fsl_db const * const db, char const * zTok,
                          fsl_size_t * pnConsumed, fsl_b * const b){
   char const * zName = NULL;
   fsl_dbrole_e r = FSL_DBROLE_NONE;
-  fsl_size_t nT = 0 /* length of "ckouttable." resp. "repotable." */;
+  fsl_size_t nT = 0 /* length of "bare.ckout." resp. "bare.repo." */;
   if( 11==n && 0==memcmp(zTok, "dbname.repo", 11) ){
     r = FSL_DBROLE_REPO;
   }else if( 12==n && 0==memcmp(zTok, "dbname.ckout", 12) ){
     r = FSL_DBROLE_CKOUT;
-  }else if( n>11 && 0==memcmp(zTok, "ckouttable.", 11) ){
+  }else if( n>11 && 0==memcmp(zTok, "bare.ckout.", 11) ){
     r = FSL_DBROLE_CKOUT;
     nT = 11;
-  }else if( n>10 && 0==memcmp(zTok, "repotable.", 10) ){
+  }else if( n>10 && 0==memcmp(zTok, "bare.repo.", 10) ){
     r = FSL_DBROLE_REPO;
     nT = 10;
   }
   if( FSL_DBROLE_NONE!=r ){
     char const * const zPre = fsl__db_role_prefix(db, r);
     if( nT ){
-      /* As tempname.NAME, for a checkout or repository table. */
+      /* As bare.temp.NAME, for a checkout or repository table. */
       if( zPre ){
         return fsl_b_appendf(b, "\"%s%.*s\"", zPre, (int)(n - nT),
                              zTok + nT);
@@ -56765,14 +56774,14 @@ int fsl__db_schema_token(fsl_db const * const db, char const * zTok,
                            (int)(n - 5), zTok + 5);
     }
     return fsl_b_append(b, zTok, (fsl_int_t)n);
-  }else if( n>9 && 0==memcmp(zTok, "tempname.", 9) ){
+  }else if( n>10 && 0==memcmp(zTok, "bare.temp.", 10) ){
     /* As temp.NAME, without the schema, for where SQLite wants a bare
        table name, e.g. CREATE INDEX temp.X ON NAME(...). */
     if( db && db->impl.share.id>1 ){
       return fsl_b_appendf(b, "fsl%u_%.*s", db->impl.share.id,
-                           (int)(n - 9), zTok + 9);
+                           (int)(n - 10), zTok + 10);
     }
-    return fsl_b_append(b, zTok + 9, (fsl_int_t)(n - 9));
+    return fsl_b_append(b, zTok + 10, (fsl_int_t)(n - 10));
   }
   return zName ? fsl_b_append(b, zName, -1) : FSL_RC_NOT_FOUND;
 }
@@ -74468,7 +74477,7 @@ static int fsl__pivot_set_primary(fsl_cx * const f, fsl_id_t rid){
     ") WITHOUT ROWID;"
     "DELETE FROM " FSL__TABLE_PIVOT ";"
     "CREATE INDEX IF NOT EXISTS {{temp.aqueue_idx1}}"
-    " ON {{tempname.aqueue}}(pending, mtime);"
+    " ON {{bare.temp.aqueue}}(pending, mtime);"
   );
   if(0==rc){
     /* Insert the primary record */
@@ -77813,8 +77822,8 @@ static int fsl__repo_create_default_users(fsl_db * db, bool addOnlyUser,
    working copy, is adopted or dropped. Returns 0 or an error code,
    with f's error state set.
 */
-static int fsl__repo_host_free_check(fsl_cx * const f, fsl_db * const db,
-                                     char const * zPre){
+int fsl__repo_host_free_check(fsl_cx * const f, fsl_db * const db,
+                              char const * zPre){
   char * zList;
   int rc = fsl__host_prefix_recorded_check(f, db, FSL_DBROLE_REPO, zPre);
   if(rc) return rc;
@@ -78901,9 +78910,9 @@ static int fsl__rebuild_update_schema(FslRebuildState * const frs){
   rc = fsl_cx_exec(frs->f,
     "CREATE VIEW IF NOT EXISTS "
     "  {{dbname.repo}}.artifact(rid,rcvid,size,atype,srcid,hash,content) AS "
-    "    SELECT {{repotable.blob}}.rid,rcvid,size,1,srcid,uuid,content"
-    "      FROM {{repotable.blob}} LEFT JOIN {{repotable.delta}}"
-    " ON ({{repotable.blob}}.rid={{repotable.delta}}.rid);"
+    "    SELECT {{bare.repo.blob}}.rid,rcvid,size,1,srcid,uuid,content"
+    "      FROM {{bare.repo.blob}} LEFT JOIN {{bare.repo.delta}}"
+    " ON ({{bare.repo.blob}}.rid={{bare.repo.delta}}.rid);"
     /* The view's body names no schema: SQLite forbids a view stored in
        one database to name another schema, and it resolves within its
        own database anyway. Its tables are the repository's, prefixed
@@ -86504,12 +86513,19 @@ int fsl__ticket_schema_qualify(fsl_db * const db, char const * zIn,
       continue;
     }else if( (z==zIn || !(fsl_isalnum(z[-1]) || '_'==z[-1]))
               && fsl__tkt_sql_kw(z, "CREATE") ){
-      /* CREATE [UNIQUE] TABLE|INDEX [IF NOT EXISTS] [schema.]name */
+      /* CREATE [UNIQUE] TABLE|INDEX|VIEW|TRIGGER [IF NOT EXISTS]
+         [schema.]name. A rebuild drops the ticket tables, and their
+         indexes and triggers with them, but not a view, so one made
+         without IF NOT EXISTS is dropped here first. */
       char const * p = z + 6;
       fsl_size_t n;
+      bool isView = false;
+      bool ifNotExists = false;
       p += fsl__tkt_sql_skip(p);
       if( (n = fsl__tkt_sql_kw(p, "UNIQUE")) ) p += n + fsl__tkt_sql_skip(p + n);
-      if( (n = fsl__tkt_sql_kw(p, "TABLE")) || (n = fsl__tkt_sql_kw(p, "INDEX")) ){
+      if( (n = fsl__tkt_sql_kw(p, "TABLE")) || (n = fsl__tkt_sql_kw(p, "INDEX"))
+          || (n = fsl__tkt_sql_kw(p, "TRIGGER"))
+          || ((n = fsl__tkt_sql_kw(p, "VIEW")) && (isView = true)) ){
         p += n;
         p += fsl__tkt_sql_skip(p);
         if( (n = fsl__tkt_sql_kw(p, "IF")) ){
@@ -86520,6 +86536,7 @@ int fsl__ticket_schema_qualify(fsl_db * const db, char const * zIn,
             if( (n = fsl__tkt_sql_kw(p2, "EXISTS")) ){
               p = p2 + n;
               p += fsl__tkt_sql_skip(p);
+              ifNotExists = true;
             }
           }
         }
@@ -86535,7 +86552,13 @@ int fsl__ticket_schema_qualify(fsl_db * const db, char const * zIn,
               nName = n2;
             }
           }
-          rc = fsl_b_append(out, zCopied, (fsl_int_t)(p - zCopied));
+          if( isView && !ifNotExists ){
+            rc = fsl_b_append(out, zCopied, (fsl_int_t)(z - zCopied));
+            if( 0==rc ) rc = fsl_b_appendf(out, "DROP VIEW IF EXISTS %s.%.*s;\n",
+                                           zSchema, (int)nName, zName);
+            zCopied = z;
+          }
+          if( 0==rc ) rc = fsl_b_append(out, zCopied, (fsl_int_t)(p - zCopied));
           if( 0==rc ) rc = fsl_b_appendf(out, "%s.%.*s", zSchema,
                                          (int)nName, zName);
           z = zCopied = zName + nName;
@@ -86864,10 +86887,18 @@ static int fsl__ticket_schema_install_prefixed(fsl_cx * const f,
     fsl_b_reuse(sql);
     rc = fsl_db_prepare(&s, &q,
       "SELECT sql, CASE WHEN type IN ('table','view') THEN name"
-      " ELSE %Q||name END"
+      " ELSE %Q||name END, type='view'"
       " FROM main.sqlite_schema WHERE sql IS NOT NULL"
       " AND name NOT GLOB 'sqlite_*' ORDER BY type<>'table', rowid", zPre);
     while(!rc && FSL_RC_STEP_ROW==fsl_stmt_step(&q)){
+      if(fsl_stmt_g_int32(&q, 2)){
+        /* A rebuild leaves the views, which the prefix keeps to this
+           repository, so there is nothing of the host's to drop. */
+        rc = fsl_b_appendf(sql, "DROP VIEW IF EXISTS %!Q.\"%s\";\n",
+                           fsl__db_schema(db, FSL_DBROLE_REPO),
+                           fsl_stmt_g_text(&q, 1, NULL));
+        if(rc) break;
+      }
       rc = fsl__repo_copy_sql(sql, fsl_stmt_g_text(&q, 0, NULL),
                               fsl__db_schema(db, FSL_DBROLE_REPO),
                               fsl_stmt_g_text(&q, 1, NULL));
@@ -94983,6 +95014,8 @@ int fsl_repo_zip_sym_to_filename( fsl_cx * const f, char const * sym,
   COMMIT;                              -- both, or neither
   SELECT fsl_close('repo_2');
 
+  The loadable extension needs SQLite 3.44.0 or later.
+
   A program which links libfossil registers the extension with
   sqlite3_auto_extension((void(*)(void))fsl_sqlext_init). The loadable
   build (src/sqlext-loadable.c) has the entry point
@@ -99248,8 +99281,8 @@ static void fslext_sync(sqlite3_context *cx, int argc, sqlite3_value **argv){
   leaves the file, named after the host db with a suffix of
   "-fslclone-" and a random number. It needs room for the whole
   repository there, a main db which is a file and, as fsl_open(), no
-  transaction. If repo:NAME exists, that is only found out at the
-  import, after the clone.
+  transaction. It checks that repo:NAME is free before the download,
+  and the import checks again, for one which appeared meanwhile.
 */
 static void fslext_clone(sqlite3_context *cx, int argc, sqlite3_value **argv){
   char const * const zUrl = (char const *)sqlite3_value_text(argv[0]);
@@ -99261,6 +99294,8 @@ static void fslext_clone(sqlite3_context *cx, int argc, sqlite3_value **argv){
   int const repoKind = fslext_repo_name(zFile, zRepo);
   char * zPw = NULL;
   char * zTmp = NULL;
+  char * zPre = NULL;
+  fsl_cx * f = NULL;
   int rc;
   if( !zUrl || !*zUrl || !zFile || !*zFile ){
     sqlite3_result_error(cx, "fsl_clone() requires a URL and a "
@@ -99291,9 +99326,23 @@ static void fslext_clone(sqlite3_context *cx, int argc, sqlite3_value **argv){
     sqlite3_randomness((int)sizeof(nRand), &nRand);
     zTmp = fsl_mprintf("%s-fslclone-%016llx", zHost,
                        (unsigned long long)nRand);
-    if( !zTmp ){
-      sqlite3_result_error_nomem(cx);
+    zPre = fsl_mprintf(FSLEXT_REPO_PREFIX "%s_", zRepo);
+    rc = (zTmp && zPre) ? fsl_cx_init(&f, NULL) : FSL_RC_OOM;
+    if( 0==rc ) rc = fsl_cx_host_db(f, ext->db);
+    if( 0==rc ){
+      /* Before the download, which may be long. */
+      fsl_db h = fsl_db_empty;
+      fsl__db_borrow(&h, ext->db);
+      rc = fsl__cx_repo_prefix_check(f, &h, zPre);
+      if( 0==rc ) rc = fsl__repo_host_free_check(f, &h, zPre);
+      fsl_db_close(&h)/*does not close the host's handle*/;
+    }
+    if( rc ){
+      if( f ) fslext_open_finish(cx, ext, f, rc, argv[1]);
+      else sqlite3_result_error_nomem(cx);
       fsl_free(zPw);
+      fsl_free(zTmp);
+      fsl_free(zPre);
       return;
     }
   }
@@ -99310,19 +99359,9 @@ static void fslext_clone(sqlite3_context *cx, int argc, sqlite3_value **argv){
                                      : fsl_rc_cstr(rc));
     sqlite3_result_error(cx, z ? z : "fsl_clone() failed", -1);
     sqlite3_free(z);
+    fsl_cx_finalize(f);
   }else if( zTmp ){
-    fsl_cx * f = NULL;
-    char * const zPre = fsl_mprintf(FSLEXT_REPO_PREFIX "%s_", zRepo);
-    rc = zPre ? fsl_cx_init(&f, NULL) : FSL_RC_OOM;
-    if( rc ){
-      fslext_error(cx, f, rc);
-      fsl_cx_finalize(f);
-    }else{
-      rc = fsl_cx_host_db(f, ext->db);
-      if( 0==rc ) rc = fsl_repo_import(f, zTmp, zPre);
-      fslext_open_finish(cx, ext, f, rc, argv[1]);
-    }
-    fsl_free(zPre);
+    fslext_open_finish(cx, ext, f, fsl_repo_import(f, zTmp, zPre), argv[1]);
     /* Only here: if fsl_clone() failed, it removed what it made, and
        the file may not be its own. */
     fsl_file_unlink(zTmp);
@@ -99332,6 +99371,7 @@ static void fslext_clone(sqlite3_context *cx, int argc, sqlite3_value **argv){
   fsl_error_clear(&err);
   fsl_free(zPw);
   fsl_free(zTmp);
+  fsl_free(zPre);
 }
 
 /**
@@ -101037,7 +101077,7 @@ static sqlite3_module fslextReposModule = {
 };
 
 int fsl_sqlext_init(sqlite3 * db, char ** pzErrMsg,
-                    void const * pApi){
+                    sqlite3_api_routines const * pApi){
   static struct {
     char const * zName;
     int nArg;
@@ -101140,6 +101180,15 @@ __declspec(dllexport)
 int sqlite3_fossilext_init(sqlite3 * db, char ** pzErrMsg,
                            sqlite3_api_routines const * pApi){
   SQLITE_EXTENSION_INIT2(pApi);
+  if( sqlite3_libversion_number()<3044000 ){
+    /* sqlite3_set_clientdata() is new in 3.44.0: on an older SQLite
+       its entry in pApi does not exist. */
+    if( pzErrMsg ){
+      *pzErrMsg = sqlite3_mprintf("fossilext needs SQLite 3.44.0 or later, "
+                                  "and this is %s.", sqlite3_libversion());
+    }
+    return SQLITE_ERROR;
+  }
   return fsl_sqlext_init(db, pzErrMsg, pApi);
 }
 #endif
@@ -101956,12 +102005,12 @@ static char const fsl_schema_repo1_cstr_a[] = {
 32, 32, 45, 45, 32, 82, 101, 99, 111, 114, 100, 32, 73, 68, 32, 104, 111, 108, 100, 105, 
 110, 103, 32, 97, 32, 100, 101, 108, 116, 97, 10, 32, 32, 115, 114, 99, 105, 100, 32, 73, 
 78, 84, 69, 71, 69, 82, 32, 78, 79, 84, 32, 78, 85, 76, 76, 32, 82, 69, 70, 69, 
-82, 69, 78, 67, 69, 83, 32, 123, 123, 114, 101, 112, 111, 116, 97, 98, 108, 101, 46, 98, 
+82, 69, 78, 67, 69, 83, 32, 123, 123, 98, 97, 114, 101, 46, 114, 101, 112, 111, 46, 98, 
 108, 111, 98, 125, 125, 32, 32, 32, 45, 45, 32, 82, 101, 99, 111, 114, 100, 32, 104, 111, 
 108, 100, 105, 110, 103, 32, 115, 111, 117, 114, 99, 101, 32, 100, 111, 99, 117, 109, 101, 110, 
 116, 10, 41, 59, 10, 67, 82, 69, 65, 84, 69, 32, 73, 78, 68, 69, 88, 32, 123, 123, 
 100, 98, 110, 97, 109, 101, 46, 114, 101, 112, 111, 125, 125, 46, 100, 101, 108, 116, 97, 95, 
-105, 49, 32, 79, 78, 32, 123, 123, 114, 101, 112, 111, 116, 97, 98, 108, 101, 46, 100, 101, 
+105, 49, 32, 79, 78, 32, 123, 123, 98, 97, 114, 101, 46, 114, 101, 112, 111, 46, 100, 101, 
 108, 116, 97, 125, 125, 40, 115, 114, 99, 105, 100, 41, 59, 10, 10, 45, 45, 45, 45, 45, 
 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 
 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 
@@ -101994,7 +102043,7 @@ static char const fsl_schema_repo1_cstr_a[] = {
 82, 32, 80, 82, 73, 77, 65, 82, 89, 32, 75, 69, 89, 44, 32, 32, 32, 32, 32, 32, 
 45, 45, 32, 82, 101, 99, 101, 105, 118, 101, 100, 45, 70, 114, 111, 109, 32, 73, 68, 10, 
 32, 32, 117, 105, 100, 32, 73, 78, 84, 69, 71, 69, 82, 32, 82, 69, 70, 69, 82, 69, 
-78, 67, 69, 83, 32, 123, 123, 114, 101, 112, 111, 116, 97, 98, 108, 101, 46, 117, 115, 101, 
+78, 67, 69, 83, 32, 123, 123, 98, 97, 114, 101, 46, 114, 101, 112, 111, 46, 117, 115, 101, 
 114, 125, 125, 44, 32, 32, 32, 32, 45, 45, 32, 85, 115, 101, 114, 32, 108, 111, 103, 105, 
 110, 10, 32, 32, 109, 116, 105, 109, 101, 32, 68, 65, 84, 69, 84, 73, 77, 69, 44, 32, 
 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 45, 45, 32, 84, 
@@ -102292,7 +102341,7 @@ static char const fsl_schema_repo2_cstr_a[] = {
 110, 116, 101, 110, 116, 32, 82, 73, 68, 46, 32, 48, 32, 105, 102, 32, 110, 101, 119, 46, 
 32, 45, 49, 32, 105, 102, 32, 102, 114, 111, 109, 32, 97, 32, 109, 101, 114, 103, 101, 10, 
 32, 32, 102, 110, 105, 100, 32, 73, 78, 84, 69, 71, 69, 82, 32, 82, 69, 70, 69, 82, 
-69, 78, 67, 69, 83, 32, 123, 123, 114, 101, 112, 111, 116, 97, 98, 108, 101, 46, 102, 105, 
+69, 78, 67, 69, 83, 32, 123, 123, 98, 97, 114, 101, 46, 114, 101, 112, 111, 46, 102, 105, 
 108, 101, 110, 97, 109, 101, 125, 125, 44, 32, 32, 32, 45, 45, 32, 78, 97, 109, 101, 32, 
 111, 102, 32, 116, 104, 101, 32, 102, 105, 108, 101, 10, 32, 32, 112, 102, 110, 105, 100, 32, 
 73, 78, 84, 69, 71, 69, 82, 44, 32, 32, 32, 32, 32, 32, 45, 45, 32, 80, 114, 101, 
@@ -102306,28 +102355,28 @@ static char const fsl_schema_repo2_cstr_a[] = {
 32, 105, 102, 32, 112, 109, 105, 100, 32, 105, 115, 32, 116, 104, 101, 32, 112, 114, 105, 109, 
 97, 114, 121, 10, 41, 59, 10, 67, 82, 69, 65, 84, 69, 32, 73, 78, 68, 69, 88, 32, 
 123, 123, 100, 98, 110, 97, 109, 101, 46, 114, 101, 112, 111, 125, 125, 46, 109, 108, 105, 110, 
-107, 95, 105, 49, 32, 79, 78, 32, 123, 123, 114, 101, 112, 111, 116, 97, 98, 108, 101, 46, 
+107, 95, 105, 49, 32, 79, 78, 32, 123, 123, 98, 97, 114, 101, 46, 114, 101, 112, 111, 46, 
 109, 108, 105, 110, 107, 125, 125, 40, 109, 105, 100, 41, 59, 10, 67, 82, 69, 65, 84, 69, 
 32, 73, 78, 68, 69, 88, 32, 123, 123, 100, 98, 110, 97, 109, 101, 46, 114, 101, 112, 111, 
-125, 125, 46, 109, 108, 105, 110, 107, 95, 105, 50, 32, 79, 78, 32, 123, 123, 114, 101, 112, 
-111, 116, 97, 98, 108, 101, 46, 109, 108, 105, 110, 107, 125, 125, 40, 102, 110, 105, 100, 41, 
+125, 125, 46, 109, 108, 105, 110, 107, 95, 105, 50, 32, 79, 78, 32, 123, 123, 98, 97, 114, 
+101, 46, 114, 101, 112, 111, 46, 109, 108, 105, 110, 107, 125, 125, 40, 102, 110, 105, 100, 41, 
 59, 10, 67, 82, 69, 65, 84, 69, 32, 73, 78, 68, 69, 88, 32, 123, 123, 100, 98, 110, 
 97, 109, 101, 46, 114, 101, 112, 111, 125, 125, 46, 109, 108, 105, 110, 107, 95, 105, 51, 32, 
-79, 78, 32, 123, 123, 114, 101, 112, 111, 116, 97, 98, 108, 101, 46, 109, 108, 105, 110, 107, 
+79, 78, 32, 123, 123, 98, 97, 114, 101, 46, 114, 101, 112, 111, 46, 109, 108, 105, 110, 107, 
 125, 125, 40, 102, 105, 100, 41, 59, 10, 67, 82, 69, 65, 84, 69, 32, 73, 78, 68, 69, 
 88, 32, 123, 123, 100, 98, 110, 97, 109, 101, 46, 114, 101, 112, 111, 125, 125, 46, 109, 108, 
-105, 110, 107, 95, 105, 52, 32, 79, 78, 32, 123, 123, 114, 101, 112, 111, 116, 97, 98, 108, 
-101, 46, 109, 108, 105, 110, 107, 125, 125, 40, 112, 105, 100, 41, 59, 10, 10, 45, 45, 32, 
+105, 110, 107, 95, 105, 52, 32, 79, 78, 32, 123, 123, 98, 97, 114, 101, 46, 114, 101, 112, 
+111, 46, 109, 108, 105, 110, 107, 125, 125, 40, 112, 105, 100, 41, 59, 10, 10, 45, 45, 32, 
 80, 97, 114, 101, 110, 116, 47, 99, 104, 105, 108, 100, 32, 108, 105, 110, 107, 97, 103, 101, 
 115, 32, 98, 101, 116, 119, 101, 101, 110, 32, 99, 104, 101, 99, 107, 105, 110, 115, 10, 45, 
 45, 10, 67, 82, 69, 65, 84, 69, 32, 84, 65, 66, 76, 69, 32, 123, 123, 100, 98, 110, 
 97, 109, 101, 46, 114, 101, 112, 111, 125, 125, 46, 112, 108, 105, 110, 107, 40, 10, 32, 32, 
 112, 105, 100, 32, 73, 78, 84, 69, 71, 69, 82, 32, 82, 69, 70, 69, 82, 69, 78, 67, 
-69, 83, 32, 123, 123, 114, 101, 112, 111, 116, 97, 98, 108, 101, 46, 98, 108, 111, 98, 125, 
+69, 83, 32, 123, 123, 98, 97, 114, 101, 46, 114, 101, 112, 111, 46, 98, 108, 111, 98, 125, 
 125, 44, 32, 32, 32, 32, 45, 45, 32, 80, 97, 114, 101, 110, 116, 32, 109, 97, 110, 105, 
 102, 101, 115, 116, 10, 32, 32, 99, 105, 100, 32, 73, 78, 84, 69, 71, 69, 82, 32, 82, 
-69, 70, 69, 82, 69, 78, 67, 69, 83, 32, 123, 123, 114, 101, 112, 111, 116, 97, 98, 108, 
-101, 46, 98, 108, 111, 98, 125, 125, 44, 32, 32, 32, 32, 45, 45, 32, 67, 104, 105, 108, 
+69, 70, 69, 82, 69, 78, 67, 69, 83, 32, 123, 123, 98, 97, 114, 101, 46, 114, 101, 112, 
+111, 46, 98, 108, 111, 98, 125, 125, 44, 32, 32, 32, 32, 45, 45, 32, 67, 104, 105, 108, 
 100, 32, 109, 97, 110, 105, 102, 101, 115, 116, 10, 32, 32, 105, 115, 112, 114, 105, 109, 32, 
 66, 79, 79, 76, 69, 65, 78, 44, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 
 32, 32, 32, 32, 32, 45, 45, 32, 112, 105, 100, 32, 105, 115, 32, 116, 104, 101, 32, 112, 
@@ -102337,14 +102386,14 @@ static char const fsl_schema_repo2_cstr_a[] = {
 101, 32, 100, 97, 116, 101, 47, 116, 105, 109, 101, 32, 115, 116, 97, 109, 112, 32, 111, 110, 
 32, 99, 105, 100, 46, 32, 32, 74, 117, 108, 105, 97, 110, 32, 100, 97, 121, 46, 10, 32, 
 32, 98, 97, 115, 101, 105, 100, 32, 73, 78, 84, 69, 71, 69, 82, 32, 82, 69, 70, 69, 
-82, 69, 78, 67, 69, 83, 32, 123, 123, 114, 101, 112, 111, 116, 97, 98, 108, 101, 46, 98, 
+82, 69, 78, 67, 69, 83, 32, 123, 123, 98, 97, 114, 101, 46, 114, 101, 112, 111, 46, 98, 
 108, 111, 98, 125, 125, 44, 32, 45, 45, 32, 66, 97, 115, 101, 108, 105, 110, 101, 32, 105, 
 102, 32, 99, 105, 100, 32, 105, 115, 32, 97, 32, 100, 101, 108, 116, 97, 32, 109, 97, 110, 
 105, 102, 101, 115, 116, 46, 10, 32, 32, 85, 78, 73, 81, 85, 69, 40, 112, 105, 100, 44, 
 32, 99, 105, 100, 41, 10, 41, 59, 10, 67, 82, 69, 65, 84, 69, 32, 73, 78, 68, 69, 
 88, 32, 123, 123, 100, 98, 110, 97, 109, 101, 46, 114, 101, 112, 111, 125, 125, 46, 112, 108, 
-105, 110, 107, 95, 105, 50, 32, 79, 78, 32, 123, 123, 114, 101, 112, 111, 116, 97, 98, 108, 
-101, 46, 112, 108, 105, 110, 107, 125, 125, 40, 99, 105, 100, 44, 112, 105, 100, 41, 59, 10, 
+105, 110, 107, 95, 105, 50, 32, 79, 78, 32, 123, 123, 98, 97, 114, 101, 46, 114, 101, 112, 
+111, 46, 112, 108, 105, 110, 107, 125, 125, 40, 99, 105, 100, 44, 112, 105, 100, 41, 59, 10, 
 10, 45, 45, 32, 65, 32, 34, 108, 101, 97, 102, 34, 32, 99, 104, 101, 99, 107, 105, 110, 
 32, 105, 115, 32, 97, 32, 99, 104, 101, 99, 107, 105, 110, 32, 116, 104, 97, 116, 32, 104, 
 97, 115, 32, 110, 111, 32, 99, 104, 105, 108, 100, 114, 101, 110, 32, 105, 110, 32, 116, 104, 
@@ -102386,8 +102435,8 @@ static char const fsl_schema_repo2_cstr_a[] = {
 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 45, 45, 32, 65, 115, 115, 111, 99, 
 105, 97, 116, 101, 100, 32, 116, 105, 99, 107, 101, 116, 32, 111, 114, 32, 119, 105, 107, 105, 
 32, 110, 97, 109, 101, 32, 116, 97, 103, 10, 32, 32, 117, 105, 100, 32, 73, 78, 84, 69, 
-71, 69, 82, 32, 82, 69, 70, 69, 82, 69, 78, 67, 69, 83, 32, 123, 123, 114, 101, 112, 
-111, 116, 97, 98, 108, 101, 46, 117, 115, 101, 114, 125, 125, 44, 32, 32, 32, 32, 45, 45, 
+71, 69, 82, 32, 82, 69, 70, 69, 82, 69, 78, 67, 69, 83, 32, 123, 123, 98, 97, 114, 
+101, 46, 114, 101, 112, 111, 46, 117, 115, 101, 114, 125, 125, 44, 32, 32, 32, 32, 45, 45, 
 32, 85, 115, 101, 114, 32, 119, 104, 111, 32, 99, 97, 117, 115, 101, 100, 32, 116, 104, 101, 
 32, 101, 118, 101, 110, 116, 10, 32, 32, 98, 103, 99, 111, 108, 111, 114, 32, 84, 69, 88, 
 84, 44, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 
@@ -102415,7 +102464,7 @@ static char const fsl_schema_repo2_cstr_a[] = {
 101, 100, 32, 100, 97, 116, 101, 43, 116, 105, 109, 101, 44, 32, 111, 114, 32, 78, 85, 76, 
 76, 10, 41, 59, 10, 67, 82, 69, 65, 84, 69, 32, 73, 78, 68, 69, 88, 32, 123, 123, 
 100, 98, 110, 97, 109, 101, 46, 114, 101, 112, 111, 125, 125, 46, 101, 118, 101, 110, 116, 95, 
-105, 49, 32, 79, 78, 32, 123, 123, 114, 101, 112, 111, 116, 97, 98, 108, 101, 46, 101, 118, 
+105, 49, 32, 79, 78, 32, 123, 123, 98, 97, 114, 101, 46, 114, 101, 112, 111, 46, 101, 118, 
 101, 110, 116, 125, 125, 40, 109, 116, 105, 109, 101, 41, 59, 10, 10, 45, 45, 32, 65, 32, 
 114, 101, 99, 111, 114, 100, 32, 111, 102, 32, 112, 104, 97, 110, 116, 111, 109, 115, 46, 32, 
 32, 65, 32, 112, 104, 97, 110, 116, 111, 109, 32, 105, 115, 32, 97, 32, 114, 101, 99, 111, 
@@ -102452,8 +102501,8 @@ static char const fsl_schema_repo2_cstr_a[] = {
 109, 32, 98, 97, 115, 101, 108, 105, 110, 101, 32, 111, 102, 32, 116, 104, 105, 115, 32, 111, 
 114, 112, 104, 97, 110, 10, 41, 59, 10, 67, 82, 69, 65, 84, 69, 32, 73, 78, 68, 69, 
 88, 32, 123, 123, 100, 98, 110, 97, 109, 101, 46, 114, 101, 112, 111, 125, 125, 46, 111, 114, 
-112, 104, 97, 110, 95, 98, 97, 115, 101, 108, 105, 110, 101, 32, 79, 78, 32, 123, 123, 114, 
-101, 112, 111, 116, 97, 98, 108, 101, 46, 111, 114, 112, 104, 97, 110, 125, 125, 40, 98, 97, 
+112, 104, 97, 110, 95, 98, 97, 115, 101, 108, 105, 110, 101, 32, 79, 78, 32, 123, 123, 98, 
+97, 114, 101, 46, 114, 101, 112, 111, 46, 111, 114, 112, 104, 97, 110, 125, 125, 40, 98, 97, 
 115, 101, 108, 105, 110, 101, 41, 59, 10, 10, 45, 45, 32, 85, 110, 99, 108, 117, 115, 116, 
 101, 114, 101, 100, 32, 114, 101, 99, 111, 114, 100, 115, 46, 32, 32, 65, 110, 32, 117, 110, 
 99, 108, 117, 115, 116, 101, 114, 101, 100, 32, 114, 101, 99, 111, 114, 100, 32, 105, 115, 32, 
@@ -102590,7 +102639,7 @@ static char const fsl_schema_repo2_cstr_a[] = {
 84, 65, 66, 76, 69, 32, 123, 123, 100, 98, 110, 97, 109, 101, 46, 114, 101, 112, 111, 125, 
 125, 46, 116, 97, 103, 120, 114, 101, 102, 40, 10, 32, 32, 116, 97, 103, 105, 100, 32, 73, 
 78, 84, 69, 71, 69, 82, 32, 82, 69, 70, 69, 82, 69, 78, 67, 69, 83, 32, 123, 123, 
-114, 101, 112, 111, 116, 97, 98, 108, 101, 46, 116, 97, 103, 125, 125, 44, 32, 32, 32, 45, 
+98, 97, 114, 101, 46, 114, 101, 112, 111, 46, 116, 97, 103, 125, 125, 44, 32, 32, 32, 45, 
 45, 32, 84, 104, 101, 32, 116, 97, 103, 32, 116, 104, 97, 116, 32, 119, 97, 115, 32, 97, 
 100, 100, 101, 100, 32, 111, 114, 32, 114, 101, 109, 111, 118, 101, 100, 10, 32, 32, 116, 97, 
 103, 116, 121, 112, 101, 32, 73, 78, 84, 69, 71, 69, 82, 44, 32, 32, 32, 32, 32, 32, 
@@ -102598,11 +102647,11 @@ static char const fsl_schema_repo2_cstr_a[] = {
 99, 101, 108, 32, 32, 49, 58, 43, 44, 115, 105, 110, 103, 108, 101, 32, 32, 50, 58, 42, 
 44, 112, 114, 111, 112, 97, 103, 97, 116, 101, 10, 32, 32, 115, 114, 99, 105, 100, 32, 73, 
 78, 84, 69, 71, 69, 82, 32, 82, 69, 70, 69, 82, 69, 78, 67, 69, 83, 32, 123, 123, 
-114, 101, 112, 111, 116, 97, 98, 108, 101, 46, 98, 108, 111, 98, 125, 125, 44, 32, 32, 45, 
+98, 97, 114, 101, 46, 114, 101, 112, 111, 46, 98, 108, 111, 98, 125, 125, 44, 32, 32, 45, 
 45, 32, 65, 114, 116, 105, 102, 97, 99, 116, 32, 111, 102, 32, 116, 97, 103, 46, 32, 48, 
 32, 102, 111, 114, 32, 112, 114, 111, 112, 97, 103, 97, 116, 101, 100, 32, 116, 97, 103, 115, 
 10, 32, 32, 111, 114, 105, 103, 105, 100, 32, 73, 78, 84, 69, 71, 69, 82, 32, 82, 69, 
-70, 69, 82, 69, 78, 67, 69, 83, 32, 123, 123, 114, 101, 112, 111, 116, 97, 98, 108, 101, 
+70, 69, 82, 69, 78, 67, 69, 83, 32, 123, 123, 98, 97, 114, 101, 46, 114, 101, 112, 111, 
 46, 98, 108, 111, 98, 125, 125, 44, 32, 45, 45, 32, 99, 104, 101, 99, 107, 45, 105, 110, 
 32, 104, 111, 108, 100, 105, 110, 103, 32, 112, 114, 111, 112, 97, 103, 97, 116, 101, 100, 32, 
 116, 97, 103, 10, 32, 32, 118, 97, 108, 117, 101, 32, 84, 69, 88, 84, 44, 32, 32, 32, 
@@ -102619,7 +102668,7 @@ static char const fsl_schema_repo2_cstr_a[] = {
 73, 81, 85, 69, 40, 114, 105, 100, 44, 32, 116, 97, 103, 105, 100, 41, 10, 41, 59, 10, 
 67, 82, 69, 65, 84, 69, 32, 73, 78, 68, 69, 88, 32, 123, 123, 100, 98, 110, 97, 109, 
 101, 46, 114, 101, 112, 111, 125, 125, 46, 116, 97, 103, 120, 114, 101, 102, 95, 105, 49, 32, 
-79, 78, 32, 123, 123, 114, 101, 112, 111, 116, 97, 98, 108, 101, 46, 116, 97, 103, 120, 114, 
+79, 78, 32, 123, 123, 98, 97, 114, 101, 46, 114, 101, 112, 111, 46, 116, 97, 103, 120, 114, 
 101, 102, 125, 125, 40, 116, 97, 103, 105, 100, 44, 32, 109, 116, 105, 109, 101, 41, 59, 10, 
 10, 45, 45, 32, 87, 104, 101, 110, 32, 97, 32, 104, 121, 112, 101, 114, 108, 105, 110, 107, 
 32, 111, 99, 99, 117, 114, 115, 32, 102, 114, 111, 109, 32, 111, 110, 101, 32, 97, 114, 116, 
@@ -102652,8 +102701,8 @@ static char const fsl_schema_repo2_cstr_a[] = {
 85, 69, 40, 116, 97, 114, 103, 101, 116, 44, 32, 115, 114, 99, 116, 121, 112, 101, 44, 32, 
 115, 114, 99, 105, 100, 41, 10, 41, 59, 10, 67, 82, 69, 65, 84, 69, 32, 73, 78, 68, 
 69, 88, 32, 123, 123, 100, 98, 110, 97, 109, 101, 46, 114, 101, 112, 111, 125, 125, 46, 98, 
-97, 99, 107, 108, 105, 110, 107, 95, 115, 114, 99, 32, 79, 78, 32, 123, 123, 114, 101, 112, 
-111, 116, 97, 98, 108, 101, 46, 98, 97, 99, 107, 108, 105, 110, 107, 125, 125, 40, 115, 114, 
+97, 99, 107, 108, 105, 110, 107, 95, 115, 114, 99, 32, 79, 78, 32, 123, 123, 98, 97, 114, 
+101, 46, 114, 101, 112, 111, 46, 98, 97, 99, 107, 108, 105, 110, 107, 125, 125, 40, 115, 114, 
 99, 105, 100, 44, 32, 115, 114, 99, 116, 121, 112, 101, 41, 59, 10, 10, 45, 45, 32, 69, 
 97, 99, 104, 32, 97, 116, 116, 97, 99, 104, 109, 101, 110, 116, 32, 105, 115, 32, 97, 110, 
 32, 101, 110, 116, 114, 121, 32, 105, 110, 32, 116, 104, 101, 32, 102, 111, 108, 108, 111, 119, 
@@ -102694,12 +102743,12 @@ static char const fsl_schema_repo2_cstr_a[] = {
 97, 116, 116, 97, 99, 104, 109, 101, 110, 116, 10, 41, 59, 10, 67, 82, 69, 65, 84, 69, 
 32, 73, 78, 68, 69, 88, 32, 123, 123, 100, 98, 110, 97, 109, 101, 46, 114, 101, 112, 111, 
 125, 125, 46, 97, 116, 116, 97, 99, 104, 109, 101, 110, 116, 95, 105, 100, 120, 49, 32, 79, 
-78, 32, 123, 123, 114, 101, 112, 111, 116, 97, 98, 108, 101, 46, 97, 116, 116, 97, 99, 104, 
+78, 32, 123, 123, 98, 97, 114, 101, 46, 114, 101, 112, 111, 46, 97, 116, 116, 97, 99, 104, 
 109, 101, 110, 116, 125, 125, 40, 116, 97, 114, 103, 101, 116, 44, 32, 102, 105, 108, 101, 110, 
 97, 109, 101, 44, 32, 109, 116, 105, 109, 101, 41, 59, 10, 67, 82, 69, 65, 84, 69, 32, 
 73, 78, 68, 69, 88, 32, 123, 123, 100, 98, 110, 97, 109, 101, 46, 114, 101, 112, 111, 125, 
 125, 46, 97, 116, 116, 97, 99, 104, 109, 101, 110, 116, 95, 105, 100, 120, 50, 32, 79, 78, 
-32, 123, 123, 114, 101, 112, 111, 116, 97, 98, 108, 101, 46, 97, 116, 116, 97, 99, 104, 109, 
+32, 123, 123, 98, 97, 114, 101, 46, 114, 101, 112, 111, 46, 97, 116, 116, 97, 99, 104, 109, 
 101, 110, 116, 125, 125, 40, 115, 114, 99, 41, 59, 10, 10, 45, 45, 32, 70, 111, 114, 32, 
 116, 114, 97, 99, 107, 105, 110, 103, 32, 99, 104, 101, 114, 114, 121, 112, 105, 99, 107, 32, 
 109, 101, 114, 103, 101, 115, 10, 67, 82, 69, 65, 84, 69, 32, 84, 65, 66, 76, 69, 32, 
@@ -102712,8 +102761,8 @@ static char const fsl_schema_repo2_cstr_a[] = {
 105, 108, 100, 105, 100, 41, 10, 41, 32, 87, 73, 84, 72, 79, 85, 84, 32, 82, 79, 87, 
 73, 68, 59, 10, 67, 82, 69, 65, 84, 69, 32, 73, 78, 68, 69, 88, 32, 123, 123, 100, 
 98, 110, 97, 109, 101, 46, 114, 101, 112, 111, 125, 125, 46, 99, 104, 101, 114, 114, 121, 112, 
-105, 99, 107, 95, 99, 105, 100, 32, 79, 78, 32, 123, 123, 114, 101, 112, 111, 116, 97, 98, 
-108, 101, 46, 99, 104, 101, 114, 114, 121, 112, 105, 99, 107, 125, 125, 40, 99, 104, 105, 108, 
+105, 99, 107, 95, 99, 105, 100, 32, 79, 78, 32, 123, 123, 98, 97, 114, 101, 46, 114, 101, 
+112, 111, 46, 99, 104, 101, 114, 114, 121, 112, 105, 99, 107, 125, 125, 40, 99, 104, 105, 108, 
 100, 105, 100, 41, 59, 10, 
 0};
 char const * fsl_schema_repo2_cstr = fsl_schema_repo2_cstr_a;
@@ -102881,7 +102930,7 @@ static char const fsl_schema_ckout_cstr_a[] = {
 10, 10, 67, 82, 69, 65, 84, 69, 32, 84, 65, 66, 76, 69, 32, 123, 123, 100, 98, 110, 
 97, 109, 101, 46, 99, 107, 111, 117, 116, 125, 125, 46, 118, 109, 101, 114, 103, 101, 40, 10, 
 32, 32, 105, 100, 32, 73, 78, 84, 69, 71, 69, 82, 32, 82, 69, 70, 69, 82, 69, 78, 
-67, 69, 83, 32, 123, 123, 99, 107, 111, 117, 116, 116, 97, 98, 108, 101, 46, 118, 102, 105, 
+67, 69, 83, 32, 123, 123, 98, 97, 114, 101, 46, 99, 107, 111, 117, 116, 46, 118, 102, 105, 
 108, 101, 125, 125, 44, 32, 32, 32, 32, 32, 32, 45, 45, 32, 86, 70, 73, 76, 69, 32, 
 101, 110, 116, 114, 121, 32, 116, 104, 97, 116, 32, 104, 97, 115, 32, 98, 101, 101, 110, 32, 
 109, 101, 114, 103, 101, 100, 10, 32, 32, 109, 101, 114, 103, 101, 32, 73, 78, 84, 69, 71, 
@@ -102893,8 +102942,8 @@ static char const fsl_schema_ckout_cstr_a[] = {
 97, 115, 104, 32, 102, 111, 114, 32, 109, 101, 114, 103, 101, 32, 111, 98, 106, 101, 99, 116, 
 10, 41, 59, 10, 67, 82, 69, 65, 84, 69, 32, 85, 78, 73, 81, 85, 69, 32, 73, 78, 
 68, 69, 88, 32, 123, 123, 100, 98, 110, 97, 109, 101, 46, 99, 107, 111, 117, 116, 125, 125, 
-46, 118, 109, 101, 114, 103, 101, 120, 49, 32, 79, 78, 32, 123, 123, 99, 107, 111, 117, 116, 
-116, 97, 98, 108, 101, 46, 118, 109, 101, 114, 103, 101, 125, 125, 40, 105, 100, 44, 109, 104, 
+46, 118, 109, 101, 114, 103, 101, 120, 49, 32, 79, 78, 32, 123, 123, 98, 97, 114, 101, 46, 
+99, 107, 111, 117, 116, 46, 118, 109, 101, 114, 103, 101, 125, 125, 40, 105, 100, 44, 109, 104, 
 97, 115, 104, 41, 59, 10, 10, 45, 45, 32, 84, 104, 101, 32, 102, 111, 108, 108, 111, 119, 
 105, 110, 103, 32, 116, 114, 105, 103, 103, 101, 114, 32, 119, 105, 108, 108, 32, 112, 114, 101, 
 118, 101, 110, 116, 32, 111, 108, 100, 101, 114, 32, 118, 101, 114, 115, 105, 111, 110, 115, 32, 
@@ -102914,8 +102963,8 @@ static char const fsl_schema_ckout_cstr_a[] = {
 101, 110, 116, 108, 121, 32, 105, 103, 110, 111, 114, 101, 100, 46, 10, 67, 82, 69, 65, 84, 
 69, 32, 84, 82, 73, 71, 71, 69, 82, 32, 123, 123, 100, 98, 110, 97, 109, 101, 46, 99, 
 107, 111, 117, 116, 125, 125, 46, 118, 109, 101, 114, 103, 101, 95, 99, 107, 49, 32, 65, 70, 
-84, 69, 82, 32, 73, 78, 83, 69, 82, 84, 32, 79, 78, 32, 123, 123, 99, 107, 111, 117, 
-116, 116, 97, 98, 108, 101, 46, 118, 109, 101, 114, 103, 101, 125, 125, 10, 87, 72, 69, 78, 
+84, 69, 82, 32, 73, 78, 83, 69, 82, 84, 32, 79, 78, 32, 123, 123, 98, 97, 114, 101, 
+46, 99, 107, 111, 117, 116, 46, 118, 109, 101, 114, 103, 101, 125, 125, 10, 87, 72, 69, 78, 
 32, 110, 101, 119, 46, 109, 104, 97, 115, 104, 32, 73, 83, 32, 78, 85, 76, 76, 32, 66, 
 69, 71, 73, 78, 10, 32, 32, 83, 69, 76, 69, 67, 84, 32, 114, 97, 105, 115, 101, 40, 
 70, 65, 73, 76, 44, 10, 32, 32, 39, 116, 114, 121, 105, 110, 103, 32, 116, 111, 32, 117, 
@@ -103051,7 +103100,7 @@ static char const fsl_schema_forum_cstr_a[] = {
 100, 46, 32, 32, 74, 117, 108, 105, 97, 110, 32, 100, 97, 121, 10, 41, 59, 10, 67, 82, 
 69, 65, 84, 69, 32, 73, 78, 68, 69, 88, 32, 123, 123, 100, 98, 110, 97, 109, 101, 46, 
 114, 101, 112, 111, 125, 125, 46, 102, 111, 114, 117, 109, 116, 104, 114, 101, 97, 100, 32, 79, 
-78, 32, 123, 123, 114, 101, 112, 111, 116, 97, 98, 108, 101, 46, 102, 111, 114, 117, 109, 112, 
+78, 32, 123, 123, 98, 97, 114, 101, 46, 114, 101, 112, 111, 46, 102, 111, 114, 117, 109, 112, 
 111, 115, 116, 125, 125, 40, 102, 114, 111, 111, 116, 44, 102, 109, 116, 105, 109, 101, 41, 59, 
 10, 
 0};

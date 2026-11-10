@@ -6,9 +6,9 @@
 #define FSL_AMALGAMATION_BUILD 1
 #define FSL_PACKAGE_NAME "libfossil"
 #define FSL_LIBRARY_VERSION "0.6.1"
-#define FSL_LIB_VERSION_HASH "ab34f5e39c293b3a515aac1252dc7a593d556a2b693cf568bc493881080d79bf"
-#define FSL_LIB_VERSION_TIMESTAMP "2026-11-09 23:16:24.829 UTC"
-#define FSL_LIB_CONFIG_TIMESTAMP "2026-11-09 23:16 GMT"
+#define FSL_LIB_VERSION_HASH "e84af25d7914297f0a86b73e947fc8ccc02e33b0df66f1de910debbab2e3e64c"
+#define FSL_LIB_VERSION_TIMESTAMP "2026-11-10 15:55:59.881 UTC"
+#define FSL_LIB_CONFIG_TIMESTAMP "2026-11-10 15:56 GMT"
 #define FSL_AUX_SCHEMA "2015-01-24"
 #define FSL_CONTENT_SCHEMA "2"
 #define FOSSIL_RELEASE_VERSION_NUMBER 22700
@@ -8590,8 +8590,8 @@ FSL_EXPORT int fsl_outputfv( fsl_cx * f, char const * fmt, va_list args );
 
    - "user.name": gets replaced with fsl_cx_user_guess().
 
-   - "dbname.repo", "dbname.ckout", "repotable.NAME",
-     "ckouttable.NAME", "temp.NAME" and "tempname.NAME": get replaced
+   - "dbname.repo", "dbname.ckout", "bare.repo.NAME",
+     "bare.ckout.NAME", "temp.NAME" and "bare.temp.NAME": get replaced
      with the names of the repository's and checkout's schemas, of the
      repository resp. checkout table NAME and of f's own TEMP table
      NAME on f's db connection, as the fsl_db SQL functions do (see
@@ -10500,22 +10500,22 @@ FSL_EXPORT void fsl_db_err_reset( fsl_db * db );
    {{temp.NAME}} with the TEMP table NAME of db's context ("temp.NAME"
    for the first context on db's connection, "temp.fslN_NAME" for the
    Nth); and
-   {{tempname.NAME}} with that table's name without the "temp."
-   schema, for where SQLite wants a bare name, as in
-   "CREATE INDEX {{temp.x_idx}} ON {{tempname.x}}(a)"; and
-   {{ckouttable.NAME}} and {{repotable.NAME}} with the checkout resp.
+   {{bare.temp.NAME}} with that table's bare name, without the "temp."
+   schema, for where SQLite wants one, as in
+   "CREATE INDEX {{temp.x_idx}} ON {{bare.temp.x}}(a)"; and
+   {{bare.ckout.NAME}} and {{bare.repo.NAME}} with the checkout resp.
    repository table NAME without its schema, for the same uses, e.g.
-   "ON {{ckouttable.vmerge}}".
+   "ON {{bare.ckout.vmerge}}".
 
    A context's checkout tables may instead be tables of a host's main
    db whose names have a prefix P
    (fsl_repo_open_ckout_opt::hostTablePrefix). Then
    "{{dbname.ckout}}.NAME" as a whole becomes main."PNAME",
-   {{ckouttable.NAME}} becomes "PNAME", and a {{dbname.ckout}} which
+   {{bare.ckout.NAME}} becomes "PNAME", and a {{dbname.ckout}} which
    is not followed by ".NAME" (NAME being of [A-Za-z0-9_] characters)
    is an error (FSL_RC_MISUSE), since it cannot name a prefixed
    table. The same goes for the repository's tables, with
-   {{dbname.repo}} and {{repotable.NAME}}, while they are prefixed
+   {{dbname.repo}} and {{bare.repo.NAME}}, while they are prefixed
    tables of a host's main db (fsl_repo_open_host()). Without a
    prefix, the expansions are as described above, e.g. "ckout.NAME"
    and "NAME". Other text in double braces is left as is. The same applies to every fsl_db
@@ -11790,7 +11790,7 @@ FSL_EXPORT void fsl_cx_host_db_closing( fsl_cx * f );
    functions.
 */
 FSL_EXPORT int fsl_sqlext_init(fsl_db_t * db, char ** pzErrMsg,
-                               void const * pApi);
+                               sqlite3_api_routines const * pApi);
 
 /**
    Expects fmt to be a SELECT-style query. For each row in the
@@ -16139,7 +16139,7 @@ FSL_EXPORT char const * fsl_schema_config(void);
 
    The SQL names the repository's schema with the placeholder
    {{dbname.repo}}, and tables in REFERENCES and index ON clauses with
-   {{repotable.NAME}}, so it is meant to be passed as the format string
+   {{bare.repo.NAME}}, so it is meant to be passed as the format string
    of fsl_db_exec_multi() or fsl_cx_exec_multi(), which expand them for
    the database or context. Passed as data (e.g. via "%s"), or to plain
    sqlite3, it does not run as is. It does not set the repository db's
@@ -16156,7 +16156,7 @@ FSL_EXPORT char const * fsl_schema_repo1(void);
    held in the primary "static" schemas. These parts are
    occassionally recreated, e.g. via a 'rebuild' of a repository.
 
-   Uses the {{dbname.repo}} and {{repotable.NAME}} placeholders: see
+   Uses the {{dbname.repo}} and {{bare.repo.NAME}} placeholders: see
    fsl_schema_repo1() for how to run it.
 
    TODO: add optional (fsl_size_t*) to return the length.
@@ -16166,7 +16166,7 @@ FSL_EXPORT char const * fsl_schema_repo2(void);
 /**
    Returns the raw SQL code for a Fossil checkout database.
 
-   Uses the {{dbname.ckout}} and {{ckouttable.NAME}} placeholders: see
+   Uses the {{dbname.ckout}} and {{bare.ckout.NAME}} placeholders: see
    fsl_schema_repo1() for how to run it. It does not set the checkout
    db's PRAGMA application_id (252006674, 'FSLC'), which libfossil
    sets separately for a checkout db file of its own.
@@ -16189,7 +16189,7 @@ FSL_EXPORT char const * fsl_schema_ticket(void);
    Returns the raw SQL code for the "forum" parts of a Fossil
    repository database.
 
-   Uses the {{dbname.repo}} and {{repotable.NAME}} placeholders: see
+   Uses the {{dbname.repo}} and {{bare.repo.NAME}} placeholders: see
    fsl_schema_repo1() for how to run it.
 
    TODO: add optional (fsl_size_t*) to return the length.
@@ -30841,12 +30841,12 @@ char const * fsl__db_schema(fsl_db const * const db, fsl_dbrole_e r);
    {{X}}) for db to b: "dbname.repo" and "dbname.ckout" become the
    schema names (fsl__db_schema()), and "temp.NAME" becomes the TEMP
    table NAME of db's context, "temp.NAME" for a connection's first
-   context and "temp.fslN_NAME" for its Nth, and "tempname.NAME" that
+   context and "temp.fslN_NAME" for its Nth, and "bare.temp.NAME" that
    name without its schema, for e.g. CREATE INDEX's ON clause.
-   "ckouttable.NAME" becomes the checkout table NAME without its
+   "bare.ckout.NAME" becomes the checkout table NAME without its
    schema, for the same uses: NAME, or "PNAME" (quoted) while db's
    checkout tables are prefixed with P (fsl__db_ckout_prefix()).
-   "repotable.NAME" does the same for a repository table
+   "bare.repo.NAME" does the same for a repository table
    (fsl__db_repo_prefix()).
 
    zTail, if not NULL, is the NUL-terminated text after the token's
@@ -31067,7 +31067,7 @@ bool fsl__db_table_has_column(fsl_db * const db, fsl_dbrole_e r,
 
    fsl_b_appendf(b, zFmt, ...) after replacing the schema placeholders
    ({{dbname.repo}}, {{dbname.ckout}}, {{temp.NAME}},
-   {{tempname.NAME}}, see fsl__db_schema_token()) in zFmt, never in
+   {{bare.temp.NAME}}, see fsl__db_schema_token()) in zFmt, never in
    the values formatted into it, for db. For SQL built up in a buffer
    and then prepared as a "%b" argument, which the fsl_db SQL
    functions do not expand.
@@ -31103,6 +31103,15 @@ int fsl__ticket_schema_qualify(fsl_db * const db, char const * zIn,
    code, with f's error state set.
 */
 int fsl__ticket_schema_install(fsl_cx * const f, char const * zSql);
+
+/** @internal
+
+   Checks that a repository with table prefix zPre can be made in the
+   main db of db's connection: that the prefix overlaps no recorded
+   one and that main has no object whose name starts with it, ignoring
+   case. Returns 0 or an error code, with f's error state set.
+*/
+int fsl__repo_host_free_check(fsl_cx * f, fsl_db * db, char const * zPre);
 
 /** @internal
 
