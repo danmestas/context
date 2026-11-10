@@ -19,6 +19,11 @@ the exact bytes and writes `NAME.origin.json` beside them, saying where the sour
 came from and how long it can be trusted. `ctx source check` fails if a source has
 no origin or has changed since it was recorded, so a repository's CI can run it.
 
+Old information is retired without being erased. `ctx source supersede` records
+that a source was replaced, amended or retracted, and search stops serving it unless
+asked with `--history` or `--as-of DATE`. `ctx wiki repin` moves each claim whose
+quote survives and opens a ticket for each one that does not.
+
 Source documents are check-ins, the compiled wiki is Fossil wiki in Markdown,
 work items are tickets, and session transcripts are technotes in a per-person
 repository.

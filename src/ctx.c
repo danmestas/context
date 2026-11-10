@@ -938,18 +938,31 @@ static char *current_project(sqlite3 *db) {
 }
 
 /* Runs the search; prints hits and returns how many there were. */
-static int search_run(sqlite3 *db, const char *match, const char *project, int limit) {
-  sqlite3_stmt *q = db_prepare(db,
+static int search_run(sqlite3 *db, const char *match, const char *project, int limit, int history, const char *as_of) {
+  /* retired material is removed before a model can see it, not just labeled */
+  static const char head[] =
       "SELECT c.id, coalesce(c.project, d.project), d.kind, coalesce(c.heading,''), substr(coalesce(c.at,''),1,10),"
       "       snippet(ctx_chunk_fts, 1, '[', ']', ' ... ', 40)"
       " FROM ctx_chunk_fts"
       " JOIN ctx_chunk c ON c.id = ctx_chunk_fts.rowid"
       " JOIN ctx_doc d ON d.id = c.doc_id"
-      " WHERE ctx_chunk_fts MATCH ?1 AND (?2 IS NULL OR coalesce(c.project, d.project) = ?2)"
-      " ORDER BY ctx_chunk_fts.rank LIMIT ?3");
+      " WHERE ctx_chunk_fts MATCH ?1 AND (?2 IS NULL OR coalesce(c.project, d.project) = ?2)";
+  static const char current[] = " AND (?4 OR coalesce(d.status, '') NOT IN ('superseded', 'retracted', 'retired'))";
+  static const char then[] =
+      " AND ?4 IS NOT NULL AND ((d.kind = 'session' AND substr(c.at, 1, 10) <= ?5)"
+      "  OR (d.kind = 'source' AND EXISTS (SELECT 1 FROM ctx_source_meta m WHERE m.doc_id = d.id AND m.added_at <= ?5"
+      "      AND m.valid_from <= ?5 AND (m.valid_until IS NULL OR m.valid_until > ?5))"
+      "      AND NOT EXISTS (SELECT 1 FROM ctx_supersession e WHERE e.project = d.project AND e.old = d.name"
+      "      AND e.at <= ?5 AND e.relation IN ('replaces', 'retracts'))))";
+  static const char tail[] = " ORDER BY ctx_chunk_fts.rank LIMIT ?3";
+  char sql[1600];
+  snprintf(sql, sizeof sql, "%s%s%s", head, as_of ? then : current, tail);
+  sqlite3_stmt *q = db_prepare(db, sql);
   sqlite3_bind_text(q, 1, match, -1, SQLITE_STATIC);
   if (project) sqlite3_bind_text(q, 2, project, -1, SQLITE_STATIC);
   sqlite3_bind_int(q, 3, limit);
+  sqlite3_bind_int(q, 4, history);
+  if (as_of) sqlite3_bind_text(q, 5, as_of, -1, SQLITE_STATIC);
   int hits = 0, rc;
   while ((rc = sqlite3_step(q)) == SQLITE_ROW) {
     hits++;
@@ -974,13 +987,19 @@ static int search_run(sqlite3 *db, const char *match, const char *project, int l
   return hits;
 }
 
-/* ctx search [--all] [--limit N] WORDS... */
+/* ctx search [--all] [--history] [--as-of DATE] [--limit N] WORDS... */
+static void require_date(sqlite3 *db, const char *flag, const char *value);
+static void index_prepare(sqlite3 *db);
+
 static int cmd_search(int argc, char **argv) {
-  int all = 0, limit = 12, nwords = 0;
+  int all = 0, limit = 12, nwords = 0, history = 0;
+  const char *as_of = NULL;
   char **words = calloc((size_t)argc + 1, sizeof *words);
   if (!words) die("out of memory");
   for (int i = 0; i < argc; i++) {
     if (!strcmp(argv[i], "--all")) all = 1;
+    else if (!strcmp(argv[i], "--history")) history = 1;
+    else if (!strcmp(argv[i], "--as-of") && i + 1 < argc) as_of = argv[++i];
     else if (!strcmp(argv[i], "--limit") && i + 1 < argc) limit = atoi(argv[++i]);
     else if (!strncmp(argv[i], "--", 2)) die("unknown option %s", argv[i]);
     else words[nwords++] = argv[i];
@@ -990,11 +1009,15 @@ static int cmd_search(int argc, char **argv) {
   if (!fts_query(nwords, words, &q)) die("no search words");
   free(words);
   sqlite3 *db = ctx_open();
+  if (as_of) {
+    require_date(db, "--as-of", as_of);
+    index_prepare(db);
+  }
   char *project = all ? NULL : current_project(db);
-  int hits = search_run(db, q.p, project, limit);
+  int hits = search_run(db, q.p, project, limit, history, as_of);
   if (!hits && project) {
     fprintf(stderr, "ctx: nothing in project %s; searching everything\n", project);
-    hits = search_run(db, q.p, NULL, limit);
+    hits = search_run(db, q.p, NULL, limit, history, as_of);
   }
   if (!hits) fprintf(stderr, "ctx: no matches\n");
   free(project);
@@ -1906,6 +1929,7 @@ static int cmd_project(int argc, char **argv) {
 /* Sources. Each file under sources/ has NAME.origin.json beside it, saying where it
  * came from and what bytes it had. Both are ordinary files, committed like code. */
 #define ORIGIN_SUFFIX ".origin.json"
+#define EVENTS_FILE "SUPERSEDED.jsonl" /* directly under sources/; append-only */
 
 static char *slurp(const char *path, size_t *n) {
   FILE *f = fopen(path, "rb");
@@ -2081,7 +2105,7 @@ static void source_walk(sqlite3 *db, const char *root, const char *rel, source_t
   if (!d) return;
   struct dirent *e;
   while ((e = readdir(d))) {
-    if (e->d_name[0] == '.') continue;
+    if (e->d_name[0] == '.' || !strcmp(e->d_name, EVENTS_FILE)) continue;
     char sub[4500], full[4600];
     snprintf(sub, sizeof sub, "%s/%s", rel, e->d_name);
     snprintf(full, sizeof full, "%s/%s", root, sub);
@@ -2139,10 +2163,12 @@ static void source_walk(sqlite3 *db, const char *root, const char *rel, source_t
 }
 
 static int source_uses(int argc, char **argv);
+static int source_supersede(int argc, char **argv);
 
 static int cmd_source(int argc, char **argv) {
   if (argc >= 1 && !strcmp(argv[0], "add")) return source_add(argc - 1, argv + 1);
   if (argc >= 1 && !strcmp(argv[0], "uses")) return source_uses(argc - 1, argv + 1);
+  if (argc >= 1 && !strcmp(argv[0], "supersede")) return source_supersede(argc - 1, argv + 1);
   if (argc >= 1 && !strcmp(argv[0], "check")) {
     const char *project = argc == 3 && !strcmp(argv[1], "--project") ? argv[2] : NULL;
     if (argc != 1 && !project) die("usage: ctx source check [--project P]");
@@ -2162,6 +2188,7 @@ static int cmd_source(int argc, char **argv) {
 /* ctx index: makes a project's sources and wiki searchable and parses citations.
  * Everything it writes is derived, so a project can always be indexed again. */
 #define CHUNK_MAX 8000
+#define RETIRED_MARK "> **Retired" /* the first line of a retired page */
 
 static void chunk_insert(sqlite3_stmt *ins, sqlite3_int64 doc, int *seq, const char *heading, const char *project, const char *p, size_t n) {
   size_t a = 0;
@@ -2443,9 +2470,74 @@ static int doc_store(sqlite3 *db, const char *project, sqlite3_int64 repo_id, co
     sqlite3_step(d);
     sqlite3_finalize(d);
   }
+  if (is_wiki) {
+    sqlite3_stmt *u = db_prepare(db, "UPDATE ctx_doc SET status = ?2 WHERE id = ?1");
+    sqlite3_bind_int64(u, 1, doc);
+    if (!strncmp(p, RETIRED_MARK, strlen(RETIRED_MARK))) sqlite3_bind_text(u, 2, "retired", -1, SQLITE_STATIC);
+    else sqlite3_bind_null(u, 2);
+    sqlite3_step(u);
+    sqlite3_finalize(u);
+  }
   db_exec(db, "COMMIT");
   free(hash);
   return 1;
+}
+
+/* The dates and class a source was added with, for retrieval and review. */
+static void source_meta(sqlite3 *db, const char *project, const char *name, const char *full) {
+  char path[4800];
+  snprintf(path, sizeof path, "%s%s", full, ORIGIN_SUFFIX);
+  size_t n = 0;
+  char *m = slurp(path, &n);
+  if (!m) return;
+  sqlite3_stmt *q = db_prepare(db,
+      "INSERT OR REPLACE INTO ctx_source_meta(doc_id, class, review_after, valid_from, valid_until, added_at, origin)"
+      " SELECT d.id, json_extract(?3, '$.class'), json_extract(?3, '$.review_after'), json_extract(?3, '$.valid_from'),"
+      " json_extract(?3, '$.valid_until'), json_extract(?3, '$.added_at'), json_extract(?3, '$.origin')"
+      " FROM ctx_doc d WHERE d.project = ?1 AND d.kind = 'source' AND d.name = ?2 AND json_valid(?3)");
+  sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 2, name, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 3, m, (int)n, SQLITE_STATIC);
+  sqlite3_step(q);
+  sqlite3_finalize(q);
+  free(m);
+}
+
+/* Rebuilds the current state from the append-only events. */
+static void load_events(sqlite3 *db, const char *project, const char *base) {
+  char path[4600];
+  snprintf(path, sizeof path, "%s/sources/%s", base, EVENTS_FILE);
+  size_t n = 0;
+  char *text = slurp(path, &n);
+  db_exec(db, "BEGIN IMMEDIATE");
+  sqlite3_stmt *q = db_prepare(db, "DELETE FROM ctx_supersession WHERE project = ?1");
+  sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  sqlite3_step(q);
+  sqlite3_finalize(q);
+  if (text) {
+    text = realloc(text, n + 1);
+    if (!text) die("out of memory");
+    text[n] = 0;
+    q = db_prepare(db,
+        "INSERT OR REPLACE INTO ctx_supersession(project, old, new, relation, reason, by_whom, at)"
+        " SELECT ?1, json_extract(?2, '$.old'), json_extract(?2, '$.new'), json_extract(?2, '$.relation'), json_extract(?2, '$.reason'),"
+        " json_extract(?2, '$.by'), json_extract(?2, '$.at') WHERE json_valid(?2)");
+    for (char *line = strtok(text, "\n"); line; line = strtok(NULL, "\n")) {
+      sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+      sqlite3_bind_text(q, 2, line, -1, SQLITE_STATIC);
+      sqlite3_step(q);
+      sqlite3_reset(q);
+    }
+    sqlite3_finalize(q);
+    free(text);
+  }
+  q = db_prepare(db,
+      "UPDATE ctx_doc SET status = (SELECT CASE e.relation WHEN 'replaces' THEN 'superseded' WHEN 'retracts' THEN 'retracted' WHEN 'amends' THEN 'amended' END"
+      " FROM ctx_supersession e WHERE e.project = ctx_doc.project AND e.old = ctx_doc.name) WHERE project = ?1 AND kind = 'source'");
+  sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  sqlite3_step(q);
+  sqlite3_finalize(q);
+  db_exec(db, "COMMIT");
 }
 
 static void index_tree(sqlite3 *db, const char *project, sqlite3_int64 repo, const char *base, const char *rel, long *count, long *changed) {
@@ -2455,7 +2547,7 @@ static void index_tree(sqlite3 *db, const char *project, sqlite3_int64 repo, con
   if (!d) return;
   struct dirent *e;
   while ((e = readdir(d))) {
-    if (e->d_name[0] == '.') continue;
+    if (e->d_name[0] == '.' || !strcmp(e->d_name, EVENTS_FILE)) continue;
     char sub[4600], full[4700];
     snprintf(sub, sizeof sub, "%s/%s", rel, e->d_name);
     snprintf(full, sizeof full, "%s/%s", base, sub);
@@ -2470,6 +2562,7 @@ static void index_tree(sqlite3 *db, const char *project, sqlite3_int64 repo, con
       (*count)++;
       *changed += doc_store(db, project, repo, "source", sub, p, n, !memchr(p, 0, n < 8192 ? n : 8192));
       free(p);
+      source_meta(db, project, sub, full);
     }
   }
   closedir(d);
@@ -2498,6 +2591,10 @@ static void index_prepare(sqlite3 *db) {
           " target_kind TEXT NOT NULL, target TEXT, ci TEXT, file_hash TEXT, status TEXT NOT NULL) STRICT;"
           "CREATE INDEX IF NOT EXISTS ctx_citation_target ON ctx_citation(target_kind, target);"
           "CREATE INDEX IF NOT EXISTS ctx_citation_doc ON ctx_citation(doc_id);"
+          "CREATE TABLE IF NOT EXISTS ctx_source_meta(doc_id INTEGER PRIMARY KEY, class TEXT, review_after TEXT, valid_from TEXT,"
+          " valid_until TEXT, added_at TEXT, origin TEXT) STRICT;"
+          "CREATE TABLE IF NOT EXISTS ctx_supersession(project TEXT NOT NULL, old TEXT NOT NULL, new TEXT, relation TEXT NOT NULL,"
+          " reason TEXT, by_whom TEXT, at TEXT, PRIMARY KEY (project, old)) STRICT;"
           "CREATE TEMP TABLE IF NOT EXISTS seen(kind TEXT, name TEXT, PRIMARY KEY (kind, name));"
           "CREATE TEMP TABLE IF NOT EXISTS cite(ref, quote, target_kind, target, ci, file_hash, status);"
           "CREATE TEMP TABLE IF NOT EXISTS pagelink(page PRIMARY KEY);");
@@ -2527,6 +2624,7 @@ static int cmd_index(int argc, char **argv) {
   int have_files = sqlite3_step(q) == SQLITE_ROW;
   sqlite3_finalize(q);
   if (have_files) index_tree(db, project, repo_id, tmp, "sources", &files, &changed);
+  load_events(db, project, tmp);
   remove_tree(tmp);
   char sql[256];
   snprintf(sql, sizeof sql, "SELECT substr(tagname, 6) FROM fslrepo_%s_tag WHERE tagname GLOB 'wiki-*'", repo);
@@ -2561,8 +2659,8 @@ static int cmd_index(int argc, char **argv) {
   sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
   sqlite3_step(q);
   sqlite3_finalize(q);
-  static const char *const gone[] = {"DELETE FROM ctx_link WHERE src_id", "DELETE FROM ctx_citation WHERE doc_id", "DELETE FROM ctx_doc WHERE id"};
-  for (int i = 0; i < 3; i++) {
+  static const char *const gone[] = {"DELETE FROM ctx_link WHERE src_id", "DELETE FROM ctx_citation WHERE doc_id", "DELETE FROM ctx_source_meta WHERE doc_id", "DELETE FROM ctx_doc WHERE id"};
+  for (int i = 0; i < 4; i++) {
     snprintf(sql, sizeof sql, "%s IN (SELECT id FROM ctx_doc d WHERE d.project = ?1 AND d.kind IN ('source', 'wiki')"
                               " AND NOT EXISTS (SELECT 1 FROM temp.seen s WHERE s.kind = d.kind AND s.name = d.name))", gone[i]);
     q = db_prepare(db, sql);
@@ -2658,12 +2756,13 @@ static int body_check(sqlite3 *db, const char *text) {
     int fence = n >= 3 && !strncmp(p, "```", 3);
     int item = n >= 2 && ((p[0] == '-' || p[0] == '*') && p[1] == ' ');
     if (fence) fenced = !fenced;
-    if (fence || fenced || blank || p[0] == '#' || !strncmp(p, "[^", 2) || item) {
+    int skip = p[0] == '#' || !strncmp(p, "[^", 2) || !strncmp(p, RETIRED_MARK, strlen(RETIRED_MARK));
+    if (fence || fenced || blank || skip || item) {
       buf_add(&block, "", 1);
       bad += block_check(db, block.p);
       block.n = 0;
     }
-    if (!fence && !fenced && !blank && p[0] != '#' && strncmp(p, "[^", 2)) {
+    if (!fence && !fenced && !blank && !skip) {
       buf_add(&block, item ? p + 2 : p, item ? n - 2 : n);
       buf_add(&block, " ", 1);
       if (item) {
@@ -2704,36 +2803,8 @@ static void project_of(sqlite3 *db, const char *opt, char **project, char repo[8
   sqlite3_finalize(q);
 }
 
-static int wiki_save(int argc, char **argv) {
-  const char *name = NULL, *file = NULL, *model = NULL, *ticket = "none", *project_opt = NULL, *session = getenv("CTX_SESSION");
-  for (int i = 0; i < argc; i++) {
-    if (!strncmp(argv[i], "--", 2)) {
-      if (i + 1 >= argc) die("%s needs a value", argv[i]);
-      const char *o = argv[i], *v = argv[++i];
-      if (!strcmp(o, "--model")) model = v;
-      else if (!strcmp(o, "--ticket")) ticket = v;
-      else if (!strcmp(o, "--project")) project_opt = v;
-      else if (!strcmp(o, "--session")) session = v;
-      else die("unknown option %s", o);
-    } else if (!name) name = argv[i];
-    else if (!file) file = argv[i];
-    else die("usage: ctx wiki save NAME FILE --model M [--ticket ID]");
-  }
-  if (!name || !file) die("usage: ctx wiki save NAME FILE --model M [--ticket ID]");
-  if (!model || !*model) die("--model is required: say what compiled this page");
-  size_t n = 0;
-  char *raw = slurp(file, &n);
-  if (!raw) die("cannot read %s: %s", file, strerror(errno));
-  raw = realloc(raw, n + 1);
-  if (!raw) die("out of memory");
-  raw[n] = 0;
+static int wiki_commit(sqlite3 *db, const char *project, sqlite3_int64 repo_id, const char *name, char *raw, const char *model, const char *ticket, const char *session, int repinning) {
   raw[generated_at(raw)] = 0;
-  sqlite3 *db = ctx_open();
-  char *project, repo[80];
-  sqlite3_int64 repo_id;
-  project_of(db, project_opt, &project, repo, &repo_id);
-  index_prepare(db);
-  open_project(db, repo);
   wiki_parse(db, raw);
   int bad = 0;
   if (strlen(raw) > PAGE_MAX) bad += refuse("the page is over %s%s", "32 KB", "");
@@ -2746,6 +2817,12 @@ static int wiki_save(int argc, char **argv) {
     else if ((!strcmp(kind, "source") || !strcmp(kind, "code")) && strlen(ci) < 40) bad += refuse("[^%s] must pin a full check-in hash%s", ref, "");
     else if (strcmp(status, "ok")) bad += refuse("[^%s]: %s", ref, status);
   }
+  sqlite3_finalize(q);
+  /* a re-pin keeps claims it could not move; those are already tickets */
+  q = db_prepare(db, "SELECT c.ref, d.status FROM temp.cite c JOIN ctx_doc d ON d.project = ?1 AND d.kind = 'source' AND d.name = c.target WHERE d.status IN ('superseded', 'retracted') AND NOT ?2");
+  sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  sqlite3_bind_int(q, 2, repinning);
+  while (sqlite3_step(q) == SQLITE_ROW) bad += refuse("[^%s] cites a %s source", (const char *)sqlite3_column_text(q, 0), (const char *)sqlite3_column_text(q, 1));
   sqlite3_finalize(q);
   char **links = NULL;
   size_t nl = 0;
@@ -2767,7 +2844,6 @@ static int wiki_save(int argc, char **argv) {
   free(links);
   if (bad) {
     printf("%d problems; nothing was saved\n", bad);
-    sqlite3_close(db);
     return 1;
   }
   /* What this edit dropped: LLMs lose detail while smoothing prose. */
@@ -2821,8 +2897,47 @@ static int wiki_save(int argc, char **argv) {
   sqlite3_step(q);
   sqlite3_finalize(q);
   printf("saved %s %.12s, %ld sources\n", name, version, sources);
-  sqlite3_close(db);
+  free(version);
+  free(page.p);
   return 0;
+}
+
+static int wiki_repin(int argc, char **argv);
+static int wiki_retire(int argc, char **argv);
+static int wiki_restore(int argc, char **argv);
+
+static int wiki_save(int argc, char **argv) {
+  const char *name = NULL, *file = NULL, *model = NULL, *ticket = "none", *project_opt = NULL, *session = getenv("CTX_SESSION");
+  for (int i = 0; i < argc; i++) {
+    if (!strncmp(argv[i], "--", 2)) {
+      if (i + 1 >= argc) die("%s needs a value", argv[i]);
+      const char *o = argv[i], *v = argv[++i];
+      if (!strcmp(o, "--model")) model = v;
+      else if (!strcmp(o, "--ticket")) ticket = v;
+      else if (!strcmp(o, "--project")) project_opt = v;
+      else if (!strcmp(o, "--session")) session = v;
+      else die("unknown option %s", o);
+    } else if (!name) name = argv[i];
+    else if (!file) file = argv[i];
+    else die("usage: ctx wiki save NAME FILE --model M [--ticket ID]");
+  }
+  if (!name || !file) die("usage: ctx wiki save NAME FILE --model M [--ticket ID]");
+  if (!model || !*model) die("--model is required: say what compiled this page");
+  size_t n = 0;
+  char *raw = slurp(file, &n);
+  if (!raw) die("cannot read %s: %s", file, strerror(errno));
+  raw = realloc(raw, n + 1);
+  if (!raw) die("out of memory");
+  raw[n] = 0;
+  sqlite3 *db = ctx_open();
+  char *project, repo[80];
+  sqlite3_int64 repo_id;
+  project_of(db, project_opt, &project, repo, &repo_id);
+  index_prepare(db);
+  open_project(db, repo);
+  int rc = wiki_commit(db, project, repo_id, name, raw, model, ticket, session, 0);
+  sqlite3_close(db);
+  return rc;
 }
 
 static int wiki_check(int argc, char **argv) {
@@ -2838,6 +2953,15 @@ static int wiki_check(int argc, char **argv) {
   sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
   while (sqlite3_step(q) == SQLITE_ROW) {
     printf("%s: [^%s] %s: %s\n", sqlite3_column_text(q, 0), sqlite3_column_text(q, 1), sqlite3_column_text(q, 2), sqlite3_column_text(q, 3));
+    bad++;
+  }
+  sqlite3_finalize(q);
+  q = db_prepare(db, "SELECT d.name, c.ref, s.status, c.target FROM ctx_citation c JOIN ctx_doc d ON d.id = c.doc_id"
+                     " JOIN ctx_doc s ON s.project = d.project AND s.kind = 'source' AND s.name = c.target"
+                     " WHERE d.project = ?1 AND s.status IN ('superseded', 'retracted') AND coalesce(d.status, '') <> 'retired' ORDER BY 1, 2");
+  sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    printf("%s: [^%s] cites a %s source: %s\n", sqlite3_column_text(q, 0), sqlite3_column_text(q, 1), sqlite3_column_text(q, 2), sqlite3_column_text(q, 3));
     bad++;
   }
   sqlite3_finalize(q);
@@ -2940,12 +3064,335 @@ static int wiki_why(int argc, char **argv) {
   return 0;
 }
 
+static char *page_text(sqlite3 *db, const char *name) {
+  sqlite3_stmt *q = db_prepare(db, "SELECT fsl_wiki(?1)");
+  sqlite3_bind_text(q, 1, name, -1, SQLITE_STATIC);
+  char *t = sqlite3_step(q) == SQLITE_ROW && sqlite3_column_text(q, 0) ? dup_text(sqlite3_column_text(q, 0)) : NULL;
+  sqlite3_finalize(q);
+  return t;
+}
+
+/* A retired page keeps its text and history. Its status lives in the page, so it syncs. */
+static int wiki_set_banner(int argc, char **argv, int retire) {
+  const char *name = NULL, *reason = NULL, *by = NULL, *project_opt = NULL;
+  for (int i = 0; i < argc; i++) {
+    if (!strncmp(argv[i], "--", 2)) {
+      if (i + 1 >= argc) die("%s needs a value", argv[i]);
+      const char *o = argv[i], *v = argv[++i];
+      if (!strcmp(o, "--reason")) reason = v;
+      else if (!strcmp(o, "--by")) by = v;
+      else if (!strcmp(o, "--project")) project_opt = v;
+      else die("unknown option %s", o);
+    } else if (!name) name = argv[i];
+    else die("too many arguments");
+  }
+  if (!name || (retire && (!reason || !*reason))) die("usage: ctx wiki retire PAGE --reason WHY [--by PAGE] | ctx wiki restore PAGE");
+  sqlite3 *db = ctx_open();
+  char *project, repo[80];
+  sqlite3_int64 repo_id;
+  project_of(db, project_opt, &project, repo, &repo_id);
+  index_prepare(db);
+  open_project(db, repo);
+  char *text = page_text(db, name);
+  if (!text) die("no page %s", name);
+  int is_retired = !strncmp(text, RETIRED_MARK, strlen(RETIRED_MARK));
+  buf page = {0};
+  if (retire) {
+    if (is_retired) die("%s is already retired", name);
+    if (by) {
+      char *target = page_text(db, by);
+      if (!target) die("no page %s", by);
+      free(target);
+    }
+    sqlite3_stmt *q = db_prepare(db, "SELECT printf('> **Retired %s by %s.** %s%s%s%s%s', date('now'), ?1, ?2, CASE WHEN ?3 IS NULL THEN '' ELSE ' See [' END, coalesce(?3, ''), CASE WHEN ?3 IS NULL THEN '' ELSE '](/wiki?name=' || replace(?3, ' ', '+') || ')' END, '')");
+    sqlite3_bind_text(q, 1, person(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(q, 2, reason, -1, SQLITE_STATIC);
+    sqlite3_bind_text(q, 3, by, -1, SQLITE_STATIC);
+    sqlite3_step(q);
+    buf_str(&page, (const char *)sqlite3_column_text(q, 0));
+    sqlite3_finalize(q);
+    buf_str(&page, "\n\n");
+    buf_str(&page, text);
+  } else {
+    if (!is_retired) die("%s is not retired", name);
+    const char *rest = strstr(text, "\n\n");
+    buf_str(&page, rest ? rest + 2 : "");
+  }
+  buf_add(&page, "", 1);
+  sqlite3_stmt *q = db_prepare(db, "SELECT fsl_wiki_save(?1, ?2, 'text/x-markdown')");
+  sqlite3_bind_text(q, 1, name, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 2, page.p, -1, SQLITE_STATIC);
+  if (sqlite3_step(q) != SQLITE_ROW) die("cannot save the page: %s", sqlite3_errmsg(db));
+  sqlite3_finalize(q);
+  doc_store(db, project, repo_id, "wiki", name, page.p, strlen(page.p), 1);
+  printf("%s %s\n", name, retire ? "retired" : "restored");
+  free(page.p);
+  free(text);
+  sqlite3_close(db);
+  return 0;
+}
+
+static int wiki_retire(int argc, char **argv) { return wiki_set_banner(argc, argv, 1); }
+static int wiki_restore(int argc, char **argv) { return wiki_set_banner(argc, argv, 0); }
+
+/* Replaces the link of footnote REF with one pinned to path at ci. */
+static char *footnote_repin(const char *text, const char *ref, const char *path, const char *ci) {
+  char head[96];
+  snprintf(head, sizeof head, "[^%s]:", ref);
+  const char *line = NULL;
+  for (const char *p = strstr(text, head); p; p = strstr(p + 1, head))
+    if (p == text || p[-1] == '\n') {
+      line = p;
+      break;
+    }
+  if (!line) return NULL;
+  const char *end = strchr(line, '\n');
+  if (!end) end = line + strlen(line);
+  const char *open = NULL;
+  for (const char *p = line; p < end - 1; p++)
+    if (p[0] == ']' && p[1] == '(') open = p;
+  if (!open) return NULL;
+  const char *close = memchr(open, ')', (size_t)(end - open));
+  if (!close) return NULL;
+  buf out = {0};
+  buf_add(&out, text, (size_t)(open + 2 - text));
+  buf_str(&out, "/file?name=");
+  for (const char *c = path; *c; c++) buf_add(&out, *c == ' ' ? "+" : c, 1);
+  buf_str(&out, "&ci=");
+  buf_str(&out, ci);
+  buf_str(&out, "&txt=1");
+  buf_str(&out, close);
+  buf_add(&out, "", 1);
+  return out.p;
+}
+
+typedef struct {
+  char *title, *body;
+} repin_ticket;
+
+/* After a source changes: a quote still found moves its pin, and propagation stops
+ * there. A quote that is gone, or a retracted source, becomes a ticket. */
+static int wiki_repin(int argc, char **argv) {
+  const char *project_opt = argc == 2 && !strcmp(argv[0], "--project") ? argv[1] : NULL;
+  if (argc && !project_opt) die("usage: ctx wiki repin [--project P]");
+  int rc = cmd_index(argc, argv);
+  if (rc) return rc;
+  sqlite3 *db = ctx_open();
+  char *project, repo[80];
+  sqlite3_int64 repo_id;
+  project_of(db, project_opt, &project, repo, &repo_id);
+  index_prepare(db);
+  open_project(db, repo);
+  sqlite3_stmt *q = db_prepare(db, "SELECT fsl_resolve('trunk')");
+  if (sqlite3_step(q) != SQLITE_ROW) die("the project has no check-ins");
+  char *tip = dup_text(sqlite3_column_text(q, 0));
+  sqlite3_finalize(q);
+  char **pages = NULL;
+  size_t npages = 0;
+  q = db_prepare(db, "SELECT DISTINCT d.name FROM ctx_citation c JOIN ctx_doc d ON d.id = c.doc_id WHERE d.project = ?1 AND d.kind = 'wiki'"
+                     " AND c.target_kind = 'source' AND coalesce(d.status, '') <> 'retired' ORDER BY 1");
+  sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    pages = realloc(pages, (npages + 1) * sizeof *pages);
+    if (!pages) die("out of memory");
+    pages[npages++] = dup_text(sqlite3_column_text(q, 0));
+  }
+  sqlite3_finalize(q);
+  long moved = 0;
+  repin_ticket *tickets = NULL;
+  size_t ntickets = 0;
+  for (size_t pg = 0; pg < npages; pg++) {
+    char *text = page_text(db, pages[pg]);
+    if (!text) continue;
+    int changed = 0;
+    q = db_prepare(db, "SELECT c.ref, c.quote, c.target, coalesce(c.file_hash, '') FROM ctx_citation c JOIN ctx_doc d ON d.id = c.doc_id"
+                       " WHERE d.project = ?1 AND d.kind = 'wiki' AND d.name = ?2 AND c.target_kind = 'source' ORDER BY c.id");
+    sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+    sqlite3_bind_text(q, 2, pages[pg], -1, SQLITE_STATIC);
+    while (sqlite3_step(q) == SQLITE_ROW) {
+      char *ref = dup_text(sqlite3_column_text(q, 0)), *quote = dup_text(sqlite3_column_text(q, 1));
+      char *target = dup_text(sqlite3_column_text(q, 2)), *pinned = dup_text(sqlite3_column_text(q, 3));
+      char *cur = strdup(target);
+      int retracted = 0;
+      for (int hop = 0; hop < 32; hop++) {
+        sqlite3_stmt *e = db_prepare(db, "SELECT new, relation FROM ctx_supersession WHERE project = ?1 AND old = ?2 AND relation IN ('replaces', 'retracts')");
+        sqlite3_bind_text(e, 1, project, -1, SQLITE_STATIC);
+        sqlite3_bind_text(e, 2, cur, -1, SQLITE_STATIC);
+        int found = sqlite3_step(e) == SQLITE_ROW;
+        if (found && !strcmp((const char *)sqlite3_column_text(e, 1), "retracts")) retracted = 1;
+        else if (found && sqlite3_column_text(e, 0)) {
+          free(cur);
+          cur = dup_text(sqlite3_column_text(e, 0));
+        } else found = 0;
+        sqlite3_finalize(e);
+        if (!found || retracted) break;
+      }
+      const char *problem = NULL;
+      if (retracted) problem = "its source was retracted";
+      else {
+        sqlite3_stmt *f = db_prepare(db, "SELECT fsl_file('trunk', ?1)");
+        sqlite3_bind_text(f, 1, cur, -1, SQLITE_STATIC);
+        if (sqlite3_step(f) == SQLITE_ROW && sqlite3_column_type(f, 0) != SQLITE_NULL) {
+          const char *data = sqlite3_column_blob(f, 0);
+          size_t n = (size_t)sqlite3_column_bytes(f, 0);
+          char *hash = sha3_hex(data ? data : "", n);
+          char *hay = squeeze(data ? data : "", n), *needle = squeeze(quote, strlen(quote));
+          int same = !strcmp(cur, target) && !strcmp(hash, pinned);
+          if (!same) {
+            if (!*needle || !strstr(hay, needle)) problem = "its quote is no longer in the current source";
+            else {
+              char *next = footnote_repin(text, ref, cur, tip);
+              if (next) {
+                free(text);
+                text = next;
+                changed++;
+              }
+            }
+          }
+          free(hash);
+          free(hay);
+          free(needle);
+        } else {
+          problem = "its source no longer exists";
+        }
+        sqlite3_finalize(f);
+      }
+      if (problem) {
+        tickets = realloc(tickets, (ntickets + 1) * sizeof *tickets);
+        if (!tickets) die("out of memory");
+        char *t = sqlite3_mprintf("Wiki: re-source [^%s] on %s", ref, pages[pg]);
+        char *b = sqlite3_mprintf("The claim marked [^%s] on page %s needs new support: %s.\n\nIt quoted: \"%s\"\nFrom: %s", ref, pages[pg], problem, quote, target);
+        tickets[ntickets].title = strdup(t);
+        tickets[ntickets++].body = strdup(b);
+        sqlite3_free(t);
+        sqlite3_free(b);
+      }
+      free(ref);
+      free(quote);
+      free(target);
+      free(pinned);
+      free(cur);
+    }
+    sqlite3_finalize(q);
+    if (changed) {
+      if (wiki_commit(db, project, repo_id, pages[pg], text, "ctx repin", "none", NULL, 1)) printf("could not re-pin %s\n", pages[pg]);
+      else moved += changed;
+    }
+    free(text);
+    free(pages[pg]);
+  }
+  free(pages);
+  long opened = 0;
+  if (ntickets) {
+    open_private(db);
+    tickets_prepare(db);
+    db_exec(db, "SELECT fsl_use('repo:me')");
+    for (size_t i = 0; i < ntickets; i++) {
+      q = db_prepare(db, "SELECT count(*) FROM fslrepo_me_ticket WHERE title = ?1 AND status IN ('Open', 'Claimed')");
+      sqlite3_bind_text(q, 1, tickets[i].title, -1, SQLITE_STATIC);
+      sqlite3_step(q);
+      int dup = sqlite3_column_int(q, 0);
+      sqlite3_finalize(q);
+      if (!dup) {
+        char *id = ticket_new(db, tickets[i].title, "Task", project, tickets[i].body, "ctx wiki check reports no problem for this claim.", "");
+        printf("ticket %.10s %s\n", id, tickets[i].title);
+        free(id);
+        opened++;
+      }
+      free(tickets[i].title);
+      free(tickets[i].body);
+    }
+  }
+  free(tickets);
+  printf("%ld re-pinned, %ld tickets opened\n", moved, opened);
+  free(tip);
+  sqlite3_close(db);
+  return 0;
+}
+
 static int cmd_wiki(int argc, char **argv) {
   if (argc >= 1 && !strcmp(argv[0], "save")) return wiki_save(argc - 1, argv + 1);
   if (argc >= 1 && !strcmp(argv[0], "check")) return wiki_check(argc - 1, argv + 1);
   if (argc >= 1 && !strcmp(argv[0], "why")) return wiki_why(argc - 1, argv + 1);
-  die("usage: ctx wiki save NAME FILE --model M [--ticket ID] | check | why PAGE");
+  if (argc >= 1 && !strcmp(argv[0], "repin")) return wiki_repin(argc - 1, argv + 1);
+  if (argc >= 1 && !strcmp(argv[0], "retire")) return wiki_retire(argc - 1, argv + 1);
+  if (argc >= 1 && !strcmp(argv[0], "restore")) return wiki_restore(argc - 1, argv + 1);
+  die("usage: ctx wiki save NAME FILE --model M [--ticket ID] | check | why PAGE | repin | retire PAGE --reason WHY [--by PAGE] | restore PAGE");
   return 2;
+}
+
+/* ctx source supersede OLD --by NEW --relation replaces|amends --reason WHY
+ * ctx source supersede OLD --relation retracts --reason WHY
+ * An append-only event in the project, committed like any other change. */
+static int source_supersede(int argc, char **argv) {
+  const char *old = NULL, *by = NULL, *relation = NULL, *reason = NULL, *project_opt = NULL;
+  for (int i = 0; i < argc; i++) {
+    if (!strncmp(argv[i], "--", 2)) {
+      if (i + 1 >= argc) die("%s needs a value", argv[i]);
+      const char *o = argv[i], *v = argv[++i];
+      if (!strcmp(o, "--by")) by = v;
+      else if (!strcmp(o, "--relation")) relation = v;
+      else if (!strcmp(o, "--reason")) reason = v;
+      else if (!strcmp(o, "--project")) project_opt = v;
+      else die("unknown option %s", o);
+    } else if (!old) old = argv[i];
+    else die("too many arguments");
+  }
+  if (!old || !relation || !reason || !*reason) die("usage: ctx source supersede OLD --relation replaces|amends|retracts [--by NEW] --reason WHY");
+  int retract = !strcmp(relation, "retracts");
+  if (!retract && strcmp(relation, "replaces") && strcmp(relation, "amends")) die("--relation must be replaces, amends or retracts");
+  if (!retract && !by) die("--by is required: say which source takes over");
+  if (retract && by) die("a retraction has no successor");
+  sqlite3 *db = ctx_open();
+  char *root = project_root(db, project_opt);
+  char oldn[1100], newn[1100], path[4500], events[4500];
+  snprintf(oldn, sizeof oldn, "%s%s", strncmp(old, "sources/", 8) ? "sources/" : "", old);
+  snprintf(newn, sizeof newn, "%s%s", !by || !strncmp(by, "sources/", 8) ? "" : "sources/", by ? by : "");
+  snprintf(path, sizeof path, "%s/%s", root, oldn);
+  if (!exists(path)) die("no source %s", oldn);
+  if (by) {
+    if (!strcmp(oldn, newn)) die("a source cannot supersede itself");
+    snprintf(path, sizeof path, "%s/%s%s", root, newn, ORIGIN_SUFFIX);
+    if (!exists(path)) die("%s has no recorded origin; run ctx source add first", newn);
+  }
+  snprintf(events, sizeof events, "%s/sources/%s", root, EVENTS_FILE);
+  size_t n = 0;
+  char *text = slurp(events, &n);
+  if (text) {
+    text = realloc(text, n + 1);
+    if (!text) die("out of memory");
+    text[n] = 0;
+    sqlite3_stmt *e = db_prepare(db, "SELECT json_extract(?1, '$.old'), json_extract(?1, '$.relation') WHERE json_valid(?1)");
+    char *copy = strdup(text);
+    for (char *line = strtok(copy, "\n"); line; line = strtok(NULL, "\n")) {
+      sqlite3_bind_text(e, 1, line, -1, SQLITE_STATIC);
+      if (sqlite3_step(e) == SQLITE_ROW && strcmp((const char *)sqlite3_column_text(e, 1), "amends")) {
+        const char *was = (const char *)sqlite3_column_text(e, 0);
+        if (!strcmp(was, oldn)) die("%s is already superseded", oldn);
+        if (by && !strcmp(was, newn)) die("%s is itself superseded; a successor must be current", newn);
+      }
+      sqlite3_reset(e);
+    }
+    sqlite3_finalize(e);
+    free(copy);
+  }
+  sqlite3_stmt *q = db_prepare(db, "SELECT json_object('old', ?1, 'new', ?2, 'relation', ?3, 'reason', ?4, 'by', ?5, 'at', date('now'))");
+  sqlite3_bind_text(q, 1, oldn, -1, SQLITE_STATIC);
+  if (by) sqlite3_bind_text(q, 2, newn, -1, SQLITE_STATIC);
+  else sqlite3_bind_null(q, 2);
+  sqlite3_bind_text(q, 3, relation, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 4, reason, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 5, person(), -1, SQLITE_STATIC);
+  sqlite3_step(q);
+  buf out = {0};
+  if (text) buf_add(&out, text, n);
+  buf_str(&out, (const char *)sqlite3_column_text(q, 0));
+  buf_str(&out, "\n");
+  sqlite3_finalize(q);
+  spit(events, out.p, out.n);
+  printf("%s %s%s%s\ncommit sources/%s to record it\n", oldn, relation, by ? " by " : "", by ? newn : "", EVENTS_FILE);
+  sqlite3_close(db);
+  return 0;
 }
 
 /* Which claims depend on a source: the question a supersession has to answer. */
@@ -2981,14 +3428,14 @@ static int usage(void) {
         "       ctx init\n"
         "       ctx extract TRANSCRIPT\n"
         "       ctx archive TRANSCRIPT\n"
-        "       ctx search [--all] [--limit N] WORDS...\n"
+        "       ctx search [--all] [--history] [--as-of DATE] [--limit N] WORDS...\n"
         "       ctx turn ID [BEFORE [AFTER]] [--full]\n"
         "       ctx audit [--all] [--known] [--tickets] [--limit N] | --allow ID [NOTE]\n"
         "       ctx ticket new|ready|show|claim|done|drop|offer ...\n"
         "       ctx project add NAME [--root DIR] [--import FILE] [--remote URL] | list | pull NAME [--from URL]\n"
-        "       ctx source add FILE --origin WHERE --class CLASS [--as PATH] | uses PATH | check\n"
+        "       ctx source add FILE --origin WHERE --class CLASS [--as PATH] | supersede OLD | uses PATH | check\n"
         "       ctx index [--project P]\n"
-        "       ctx wiki save NAME FILE --model M [--ticket ID] | check | why PAGE\n"
+        "       ctx wiki save NAME FILE --model M [--ticket ID] | check | why PAGE | repin | retire PAGE --reason WHY | restore PAGE\n"
         "       ctx scan [DIR]\n"
         "       ctx hook\n"
         "       ctx sql STATEMENT\n",

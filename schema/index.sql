@@ -70,7 +70,7 @@ CREATE TABLE ctx_doc(
   name     TEXT NOT NULL,
   title    TEXT,
   hash     TEXT NOT NULL,  -- Fossil artifact hash, or content hash for code
-  status   TEXT,           -- tickets only: Open, Claimed, Done or Dropped
+  status   TEXT,           -- tickets: Open, Claimed, Done, Dropped; sources: superseded, retracted, amended; wiki: retired
   size     INTEGER NOT NULL,
   mtime    INTEGER NOT NULL,
   UNIQUE (project, kind, name)
