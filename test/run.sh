@@ -735,12 +735,15 @@ export CTX_DB="$T/m2.sqlite"
 if "$CTX" init --clone "$T/hub.fossil" 2>/dev/null; then fail "a private repository is cloned once"; fi
 export CTX_DB="$T/m1.sqlite"
 printf '{"uuid":"sy-2","timestamp":"2026-08-02T10:00:00Z","cwd":"/w/syncproj","message":{"role":"user","content":"the wombat follow-up"}}\n' >> "$T/ab12cd34-sync.jsonl"
+printf '{"uuid":"sy-3","cwd":"/w/syncproj","message":{"role":"assistant","content":"an undated platypus reply"}}\n' >> "$T/ab12cd34-sync.jsonl"
 "$CTX" archive "$T/ab12cd34-sync.jsonl" >/dev/null
 "$CTX" sync >/dev/null || fail "push"
+NOTES=$("$CTX" sql "SELECT count(*) FROM ctx_capture_day")
 export CTX_DB="$T/m2.sqlite"
 "$CTX" sync | grep -q 'sessions from other machines indexed' || fail "a pull indexes new sessions"
 "$CTX" search --all wombat | grep -q 'wombat' || fail "a new turn arrives"
-[ "$("$CTX" sql "SELECT count(*) FROM ctx_doc WHERE kind='session'")" = 2 ] || fail "each day is one session, not duplicated"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE body LIKE '%platypus%' AND body NOT LIKE '%wombat%'")" = 1 ] || fail "a turn with no timestamp stays its own turn"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_doc WHERE kind='session'")" = "$NOTES" ] || fail "one session per technote, not duplicated"
 "$CTX" sync | grep -q 'sessions from other machines' && fail "an unchanged note is not indexed again"
 "$CTX" ticket claim "$TK" --as machine2 >/dev/null || fail "machine 2 claims"
 export CTX_DB="$T/m1.sqlite"
