@@ -28,7 +28,7 @@
 /* A tool's output is kept up to this size at each end; the middle is cut. */
 #define TOOL_KEEP (16 * 1024)
 
-int fsl_sqlext_init(sqlite3 *db, char **err, const void *api);
+int fsl_sqlext_init(sqlite3 *db, char **err, const void *api); /* as libfossil defines it */
 char *fsl_sha3sum_cstr(const char *in, long long len);
 void fsl_free(void *p);
 
@@ -177,6 +177,11 @@ static int c_value(unsigned char c) {
   return !c_space(c) && c != '"' && c != '\'' && c != ',' && c != ';' && c != ')' && c != '}';
 }
 
+/* What a URL allows in its user and password (RFC 3986 userinfo), plus %-escapes. */
+static int c_userinfo(unsigned char c) {
+  return c_alnum(c) || (c && strchr("-._~!$&'()*+,;=:%", c));
+}
+
 static size_t span(const char *s, size_t n, size_t i, int (*ok)(unsigned char)) {
   size_t j = i;
   while (j < n && ok((unsigned char)s[j])) j++;
@@ -272,12 +277,14 @@ static size_t assignment_value(const char *s, size_t n, size_t i) {
 }
 
 /* If a secret starts at i, returns its end and sets its start and rule name. */
-static size_t secret_at(const char *s, size_t n, size_t i, size_t *from_out, const char **name) {
+/* after_secret: i is where an earlier secret ended, which counts as a word boundary,
+ * so a token glued to the one just removed is still found. */
+static size_t secret_at(const char *s, size_t n, size_t i, size_t *from_out, const char **name, int after_secret) {
   static const char *const words[] = {"password", "passwd", "token",  "secret",
                                       "api_key",  "api-key", "apikey", NULL};
   static const char *const hexwords[] = {"key", "auth", "credential", NULL};
   size_t end = 0, from = i;
-  int prev_ok = i == 0 || !c_word((unsigned char)s[i - 1]);
+  int prev_ok = after_secret || i == 0 || !c_word((unsigned char)s[i - 1]);
   if (s[i] == '-' && at(s, n, i, "-----BEGIN ")) {
     size_t line = i;
     while (line < n && s[line] != '\n') line++;
@@ -302,7 +309,11 @@ static size_t secret_at(const char *s, size_t n, size_t i, size_t *from_out, con
     /* `doppler secrets get --json`: the value, then a matching ...ValueType field. */
     size_t v = i + (s[i + 1] == 'c' ? 12 : 7), e = v;
     while (e < n && s[e] != '"') e += s[e] == '\\' ? 2 : 1;
-    if (e < n && e > v && memmem(s + e, n - e < 40 ? n - e : 40, "ValueType\"", 10)) {
+    if (e > n) e = n;
+    int marker = e - v == strlen(REDACTED) && !memcmp(s + v, REDACTED, e - v); /* already redacted */
+    /* exactly Doppler's shape, so the match never depends on text further along */
+    int doppler = at(s, n, e, "\",\"computedValueType\"") || at(s, n, e, "\",\"rawValueType\"");
+    if (e < n && e > v && !marker && doppler) {
       from = v;
       end = e;
       *name = "doppler-json";
@@ -310,7 +321,7 @@ static size_t secret_at(const char *s, size_t n, size_t i, size_t *from_out, con
   }
   if (!end && s[i] == ':' && at(s, n, i, "://")) {
     size_t a = i + 3, j = a, colon = 0;
-    while (j < n && s[j] != '/' && s[j] != '@' && !c_space((unsigned char)s[j])) {
+    while (j < n && s[j] != '@' && c_userinfo((unsigned char)s[j])) {
       if (s[j] == ':' && !colon) colon = j;
       j++;
     }
@@ -353,7 +364,7 @@ static void add_redacted(buf *out, const char *s, size_t n) {
   while (i < n) {
     size_t from;
     const char *name;
-    size_t end = secret_at(s, n, i, &from, &name);
+    size_t end = secret_at(s, n, i, &from, &name, i == done && done > 0);
     if (end) {
       buf_add(out, s + done, from - done);
       buf_str(out, REDACTED);
@@ -1530,7 +1541,7 @@ static int cmd_audit(int argc, char **argv) {
       for (size_t i = 0; i < n;) {
         size_t from = i;
         const char *name = NULL;
-        size_t end = secret_at(s, n, i, &from, &name);
+        size_t end = secret_at(s, n, i, &from, &name, 0);
         if (!end) end = candidate_at(s, n, i, &from, &name);
         if (end && !placeholder(s + from, end - from)) finding_add(ins, name, s + from, end - from, id, project, day, "");
         i = end ? end : i + 1;
@@ -3842,6 +3853,70 @@ static int source_uses(int argc, char **argv) {
 /* Sync. Each repository syncs with its remote over plain http, on a private network
  * or through an ssh tunnel, so ctx needs no TLS. */
 
+/* Splits a technote into its turns. Each turn starts at a line "## user TIMESTAMP"
+ * or "## assistant TIMESTAMP", where the timestamp may be missing. */
+typedef void (*turn_emit)(void *ctx, const char *role, const char *at, const char *body, size_t n);
+
+static void note_turns(const char *text, turn_emit emit, void *ctx) {
+  const char *p = text, *start = NULL;
+  char role[16] = "", at[40] = "";
+  for (;;) {
+    const char *nl = strchr(p, '\n');
+    int head = 0;
+    char r[16], ts[40];
+    char line[96];
+    size_t ll = nl ? (size_t)(nl - p) : strlen(p);
+    snprintf(line, sizeof line, "%.*s", (int)(ll < sizeof line - 1 ? ll : sizeof line - 1), p);
+    int got = !strncmp(line, "## ", 3) ? sscanf(line + 3, "%15s %39s", r, ts) : 0; /* this line only */
+    if (got >= 1 && (!strcmp(r, "user") || !strcmp(r, "assistant"))) {
+      if (got == 1 && ll <= 3 + strlen(r) + 1) { /* a turn with no timestamp */
+        ts[0] = 0;
+        head = 1;
+      } else if (got == 2 && strlen(ts) >= 19 && ts[4] == '-' && ts[10] == 'T') {
+        head = 1;
+      }
+    }
+    if (head || !*p) {
+      if (start) {
+        size_t len = (size_t)(p - start);
+        while (len && c_space((unsigned char)start[len - 1])) len--;
+        emit(ctx, role, at, start, len);
+      }
+      if (!*p) break;
+      snprintf(role, sizeof role, "%s", r);
+      snprintf(at, sizeof at, "%s", ts);
+      start = nl ? nl + 1 : p + strlen(p);
+    }
+    if (!nl) {
+      p += strlen(p);
+      continue;
+    }
+    p = nl + 1;
+  }
+}
+
+typedef struct {
+  sqlite3_stmt *ins;
+  sqlite3_int64 doc;
+  int seq;
+  const char *id, *project;
+} note_sink;
+
+static void note_store(void *ctx, const char *role, const char *at, const char *body, size_t n) {
+  note_sink *k = ctx;
+  char turn[160];
+  snprintf(turn, sizeof turn, "note:%s:%d", k->id, k->seq);
+  sqlite3_bind_int64(k->ins, 1, k->doc);
+  sqlite3_bind_int(k->ins, 2, k->seq++);
+  sqlite3_bind_text(k->ins, 3, role, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(k->ins, 4, at, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(k->ins, 5, turn, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(k->ins, 6, k->project, -1, SQLITE_STATIC);
+  sqlite3_bind_text(k->ins, 7, body, (int)n, SQLITE_TRANSIENT);
+  sqlite3_step(k->ins);
+  sqlite3_reset(k->ins);
+}
+
 /* Turns technotes this machine did not write into searchable sessions. Technotes hold
  * each turn as "## ROLE TIMESTAMP" and its body, already redacted. */
 static void sessions_from_remote(sqlite3 *db) {
@@ -3909,53 +3984,8 @@ static void sessions_from_remote(sqlite3 *db) {
       sqlite3_int64 doc = sqlite3_column_int64(q, 0);
       sqlite3_finalize(q);
       sqlite3_stmt *ins = db_prepare(db, "INSERT INTO ctx_chunk(doc_id, seq, heading, at, turn, project, body) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)");
-      int seq = 0;
-      const char *p = text, *start = NULL;
-      char role[16] = "", at[40] = "";
-      for (;;) {
-        const char *nl = strchr(p, '\n');
-        int head = 0;
-        char r[16], ts[40];
-        char line[96];
-        size_t ll = nl ? (size_t)(nl - p) : strlen(p);
-        snprintf(line, sizeof line, "%.*s", (int)(ll < sizeof line - 1 ? ll : sizeof line - 1), p);
-        int got = !strncmp(line, "## ", 3) ? sscanf(line + 3, "%15s %39s", r, ts) : 0; /* this line only */
-        if (got >= 1 && (!strcmp(r, "user") || !strcmp(r, "assistant"))) {
-          size_t len = nl ? (size_t)(nl - p) : strlen(p);
-          if (got == 1 && len <= 3 + strlen(r) + 1) { /* a turn with no timestamp */
-            ts[0] = 0;
-            head = 1;
-          } else if (got == 2 && strlen(ts) >= 19 && ts[4] == '-' && ts[10] == 'T') {
-            head = 1;
-          }
-        }
-        if (head || !*p) {
-          if (start) {
-            size_t len = (size_t)(p - start);
-            while (len && c_space((unsigned char)start[len - 1])) len--;
-            char turn[160];
-            snprintf(turn, sizeof turn, "note:%s:%d", notes[i].id, seq);
-            sqlite3_bind_int64(ins, 1, doc);
-            sqlite3_bind_int(ins, 2, seq++);
-            sqlite3_bind_text(ins, 3, role, -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(ins, 4, at, -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(ins, 5, turn, -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(ins, 6, notes[i].project, -1, SQLITE_STATIC);
-            sqlite3_bind_text(ins, 7, start, (int)len, SQLITE_TRANSIENT);
-            sqlite3_step(ins);
-            sqlite3_reset(ins);
-          }
-          if (!*p) break;
-          snprintf(role, sizeof role, "%s", r);
-          snprintf(at, sizeof at, "%s", ts);
-          start = nl ? nl + 1 : p + strlen(p);
-        }
-        if (!nl) {
-          p += strlen(p);
-          continue;
-        }
-        p = nl + 1;
-      }
+      note_sink sink = {ins, doc, 0, notes[i].id, notes[i].project};
+      note_turns(text, note_store, &sink);
       sqlite3_finalize(ins);
       q = db_prepare(db, "INSERT OR REPLACE INTO ctx_remote_note(technote, version) VALUES (?1, ?2)");
       sqlite3_bind_text(q, 1, notes[i].id, -1, SQLITE_STATIC);
@@ -4211,6 +4241,7 @@ static int usage(void) {
   return 2;
 }
 
+#ifndef CTX_NO_MAIN /* the fuzz targets include this file for its parsers */
 int main(int argc, char **argv) {
   self_path = argv[0];
   if (sqlite3_auto_extension((void (*)(void))fsl_sqlext_init) != SQLITE_OK)
@@ -4236,3 +4267,4 @@ int main(int argc, char **argv) {
   if (argc >= 3 && !strcmp(argv[1], "turn")) return cmd_turn(argc - 2, argv + 2);
   return usage();
 }
+#endif

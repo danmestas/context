@@ -6,3 +6,8 @@
 build/
 /ctx
 __pycache__/
+/ctx-san
+crash-*
+leak-*
+timeout-*
+oom-*

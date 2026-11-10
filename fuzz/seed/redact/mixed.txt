@@ -1,0 +1,1 @@
+token = "abcdefghijk12345" and ghp_0123456789abcdefghij0123 and https://u:longpassword@host/x
