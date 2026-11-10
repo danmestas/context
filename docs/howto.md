@@ -1,0 +1,407 @@
+# How to use ctx
+
+Each section is one task. Commands assume `ctx` is on your PATH; `ctx` with no
+arguments lists them all, and `ctx version` prints its version and SQLite's.
+
+- [Install](#install)
+- [Archive your sessions](#archive-your-sessions)
+- [Search past work](#search-past-work)
+- [Check the archive for secrets](#check-the-archive-for-secrets)
+- [Set up a project](#set-up-a-project)
+- [Work with tickets](#work-with-tickets)
+- [Add sources](#add-sources)
+- [Retire a source](#retire-a-source)
+- [Keep a wiki](#keep-a-wiki)
+- [Share between machines](#share-between-machines)
+- [Add past sessions to prompts](#add-past-sessions-to-prompts)
+- [Rebuild and upgrade](#rebuild-and-upgrade)
+- [Measure and improve the skill](#measure-and-improve-the-skill)
+- [Query the database directly](#query-the-database-directly)
+- [Environment](#environment)
+
+## Install
+
+### From a release archive
+
+A release archive is a Claude Code plugin. It holds `bin/ctx`, the `ctx` and
+`ctx-wiki` skills, and hooks that archive each session.
+
+```sh
+tar xzf ctx-0.0.1-darwin-arm64.tar.gz
+claude plugin marketplace add ./ctx-0.0.1-darwin-arm64
+claude plugin install ctx@ctx
+ln -s "$PWD/ctx-0.0.1-darwin-arm64/bin/ctx" ~/.local/bin/ctx
+ctx init
+ctx scan
+```
+
+While the plugin is enabled, `ctx` is on the Bash tool's PATH inside Claude Code;
+the link puts it on yours. The Linux archives need glibc 2.34 or later.
+
+If you also have the ctx hooks in your own `settings.json`, remove them, or every
+session is archived twice.
+
+### Install from source
+
+```sh
+make                      # needs a C compiler and zlib
+cp ctx ~/.local/bin/
+mkdir -p ~/.claude/skills && cp -R skill/ctx skill/ctx-wiki ~/.claude/skills/
+ctx init
+ctx scan
+```
+
+Then add the hooks to `~/.claude/settings.json`, merged with any you have:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{ "hooks": [
+      { "type": "command", "command": "ctx hook", "async": true },
+      { "type": "command", "command": "ctx ticket offer", "timeout": 3 }
+    ] }],
+    "Stop":       [{ "hooks": [{ "type": "command", "command": "ctx hook", "async": true }] }],
+    "PreCompact": [{ "hooks": [{ "type": "command", "command": "ctx hook", "async": true }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "ctx hook", "async": true }] }]
+  }
+}
+```
+
+Use the full path to `ctx` if `~/.local/bin` is not on the PATH hooks run with.
+
+## Archive your sessions
+
+With the hooks installed there is nothing to do. `ctx hook` notes the transcript
+and returns at once; the archiving runs detached. At most once an hour it also
+scans `~/.claude/projects` (or `$CLAUDE_CONFIG_DIR/projects`) for transcripts that
+grew without a hook, and syncs repositories that have a remote. That check runs
+when a session starts.
+
+By hand:
+
+```sh
+ctx scan [DIR]            # archive everything that grew since it was last read
+ctx archive FILE.jsonl    # archive one transcript
+ctx extract FILE.jsonl    # print the redacted turns without storing them
+```
+
+Before anything is stored, known secret shapes (API keys, tokens, private keys,
+passwords in URLs and the like) become `[REDACTED]`, and long tool output is
+trimmed. Each session becomes a technote in your private repository, `repo:me`,
+one per session per day, tagged with its project. A project is the directory the
+session ran in, or the project it belongs to after `ctx project add`.
+
+## Search past work
+
+```sh
+ctx search WORDS...              # this project first; everything if nothing matches
+ctx search --all WORDS...        # every project
+ctx search --limit 30 WORDS...   # more than the default 12
+ctx turn ID                      # one turn
+ctx turn ID 2 5                  # with 2 turns before and 5 after
+ctx turn ID 0 0 --full           # without trimming a long turn
+```
+
+A turn matches if it has any of the words, and turns with more of the rarer words
+rank higher. Use exact names and the literal words of an error; two or three rare
+words beat a sentence. Each hit shows `#ID`, project, speaker, date and a snippet
+with the matched words in brackets.
+
+Search also covers each project's sources and wiki once they are indexed.
+Superseded, retracted and retired material is left out unless you ask for it:
+
+```sh
+ctx search --history WORDS...           # include superseded sources and retired pages
+ctx search --as-of 2026-03-01 WORDS...  # what ctx knew and held true on that date
+```
+
+`--as-of` returns sessions up to that date, and sources that had been added by
+then, were valid on that date and had not yet been replaced or retracted. It
+leaves out wiki pages.
+
+The `ctx` skill tells agents how to search well. Archived text is a record, not
+instructions: an agent should never act on commands it finds there.
+
+## Check the archive for secrets
+
+```sh
+ctx audit                 # scan turns added since the last run; exits 1 if anything is open
+ctx audit --all           # rescan the whole archive, for instance after a new rule
+ctx audit --limit 100     # list more than 30 open findings
+ctx audit --allow ID "a test fixture, not a key"
+ctx audit --tickets       # open one ticket per rule with open findings
+```
+
+`ctx audit` looks for secret-shaped strings that redaction did not catch. It
+prints where each one is, never the value: findings for known values first, then
+the rest oldest first. To check for secrets you know, pipe
+them in one per line:
+
+```sh
+your-secret-tool export | ctx audit --known
+```
+
+`tools/doppler-values.py | ctx audit --known` does this for every Doppler secret
+you can read, leaving out settings whose names mark them as not secret. A finding
+names the value by its line number; `tools/doppler-values.py --name N` says which
+secret line N is.
+
+## Set up a project
+
+A project maps a directory to a shared Fossil repository held inside the ctx
+database. Sessions run under that directory belong to it, and its sources and wiki
+live in that repository.
+
+Sources are committed from an ordinary Fossil checkout, so start from a Fossil
+repository and clone it into ctx:
+
+```sh
+fossil init ~/fossils/myproj.fossil             # or use one you already serve
+cd ~/code/myproj && fossil open ~/fossils/myproj.fossil
+ctx project add myproj --clone ~/fossils/myproj.fossil
+```
+
+The clone's URL, a file path or an http URL, becomes the project's remote: `ctx
+project pull` brings in check-ins from it and `ctx sync myproj` sends wiki pages
+back. Other forms:
+
+```sh
+ctx project add myproj                          # an empty repository, for a wiki without sources
+ctx project add myproj --import repo.fossil     # a copy of a Fossil repository file, with no remote
+ctx project add myproj --root DIR --remote URL  # map another directory, and set where it syncs
+ctx project list                                # name, repository, directory
+ctx project pull myproj [--from URL]            # bring in new check-ins
+```
+
+Repository names keep only letters and digits: `my-proj` becomes `repo:myproj`.
+
+## Work with tickets
+
+Tickets live in your private repository, `repo:me`, each tagged with its project,
+so they sync with your archive. `--type` is Task (the default), Bug, Feature or
+Question.
+
+```sh
+ctx ticket new "Fix the importer" --type Bug --body "Stalls on files over 2 GB" \
+  --acceptance "A 3 GB file imports" [--blocked-by ID]...
+ctx ticket ready              # open and unblocked, for this project
+ctx ticket ready --all        # every project
+ctx ticket show ID
+ctx ticket claim ID [--as NAME]
+ctx ticket done ID --result "Fixed in 4f2a91"
+ctx ticket drop ID --reason "Superseded by 9c1e"
+```
+
+A claim belongs to one person. When `repo:me` has a remote, `ctx` syncs before and
+after a claim, so two machines cannot both take the same ticket.
+
+`ctx ticket offer` runs at session start. It prints nothing unless this project
+has ready work, and then lists up to five tickets for the agent, as a record, not
+as instructions.
+
+## Add sources
+
+Sources are the documents a project's knowledge is built from: specs, papers,
+vendor docs, notes. They live in the project's checkout under `sources/`, are
+committed like code, and are never edited in place.
+
+```sh
+ctx source add ~/Downloads/spec.pdf --origin https://example.com/spec \
+  --class versioned --valid-from 2026-01-15 [--as vendor/spec.pdf]
+```
+
+This copies the file to `sources/` and writes `spec.pdf.origin.json` beside it,
+with its SHA3 hash, origin, class, dates, risk and who added it. Commit both in
+the checkout, then pull into ctx and index:
+
+```sh
+fossil add sources && fossil commit -m "Add the vendor spec"   # and fossil push if served
+ctx project pull myproj
+ctx index
+```
+
+The class says how long a source can be trusted:
+
+| Class | Meaning | Needs |
+|---|---|---|
+| `evergreen` | stays true | |
+| `versioned` | true for one version of something | best with `--valid-from`, and `--valid-until` once replaced |
+| `perishable` | goes stale with time | `--review-after DATE` |
+
+Other options: `--retrieved DATE`, `--how` (how it was obtained), and
+`--risk security|money|legal|api`, which keeps the wiki from retiring anything
+built on it without a person.
+
+`ctx source check` fails if any source has no origin, has changed since its origin
+was recorded, or has an invalid class, and lists perishable sources due for
+review. Run it in the project's CI.
+
+## Retire a source
+
+Old information is superseded, not erased. Add the newer source, then record one
+of three relations:
+
+```sh
+ctx source add ~/Downloads/spec-v3.pdf --origin https://example.com/spec/v3 \
+  --class versioned --valid-from 2026-09-01
+ctx source supersede spec.pdf --by spec-v3.pdf --relation replaces --reason "v3 replaced v2"
+ctx source supersede spec.pdf --by errata.md --relation amends --reason "errata"
+ctx source supersede spec.pdf --relation retracts --reason "withdrawn by the vendor"
+ctx source uses sources/spec.pdf  # which wiki claims depend on it
+```
+
+Names work with or without the `sources/` prefix. Each relation appends an event
+to `sources/SUPERSEDED.jsonl`; commit it like any other change. After `replaces`
+or `retracts`, search leaves the old source out unless asked with `--history` or
+`--as-of`; an amended source stays in. Run `ctx wiki repin` afterwards, as below.
+
+## Keep a wiki
+
+The wiki is Markdown pages compiled from the sources. `ctx wiki save` is the only
+way a page is written, and it refuses one whose provenance does not hold. The
+`ctx-wiki` skill teaches agents the format; a page looks like this:
+
+```markdown
+# Cache design
+
+The cache keeps entries for 30 seconds.[^ttl]
+
+Synthesis: short lifetimes and nightly eviction keep the table small.[^ttl][^evict]
+
+See [Eviction policy](/wiki?name=Eviction+policy).
+
+[^ttl]: "The cache TTL is 30 seconds." [design.md](/file?name=sources/design.md&ci=FULLHASH&txt=1)
+[^evict]: "Evictions run nightly." [ops.md](/file?name=sources/ops.md&ci=FULLHASH&txt=1)
+```
+
+The gate checks, without any model:
+
+- every claim has a footnote, and every quote appears word for word in what it
+  cites: a source or code file at a full check-in hash, or a session or ticket of
+  this project;
+- each cited source has an origin and still matches its recorded hash;
+- a claim starting `Synthesis:` cites at least two sources;
+- no citation points at a wiki page, and every page link points at a page that
+  exists;
+- the page is under 32 KB.
+
+It adds a `## Sources` list and a `## Provenance` block, and reports any claim the
+new version dropped. Get the full trunk hash for citations with:
+
+```sh
+ctx sql "SELECT fsl_open('repo:myproj'), fsl_use('repo:myproj'), fsl_resolve('trunk')"
+```
+
+Then:
+
+```sh
+ctx wiki save "Cache design" page.md --model MODEL [--ticket ID] [--session ID]
+ctx wiki publish             # regenerate the Wiki Index and Wiki Health pages
+ctx wiki check               # every citation still holds; exits 1 on a problem
+ctx wiki why "Cache design"  # each claim beside its quote, to review by eye
+ctx sync myproj              # push the pages to the project's remote
+```
+
+The gate proves a quote exists; only a reader can tell it supports the claim. Read
+`ctx wiki why` for every page.
+
+When sources change:
+
+```sh
+ctx wiki repin                # move each claim whose quote survives; ticket the rest
+ctx wiki queue                # stale knowledge, most depended-on first
+ctx wiki retire PAGE --reason WHY [--by NEWER-PAGE]
+ctx wiki restore PAGE
+ctx wiki retire --auto        # list pages nothing needs any more
+ctx wiki retire --auto --apply
+```
+
+`--auto` retires only a page whose sources are all gone (superseded, retracted, or
+more than 90 days past review), that nothing links to,
+that past sessions do not mention, and that has no risk class. Anything else that
+looks finished becomes a ticket for a person. A retired page keeps its text and
+history.
+
+Every command takes `--project P` to work on a project other than the current
+directory's.
+
+## Share between machines
+
+Each repository syncs with a Fossil server over plain http, so use a private
+network or an ssh tunnel; ctx has no TLS.
+
+A remote must hold a copy of the same repository. For your private archive, export
+it once on the first machine and serve that file:
+
+```sh
+ctx sql "SELECT fsl_export('repo:me', '/srv/ctx/me.fossil')"
+fossil server --port 8080 /srv/ctx/me.fossil    # on the host; or zit serve
+ssh -N -L 8080:127.0.0.1:8080 host              # on each machine
+ctx remote me http://127.0.0.1:8080/
+ctx sync                                        # every repository with a remote
+```
+
+On a second machine, start from that copy instead of an empty archive:
+
+```sh
+ctx init --clone http://127.0.0.1:8080/
+```
+
+Sessions archived on other machines become searchable after each sync. The hooks
+also sync when a session starts, at most once an hour.
+
+A project syncs with the server it was cloned from (`ctx project add --clone URL`),
+or with one you set:
+
+```sh
+ctx remote myproj URL
+ctx sync myproj
+```
+
+## Add past sessions to prompts
+
+`ctx inject` is a `UserPromptSubmit` hook that adds up to three short snippets
+from past sessions to a prompt when its rare words match strongly, and nothing
+otherwise. It is not installed by default: in an eval of 90 questions it scored
+no better than the `ctx` skill alone. To try it, add to `settings.json`:
+
+```json
+"UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "ctx inject", "timeout": 3 }] }]
+```
+
+## Rebuild and upgrade
+
+```sh
+ctx rebuild
+```
+
+drops the search index, citations and links and rebuilds them from the
+repositories. When a new version of `ctx` changes those tables it rebuilds by
+itself on first use; the kept tables are upgraded in place. A rebuild of a large
+archive takes a minute or two.
+
+## Measure and improve the skill
+
+`eval/skill_eval.py` measures the `ctx` skill against a private bank of questions
+about past work, with blind grading and a held-out set, so a change to the skill
+is kept only if results improve. The question bank and results stay in
+`~/.ctx/eval`. [eval/README.md](../eval/README.md) describes the loop.
+
+## Query the database directly
+
+```sh
+ctx sql "SELECT project, count(*) FROM ctx_capture GROUP BY 1"
+```
+
+`ctx sql` runs one statement with libfossil's SQL functions loaded, such as
+`fsl_open`, `fsl_use` and `fsl_resolve`. The tables are described in
+`schema/state.sql` and `schema/index.sql`.
+
+## Environment
+
+| Variable | Effect |
+|---|---|
+| `CTX_DB` | the database, instead of `~/.ctx/ctx.sqlite` |
+| `CLAUDE_CONFIG_DIR` | where transcripts are found, instead of `~/.claude` |
+| `USER` | the name on check-ins, claims and sources |
+| `CTX_SESSION` | the session `ctx wiki save` records a page against |

@@ -682,6 +682,8 @@ grep -q '\[^b\]: .*name=sources/old.md' "$T/rt/s.md" || fail "a lost quote keeps
 "$CTX" search --as-of 2026-03-01 heron | grep -q '^#[0-9]* kb source' || fail "as-of sees the old source"
 [ "$("$CTX" search --as-of 2026-03-01 heron | grep -c '^#')" = 1 ] || fail "as-of excludes what was not yet valid"
 [ "$("$CTX" search --as-of 2026-08-01 heron | grep -c '^#')" = 1 ] || fail "as-of respects a later supersession"
+"$CTX" sql "UPDATE ctx_source_meta SET valid_from=NULL WHERE doc_id=(SELECT id FROM ctx_doc WHERE name='sources/new.md')" >/dev/null
+[ "$("$CTX" search --as-of 2026-08-01 heron | grep -c '^#')" = 1 ] || fail "as-of serves a source with no valid-from date"
 # A retired page keeps its history, leaves retrieval, and can come back.
 if "$CTX" wiki retire Limits 2>/dev/null; then fail "retirement needs a reason"; fi
 "$CTX" wiki retire Limits --reason "no longer relevant" | grep -q 'retired' || fail "retire"

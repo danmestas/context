@@ -1,8 +1,8 @@
 # ctx
 
 ctx archives your Claude Code sessions, with secrets redacted, into a private
-Fossil repository on this machine, and searches them. Per project it also keeps
-tickets and a wiki whose every claim cites an exact source version.
+Fossil repository on this machine, and searches them. It also keeps
+tickets, and per project a wiki whose every claim cites an exact source version.
 
 This directory is a Claude Code plugin: `bin/ctx`, the `ctx` and `ctx-wiki` skills,
 and hooks that archive each session as it runs.
@@ -24,14 +24,15 @@ Set `CTX_DB` to keep the database somewhere other than `~/.ctx/ctx.sqlite`.
 
 ```sh
 ctx search why did the sync test hang     # past sessions, this project first
-ctx turn ID                               # one turn in full, with its neighbours
+ctx turn ID 2 5                           # a turn, with 2 before and 5 after
 ctx audit                                 # secret-shaped strings left in the archive
-ctx project add NAME --root DIR           # a shared repository for tickets, sources, wiki
+ctx project add NAME --clone REPO         # a project, for its sources and wiki
 ctx ticket new "Fix the importer"         # then ready, claim, done
-ctx remote me URL && ctx sync             # share the archive with another machine
+ctx sync                                  # repositories that have a remote
 ```
 
-`ctx` with no arguments lists every command.
+`ctx` with no arguments lists every command. The full guide, including how to share
+the archive between machines, is `docs/howto.md` in the source.
 
 ## Remove
 
