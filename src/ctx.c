@@ -1803,6 +1803,45 @@ static void repo_name(const char *project, char *out, size_t cap) {
     die("a project cannot use the repository name '%s'", out);
 }
 
+/* Opens a project's shared repository and makes it the current one. */
+static void open_project(sqlite3 *db, const char *repo) {
+  char handle[96];
+  snprintf(handle, sizeof handle, "repo:%s", repo);
+  sqlite3_stmt *q = db_prepare(db, "SELECT fsl_open(?1, ?2), fsl_use(?1)");
+  sqlite3_bind_text(q, 1, handle, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 2, person(), -1, SQLITE_STATIC);
+  if (sqlite3_step(q) != SQLITE_ROW) die("cannot open %s: %s", handle, sqlite3_errmsg(db));
+  sqlite3_finalize(q);
+}
+
+static int project_pull(int argc, char **argv) {
+  const char *name = argv[0], *from = NULL;
+  for (int i = 1; i < argc; i++) {
+    if (!strcmp(argv[i], "--from") && i + 1 < argc) from = argv[++i];
+    else die("usage: ctx project pull NAME [--from URL]");
+  }
+  char repo[80];
+  repo_name(name, repo, sizeof repo);
+  sqlite3 *db = ctx_open();
+  char *remote = NULL;
+  sqlite3_stmt *q = db_prepare(db, "SELECT coalesce(?1, remote) FROM ctx_repo WHERE name = ?2");
+  sqlite3_bind_text(q, 1, from, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 2, repo, -1, SQLITE_STATIC);
+  if (sqlite3_step(q) != SQLITE_ROW) die("no project %s", name);
+  if (sqlite3_column_text(q, 0)) remote = dup_text(sqlite3_column_text(q, 0));
+  sqlite3_finalize(q);
+  if (!remote) die("project %s has no remote; use --from URL", name);
+  open_project(db, repo);
+  q = db_prepare(db, "SELECT fsl_sync(?1, 'pull')");
+  sqlite3_bind_text(q, 1, remote, -1, SQLITE_STATIC);
+  if (sqlite3_step(q) != SQLITE_ROW) die("cannot pull: %s", sqlite3_errmsg(db));
+  printf("%s\n", sqlite3_column_text(q, 0));
+  sqlite3_finalize(q);
+  free(remote);
+  sqlite3_close(db);
+  return 0;
+}
+
 static int cmd_project(int argc, char **argv) {
   if (argc >= 1 && !strcmp(argv[0], "list")) {
     sqlite3 *db = ctx_open();
@@ -1815,7 +1854,8 @@ static int cmd_project(int argc, char **argv) {
     sqlite3_close(db);
     return 0;
   }
-  if (argc < 2 || strcmp(argv[0], "add")) die("usage: ctx project add NAME [--root DIR] [--import FILE] [--remote URL] | ctx project list");
+  if (argc >= 2 && !strcmp(argv[0], "pull")) return project_pull(argc - 1, argv + 1);
+  if (argc < 2 || strcmp(argv[0], "add")) die("usage: ctx project add NAME [--root DIR] [--import FILE] [--remote URL] | list | pull NAME [--from URL]");
   const char *name = argv[1], *root_opt = ".", *import = NULL, *remote = NULL;
   for (int i = 2; i < argc; i++) {
     if (i + 1 >= argc) die("%s needs a value", argv[i]);
@@ -2116,6 +2156,398 @@ static int cmd_source(int argc, char **argv) {
   return 2;
 }
 
+/* ctx index: makes a project's sources and wiki searchable and parses citations.
+ * Everything it writes is derived, so a project can always be indexed again. */
+#define CHUNK_MAX 8000
+
+static void chunk_insert(sqlite3_stmt *ins, sqlite3_int64 doc, int *seq, const char *heading, const char *project, const char *p, size_t n) {
+  size_t a = 0;
+  while (a < n && c_space((unsigned char)p[a])) a++;
+  if (a == n) return;
+  sqlite3_bind_int64(ins, 1, doc);
+  sqlite3_bind_int(ins, 2, (*seq)++);
+  sqlite3_bind_text(ins, 3, heading, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(ins, 4, project, -1, SQLITE_STATIC);
+  sqlite3_bind_text(ins, 5, p + a, (int)(n - a), SQLITE_TRANSIENT);
+  sqlite3_step(ins);
+  sqlite3_reset(ins);
+}
+
+/* One chunk per Markdown section, split further at line ends if a section is long. */
+static void chunk_text(sqlite3 *db, sqlite3_int64 doc, const char *project, const char *p, size_t n) {
+  sqlite3_stmt *ins = db_prepare(db, "INSERT INTO ctx_chunk(doc_id, seq, heading, project, body) VALUES (?1, ?2, ?3, ?4, ?5)");
+  char heading[256] = "";
+  int seq = 0, fenced = 0;
+  size_t start = 0;
+  for (size_t i = 0; i < n;) {
+    const char *nl = memchr(p + i, '\n', n - i);
+    size_t end = nl ? (size_t)(nl - p) + 1 : n;
+    if (end - i >= 3 && !memcmp(p + i, "```", 3)) fenced = !fenced;
+    if (!fenced && p[i] == '#') {
+      chunk_insert(ins, doc, &seq, heading, project, p + start, i - start);
+      start = i;
+      size_t h = i;
+      while (h < end && (p[h] == '#' || p[h] == ' ')) h++;
+      size_t len = end - h;
+      while (len && c_space((unsigned char)p[h + len - 1])) len--;
+      snprintf(heading, sizeof heading, "%.*s", (int)len, p + h);
+    } else if (end - start > CHUNK_MAX) {
+      chunk_insert(ins, doc, &seq, heading, project, p + start, i - start);
+      start = i;
+    }
+    i = end;
+  }
+  chunk_insert(ins, doc, &seq, heading, project, p + start, n - start);
+  sqlite3_finalize(ins);
+}
+
+/* Collapses whitespace runs, so a quote matches across line breaks. */
+static char *squeeze(const char *p, size_t n) {
+  char *out = malloc(n + 1);
+  if (!out) die("out of memory");
+  size_t o = 0;
+  for (size_t i = 0; i < n; i++) {
+    if (c_space((unsigned char)p[i])) {
+      if (o && out[o - 1] != ' ') out[o++] = ' ';
+    } else {
+      out[o++] = p[i];
+    }
+  }
+  while (o && out[o - 1] == ' ') o--;
+  out[o] = 0;
+  return out;
+}
+
+static char *url_param(const char *url, const char *key) {
+  size_t k = strlen(key);
+  for (const char *p = strchr(url, '?'); p && *p; p = strchr(p + 1, '&')) {
+    if (strncmp(p + 1, key, k) || p[1 + k] != '=') continue;
+    const char *v = p + 2 + k;
+    size_t n = strcspn(v, "&");
+    char *out = malloc(n + 1);
+    if (!out) die("out of memory");
+    size_t o = 0;
+    for (size_t i = 0; i < n; i++) {
+      if (!strncmp(v + i, "&amp;", 5)) break;
+      if (v[i] == '+') out[o++] = ' ';
+      else if (v[i] == '%' && i + 2 < n && c_hex((unsigned char)v[i + 1]) && c_hex((unsigned char)v[i + 2])) {
+        char hex[3] = {v[i + 1], v[i + 2], 0};
+        out[o++] = (char)strtol(hex, NULL, 16);
+        i += 2;
+      } else out[o++] = v[i];
+    }
+    out[o] = 0;
+    return out;
+  }
+  return NULL;
+}
+
+/* A citation footnote:  [^id]: "quote" [label](/file?name=PATH&ci=HASH&ln=N)  */
+static void citation_line(sqlite3 *db, sqlite3_stmt *add, const char *line) {
+  const char *close = strstr(line, "]:");
+  if (!close) return;
+  char ref[64];
+  snprintf(ref, sizeof ref, "%.*s", (int)(close - line - 2), line + 2);
+  const char *q = close + 2;
+  while (*q == ' ') q++;
+  if (*q != '"') return;
+  const char *qend = strstr(q + 1, "\" [");
+  if (!qend) return;
+  const char *link = strstr(qend, "](");
+  if (!link) return;
+  const char *uend = strchr(link + 2, ')');
+  if (!uend) return;
+  char url[1024];
+  snprintf(url, sizeof url, "%.*s", (int)(uend - link - 2), link + 2);
+  char *path = NULL, *ci = NULL;
+  const char *kind = "unknown";
+  if (!strncmp(url, "/file?", 6)) {
+    path = url_param(url, "name");
+    ci = url_param(url, "ci");
+    kind = path && !strncmp(path, "sources/", 8) ? "source" : "code";
+  } else if (!strncmp(url, "/technote/", 10)) {
+    path = strdup(url + 10);
+    kind = "session";
+  } else if (!strncmp(url, "/tktview/", 9)) {
+    path = strdup(url + 9);
+    kind = "ticket";
+  }
+  const char *status = "unchecked";
+  char *hash = NULL;
+  if (ci && path) {
+    sqlite3_stmt *f = db_prepare(db, "SELECT fsl_file(?1, ?2)");
+    sqlite3_bind_text(f, 1, ci, -1, SQLITE_STATIC);
+    sqlite3_bind_text(f, 2, path, -1, SQLITE_STATIC);
+    if (sqlite3_step(f) == SQLITE_ROW && sqlite3_column_type(f, 0) != SQLITE_NULL) {
+      const char *data = sqlite3_column_blob(f, 0);
+      size_t n = (size_t)sqlite3_column_bytes(f, 0);
+      hash = sha3_hex(data ? data : "", n);
+      char *hay = squeeze(data ? data : "", n), *needle = squeeze(q + 1, (size_t)(qend - q - 1));
+      status = *needle && strstr(hay, needle) ? "ok" : "quote-missing";
+      free(hay);
+      free(needle);
+    } else {
+      status = "no-source";
+    }
+    sqlite3_finalize(f);
+  }
+  sqlite3_bind_text(add, 1, ref, -1, SQLITE_STATIC);
+  sqlite3_bind_text(add, 2, q + 1, (int)(qend - q - 1), SQLITE_STATIC);
+  sqlite3_bind_text(add, 3, kind, -1, SQLITE_STATIC);
+  sqlite3_bind_text(add, 4, path, -1, SQLITE_STATIC);
+  sqlite3_bind_text(add, 5, ci, -1, SQLITE_STATIC);
+  sqlite3_bind_text(add, 6, hash, -1, SQLITE_STATIC);
+  sqlite3_bind_text(add, 7, status, -1, SQLITE_STATIC);
+  sqlite3_step(add);
+  sqlite3_reset(add);
+  free(path);
+  free(ci);
+  free(hash);
+}
+
+/* Reads a page's citations and page links into temp tables, outside any write. */
+static void wiki_parse(sqlite3 *db, const char *text) {
+  db_exec(db, "DELETE FROM temp.cite; DELETE FROM temp.pagelink;");
+  sqlite3_stmt *add = db_prepare(db, "INSERT INTO temp.cite VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)");
+  sqlite3_stmt *lnk = db_prepare(db, "INSERT OR IGNORE INTO temp.pagelink VALUES (?1)");
+  int fenced = 0;
+  for (const char *p = text; *p;) {
+    const char *nl = strchr(p, '\n');
+    size_t n = nl ? (size_t)(nl - p) : strlen(p);
+    char *line = strndup(p, n);
+    if (!line) die("out of memory");
+    if (!strncmp(line, "```", 3)) fenced = !fenced;
+    else if (!fenced) {
+      if (!strncmp(line, "[^", 2)) citation_line(db, add, line);
+      int code = 0;
+      for (const char *c = line; *c; c++) {
+        if (*c == '`') code = !code;
+        if (!code && !strncmp(c, "](/wiki?name=", 13)) {
+          size_t u = strcspn(c + 2, ")");
+          char *url = strndup(c + 2, u);
+          char *page = url ? url_param(url, "name") : NULL;
+          if (page) {
+            sqlite3_bind_text(lnk, 1, page, -1, SQLITE_TRANSIENT);
+            sqlite3_step(lnk);
+            sqlite3_reset(lnk);
+          }
+          free(page);
+          free(url);
+        }
+      }
+    }
+    free(line);
+    if (!nl) break;
+    p = nl + 1;
+  }
+  sqlite3_finalize(add);
+  sqlite3_finalize(lnk);
+}
+
+/* Stores one document if it changed. Returns 1 if it was written. */
+static int doc_store(sqlite3 *db, const char *project, sqlite3_int64 repo_id, const char *kind, const char *name, const char *p, size_t n, int text) {
+  char *hash = sha3_hex(p, n);
+  sqlite3_stmt *q = db_prepare(db, "INSERT OR IGNORE INTO temp.seen VALUES (?1, ?2)");
+  sqlite3_bind_text(q, 1, kind, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 2, name, -1, SQLITE_STATIC);
+  sqlite3_step(q);
+  sqlite3_finalize(q);
+  q = db_prepare(db, "SELECT hash FROM ctx_doc WHERE project = ?1 AND kind = ?2 AND name = ?3");
+  sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 2, kind, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 3, name, -1, SQLITE_STATIC);
+  int same = sqlite3_step(q) == SQLITE_ROW && !strcmp((const char *)sqlite3_column_text(q, 0), hash);
+  sqlite3_finalize(q);
+  int is_wiki = !strcmp(kind, "wiki");
+  if (same && !is_wiki) { /* a page's citations can change status when its sources move */
+    free(hash);
+    return 0;
+  }
+  if (is_wiki) wiki_parse(db, p);
+  db_exec(db, "BEGIN IMMEDIATE");
+  q = db_prepare(db,
+      "DELETE FROM ctx_chunk WHERE doc_id = (SELECT id FROM ctx_doc WHERE project = ?1 AND kind = ?2 AND name = ?3)");
+  sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 2, kind, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 3, name, -1, SQLITE_STATIC);
+  sqlite3_step(q);
+  sqlite3_finalize(q);
+  q = db_prepare(db,
+      "INSERT INTO ctx_doc(project, repo_id, kind, name, title, hash, size, mtime) VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, unixepoch())"
+      " ON CONFLICT (project, kind, name) DO UPDATE SET hash = excluded.hash, size = excluded.size, mtime = excluded.mtime RETURNING id");
+  sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  sqlite3_bind_int64(q, 2, repo_id);
+  sqlite3_bind_text(q, 3, kind, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 4, name, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 5, hash, -1, SQLITE_STATIC);
+  sqlite3_bind_int64(q, 6, (sqlite3_int64)n);
+  if (sqlite3_step(q) != SQLITE_ROW) die("%s", sqlite3_errmsg(db));
+  sqlite3_int64 doc = sqlite3_column_int64(q, 0);
+  sqlite3_finalize(q);
+  if (text) {
+    buf clean = {0};
+    add_redacted(&clean, p, n); /* the file stays exact; only the search index is redacted */
+    chunk_text(db, doc, project, clean.p ? clean.p : "", clean.n);
+    free(clean.p);
+  }
+  if (is_wiki) {
+    sqlite3_stmt *d = db_prepare(db, "DELETE FROM ctx_link WHERE src_id = ?1");
+    sqlite3_bind_int64(d, 1, doc);
+    sqlite3_step(d);
+    sqlite3_finalize(d);
+    d = db_prepare(db, "DELETE FROM ctx_citation WHERE doc_id = ?1");
+    sqlite3_bind_int64(d, 1, doc);
+    sqlite3_step(d);
+    sqlite3_finalize(d);
+    d = db_prepare(db, "INSERT INTO ctx_citation(doc_id, ref, quote, target_kind, target, ci, file_hash, status) SELECT ?1, * FROM temp.cite");
+    sqlite3_bind_int64(d, 1, doc);
+    sqlite3_step(d);
+    sqlite3_finalize(d);
+    d = db_prepare(db, "INSERT OR IGNORE INTO ctx_link(src_id, kind, dst_kind, dst_name, dst_hash)"
+                       " SELECT ?1, CASE WHEN target_kind IN ('source', 'code') THEN 'compiled_from' ELSE 'cites' END, target_kind, target, file_hash"
+                       " FROM temp.cite WHERE target_kind <> 'unknown' AND target IS NOT NULL");
+    sqlite3_bind_int64(d, 1, doc);
+    sqlite3_step(d);
+    sqlite3_finalize(d);
+    d = db_prepare(db, "INSERT OR IGNORE INTO ctx_link(src_id, kind, dst_kind, dst_name) SELECT ?1, 'links_to', 'wiki', page FROM temp.pagelink");
+    sqlite3_bind_int64(d, 1, doc);
+    sqlite3_step(d);
+    sqlite3_finalize(d);
+  }
+  db_exec(db, "COMMIT");
+  free(hash);
+  return 1;
+}
+
+static void index_tree(sqlite3 *db, const char *project, sqlite3_int64 repo, const char *base, const char *rel, long *count, long *changed) {
+  char dir[4500];
+  snprintf(dir, sizeof dir, "%s/%s", base, rel);
+  DIR *d = opendir(dir);
+  if (!d) return;
+  struct dirent *e;
+  while ((e = readdir(d))) {
+    if (e->d_name[0] == '.') continue;
+    char sub[4600], full[4700];
+    snprintf(sub, sizeof sub, "%s/%s", rel, e->d_name);
+    snprintf(full, sizeof full, "%s/%s", base, sub);
+    struct stat st;
+    if (lstat(full, &st)) continue;
+    if (S_ISDIR(st.st_mode)) {
+      index_tree(db, project, repo, base, sub, count, changed);
+    } else if (S_ISREG(st.st_mode) && !has_suffix(e->d_name, ORIGIN_SUFFIX)) {
+      size_t n = 0;
+      char *p = slurp(full, &n);
+      if (!p) continue;
+      (*count)++;
+      *changed += doc_store(db, project, repo, "source", sub, p, n, !memchr(p, 0, n < 8192 ? n : 8192));
+      free(p);
+    }
+  }
+  closedir(d);
+}
+
+static void remove_tree(const char *path) {
+  DIR *d = opendir(path);
+  if (d) {
+    struct dirent *e;
+    while ((e = readdir(d))) {
+      if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+      char sub[4700];
+      snprintf(sub, sizeof sub, "%s/%s", path, e->d_name);
+      struct stat st;
+      if (!lstat(sub, &st) && S_ISDIR(st.st_mode)) remove_tree(sub);
+      else unlink(sub);
+    }
+    closedir(d);
+  }
+  rmdir(path);
+}
+
+static int cmd_index(int argc, char **argv) {
+  const char *project_opt = argc == 2 && !strcmp(argv[0], "--project") ? argv[1] : NULL;
+  if (argc && !project_opt) die("usage: ctx index [--project P]");
+  sqlite3 *db = ctx_open();
+  char *project = project_opt ? dup_text((const unsigned char *)project_opt) : current_project(db);
+  char repo[80];
+  repo_name(project, repo, sizeof repo);
+  sqlite3_stmt *q = db_prepare(db, "SELECT id FROM ctx_repo WHERE name = ?1 AND scope = 'shared'");
+  sqlite3_bind_text(q, 1, repo, -1, SQLITE_STATIC);
+  if (sqlite3_step(q) != SQLITE_ROW) die("no project %s; run: ctx project add", project);
+  sqlite3_int64 repo_id = sqlite3_column_int64(q, 0);
+  sqlite3_finalize(q);
+  db_exec(db,
+          "CREATE TABLE IF NOT EXISTS ctx_citation(id INTEGER PRIMARY KEY, doc_id INTEGER NOT NULL, ref TEXT NOT NULL, quote TEXT NOT NULL,"
+          " target_kind TEXT NOT NULL, target TEXT, ci TEXT, file_hash TEXT, status TEXT NOT NULL) STRICT;"
+          "CREATE INDEX IF NOT EXISTS ctx_citation_target ON ctx_citation(target_kind, target);"
+          "CREATE INDEX IF NOT EXISTS ctx_citation_doc ON ctx_citation(doc_id);"
+          "CREATE TEMP TABLE seen(kind TEXT, name TEXT, PRIMARY KEY (kind, name));"
+          "CREATE TEMP TABLE cite(ref, quote, target_kind, target, ci, file_hash, status);"
+          "CREATE TEMP TABLE pagelink(page PRIMARY KEY);");
+  open_project(db, repo);
+  long files = 0, changed = 0, pages = 0;
+  char tmp[4400], *side = sidecar(".index.XXXXXX");
+  snprintf(tmp, sizeof tmp, "%s", side);
+  free(side);
+  if (!mkdtemp(tmp)) die("cannot make a temporary directory: %s", strerror(errno));
+  q = db_prepare(db, "SELECT fsl_extract('trunk', ?1, 1)");
+  sqlite3_bind_text(q, 1, tmp, -1, SQLITE_STATIC);
+  int have_files = sqlite3_step(q) == SQLITE_ROW;
+  sqlite3_finalize(q);
+  if (have_files) index_tree(db, project, repo_id, tmp, "sources", &files, &changed);
+  remove_tree(tmp);
+  char sql[256];
+  snprintf(sql, sizeof sql, "SELECT substr(tagname, 6) FROM fslrepo_%s_tag WHERE tagname GLOB 'wiki-*'", repo);
+  q = db_prepare(db, sql);
+  char **names = NULL;
+  size_t nn = 0, cap = 0;
+  while (sqlite3_step(q) == SQLITE_ROW) { /* listed first: libfossil reads pages one at a time */
+    if (nn == cap) {
+      cap = cap ? cap * 2 : 32;
+      names = realloc(names, cap * sizeof *names);
+      if (!names) die("out of memory");
+    }
+    names[nn++] = dup_text(sqlite3_column_text(q, 0));
+  }
+  sqlite3_finalize(q);
+  for (size_t i = 0; i < nn; i++) {
+    q = db_prepare(db, "SELECT fsl_wiki(?1)");
+    sqlite3_bind_text(q, 1, names[i], -1, SQLITE_STATIC);
+    char *text = sqlite3_step(q) == SQLITE_ROW && sqlite3_column_text(q, 0) ? dup_text(sqlite3_column_text(q, 0)) : NULL;
+    sqlite3_finalize(q);
+    if (text) {
+      pages++;
+      changed += doc_store(db, project, repo_id, "wiki", names[i], text, strlen(text), 1);
+      free(text);
+    }
+    free(names[i]);
+  }
+  free(names);
+  db_exec(db, "BEGIN IMMEDIATE");
+  q = db_prepare(db, "DELETE FROM ctx_chunk WHERE doc_id IN (SELECT id FROM ctx_doc d WHERE d.project = ?1 AND d.kind IN ('source', 'wiki')"
+                     " AND NOT EXISTS (SELECT 1 FROM temp.seen s WHERE s.kind = d.kind AND s.name = d.name))");
+  sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  sqlite3_step(q);
+  sqlite3_finalize(q);
+  static const char *const gone[] = {"DELETE FROM ctx_link WHERE src_id", "DELETE FROM ctx_citation WHERE doc_id", "DELETE FROM ctx_doc WHERE id"};
+  for (int i = 0; i < 3; i++) {
+    snprintf(sql, sizeof sql, "%s IN (SELECT id FROM ctx_doc d WHERE d.project = ?1 AND d.kind IN ('source', 'wiki')"
+                              " AND NOT EXISTS (SELECT 1 FROM temp.seen s WHERE s.kind = d.kind AND s.name = d.name))", gone[i]);
+    q = db_prepare(db, sql);
+    sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+    sqlite3_step(q);
+    sqlite3_finalize(q);
+  }
+  db_exec(db, "COMMIT");
+  q = db_prepare(db, "SELECT count(*), coalesce(sum(c.status <> 'ok' AND c.status <> 'unchecked'), 0) FROM ctx_citation c JOIN ctx_doc d ON d.id = c.doc_id WHERE d.project = ?1");
+  sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  sqlite3_step(q);
+  printf("%ld sources, %ld wiki pages, %ld changed, %d citations, %d failing\n", files, pages, changed, sqlite3_column_int(q, 0), sqlite3_column_int(q, 1));
+  sqlite3_finalize(q);
+  free(project);
+  sqlite3_close(db);
+  return 0;
+}
+
 static int usage(void) {
   fputs("usage: ctx version\n"
         "       ctx init\n"
@@ -2125,8 +2557,9 @@ static int usage(void) {
         "       ctx turn ID [BEFORE [AFTER]] [--full]\n"
         "       ctx audit [--all] [--known] [--tickets] [--limit N] | --allow ID [NOTE]\n"
         "       ctx ticket new|ready|show|claim|done|drop|offer ...\n"
-        "       ctx project add NAME [--root DIR] [--import FILE] [--remote URL] | list\n"
+        "       ctx project add NAME [--root DIR] [--import FILE] [--remote URL] | list | pull NAME [--from URL]\n"
         "       ctx source add FILE --origin WHERE --class CLASS [--as PATH] | check\n"
+        "       ctx index [--project P]\n"
         "       ctx scan [DIR]\n"
         "       ctx hook\n"
         "       ctx sql STATEMENT\n",
@@ -2148,6 +2581,7 @@ int main(int argc, char **argv) {
   if (argc >= 2 && !strcmp(argv[1], "audit")) return cmd_audit(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "ticket")) return cmd_ticket(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "project")) return cmd_project(argc - 2, argv + 2);
+  if (argc >= 2 && !strcmp(argv[1], "index")) return cmd_index(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "source")) return cmd_source(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "search")) return cmd_search(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "turn")) return cmd_turn(argc - 2, argv + 2);

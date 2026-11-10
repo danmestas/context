@@ -5,6 +5,8 @@
 -- Derived, cleared and rebuilt from the repositories and project files, and never
 -- synced: ctx_doc, ctx_chunk, ctx_chunk_fts, ctx_link.
 --
+-- ctx_audit_* and ctx_citation are created by the commands that use them.
+--
 -- What lives in the Fossil repositories, not here:
 --   source documents   check-ins in the project's shared repository
 --   compiled wiki      Fossil wiki pages, mimetype text/x-markdown, same repository

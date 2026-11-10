@@ -431,6 +431,78 @@ printf 'no record\n' > sources/bare.md
 "$CTX" source check | grep -q 'no origin recorded for sources/bare.md' || fail "missing origin is named"
 cd - >/dev/null
 
+# Index: sources and wiki pages from a project repository, with citations checked.
+export CTX_DB="$T/index.sqlite"
+"$CTX" init >/dev/null
+mkdir -p "$T/ix/co" "$T/ix/root"
+(cd "$T/ix/root" && "$CTX" project add kb >/dev/null)
+inrepo() { "$CTX" sql "SELECT fsl_open('repo:kb', 'tester'), fsl_use('repo:kb'), $1" | cut -f3-; }
+inco() { "$CTX" sql "SELECT fsl_open('$T/ix/co', 'tester'), fsl_use('repo:kb'), $1" | cut -f3-; }
+inrepo "fsl_checkout('$T/ix/co')" >/dev/null
+mkdir -p "$T/ix/co/sources/sub"
+printf '# Design\n\nThe cache TTL is 30\nseconds in production.\n\n## Other\n\nUnrelated walrus text.\n' > "$T/ix/co/sources/sub/design.md"
+printf '{"origin":"x"}\n' > "$T/ix/co/sources/sub/design.md.origin.json"
+inco "fsl_add('sources')" >/dev/null
+inco "fsl_commit('{\"comment\":\"add source\"}')" >/dev/null
+CI=$(inrepo "fsl_resolve('trunk')")
+python3 - "$T/ix/page.md" "$CI" <<'EOF'
+import sys
+p, ci = sys.argv[1:3]
+open(p, "w").write(f"""# Cache
+
+Entries live 30 seconds.[^a] A bad one.[^b] See [Other](/wiki?name=Other+Page) and [Gone](/wiki?name=Gone).
+
+`[x](/wiki?name=InCode)`
+
+```
+[y](/wiki?name=InFence)
+```
+
+[^a]: "The cache TTL is 30 seconds in production." [design](/file?name=sources/sub/design.md&ci={ci}&txt=1&ln=3)
+[^b]: "This was never written." [design](/file?name=sources/sub/design.md&ci={ci})
+[^c]: "A claim from a session." [note](/technote/abc123)
+""")
+EOF
+"$CTX" sql "SELECT fsl_open('repo:kb','tester'), fsl_use('repo:kb'), fsl_wiki_save('Cache', cast(readfile('$T/ix/page.md') as text), 'text/x-markdown')" 2>/dev/null >/dev/null || python3 - "$CTX" "$T/ix/page.md" <<'EOF'
+import subprocess, sys
+ctx, p = sys.argv[1:3]
+t = open(p).read().replace("'", "''")
+subprocess.run([ctx, "sql", f"SELECT fsl_open('repo:kb','tester'), fsl_use('repo:kb'), fsl_wiki_save('Cache', '{t}', 'text/x-markdown')"], check=True, capture_output=True)
+EOF
+inrepo "fsl_wiki_save('Other Page', '# Other', 'text/x-markdown')" >/dev/null
+out=$(cd "$T/ix/root" && "$CTX" index); echo "$out" | grep -q '^1 sources, 2 wiki pages, 3 changed, 3 citations, 1 failing' || fail "index counts: $out"
+"$CTX" sql "SELECT count(*) FROM ctx_doc WHERE name LIKE '%origin.json'" | grep -q '^0' || fail "origin files are not indexed as sources"
+q() { "$CTX" sql "$1"; }
+[ "$(q "SELECT status FROM ctx_citation WHERE ref='a'")" = ok ] || fail "a quote is found across a line break"
+[ "$(q "SELECT status FROM ctx_citation WHERE ref='b'")" = quote-missing ] || fail "a missing quote is caught"
+[ "$(q "SELECT status FROM ctx_citation WHERE ref='c'")" = unchecked ] || fail "a session citation awaits checking"
+[ "$(q "SELECT ci FROM ctx_citation WHERE ref='a'")" = "$CI" ] || fail "citation pins the check-in"
+[ "$(q "SELECT length(file_hash) FROM ctx_citation WHERE ref='a'")" = 64 ] || fail "citation pins a full hash"
+[ "$(q "SELECT count(*) FROM ctx_link WHERE kind='links_to'")" = 2 ] || fail "page links, ignoring code"
+[ "$(q "SELECT count(*) FROM ctx_link WHERE kind='compiled_from' AND dst_name='sources/sub/design.md'")" = 1 ] || fail "compiled_from link"
+[ "$(q "SELECT count(*) FROM ctx_stale_wiki")" = 0 ] || fail "nothing is stale yet"
+[ "$(q "SELECT group_concat(heading) FROM (SELECT heading FROM ctx_chunk c JOIN ctx_doc d ON d.id=c.doc_id WHERE d.kind='source' ORDER BY seq)")" = "Design,Other" ] || fail "chunks by heading"
+(cd "$T/ix/root" && "$CTX" search walrus | grep -q 'source Other') || fail "sources are searchable"
+out=$(cd "$T/ix/root" && "$CTX" index); echo "$out" | grep -q ' 2 changed\| 0 changed' || fail "an unchanged source is not rewritten: $out"
+# A changed source makes the page stale, and a removed one leaves the index.
+printf '# Design\n\nThe cache TTL is now 60 seconds.\n' > "$T/ix/co/sources/sub/design.md"
+inco "fsl_commit('{\"comment\":\"change source\"}')" >/dev/null
+(cd "$T/ix/root" && "$CTX" index >/dev/null)
+[ "$(q "SELECT count(*) FROM ctx_stale_wiki")" = 1 ] || fail "a changed source makes the page stale"
+[ "$(q "SELECT status FROM ctx_citation WHERE ref='a'")" = ok ] || fail "a pinned citation still resolves at its version"
+inco "fsl_rm('sources/sub/design.md')" >/dev/null; inco "fsl_commit('{\"comment\":\"remove source\"}')" >/dev/null
+(cd "$T/ix/root" && "$CTX" index >/dev/null)
+[ "$(q "SELECT count(*) FROM ctx_doc WHERE kind='source'")" = 0 ] || fail "a removed source leaves the index"
+[ "$(q "SELECT count(*) FROM ctx_chunk c JOIN ctx_doc d ON d.id=c.doc_id WHERE d.kind='source'")" = 0 ] || fail "its chunks go too"
+[ "$(q "SELECT count(*) FROM ctx_stale_wiki")" = 1 ] || fail "a page citing a removed source is stale"
+# Pull brings in new work from another copy.
+"$CTX" sql "SELECT fsl_export('repo:kb', '$T/ix/upstream.fossil')" >/dev/null 2>&1 || "$CTX" sql "SELECT fsl_open('repo:kb','t'), fsl_export('repo:kb', '$T/ix/upstream.fossil')" >/dev/null
+export CTX_DB="$T/index2.sqlite"
+"$CTX" init >/dev/null
+(cd "$T/ix/root" && "$CTX" project add kb2 --root "$T/other" --import "$T/ix/upstream.fossil" >/dev/null)
+"$CTX" project pull kb2 --from "$T/ix/upstream.fossil" | grep -q 'received' || fail "pull"
+if "$CTX" project pull kb2 2>/dev/null; then fail "pull needs a source"; fi
+
 # The skill eval harness works end to end with a stand-in for the model.
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"
 
