@@ -1,6 +1,6 @@
 ---
 name: ctx-wiki
-description: Compile or maintain a project's wiki from its version-pinned sources with ctx. Use when asked to compile a source into the wiki, write or update a wiki page, fix wiki citations, or work a ticket titled "Compile" or "Wiki:". Not for answering questions from past sessions; use the ctx skill for that.
+description: Compile or maintain a project's wiki from its version-pinned sources with ctx. Use when asked to compile a source into the wiki, write or update a wiki page, fix wiki citations, or work a ctx ticket titled "Compile" or "Wiki:". Tickets offered at session start, or given as a 10-character id, are ctx tickets: read one with `ctx ticket show ID`. Not for answering questions from past sessions; use the ctx skill for that.
 ---
 
 # ctx-wiki
@@ -18,7 +18,7 @@ ctx wiki publish                # then read Wiki Index to see what already exist
 ```
 
 Read each source completely. Prefer updating an existing page to adding one.
-Pin citations to the trunk check-in: `ctx sql "SELECT fsl_open('repo:NAME'), fsl_use('repo:NAME'), fsl_resolve('trunk')"`, with hyphens in NAME written as underscores. Take the full hash from the last column.
+Pin citations to the trunk check-in: `ctx sql "SELECT fsl_open('repo:NAME'), fsl_use('repo:NAME'), fsl_resolve('trunk')"`, where NAME is the repository `ctx project list` shows after `repo:`. Take the full hash from the last column.
 
 ## Page format
 
@@ -43,7 +43,7 @@ See [Eviction](/wiki?name=Eviction).
 - Choose a short quote that really supports the claim. A quote that exists but says something else still passes the gate and is still wrong.
 - A claim combining sources starts with `Synthesis:` and cites each source it uses.
 - Cite sources, code, sessions and tickets of this project. Never cite a wiki page: links between pages are navigation only.
-- Only link to pages that exist. Save the target first.
+- Only link to pages that exist. Save the target first. Write spaces in a page name as `+`: `[Cache Design](/wiki?name=Cache+Design)`.
 - Do not write `## Sources` or `## Provenance`. `ctx` generates them.
 - Keep a page under 32 KB and to one topic.
 - Do not state anything the sources do not say. Leave out what you cannot support.
