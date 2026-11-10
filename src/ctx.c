@@ -93,7 +93,9 @@ static int cmd_version(void) {
   return 0;
 }
 
-static int cmd_init(void) {
+static void sessions_from_remote(sqlite3 *db);
+
+static int cmd_init(const char *clone) {
   char *path = db_path();
   sqlite3 *db = db_open(path);
   db_exec(db, "PRAGMA journal_mode=WAL;");
@@ -102,6 +104,15 @@ static int cmd_init(void) {
     db_exec(db, ctx_schema);
     db_exec(db, "COMMIT");
   }
+  if (clone && !db_int(db, "SELECT count(*) FROM sqlite_master WHERE name='fslrepo_me_config'")) {
+    /* another machine already has this person's private repository */
+    sqlite3_stmt *q = db_prepare(db, "SELECT fsl_clone(?1, 'repo:me')");
+    sqlite3_bind_text(q, 1, clone, -1, SQLITE_STATIC);
+    if (sqlite3_step(q) != SQLITE_ROW) die("cannot clone the private repository: %s", sqlite3_errmsg(db));
+    sqlite3_finalize(q);
+  } else if (clone) {
+    die("this machine already has a private repository");
+  }
   if (!db_int(db, "SELECT count(*) FROM sqlite_master WHERE name='fslrepo_me_config'")) {
     sqlite3_stmt *q = db_prepare(db, "SELECT fsl_open('repo:me', ?1, '{\"create\":true}')");
     sqlite3_bind_text(q, 1, getenv("USER") && *getenv("USER") ? getenv("USER") : "ctx", -1, SQLITE_STATIC);
@@ -109,6 +120,13 @@ static int cmd_init(void) {
     sqlite3_finalize(q);
   }
   db_exec(db, "INSERT OR IGNORE INTO ctx_repo(name, scope) VALUES ('me', 'private')");
+  if (clone) {
+    sqlite3_stmt *q = db_prepare(db, "UPDATE ctx_repo SET remote = ?1 WHERE name = 'me'");
+    sqlite3_bind_text(q, 1, clone, -1, SQLITE_STATIC);
+    sqlite3_step(q);
+    sqlite3_finalize(q);
+    sessions_from_remote(db);
+  }
   printf("%s\n", path);
   sqlite3_close(db);
   free(path);
@@ -581,11 +599,24 @@ static const char *person(void) {
   return u && *u ? u : "ctx";
 }
 
-static void open_private(sqlite3 *db) {
-  sqlite3_stmt *q = db_prepare(db, "SELECT fsl_open('repo:me', ?1)");
-  sqlite3_bind_text(q, 1, person(), -1, SQLITE_STATIC);
-  if (sqlite3_step(q) != SQLITE_ROW) die("cannot open the private repository: %s", sqlite3_errmsg(db));
+/* Opens repo:NAME once per connection, and makes it current. */
+static int open_repo(sqlite3 *db, const char *name) {
+  char handle[96];
+  snprintf(handle, sizeof handle, "repo:%s", name);
+  sqlite3_stmt *q = db_prepare(db, "SELECT count(*) FROM fsl_repos WHERE name = ?1");
+  sqlite3_bind_text(q, 1, name, -1, SQLITE_STATIC);
+  int open = sqlite3_step(q) == SQLITE_ROW && sqlite3_column_int(q, 0);
   sqlite3_finalize(q);
+  q = db_prepare(db, open ? "SELECT fsl_use(?1)" : "SELECT fsl_open(?1, ?2), fsl_use(?1)");
+  sqlite3_bind_text(q, 1, handle, -1, SQLITE_STATIC);
+  if (!open) sqlite3_bind_text(q, 2, person(), -1, SQLITE_STATIC);
+  int ok = sqlite3_step(q) == SQLITE_ROW;
+  sqlite3_finalize(q);
+  return ok;
+}
+
+static void open_private(sqlite3 *db) {
+  if (!open_repo(db, "me")) die("cannot open the private repository: %s", sqlite3_errmsg(db));
 }
 
 static int is_repo_root(const char *dir) {
@@ -1170,6 +1201,7 @@ static void scan_if_due(void) {
     int fd = open(stamp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
     if (fd >= 0) close(fd);
     run_self("scan", NULL);
+    run_self("sync", NULL); /* only repositories with a remote; failures wait for the next hour */
   }
   free(stamp);
 }
@@ -1699,6 +1731,8 @@ static int ticket_usage(void) {
   return 2;
 }
 
+static int sync_one(sqlite3 *db, const char *repo, const char *remote, int quiet);
+
 static int cmd_ticket(int argc, char **argv) {
   if (argc < 1) return ticket_usage();
   const char *sub = argv[0];
@@ -1763,6 +1797,14 @@ static int cmd_ticket(int argc, char **argv) {
     free(project);
   } else {
     if (!id) return ticket_usage();
+    if (!strcmp(sub, "claim")) { /* see other machines' claims first; a ticket edit made later would win */
+      sqlite3_stmt *r = db_prepare(db, "SELECT remote FROM ctx_repo WHERE name = 'me' AND remote IS NOT NULL");
+      char *remote = sqlite3_step(r) == SQLITE_ROW ? dup_text(sqlite3_column_text(r, 0)) : NULL;
+      sqlite3_finalize(r);
+      if (remote && sync_one(db, "me", remote, 1)) fprintf(stderr, "ctx: could not sync before claiming\n");
+      free(remote);
+      open_private(db);
+    }
     db_exec(db, "BEGIN IMMEDIATE"); /* so only one claim of a ticket can win */
     char *full = ticket_resolve(db, id);
     sqlite3_stmt *q = db_prepare(db,
@@ -1810,6 +1852,24 @@ static int cmd_ticket(int argc, char **argv) {
       printf("%.10s %s\n", full, sub);
     }
     db_exec(db, "COMMIT");
+    if (!rc && !strcmp(sub, "claim")) {
+      /* across machines the later claim wins: sync, then check it is still ours */
+      char *remote = NULL;
+      sqlite3_stmt *r = db_prepare(db, "SELECT remote FROM ctx_repo WHERE name = 'me' AND remote IS NOT NULL");
+      if (sqlite3_step(r) == SQLITE_ROW) remote = dup_text(sqlite3_column_text(r, 0));
+      sqlite3_finalize(r);
+      if (remote) {
+        if (sync_one(db, "me", remote, 1)) fprintf(stderr, "ctx: could not sync; the claim is local until the next sync\n");
+        r = db_prepare(db, "SELECT coalesce(assignee, '') FROM fslrepo_me_ticket WHERE tkt_uuid = ?1");
+        sqlite3_bind_text(r, 1, full, -1, SQLITE_STATIC);
+        if (sqlite3_step(r) == SQLITE_ROW && strcmp((const char *)sqlite3_column_text(r, 0), as)) {
+          fprintf(stderr, "ctx: ticket %.10s was claimed by %s first\n", full, sqlite3_column_text(r, 0));
+          rc = 1;
+        }
+        sqlite3_finalize(r);
+        free(remote);
+      }
+    }
     free(full);
   }
   sqlite3_close(db);
@@ -1830,13 +1890,7 @@ static void repo_name(const char *project, char *out, size_t cap) {
 
 /* Opens a project's shared repository and makes it the current one. */
 static void open_project(sqlite3 *db, const char *repo) {
-  char handle[96];
-  snprintf(handle, sizeof handle, "repo:%s", repo);
-  sqlite3_stmt *q = db_prepare(db, "SELECT fsl_open(?1, ?2), fsl_use(?1)");
-  sqlite3_bind_text(q, 1, handle, -1, SQLITE_STATIC);
-  sqlite3_bind_text(q, 2, person(), -1, SQLITE_STATIC);
-  if (sqlite3_step(q) != SQLITE_ROW) die("cannot open %s: %s", handle, sqlite3_errmsg(db));
-  sqlite3_finalize(q);
+  if (!open_repo(db, repo)) die("cannot open repo:%s: %s", repo, sqlite3_errmsg(db));
 }
 
 static int project_pull(int argc, char **argv) {
@@ -3780,9 +3834,196 @@ static int source_uses(int argc, char **argv) {
   return 0;
 }
 
+/* Sync. Each repository syncs with its remote over plain http, on a private network
+ * or through an ssh tunnel, so ctx needs no TLS. */
+
+/* Turns technotes this machine did not write into searchable sessions. Technotes hold
+ * each turn as "## ROLE TIMESTAMP" and its body, already redacted. */
+static void sessions_from_remote(sqlite3 *db) {
+  db_exec(db, "CREATE TABLE IF NOT EXISTS ctx_remote_note(technote TEXT PRIMARY KEY, version TEXT NOT NULL) STRICT");
+  open_private(db);
+  db_exec(db, "SELECT fsl_use('repo:me')");
+  sqlite3_int64 repo = db_int(db, "SELECT id FROM ctx_repo WHERE name = 'me'");
+  typedef struct { char *id, *version, *project; } note;
+  note *notes = NULL;
+  size_t n = 0;
+  sqlite3_stmt *q = db_prepare(db,
+      "SELECT substr(t.tagname, 7), b.uuid, max(e.mtime),"
+      " (SELECT substr(pt.tagname, 5) FROM fslrepo_me_tagxref px JOIN fslrepo_me_tag pt ON pt.tagid = px.tagid"
+      "   WHERE px.rid = e.objid AND pt.tagname GLOB 'sym-*' AND pt.tagname <> 'sym-session' LIMIT 1)"
+      " FROM fslrepo_me_event e JOIN fslrepo_me_tag t ON t.tagid = e.tagid JOIN fslrepo_me_blob b ON b.rid = e.objid"
+      " WHERE e.type = 'e' GROUP BY t.tagname");
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    notes = realloc(notes, (n + 1) * sizeof *notes);
+    if (!notes) die("out of memory");
+    notes[n].id = dup_text(sqlite3_column_text(q, 0));
+    notes[n].version = dup_text(sqlite3_column_text(q, 1));
+    notes[n].project = dup_text(sqlite3_column_text(q, 3) ? sqlite3_column_text(q, 3) : (const unsigned char *)"unknown");
+    n++;
+  }
+  sqlite3_finalize(q);
+  long added = 0;
+  for (size_t i = 0; i < n; i++) {
+    q = db_prepare(db, "SELECT (SELECT count(*) FROM ctx_capture_day WHERE technote = ?1) + (SELECT count(*) FROM ctx_remote_note WHERE technote = ?1 AND version = ?2)");
+    sqlite3_bind_text(q, 1, notes[i].id, -1, SQLITE_STATIC);
+    sqlite3_bind_text(q, 2, notes[i].version, -1, SQLITE_STATIC);
+    sqlite3_step(q);
+    int known = sqlite3_column_int(q, 0);
+    sqlite3_finalize(q);
+    char *text = NULL;
+    if (!known) {
+      q = db_prepare(db, "SELECT fsl_technote(?1)");
+      sqlite3_bind_text(q, 1, notes[i].id, -1, SQLITE_STATIC);
+      if (sqlite3_step(q) == SQLITE_ROW && sqlite3_column_text(q, 0)) text = dup_text(sqlite3_column_text(q, 0));
+      sqlite3_finalize(q);
+    }
+    if (text) {
+      db_exec(db, "BEGIN IMMEDIATE");
+      q = db_prepare(db, "DELETE FROM ctx_chunk WHERE doc_id = (SELECT id FROM ctx_doc WHERE project = ?1 AND kind = 'session' AND name = ?2)");
+      sqlite3_bind_text(q, 1, notes[i].project, -1, SQLITE_STATIC);
+      sqlite3_bind_text(q, 2, notes[i].id, -1, SQLITE_STATIC);
+      sqlite3_step(q);
+      sqlite3_finalize(q);
+      q = db_prepare(db,
+          "INSERT INTO ctx_doc(project, repo_id, kind, name, title, hash, size, mtime) VALUES (?1, ?2, 'session', ?3, ?3, ?4, ?5, unixepoch())"
+          " ON CONFLICT (project, kind, name) DO UPDATE SET hash = excluded.hash, size = excluded.size RETURNING id");
+      sqlite3_bind_text(q, 1, notes[i].project, -1, SQLITE_STATIC);
+      sqlite3_bind_int64(q, 2, repo);
+      sqlite3_bind_text(q, 3, notes[i].id, -1, SQLITE_STATIC);
+      sqlite3_bind_text(q, 4, notes[i].version, -1, SQLITE_STATIC);
+      sqlite3_bind_int64(q, 5, (sqlite3_int64)strlen(text));
+      if (sqlite3_step(q) != SQLITE_ROW) die("%s", sqlite3_errmsg(db));
+      sqlite3_int64 doc = sqlite3_column_int64(q, 0);
+      sqlite3_finalize(q);
+      sqlite3_stmt *ins = db_prepare(db, "INSERT INTO ctx_chunk(doc_id, seq, heading, at, turn, project, body) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)");
+      int seq = 0;
+      const char *p = text, *start = NULL;
+      char role[16] = "", at[40] = "";
+      for (;;) {
+        const char *nl = strchr(p, '\n');
+        int head = 0;
+        char r[16], ts[40];
+        if (!strncmp(p, "## ", 3) && sscanf(p + 3, "%15s %39s", r, ts) == 2 && (!strcmp(r, "user") || !strcmp(r, "assistant")) &&
+            strlen(ts) >= 19 && ts[4] == '-' && ts[10] == 'T')
+          head = 1;
+        if (head || !*p) {
+          if (start) {
+            size_t len = (size_t)(p - start);
+            while (len && c_space((unsigned char)start[len - 1])) len--;
+            char turn[160];
+            snprintf(turn, sizeof turn, "note:%s:%d", notes[i].id, seq);
+            sqlite3_bind_int64(ins, 1, doc);
+            sqlite3_bind_int(ins, 2, seq++);
+            sqlite3_bind_text(ins, 3, role, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(ins, 4, at, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(ins, 5, turn, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(ins, 6, notes[i].project, -1, SQLITE_STATIC);
+            sqlite3_bind_text(ins, 7, start, (int)len, SQLITE_TRANSIENT);
+            sqlite3_step(ins);
+            sqlite3_reset(ins);
+          }
+          if (!*p) break;
+          snprintf(role, sizeof role, "%s", r);
+          snprintf(at, sizeof at, "%s", ts);
+          start = nl ? nl + 1 : p + strlen(p);
+        }
+        if (!nl) {
+          p += strlen(p);
+          continue;
+        }
+        p = nl + 1;
+      }
+      sqlite3_finalize(ins);
+      q = db_prepare(db, "INSERT OR REPLACE INTO ctx_remote_note(technote, version) VALUES (?1, ?2)");
+      sqlite3_bind_text(q, 1, notes[i].id, -1, SQLITE_STATIC);
+      sqlite3_bind_text(q, 2, notes[i].version, -1, SQLITE_STATIC);
+      sqlite3_step(q);
+      sqlite3_finalize(q);
+      db_exec(db, "COMMIT");
+      added++;
+      free(text);
+    }
+    free(notes[i].id);
+    free(notes[i].version);
+    free(notes[i].project);
+  }
+  free(notes);
+  if (added) printf("%ld sessions from other machines indexed\n", added);
+}
+
+static int cmd_remote(int argc, char **argv) {
+  if (argc != 2) die("usage: ctx remote NAME URL   (NAME is me, or a project)");
+  char repo[80];
+  if (!strcmp(argv[0], "me")) snprintf(repo, sizeof repo, "me");
+  else repo_name(argv[0], repo, sizeof repo);
+  sqlite3 *db = ctx_open();
+  sqlite3_stmt *q = db_prepare(db, "UPDATE ctx_repo SET remote = ?2 WHERE name = ?1");
+  sqlite3_bind_text(q, 1, repo, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 2, argv[1], -1, SQLITE_STATIC);
+  sqlite3_step(q);
+  sqlite3_finalize(q);
+  if (!sqlite3_changes(db)) die("no repository for %s", argv[0]);
+  printf("%s syncs with %s\n", argv[0], argv[1]);
+  sqlite3_close(db);
+  return 0;
+}
+
+/* Syncs one repository. Returns 0 on success. */
+static int sync_one(sqlite3 *db, const char *repo, const char *remote, int quiet) {
+  if (!open_repo(db, repo)) {
+    if (!quiet) printf("%s failed: %s\n", repo, sqlite3_errmsg(db));
+    return 1;
+  }
+  sqlite3_stmt *q = db_prepare(db, "SELECT fsl_sync(?1, 'sync')");
+  sqlite3_bind_text(q, 1, remote, -1, SQLITE_STATIC);
+  int ok = sqlite3_step(q) == SQLITE_ROW;
+  if (!quiet) {
+    if (ok) printf("%s %s\n", repo, sqlite3_column_text(q, 0));
+    else printf("%s failed: %s\n", repo, sqlite3_errmsg(db));
+  }
+  sqlite3_finalize(q);
+  return ok ? 0 : 1;
+}
+
+static int cmd_sync(int argc, char **argv) {
+  const char *only = argc ? argv[0] : NULL;
+  char want[80] = "";
+  if (only) {
+    if (!strcmp(only, "me")) snprintf(want, sizeof want, "me");
+    else repo_name(only, want, sizeof want);
+  }
+  sqlite3 *db = ctx_open();
+  sqlite3_stmt *q = db_prepare(db, "SELECT name, remote, coalesce(project, '') FROM ctx_repo WHERE remote IS NOT NULL AND (?1 = '' OR name = ?1) ORDER BY name <> 'me', name");
+  sqlite3_bind_text(q, 1, want, -1, SQLITE_STATIC);
+  typedef struct { char *name, *remote, *project; } target;
+  target *t = NULL;
+  size_t n = 0;
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    t = realloc(t, (n + 1) * sizeof *t);
+    if (!t) die("out of memory");
+    t[n].name = dup_text(sqlite3_column_text(q, 0));
+    t[n].remote = dup_text(sqlite3_column_text(q, 1));
+    t[n++].project = dup_text(sqlite3_column_text(q, 2));
+  }
+  sqlite3_finalize(q);
+  if (only && !n) die("%s has no remote; run: ctx remote %s URL", only, only);
+  int failed = 0;
+  for (size_t i = 0; i < n; i++) {
+    int bad = sync_one(db, t[i].name, t[i].remote, 0);
+    failed += bad;
+    if (!bad && !strcmp(t[i].name, "me")) sessions_from_remote(db);
+    free(t[i].name);
+    free(t[i].remote);
+    free(t[i].project);
+  }
+  free(t);
+  sqlite3_close(db);
+  return failed ? 1 : 0;
+}
+
 static int usage(void) {
   fputs("usage: ctx version\n"
-        "       ctx init\n"
+        "       ctx init [--clone URL]\n"
         "       ctx extract TRANSCRIPT\n"
         "       ctx archive TRANSCRIPT\n"
         "       ctx search [--all] [--history] [--as-of DATE] [--limit N] WORDS...\n"
@@ -3793,6 +4034,8 @@ static int usage(void) {
         "       ctx source add FILE --origin WHERE --class CLASS [--as PATH] | supersede OLD | uses PATH | check\n"
         "       ctx index [--project P]\n"
         "       ctx wiki save NAME FILE --model M [--ticket ID] | check | why PAGE | repin | retire PAGE --reason WHY | restore PAGE\n"
+        "       ctx remote NAME URL\n"
+        "       ctx sync [NAME]\n"
         "       ctx scan [DIR]\n"
         "       ctx hook\n"
         "       ctx sql STATEMENT\n",
@@ -3805,7 +4048,8 @@ int main(int argc, char **argv) {
   if (sqlite3_auto_extension((void (*)(void))fsl_sqlext_init) != SQLITE_OK)
     die("cannot register libfossil");
   if (argc == 2 && !strcmp(argv[1], "version")) return cmd_version();
-  if (argc == 2 && !strcmp(argv[1], "init")) return cmd_init();
+  if (argc == 2 && !strcmp(argv[1], "init")) return cmd_init(NULL);
+  if (argc == 4 && !strcmp(argv[1], "init") && !strcmp(argv[2], "--clone")) return cmd_init(argv[3]);
   if (argc == 3 && !strcmp(argv[1], "extract")) return cmd_extract(argv[2]);
   if (argc == 3 && !strcmp(argv[1], "archive")) return cmd_archive(argv[2]);
   if (argc == 3 && !strcmp(argv[1], "sql")) return cmd_sql(argv[2]);
@@ -3815,6 +4059,8 @@ int main(int argc, char **argv) {
   if (argc >= 3 && !strcmp(argv[1], "ticket")) return cmd_ticket(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "project")) return cmd_project(argc - 2, argv + 2);
   if (argc >= 2 && !strcmp(argv[1], "index")) return cmd_index(argc - 2, argv + 2);
+  if (argc >= 2 && !strcmp(argv[1], "remote")) return cmd_remote(argc - 2, argv + 2);
+  if (argc >= 2 && !strcmp(argv[1], "sync")) return cmd_sync(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "wiki")) return cmd_wiki(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "source")) return cmd_source(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "search")) return cmd_search(argc - 2, argv + 2);

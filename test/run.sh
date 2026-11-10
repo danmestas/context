@@ -261,6 +261,498 @@ left = int(open(f"{T}/stand-in.left").read())
 assert 0 < left <= 300, f"child inherited the deadline: {left}"
 EOF
 
+# Every prefixed rule is redacted before storage. Values are built so no secret-shaped text sits in this file.
+export CTX_DB="$T/rules.sqlite"
+"$CTX" init >/dev/null
+R="$T/cc001111-rules.jsonl"
+python3 - "$R" <<'EOF'
+import json, sys
+tail = "aB3dE6gH9" * 6
+prefixes = ["gh" + "p_", "gh" + "o_", "gh" + "u_", "gh" + "s_", "gh" + "r_", "github" + "_pat_", "s" + "k-", "sk" + "_live_",
+            "rk" + "_live_", "wh" + "sec_", "AK" + "IA", "AS" + "IA", "xo" + "xa-", "xo" + "xb-", "xo" + "xp-", "xo" + "xr-",
+            "xo" + "xs-", "gl" + "pat-", "np" + "m_", "py" + "pi-", "h" + "f_", "sh" + "pat_", "sh" + "pss_", "AI" + "za",
+            "ya" + "29.", "dop" + "_v1_", "lin" + "_api_", "ts" + "key-", "sn" + "trys_", "AGE-SECRET" + "-KEY-1"]
+def body(p):
+    if p.startswith("AK") or p.startswith("AS") or p.startswith("AGE"):
+        return tail.upper()
+    if p.startswith("dop"):
+        return "abc123" * 10
+    return tail
+with open(sys.argv[1], "w") as f:
+    for i, p in enumerate(prefixes):
+        f.write(json.dumps({"uuid": f"r-{i}", "timestamp": "2026-06-03T01:00:00Z", "cwd": "/w/r",
+                            "message": {"role": "user", "content": f"value {p}{body(p)} end"}}) + "\n")
+EOF
+"$CTX" archive "$R" >/dev/null
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE body LIKE '%[REDACTED] end'")" = 30 ] || fail "every prefixed rule redacts"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE body LIKE '%aB3dE6gH9%' OR body LIKE '%AB3DE6GH9%' OR body LIKE '%abc123abc123%'")" = 0 ] || fail "a value was stored"
+
+# Secret manager output is redacted even with no recognizable prefix.
+D="$T/dd001111-doppler.jsonl"
+python3 - "$D" <<'EOF'
+import json, sys
+text = '{"NAME":{"computed":"plainvalue1234","computedValueType":{"type":"string"},"raw":"plainvalue5678","rawValueType":{"type":"string"}}}'
+other = 'an unrelated {"raw":"keep this text","other":1}'
+with open(sys.argv[1], "w") as f:
+    f.write(json.dumps({"uuid": "dj-1", "timestamp": "2026-06-04T01:00:00Z", "cwd": "/w/r", "message": {"role": "user", "content": text + " " + other}}) + "\n")
+EOF
+"$CTX" archive "$D" >/dev/null
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE body LIKE '%plainvalue%'")" = 0 ] || fail "secret manager output is redacted"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE turn='dj-1' AND body LIKE '%keep this text%'")" = 1 ] || fail "ordinary raw fields stay"
+
+# Audit finds what got into storage, and shows only where and what shape.
+export CTX_DB="$T/audit.sqlite"
+"$CTX" init >/dev/null
+python3 - "$T/seed.sql" <<'EOF'
+import sys
+token = "gh" + "p_" + "Zq7Kp2Lm9Xw4Rt8Vb3Nc6Hj1Df5Gs0Yu"
+random = "Qz8Wm3Rt7Yp2Lk5Xn9Bv4Cs6Jh1Gd0Fa2Te"
+known = "hunter2-correct-horse"
+rows = [("a token " + token, 1), ("blob " + random + " here", 2), ("the value " + known + " again", 3),
+        ("password = hunter2", 4), ("ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", 5), ("nothing here at all", 6)]
+with open(sys.argv[1], "w") as f:
+    f.write("INSERT INTO ctx_doc(id, kind, name, project, hash, size, mtime) VALUES (1, 'session', 's', 'p', 'h', 1, 1);\n")
+    for b, i in rows:
+        f.write(f"INSERT INTO ctx_chunk(id, doc_id, seq, heading, at, project, body) VALUES ({i}, 1, {i}, 'user', '2026-07-01', 'p', '{b}');\n")
+open(sys.argv[1] + ".known", "w").write(known + "\nshort\n")
+open(sys.argv[1] + ".values", "w").write("\n".join([token, random, known]) + "\n")
+EOF
+python3 - "$T/seed.sql" "$CTX" <<'EOF'
+import subprocess, sys
+for line in open(sys.argv[1]):
+    subprocess.run([sys.argv[2], "sql", line.strip()], check=True, capture_output=True)
+EOF
+if "$CTX" audit --limit 20 > "$T/a1.txt"; then fail "audit exits 1 with open findings"; fi
+head -1 "$T/a1.txt" | grep -q '6 turns scanned' || fail "audit scans every turn"
+grep -q 'github-token' "$T/a1.txt" || fail "audit finds a token"
+grep -q 'entropy' "$T/a1.txt" || fail "audit finds a high-entropy value"
+grep -c 'turn 5 ' "$T/a1.txt" | grep -q '^0$' || fail "placeholders are not findings"
+if "$CTX" audit --known --limit 20 < "$T/seed.sql.known" > "$T/a2.txt"; then fail "known exits 1"; fi
+grep -q 'known .*line 1, len=21' "$T/a2.txt" || fail "known value located"
+while read -r v; do
+  if grep -qF -- "$v" "$T/a1.txt" "$T/a2.txt"; then fail "audit printed a value"; fi
+done < "$T/seed.sql.values"
+if "$CTX" sql "SELECT shape || fingerprint FROM ctx_audit_finding" | grep -qF -f "$T/seed.sql.values"; then fail "audit stored a value"; fi
+# Nothing new is reported twice, and an allowed finding stays quiet.
+out=$("$CTX" audit --limit 0 || true); echo "$out" | head -1 | grep -q '^0 turns scanned, 0 new' || fail "audit resumes where it stopped"
+for id in $("$CTX" sql "SELECT min(id) FROM ctx_audit_finding WHERE status='open' GROUP BY rule, fingerprint"); do "$CTX" audit --allow "$id" "test" >/dev/null; done
+"$CTX" audit --limit 0 > "$T/a3.txt" || fail "audit exits 0 when nothing is open"
+out=$("$CTX" audit --all --limit 0) || fail "allowed findings stay allowed on a full rescan"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_audit_run")" -ge 4 ] || fail "runs are counted over time"
+"$CTX" sql "UPDATE ctx_audit_finding SET status='open' WHERE rule='entropy'" >/dev/null
+"$CTX" audit --tickets --limit 0 > "$T/a4.txt" || true
+grep -q 'ticket .* Audit: entropy findings' "$T/a4.txt" || fail "findings become tickets"
+"$CTX" audit --tickets --limit 0 > "$T/a5.txt" || true
+if grep -q '^ticket ' "$T/a5.txt"; then fail "one ticket per rule at a time"; fi
+[ "$("$CTX" ticket ready --all | grep -c 'Audit: entropy')" = 1 ] || fail "the ticket is listed"
+
+# Tickets: created, listed by readiness, claimed once, and finished.
+export CTX_DB="$T/tickets.sqlite"
+"$CTX" init >/dev/null
+mkdir -p "$T/proj"; cd "$T/proj"
+A=$("$CTX" ticket new "First job" --acceptance "tests pass" --body "details here")
+B=$("$CTX" ticket new "Second job" --type Bug --blocked-by "$A")
+O=$("$CTX" ticket new "Elsewhere" --project other)
+[ "$("$CTX" ticket ready | wc -l | tr -d ' ')" = 1 ] || fail "a blocked ticket is not ready"
+"$CTX" ticket ready | grep -q "^$A proj Task First job" || fail "ready lists the ticket"
+[ "$("$CTX" ticket ready --all | wc -l | tr -d ' ')" = 2 ] || fail "ready --all"
+if "$CTX" ticket claim "$B" 2>/dev/null; then fail "a blocked ticket cannot be claimed"; fi
+"$CTX" ticket offer > "$T/offer.json"; python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert 'First job' in d['hookSpecificOutput']['additionalContext']; assert 'Elsewhere' not in d['hookSpecificOutput']['additionalContext']" "$T/offer.json" || fail "offer lists this project"
+[ -z "$(cd "$T" && mkdir -p idle && cd idle && "$CTX" ticket offer)" ] || fail "offer is silent with no work"
+python3 - "$CTX" "$A" <<'EOF' || fail "only one claim wins"
+import subprocess, sys
+ctx, a = sys.argv[1:3]
+ps = [subprocess.Popen([ctx, "ticket", "claim", a, "--as", f"agent{i}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) for i in range(8)]
+assert sum(p.wait() == 0 for p in ps) == 1
+EOF
+"$CTX" ticket show "$A" | grep -q 'Claimed' || fail "ticket is claimed"
+"$CTX" ticket show "$A" | grep -q '^assignee: agent' || fail "claim records who"
+"$CTX" ticket show "$A" | grep -q '^details here' || fail "show has the body"
+[ "$("$CTX" ticket ready | wc -l | tr -d ' ')" = 0 ] || fail "a claimed ticket is not ready"
+"$CTX" ticket done "$A" --result abc123 >/dev/null
+"$CTX" ticket show "$A" | grep -q '^result: abc123' || fail "done records the result"
+"$CTX" ticket ready | grep -q 'Second job' || fail "finishing a blocker readies the next"
+"$CTX" ticket drop "$O" --reason "not needed" >/dev/null
+[ "$("$CTX" ticket ready --all | wc -l | tr -d ' ')" = 1 ] || fail "dropped tickets leave the list"
+if "$CTX" ticket claim nosuch 2>/dev/null; then fail "unknown ticket"; fi
+if "$CTX" ticket new "bad type" --type Nope 2>/dev/null; then fail "ticket type is checked"; fi
+cd - >/dev/null
+
+# Projects: a shared repository is created, or imported, and the directory is mapped.
+export CTX_DB="$T/sources.sqlite"
+"$CTX" init >/dev/null
+mkdir -p "$T/work/sub" "$T/other"
+cd "$T/work"
+"$CTX" project add my-proj | grep -q 'repo:myproj' || fail "project add maps the name"
+mkdir -p "$T/other/two"; (cd "$T/other" && "$CTX" project add my-proj-two --root "$T/other/two" >/dev/null) || fail "a name extending another one works"
+if "$CTX" project add my-proj 2>/dev/null; then fail "a project is added once"; fi
+"$CTX" sql "SELECT fsl_export('repo:me', '$T/export.fossil')" >/dev/null
+(cd "$T/other" && "$CTX" project add imported --import "$T/export.fossil" >/dev/null) || fail "project import"
+[ "$("$CTX" project list | wc -l | tr -d ' ')" = 3 ] || fail "project list"
+if "$CTX" project add repo --root "$T/other" 2>/dev/null; then fail "reserved repository names"; fi
+
+# A source needs an origin and a class, and keeps its exact bytes.
+printf 'The cache TTL is 30 seconds.\n' > "$T/design.md"
+if "$CTX" source add "$T/design.md" --class evergreen 2>/dev/null; then fail "origin is required"; fi
+if "$CTX" source add "$T/design.md" --origin "x" 2>/dev/null; then fail "class is required"; fi
+if "$CTX" source add "$T/design.md" --origin "x" --class stale 2>/dev/null; then fail "class is checked"; fi
+if "$CTX" source add "$T/design.md" --origin "x" --class perishable 2>/dev/null; then fail "perishable needs a review date"; fi
+if "$CTX" source add "$T/design.md" --origin "x" --class evergreen --as ../escape.md 2>/dev/null; then fail "paths stay inside sources"; fi
+if (cd "$T" && "$CTX" source add "$T/design.md" --origin x --class evergreen 2>/dev/null); then fail "needs a registered project"; fi
+(cd sub && "$CTX" source add "$T/design.md" --origin "https://example.test/design" --class evergreen --as notes/design.md --how fetched >/dev/null) || fail "source add"
+cmp -s "$T/design.md" sources/notes/design.md || fail "bytes are kept"
+python3 - sources/notes/design.md <<'EOF' || fail "origin record"
+import hashlib, json, sys
+p = sys.argv[1]
+m = json.load(open(p + ".origin.json"))
+assert m["sha3"] == hashlib.sha3_256(open(p, "rb").read()).hexdigest()
+assert m["origin"] == "https://example.test/design" and m["class"] == "evergreen" and m["how"] == "fetched" and m["name"] == "notes/design.md"
+assert m["size"] == 29 and m["added_by"] and m["retrieved"]
+EOF
+"$CTX" source add "$T/design.md" --origin other --class evergreen --as notes/design.md | grep -q 'already recorded' || fail "adding again changes nothing"
+grep -q 'example.test' sources/notes/design.md.origin.json || fail "the first origin stands"
+printf 'changed\n' > "$T/changed.md"
+if "$CTX" source add "$T/changed.md" --origin x --class evergreen --as notes/design.md 2>/dev/null; then fail "a source is not edited in place"; fi
+"$CTX" source check | grep -q '^1 sources, 0 problems' || fail "check passes"
+"$CTX" source add "$T/design.md" --origin x --class perishable --review-after 2020-01-01 --as old.md >/dev/null
+"$CTX" source check > "$T/c1.txt" || fail "due is not a failure"
+grep -q 'due for review: sources/old.md' "$T/c1.txt" || fail "due is reported"
+printf 'tampered\n' >> sources/notes/design.md
+if "$CTX" source check > "$T/c2.txt"; then fail "tampering fails the check"; fi
+grep -q 'it changed after its origin' "$T/c2.txt" || fail "tampering is named"
+printf 'no record\n' > sources/bare.md
+"$CTX" source check | grep -q 'no origin recorded for sources/bare.md' || fail "missing origin is named"
+cd - >/dev/null
+
+# Index: sources and wiki pages from a project repository, with citations checked.
+export CTX_DB="$T/index.sqlite"
+"$CTX" init >/dev/null
+mkdir -p "$T/ix/co" "$T/ix/root"
+(cd "$T/ix/root" && "$CTX" project add kb >/dev/null)
+inrepo() { "$CTX" sql "SELECT fsl_open('repo:kb', 'tester'), fsl_use('repo:kb'), $1" | cut -f3-; }
+inco() { "$CTX" sql "SELECT fsl_open('$T/ix/co', 'tester'), fsl_use('repo:kb'), $1" | cut -f3-; }
+inrepo "fsl_checkout('$T/ix/co')" >/dev/null
+mkdir -p "$T/ix/co/sources/sub"
+printf '# Design\n\nThe cache TTL is 30\nseconds in production.\n\n## Other\n\nUnrelated walrus text.\n' > "$T/ix/co/sources/sub/design.md"
+python3 -c "import hashlib,json,sys; p=sys.argv[1]; json.dump(dict(origin='x', sha3=hashlib.sha3_256(open(p,'rb').read()).hexdigest()), open(p+'.origin.json','w'))" "$T/ix/co/sources/sub/design.md"
+inco "fsl_add('sources')" >/dev/null
+inco "fsl_commit('{\"comment\":\"add source\"}')" >/dev/null
+CI=$(inrepo "fsl_resolve('trunk')")
+python3 - "$T/ix/page.md" "$CI" <<'EOF'
+import sys
+p, ci = sys.argv[1:3]
+open(p, "w").write(f"""# Cache
+
+Entries live 30 seconds.[^a] A bad one.[^b] See [Other](/wiki?name=Other+Page) and [Gone](/wiki?name=Gone).
+
+`[x](/wiki?name=InCode)`
+
+```
+[y](/wiki?name=InFence)
+```
+
+[^a]: "The cache TTL is 30 seconds in production." [design](/file?name=sources/sub/design.md&ci={ci}&txt=1&ln=3)
+[^b]: "This was never written." [design](/file?name=sources/sub/design.md&ci={ci})
+[^c]: "A claim from a session." [note](/technote/abc123)
+""")
+EOF
+"$CTX" sql "SELECT fsl_open('repo:kb','tester'), fsl_use('repo:kb'), fsl_wiki_save('Cache', cast(readfile('$T/ix/page.md') as text), 'text/x-markdown')" 2>/dev/null >/dev/null || python3 - "$CTX" "$T/ix/page.md" <<'EOF'
+import subprocess, sys
+ctx, p = sys.argv[1:3]
+t = open(p).read().replace("'", "''")
+subprocess.run([ctx, "sql", f"SELECT fsl_open('repo:kb','tester'), fsl_use('repo:kb'), fsl_wiki_save('Cache', '{t}', 'text/x-markdown')"], check=True, capture_output=True)
+EOF
+inrepo "fsl_wiki_save('Other Page', '# Other', 'text/x-markdown')" >/dev/null
+out=$(cd "$T/ix/root" && "$CTX" index); echo "$out" | grep -q '^1 sources, 2 wiki pages, 3 changed, 3 citations, 2 failing' || fail "index counts: $out"
+"$CTX" sql "SELECT count(*) FROM ctx_doc WHERE name LIKE '%origin.json'" | grep -q '^0' || fail "origin files are not indexed as sources"
+q() { "$CTX" sql "$1"; }
+[ "$(q "SELECT status FROM ctx_citation WHERE ref='a'")" = ok ] || fail "a quote is found across a line break"
+[ "$(q "SELECT status FROM ctx_citation WHERE ref='b'")" = quote-missing ] || fail "a missing quote is caught"
+[ "$(q "SELECT status FROM ctx_citation WHERE ref='c'")" = no-source ] || fail "a citation to a session not in this repository fails"
+[ "$(q "SELECT ci FROM ctx_citation WHERE ref='a'")" = "$CI" ] || fail "citation pins the check-in"
+[ "$(q "SELECT length(file_hash) FROM ctx_citation WHERE ref='a'")" = 64 ] || fail "citation pins a full hash"
+[ "$(q "SELECT count(*) FROM ctx_link WHERE kind='links_to'")" = 2 ] || fail "page links, ignoring code"
+[ "$(q "SELECT count(*) FROM ctx_link WHERE kind='compiled_from' AND dst_name='sources/sub/design.md'")" = 1 ] || fail "compiled_from link"
+[ "$(q "SELECT count(*) FROM ctx_stale_wiki")" = 0 ] || fail "nothing is stale yet"
+[ "$(q "SELECT group_concat(heading) FROM (SELECT heading FROM ctx_chunk c JOIN ctx_doc d ON d.id=c.doc_id WHERE d.kind='source' ORDER BY seq)")" = "Design,Other" ] || fail "chunks by heading"
+(cd "$T/ix/root" && "$CTX" search walrus | grep -q 'source Other') || fail "sources are searchable"
+out=$(cd "$T/ix/root" && "$CTX" index); echo "$out" | grep -q ' 2 changed\| 0 changed' || fail "an unchanged source is not rewritten: $out"
+# A changed source makes the page stale, and a removed one leaves the index.
+printf '# Design\n\nThe cache TTL is now 60 seconds.\n' > "$T/ix/co/sources/sub/design.md"
+inco "fsl_commit('{\"comment\":\"change source\"}')" >/dev/null
+(cd "$T/ix/root" && "$CTX" index >/dev/null)
+[ "$(q "SELECT count(*) FROM ctx_stale_wiki")" = 1 ] || fail "a changed source makes the page stale"
+[ "$(q "SELECT status FROM ctx_citation WHERE ref='a'")" = ok ] || fail "a pinned citation still resolves at its version"
+inco "fsl_rm('sources/sub/design.md')" >/dev/null; inco "fsl_commit('{\"comment\":\"remove source\"}')" >/dev/null
+(cd "$T/ix/root" && "$CTX" index >/dev/null)
+[ "$(q "SELECT count(*) FROM ctx_doc WHERE kind='source'")" = 0 ] || fail "a removed source leaves the index"
+[ "$(q "SELECT count(*) FROM ctx_chunk c JOIN ctx_doc d ON d.id=c.doc_id WHERE d.kind='source'")" = 0 ] || fail "its chunks go too"
+[ "$(q "SELECT count(*) FROM ctx_stale_wiki")" = 1 ] || fail "a page citing a removed source is stale"
+# Pull brings in new work from another copy.
+"$CTX" sql "SELECT fsl_export('repo:kb', '$T/ix/upstream.fossil')" >/dev/null 2>&1 || "$CTX" sql "SELECT fsl_open('repo:kb','t'), fsl_export('repo:kb', '$T/ix/upstream.fossil')" >/dev/null
+export CTX_DB="$T/index2.sqlite"
+"$CTX" init >/dev/null
+(cd "$T/ix/root" && "$CTX" project add kb2 --root "$T/other" --import "$T/ix/upstream.fossil" >/dev/null)
+"$CTX" project pull kb2 --from "$T/ix/upstream.fossil" | grep -q 'received' || fail "pull"
+(cd "$T/ix/root" && "$CTX" project add kb3 --root "$T/ix" --clone "$T/ix/upstream.fossil" >/dev/null) || fail "clone from a repository"
+"$CTX" project pull kb3 | grep -q 'received' || fail "a clone remembers where to pull from"
+if "$CTX" project pull kb2 2>/dev/null; then fail "pull needs a source"; fi
+
+# The write gate: a page saves only if its whole provenance chain holds.
+export CTX_DB="$T/wiki.sqlite"
+"$CTX" init >/dev/null
+mkdir -p "$T/wk/co" "$T/wk/root"
+cd "$T/wk/root"
+"$CTX" project add kb >/dev/null
+w_repo() { "$CTX" sql "SELECT fsl_open('repo:kb', 'tester'), fsl_use('repo:kb'), $1" | cut -f3-; }
+w_co() { "$CTX" sql "SELECT fsl_open('$T/wk/co', 'tester'), fsl_use('repo:kb'), $1" | cut -f3-; }
+w_repo "fsl_checkout('$T/wk/co')" >/dev/null
+mkdir -p "$T/wk/co/sources"
+printf 'The cache TTL is 30 seconds.\nEvictions run nightly.\n' > "$T/wk/co/sources/a.md"
+printf 'The cache TTL is 30 seconds.\n' > "$T/wk/co/sources/noorigin.md"
+"$CTX" project add tmpsrc --root "$T/wk/co" >/dev/null
+(cd "$T/wk/co" && "$CTX" source add sources/a.md --origin https://example.test/a --class evergreen --as a.md >/dev/null)
+"$CTX" sql "DELETE FROM ctx_project WHERE project='tmpsrc'" >/dev/null
+w_co "fsl_add('sources')" >/dev/null
+w_co "fsl_commit('{\"comment\":\"sources\"}')" >/dev/null
+CI=$(w_repo "fsl_resolve('trunk')")
+NOTE=$(w_repo "fsl_technote_save('We chose a thirty second TTL.', '{\"comment\":\"note\"}')")
+TK=$(w_repo "fsl_ticket_new('{\"title\":\"Evictions are nightly\",\"status\":\"Open\"}')")
+PRIV=$("$CTX" sql "SELECT fsl_technote_save('private words here')" | tail -1)
+page() { python3 - "$T/wk/p.md" "$CI" "$NOTE" "$TK" "$PRIV" "$1" <<'EOF'
+import sys
+out, ci, note, tk, priv, case = sys.argv[1:7]
+good = f"""# Cache
+
+Entries live thirty seconds.[^a] Evictions vs. e.g. expiry are nightly.[^b]
+
+- Items expire.[^a]
+
+See [Self](/wiki?name=Cache).
+
+```
+Code is not a claim here at all.
+```
+
+[^a]: "The cache TTL is 30 seconds." [a](/file?name=sources/a.md&ci={ci}&txt=1&ln=1)
+[^b]: "Evictions run nightly." [a](/file?name=sources/a.md&ci={ci})
+"""
+extra = {
+ "good": "",
+ "uncited": "This paragraph states a claim with nothing behind it.\n",
+ "quote": f'Bad claim here today.[^x]\n\n[^x]: "Never written anywhere." [a](/file?name=sources/a.md&ci={ci})\n',
+ "short": f'Short pin claim here.[^x]\n\n[^x]: "The cache TTL is 30 seconds." [a](/file?name=sources/a.md&ci={ci[:12]})\n',
+ "wiki": 'Wiki as evidence here.[^x]\n\n[^x]: "Entries live." [p](/wiki?name=Cache)\n',
+ "dead": "Go to [Gone](/wiki?name=Nowhere).\n",
+ "undefined": "A marker without a note.[^zz]\n",
+ "synth1": "Synthesis: one source alone.[^a]\n",
+ "synth2": "Synthesis: both sources together.[^a][^b]\n",
+ "origin": f'No origin claim here.[^x]\n\n[^x]: "The cache TTL is 30 seconds." [n](/file?name=sources/noorigin.md&ci={ci})\n',
+ "session": f'A session said this.[^s] And a ticket said that.[^t]\n\n[^s]: "chose a thirty second" [n](/technote/{note})\n[^t]: "Evictions are nightly" [t](/tktview/{tk})\n',
+ "private": f'From a private session.[^p]\n\n[^p]: "private words" [n](/technote/{priv})\n',
+ "oversize": "Long claim.[^a] " + "x" * 33000 + "\n",
+}[case]
+open(out, "w").write(good.replace("[^a]: ", extra + "\n[^a]: ", 1) if extra else good)
+EOF
+}
+refused() { page "$1"; if "$CTX" wiki save Cache "$T/wk/p.md" --model m > "$T/wk/o.txt" 2>&1; then fail "gate let through: $1"; fi; grep -q "$2" "$T/wk/o.txt" || fail "gate reason for $1: $(cat "$T/wk/o.txt")"; }
+[ "$(w_repo "fsl_wiki('Cache') IS NULL")" = 1 ] || fail "no page yet"
+page good
+if "$CTX" wiki save Cache "$T/wk/p.md" 2>/dev/null; then fail "--model is required"; fi
+"$CTX" wiki save Cache "$T/wk/p.md" --model test-model --ticket abc --session sess1 | grep -q '^saved Cache' || fail "a good page saves"
+refused uncited 'no citation: This paragraph'
+refused quote 'quote-missing'
+refused short 'full check-in hash'
+refused wiki 'must cite a source'
+refused dead 'does not exist: Nowhere'
+printf '# Other\n\nBack to [Cache](/wiki?name=Cache).\n' > "$T/wk/op.md"; "$CTX" wiki save "Other Page" "$T/wk/op.md" --model m >/dev/null || fail "a second page saves"
+printf '# Spaced\n\nSee [Other](/wiki?name=Other Page).\n' > "$T/wk/sp.md"; "$CTX" wiki save Spaced "$T/wk/sp.md" --model m >/dev/null || fail "a raw space in a link is accepted"
+w_repo "fsl_wiki('Spaced')" | grep -q '(/wiki?name=Other+Page)' || fail "a raw space in a link is encoded"
+refused undefined 'zz\] is not a quoted'
+refused synth1 'synthesis must cite'
+refused origin 'no-origin'
+refused private 'no-source'
+refused oversize 'over 32 KB'
+page synth2; "$CTX" wiki save Cache "$T/wk/p.md" --model m >/dev/null || fail "synthesis citing both saves"
+page session; "$CTX" wiki save Cache "$T/wk/p.md" --model m >/dev/null || fail "session and ticket citations verify"
+TEXT=$(w_repo "fsl_wiki('Cache')")
+page good; "$CTX" wiki save Cache "$T/wk/p.md" --model test-model --ticket abc --session sess1 | grep -q 'removed claim: "chose a thirty' || fail "dropped claims are reported"
+w_repo "fsl_wiki('Cache')" > "$T/wk/saved.md"
+grep -q '^## Provenance' "$T/wk/saved.md" && grep -q 'Compiled by: test-model' "$T/wk/saved.md" && grep -q 'Ticket: abc' "$T/wk/saved.md" || fail "provenance block"
+grep -q "^- \[${CI%${CI#????????????????}}\] sources/a.md" "$T/wk/saved.md" || fail "sources section pins the check-in"
+[ "$(grep -c '^## Provenance' "$T/wk/saved.md")" = 1 ] || fail "provenance is replaced, not repeated"
+if grep -q sess1 "$T/wk/saved.md"; then fail "a shared page must not name a private session"; fi
+[ "$("$CTX" sql "SELECT session FROM ctx_wiki_log ORDER BY id DESC LIMIT 1")" = sess1 ] || fail "session is in the private log"
+UUID=$("$CTX" sql "SELECT b.uuid FROM fslrepo_kb_blob b JOIN fslrepo_kb_tagxref x ON x.rid=b.rid JOIN fslrepo_kb_tag t ON t.tagid=x.tagid WHERE t.tagname='wiki-Cache' ORDER BY x.mtime DESC, b.rid DESC LIMIT 1")
+w_repo "cast(fsl_content('$UUID') as text)" | grep -q '^N text/x-markdown' || fail "saved as Markdown"
+"$CTX" wiki why Cache > "$T/wk/why.txt"
+grep -q '^\[^a\] Entries live thirty seconds' "$T/wk/why.txt" || fail "why shows the claim: $(head -3 "$T/wk/why.txt")"
+grep -q '^\[^b\] Evictions vs. e.g. expiry are nightly.$' "$T/wk/why.txt" || fail "why keeps a sentence whole across abbreviations: $(grep '^\[^b' "$T/wk/why.txt")"
+grep -q 'quote: "The cache TTL is 30 seconds."' "$T/wk/why.txt" || fail "why shows the quote"
+grep -q 'origin: https://example.test/a, retrieved' "$T/wk/why.txt" || fail "why reaches the origin"
+"$CTX" source uses a.md | grep -q '^2 claims depend on sources/a.md' || fail "source uses counts claims"
+"$CTX" wiki check > "$T/wk/c.txt" || fail "check passes: $(cat "$T/wk/c.txt")"
+grep -q '^0 problems' "$T/wk/c.txt" || fail "check is clean"
+printf 'Replaced entirely.\n' > "$T/wk/co/sources/a.md"
+w_co "fsl_commit('{\"comment\":\"change\"}')" >/dev/null
+if "$CTX" wiki check > "$T/wk/c2.txt"; then fail "a stale page fails the check"; fi
+grep -q 'Cache: stale, source changed: sources/a.md' "$T/wk/c2.txt" || fail "stale is named"
+"$CTX" source uses a.md | grep -q 'older version' || fail "uses shows an older pin"
+cd - >/dev/null
+
+# Retirement: nothing is erased, retired material leaves retrieval, and claims follow their sources.
+export CTX_DB="$T/retire.sqlite"
+"$CTX" init >/dev/null
+mkdir -p "$T/rt/co" "$T/rt/root"
+cd "$T/rt/root"
+"$CTX" project add kb >/dev/null
+r_repo() { "$CTX" sql "SELECT fsl_open('repo:kb', 'tester'), fsl_use('repo:kb'), $1" | cut -f3-; }
+r_co() { "$CTX" sql "SELECT fsl_open('$T/rt/co', 'tester'), fsl_use('repo:kb'), $1" | cut -f3-; }
+r_commit() { r_co "fsl_add('sources')" >/dev/null 2>&1; r_co "fsl_commit('{\"comment\":\"$1\"}')" >/dev/null; }
+r_repo "fsl_checkout('$T/rt/co')" >/dev/null
+mkdir -p "$T/rt/co/sources"
+"$CTX" project add tmpsrc --root "$T/rt/co" >/dev/null
+printf 'The zebra limit is five.\nThe heron timeout is ten.\n' > "$T/rt/old.md"
+printf 'The zebra limit is five.\nThe heron timeout is forty.\n' > "$T/rt/new.md"
+printf 'The albatross rule is firm.\n' > "$T/rt/bad.md"
+(cd "$T/rt/co" && "$CTX" source add "$T/rt/old.md" --origin u1 --class versioned --valid-from 2026-01-01 >/dev/null; "$CTX" source add "$T/rt/bad.md" --origin u2 --class evergreen --valid-from 2026-01-01 >/dev/null)
+r_commit one
+CI=$(r_repo "fsl_resolve('trunk')")
+python3 - "$T/rt/p.md" "$CI" <<'EOF'
+import sys
+out, ci = sys.argv[1:3]
+open(out, "w").write(f"""# Limits
+
+The limit is five.[^a] The timeout is ten.[^b] The rule is firm.[^c]
+
+[^a]: "The zebra limit is five." [o](/file?name=sources/old.md&ci={ci})
+[^b]: "The heron timeout is ten." [o](/file?name=sources/old.md&ci={ci})
+[^c]: "The albatross rule is firm." [b](/file?name=sources/bad.md&ci={ci})
+""")
+EOF
+"$CTX" index >/dev/null
+"$CTX" wiki save Limits "$T/rt/p.md" --model m >/dev/null || fail "first page saves"
+(cd "$T/rt/co" && "$CTX" source add "$T/rt/new.md" --origin u3 --class versioned --valid-from 2026-06-01 >/dev/null)
+ev() { (cd "$T/rt/co" && "$CTX" source supersede "$@"); }
+if ev old.md --relation replaces --reason r 2>/dev/null; then fail "replaces needs a successor"; fi
+if ev old.md --relation replaces --by new.md 2>/dev/null; then fail "a reason is required"; fi
+if ev old.md --relation nonsense --by new.md --reason r 2>/dev/null; then fail "relation is checked"; fi
+if ev old.md --relation retracts --by new.md --reason r 2>/dev/null; then fail "a retraction has no successor"; fi
+if ev old.md --relation replaces --by nosuch.md --reason r 2>/dev/null; then fail "successor needs an origin"; fi
+if ev old.md --relation replaces --by old.md --reason r 2>/dev/null; then fail "no self supersession"; fi
+ev old.md --relation replaces --by new.md --reason "heron timeout raised" >/dev/null || fail "supersede"
+ev bad.md --relation retracts --reason "was wrong" >/dev/null || fail "retract"
+if ev old.md --relation replaces --by new.md --reason again 2>/dev/null; then fail "superseded once"; fi
+if ev new.md --relation replaces --by old.md --reason cycle 2>/dev/null; then fail "a successor must be current"; fi
+(cd "$T/rt/co" && "$CTX" source check) | grep -q ' 0 problems' || fail "the events file is not a source"
+[ "$(wc -l < "$T/rt/co/sources/SUPERSEDED.jsonl" | tr -d ' ')" = 2 ] || fail "events are appended"
+r_commit two
+"$CTX" index >/dev/null
+q() { "$CTX" sql "$1"; }
+[ "$(q "SELECT status FROM ctx_doc WHERE name='sources/old.md'")" = superseded ] || fail "old is superseded"
+[ "$(q "SELECT status FROM ctx_doc WHERE name='sources/bad.md'")" = retracted ] || fail "bad is retracted"
+[ "$("$CTX" search zebra | grep -c '^#[0-9]* kb source')" = 1 ] || fail "only the current source is served"
+"$CTX" search albatross 2>/dev/null | grep -q '^#[0-9]* kb source' && fail "a retracted source is not served"
+"$CTX" search --history albatross | grep -q '^#[0-9]* kb source' || fail "--history brings it back"
+if "$CTX" wiki check > "$T/rt/c.txt"; then fail "check sees superseded citations"; fi
+grep -q 'cites a superseded source' "$T/rt/c.txt" && grep -q 'cites a retracted source' "$T/rt/c.txt" || fail "check names them"
+page2() { sed 's/old.md/old.md/' "$T/rt/p.md" > "$T/rt/p2.md"; }
+page2; if "$CTX" wiki save Limits "$T/rt/p2.md" --model m > "$T/rt/g.txt"; then fail "the gate refuses a superseded source"; fi
+grep -q 'cites a superseded source' "$T/rt/g.txt" || fail "gate names supersession"
+"$CTX" wiki repin > "$T/rt/r.txt"
+grep -q '^1 re-pinned, 2 tickets opened' "$T/rt/r.txt" || fail "repin: $(cat "$T/rt/r.txt")"
+r_repo "fsl_wiki('Limits')" > "$T/rt/s.md"
+grep -q 'name=sources/new.md' "$T/rt/s.md" || fail "a surviving quote moves to the successor"
+grep -q '\[^b\]: .*name=sources/old.md' "$T/rt/s.md" || fail "a lost quote keeps its old pin"
+[ "$("$CTX" ticket ready --all | grep -c 'Wiki: re-source')" = 2 ] || fail "lost quotes become tickets"
+"$CTX" wiki repin | grep -q '^0 re-pinned, 0 tickets' || fail "repin is idempotent"
+[ "$("$CTX" ticket ready --all | grep -c 'Wiki: re-source')" = 2 ] || fail "tickets are not repeated"
+# as-of answers from what was known then.
+"$CTX" sql "UPDATE ctx_source_meta SET added_at='2026-02-01'" >/dev/null
+"$CTX" sql "UPDATE ctx_supersession SET at='2026-07-01'" >/dev/null
+"$CTX" search --as-of 2026-03-01 heron | grep -q '^#[0-9]* kb source' || fail "as-of sees the old source"
+[ "$("$CTX" search --as-of 2026-03-01 heron | grep -c '^#')" = 1 ] || fail "as-of excludes what was not yet valid"
+[ "$("$CTX" search --as-of 2026-08-01 heron | grep -c '^#')" = 1 ] || fail "as-of respects a later supersession"
+# A retired page keeps its history, leaves retrieval, and can come back.
+if "$CTX" wiki retire Limits 2>/dev/null; then fail "retirement needs a reason"; fi
+"$CTX" wiki retire Limits --reason "no longer relevant" | grep -q 'retired' || fail "retire"
+r_repo "fsl_wiki('Limits')" | head -1 | grep -q '^> \*\*Retired' || fail "the page carries a banner"
+[ "$(q "SELECT status FROM ctx_doc WHERE kind='wiki' AND name='Limits'")" = retired ] || fail "retired status"
+"$CTX" search limit 2>/dev/null | grep -q '^#[0-9]* kb wiki' && fail "a retired page is not served"
+"$CTX" search --history limit | grep -q '^#[0-9]* kb wiki' || fail "--history finds a retired page"
+"$CTX" index >/dev/null
+[ "$(q "SELECT status FROM ctx_doc WHERE kind='wiki' AND name='Limits'")" = retired ] || fail "retirement survives a rebuild"
+[ "$(q "SELECT count(*) FROM fslrepo_kb_event WHERE type='w'")" -ge 2 ] || fail "history is kept"
+"$CTX" wiki restore Limits | grep -q 'restored' || fail "restore"
+if r_repo "fsl_wiki('Limits')" | head -1 | grep -q 'Retired'; then fail "restore removes the banner"; fi
+# The review queue orders stale knowledge by what depends on it.
+"$CTX" index >/dev/null
+"$CTX" wiki queue > "$T/rt/q.txt"
+grep -Eq '^[0-9.]+ sources/(bad|old).md' "$T/rt/q.txt" || fail "queue lists stale sources: $(cat "$T/rt/q.txt")"
+grep -q 'sources/new.md' "$T/rt/q.txt" && fail "a current source is not queued"
+# Generated pages are computed, change only when the facts do, and are not knowledge.
+"$CTX" wiki publish | grep -q ' 2 generated pages updated' || fail "publish writes both pages"
+"$CTX" wiki publish | grep -q ' 0 generated pages updated' || fail "publish is stable"
+r_repo "fsl_wiki('Wiki Index')" | grep -q '^- \[Limits\](/wiki?name=Limits): 3 claims' || fail "index lists the page"
+r_repo "fsl_wiki('Wiki Health')" | grep -q 'sources/bad.md' || fail "health lists the queue"
+[ "$(q "SELECT count(*) FROM ctx_doc WHERE kind='wiki' AND name LIKE 'Wiki %'")" = 0 ] || fail "generated pages are not indexed"
+if "$CTX" wiki save "Wiki Index" "$T/rt/p.md" --model m 2>/dev/null; then fail "generated pages cannot be saved by hand"; fi
+# Automatic retirement touches only what nothing needs.
+printf '# Dead\n\nOld claim.[^x]\n\n[^x]: "The albatross rule is firm." [b](/file?name=sources/bad.md&ci=%s)\n' "$CI" > "$T/rt/dead.md"
+python3 - "$CTX" "$T/rt/dead.md" <<'EOF'
+import subprocess, sys
+ctx, p = sys.argv[1:3]
+t = open(p).read().replace("'", "''")
+for name in ("Dead Page", "Kept Page"):
+    body = t if name == "Dead Page" else t + "\nSee [Dead](/wiki?name=Dead+Page).\n"
+    subprocess.run([ctx, "sql", f"SELECT fsl_open('repo:kb','t'), fsl_use('repo:kb'), fsl_wiki_save('{name}', '{body}', 'text/x-markdown')"], check=True, capture_output=True)
+EOF
+"$CTX" index >/dev/null
+"$CTX" wiki retire --auto > "$T/rt/a.txt"
+grep -q 'needs a person: Dead Page' "$T/rt/a.txt" || fail "linked page needs a person: $(cat "$T/rt/a.txt")"
+grep -q 'would retire: Kept Page' "$T/rt/a.txt" || fail "unused page is eligible: $(cat "$T/rt/a.txt")"
+[ "$(q "SELECT count(*) FROM ctx_doc WHERE kind='wiki' AND status='retired'")" = 0 ] || fail "a dry run changes nothing"
+"$CTX" wiki retire --auto --apply > "$T/rt/a2.txt"
+[ "$(q "SELECT status FROM ctx_doc WHERE name='Kept Page'")" = retired ] || fail "auto retires the eligible page"
+[ "$(q "SELECT coalesce(status,'current') FROM ctx_doc WHERE name='Dead Page'")" = current ] || fail "a linked page stays"
+"$CTX" ticket ready --all | grep -q 'decide whether to retire Dead Page' || fail "a person is asked"
+cd - >/dev/null
+
+# Sync: a second machine starts from the private repository, sees the first one's
+# sessions, and tickets do not get claimed twice.
+export CTX_DB="$T/m1.sqlite"
+"$CTX" init >/dev/null
+printf '{"uuid":"sy-1","timestamp":"2026-08-01T10:00:00Z","cwd":"/w/syncproj","message":{"role":"user","content":"the quokka migration plan"}}\n' > "$T/ab12cd34-sync.jsonl"
+"$CTX" archive "$T/ab12cd34-sync.jsonl" >/dev/null
+"$CTX" sql "SELECT fsl_export('repo:me', '$T/hub.fossil')" >/dev/null
+"$CTX" remote me "$T/hub.fossil" >/dev/null
+TK=$("$CTX" ticket new "Shared work" --project syncproj)
+"$CTX" sync >/dev/null || fail "first machine syncs"
+export CTX_DB="$T/m2.sqlite"
+"$CTX" init --clone "$T/hub.fossil" | grep -q '1 sessions from other machines indexed' || fail "a clone indexes the other machine's sessions"
+"$CTX" search --all quokka | grep -q 'quokka' || fail "the other machine's session is searchable"
+[ "$("$CTX" sql "SELECT remote FROM ctx_repo WHERE name='me'")" = "$T/hub.fossil" ] || fail "a clone remembers its remote"
+if "$CTX" init --clone "$T/hub.fossil" 2>/dev/null; then fail "a private repository is cloned once"; fi
+export CTX_DB="$T/m1.sqlite"
+printf '{"uuid":"sy-2","timestamp":"2026-08-02T10:00:00Z","cwd":"/w/syncproj","message":{"role":"user","content":"the wombat follow-up"}}\n' >> "$T/ab12cd34-sync.jsonl"
+"$CTX" archive "$T/ab12cd34-sync.jsonl" >/dev/null
+"$CTX" sync >/dev/null || fail "push"
+export CTX_DB="$T/m2.sqlite"
+"$CTX" sync | grep -q 'sessions from other machines indexed' || fail "a pull indexes new sessions"
+"$CTX" search --all wombat | grep -q 'wombat' || fail "a new turn arrives"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_doc WHERE kind='session'")" = 2 ] || fail "each day is one session, not duplicated"
+"$CTX" sync | grep -q 'sessions from other machines' && fail "an unchanged note is not indexed again"
+"$CTX" ticket claim "$TK" --as machine2 >/dev/null || fail "machine 2 claims"
+export CTX_DB="$T/m1.sqlite"
+if "$CTX" ticket claim "$TK" --as machine1 2>"$T/claim.err" >/dev/null; then fail "a claim made on another machine is seen first"; fi
+grep -q 'Claimed by machine2' "$T/claim.err" || fail "the other machine's claim is named: $(cat "$T/claim.err")"
+"$CTX" sync >/dev/null
+[ "$("$CTX" ticket show "$TK" | sed -n 's/^assignee: //p')" = machine2 ] || fail "the first claim stands"
+if "$CTX" sync nosuch 2>/dev/null; then fail "sync of an unknown name"; fi
+
+# The skill eval harness works end to end with a stand-in for the model.
+PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"
+
 # A missing file is an error.
 if "$CTX" extract "$T/none.jsonl" 2>/dev/null; then fail "missing file"; fi
 
