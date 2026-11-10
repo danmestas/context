@@ -10,4 +10,4 @@ jobs:
       - run: bash -n bench/run.sh
       - run: python3 -c "import sqlite3; sqlite3.connect(':memory:').executescript(open('bench/schema.sql').read())"
       - run: |
-          sqlite3 :memory: -bail -cmd '.read schema/index.sql' '.read schema/check.sql'
+          sqlite3 :memory: -bail -cmd '.read schema/state.sql' -cmd '.read schema/index.sql' '.read schema/check.sql'

@@ -22,12 +22,17 @@ build/schema.h: schema/index.sql | build
 	     { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); print "\"" $$0 "\\n\"" } \
 	     END { print ";" }' $< > $@
 
+build/state_schema.h: schema/state.sql | build
+	awk 'BEGIN { print "static const char ctx_state_schema[] =" } \
+	     { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); print "\"" $$0 "\\n\"" } \
+	     END { print ";" }' $< > $@
+
 build/ticket_schema.h: schema/ticket-table.sql | build
 	awk 'BEGIN { print "static const char ctx_ticket_schema[] =" } \
 	     { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); print "\"" $$0 "\\n\"" } \
 	     END { print ";" }' $< > $@
 
-build/ctx.o: src/ctx.c build/schema.h build/ticket_schema.h | build
+build/ctx.o: src/ctx.c build/schema.h build/state_schema.h build/ticket_schema.h | build
 	$(CC) $(CFLAGS) -Wall -Wextra -I$(VENDOR) -Ibuild -c -o $@ $<
 
 build/sqlite3.o: $(VENDOR)/sqlite3.c | build
@@ -43,7 +48,7 @@ test: ctx
 SANFLAGS = -O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=undefined
 build/san/%.o: | build
 	mkdir -p build/san
-build/san/ctx.o: src/ctx.c build/schema.h build/ticket_schema.h
+build/san/ctx.o: src/ctx.c build/schema.h build/state_schema.h build/ticket_schema.h
 	mkdir -p build/san
 	$(CC) $(SANFLAGS) -Wall -Wextra -I$(VENDOR) -Ibuild -c -o $@ $<
 build/san/sqlite3.o: $(VENDOR)/sqlite3.c
@@ -75,7 +80,7 @@ build/fuzz/sqlite3.o: $(VENDOR)/sqlite3.c
 	@test -n "$(FUZZCC)" || { echo "no clang with libFuzzer; set FUZZCC" >&2; exit 1; }
 	mkdir -p build/fuzz
 	$(FUZZCC) $(SANFLAGS) -fno-sanitize=function $(SQLITE) -w -c -o $@ $<
-build/fuzz/%: fuzz/fuzz_%.c src/ctx.c build/fuzz/libfossil.o build/fuzz/sqlite3.o build/schema.h build/ticket_schema.h
+build/fuzz/%: fuzz/fuzz_%.c src/ctx.c build/fuzz/libfossil.o build/fuzz/sqlite3.o build/schema.h build/state_schema.h build/ticket_schema.h
 	$(FUZZCC) $(SANFLAGS) -fsanitize=fuzzer -w -I$(VENDOR) -Ibuild -o $@ $< build/fuzz/libfossil.o build/fuzz/sqlite3.o $(LDLIBS)
 # CI fuzzes briefly where a fuzzing clang exists, and says so where it does not.
 fuzz-ci:

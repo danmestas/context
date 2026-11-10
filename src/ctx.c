@@ -21,9 +21,12 @@
 
 #include "sqlite3.h"
 #include "schema.h"
+#include "state_schema.h"
 #include "ticket_schema.h"
 
 #define CTX_VERSION "0.0.1"
+#define CTX_USER_VERSION 2    /* PRAGMA user_version once initialized */
+#define CTX_DERIVED_VERSION 2 /* raise when schema/index.sql changes; ctx then rebuilds */
 
 /* A tool's output is kept up to this size at each end; the middle is cut. */
 #define TOOL_KEEP (16 * 1024)
@@ -93,7 +96,7 @@ static int cmd_version(void) {
   return 0;
 }
 
-static void sessions_from_remote(sqlite3 *db);
+static void sessions_from_remote(sqlite3 *db, int all);
 
 static int cmd_init(const char *clone) {
   char *path = db_path();
@@ -101,7 +104,12 @@ static int cmd_init(const char *clone) {
   db_exec(db, "PRAGMA journal_mode=WAL;");
   if (db_int(db, "PRAGMA user_version") == 0) {
     db_exec(db, "BEGIN IMMEDIATE");
+    db_exec(db, ctx_state_schema);
     db_exec(db, ctx_schema);
+    char v[256];
+    snprintf(v, sizeof v, "INSERT OR REPLACE INTO ctx_meta(key, value) VALUES ('derived_version', '%d'); PRAGMA user_version = %d;",
+             CTX_DERIVED_VERSION, CTX_USER_VERSION);
+    db_exec(db, v);
     db_exec(db, "COMMIT");
   }
   if (clone && !db_int(db, "SELECT count(*) FROM sqlite_master WHERE name='fslrepo_me_config'")) {
@@ -125,7 +133,7 @@ static int cmd_init(const char *clone) {
     sqlite3_bind_text(q, 1, clone, -1, SQLITE_STATIC);
     sqlite3_step(q);
     sqlite3_finalize(q);
-    sessions_from_remote(db);
+    sessions_from_remote(db, 0);
   }
   printf("%s\n", path);
   sqlite3_close(db);
@@ -599,11 +607,43 @@ static void head_hash(const char *path, long long upto, char out[17]) {
 
 /* libfossil refuses connections with foreign keys on, so this one leaves them off.
  * Work that relies on cascades, such as a rebuild, uses its own connection. */
+static void rebuild_derived(sqlite3 *db);
+
+/* Brings an older file up to date: state tables are added in place, and derived ones
+ * are rebuilt rather than migrated when their version changed. */
+static void schema_ensure(sqlite3 *db) {
+  int user = db_int(db, "PRAGMA user_version");
+  if (user == CTX_USER_VERSION &&
+      db_int(db, "SELECT count(*) FROM sqlite_master WHERE name = 'ctx_meta'") &&
+      db_int(db, "SELECT coalesce((SELECT CAST(value AS INTEGER) FROM ctx_meta WHERE key = 'derived_version'), 0)") == CTX_DERIVED_VERSION)
+    return; /* the common case costs three reads */
+  if (user > CTX_USER_VERSION) die("this database is from a newer ctx (version %d)", user);
+  db_exec(db, "BEGIN IMMEDIATE");
+  db_exec(db, ctx_state_schema);
+  int derived = db_int(db, "SELECT coalesce((SELECT CAST(value AS INTEGER) FROM ctx_meta WHERE key = 'derived_version'), 0)");
+  /* a file from before versioning has compatible derived tables, only fewer of them */
+  if (derived == 0) derived = CTX_DERIVED_VERSION;
+  db_exec(db, ctx_schema);
+  char v[96];
+  snprintf(v, sizeof v, "PRAGMA user_version = %d;", CTX_USER_VERSION);
+  db_exec(db, v);
+  if (derived == CTX_DERIVED_VERSION) {
+    snprintf(v, sizeof v, "INSERT OR REPLACE INTO ctx_meta(key, value) VALUES ('derived_version', '%d')", CTX_DERIVED_VERSION);
+    db_exec(db, v);
+  }
+  db_exec(db, "COMMIT");
+  if (derived != CTX_DERIVED_VERSION) {
+    fprintf(stderr, "ctx: the index changed with this version of ctx; rebuilding it once\n");
+    rebuild_derived(db);
+  }
+}
+
 static sqlite3 *ctx_open(void) {
   char *path = db_path();
   sqlite3 *db = db_open(path);
   free(path);
   if (db_int(db, "PRAGMA user_version") == 0) die("no ctx database here; run: ctx init");
+  schema_ensure(db);
   return db;
 }
 
@@ -756,6 +796,10 @@ static long archive_batch(sqlite3 *db, const char *session, const char *path, co
       buf_str(&text, turns[j].role);
       buf_str(&text, " ");
       buf_str(&text, turns[j].ts);
+      if (*turns[j].ts && *turns[j].uuid) { /* so a rebuild can still tell turns apart */
+        buf_str(&text, " ");
+        buf_str(&text, turns[j].uuid);
+      }
       buf_str(&text, "\n\n");
       buf_add(&text, turns[j].body, turns[j].body_n);
       buf_str(&text, "\n\n");
@@ -1501,12 +1545,6 @@ static int cmd_audit(int argc, char **argv) {
     } else die("usage: ctx audit [--all] [--known] [--tickets] [--limit N] | --allow ID [NOTE]");
   }
   sqlite3 *db = ctx_open();
-  db_exec(db,
-          "CREATE TABLE IF NOT EXISTS ctx_audit_run(id INTEGER PRIMARY KEY, at TEXT NOT NULL, scanned INTEGER NOT NULL,"
-          " to_id INTEGER NOT NULL, known INTEGER NOT NULL, found INTEGER NOT NULL, open INTEGER NOT NULL) STRICT;"
-          "CREATE TABLE IF NOT EXISTS ctx_audit_finding(id INTEGER PRIMARY KEY, rule TEXT NOT NULL, fingerprint TEXT NOT NULL,"
-          " chunk INTEGER NOT NULL, project TEXT, day TEXT, shape TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open',"
-          " note TEXT NOT NULL DEFAULT '', UNIQUE (rule, fingerprint, chunk)) STRICT;");
   if (allow) {
     sqlite3_stmt *u = db_prepare(db,
         "UPDATE ctx_audit_finding SET status = 'allowed', note = ?2 WHERE (rule, fingerprint) ="
@@ -2668,16 +2706,8 @@ static void remove_tree(const char *path) {
   rmdir(path);
 }
 
-static void index_prepare(sqlite3 *db) {
+static void index_prepare(sqlite3 *db) { /* scratch tables for one connection */
   db_exec(db,
-          "CREATE TABLE IF NOT EXISTS ctx_citation(id INTEGER PRIMARY KEY, doc_id INTEGER NOT NULL, ref TEXT NOT NULL, quote TEXT NOT NULL,"
-          " target_kind TEXT NOT NULL, target TEXT, ci TEXT, file_hash TEXT, status TEXT NOT NULL) STRICT;"
-          "CREATE INDEX IF NOT EXISTS ctx_citation_target ON ctx_citation(target_kind, target);"
-          "CREATE INDEX IF NOT EXISTS ctx_citation_doc ON ctx_citation(doc_id);"
-          "CREATE TABLE IF NOT EXISTS ctx_source_meta(doc_id INTEGER PRIMARY KEY, class TEXT, review_after TEXT, valid_from TEXT,"
-          " valid_until TEXT, added_at TEXT, origin TEXT, risk TEXT) STRICT;"
-          "CREATE TABLE IF NOT EXISTS ctx_supersession(project TEXT NOT NULL, old TEXT NOT NULL, new TEXT, relation TEXT NOT NULL,"
-          " reason TEXT, by_whom TEXT, at TEXT, PRIMARY KEY (project, old)) STRICT;"
           "CREATE TEMP TABLE IF NOT EXISTS seen(kind TEXT, name TEXT, PRIMARY KEY (kind, name));"
           "CREATE TEMP TABLE IF NOT EXISTS cite(ref, quote, target_kind, target, ci, file_hash, status);"
           "CREATE TEMP TABLE IF NOT EXISTS pagelink(page PRIMARY KEY);");
@@ -2986,8 +3016,6 @@ static int wiki_commit(sqlite3 *db, const char *project, sqlite3_int64 repo_id, 
   char *version = dup_text(sqlite3_column_text(q, 0));
   sqlite3_finalize(q);
   doc_store(db, project, repo_id, "wiki", name, page.p, strlen(page.p), 1);
-  db_exec(db, "CREATE TABLE IF NOT EXISTS ctx_wiki_log(id INTEGER PRIMARY KEY, project TEXT NOT NULL, page TEXT NOT NULL, version TEXT NOT NULL,"
-              " model TEXT NOT NULL, ticket TEXT NOT NULL, session TEXT, at TEXT NOT NULL) STRICT");
   q = db_prepare(db, "INSERT INTO ctx_wiki_log(project, page, version, model, ticket, session, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))");
   sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
   sqlite3_bind_text(q, 2, name, -1, SQLITE_STATIC);
@@ -3855,36 +3883,39 @@ static int source_uses(int argc, char **argv) {
 
 /* Splits a technote into its turns. Each turn starts at a line "## user TIMESTAMP"
  * or "## assistant TIMESTAMP", where the timestamp may be missing. */
-typedef void (*turn_emit)(void *ctx, const char *role, const char *at, const char *body, size_t n);
+typedef void (*turn_emit)(void *ctx, const char *role, const char *at, const char *uuid, const char *body, size_t n);
 
 static void note_turns(const char *text, turn_emit emit, void *ctx) {
   const char *p = text, *start = NULL;
-  char role[16] = "", at[40] = "";
+  char role[16] = "", at[40] = "", uuid[80] = "";
   for (;;) {
     const char *nl = strchr(p, '\n');
     int head = 0;
-    char r[16], ts[40];
+    char r[16], ts[40], id[80];
     char line[96];
     size_t ll = nl ? (size_t)(nl - p) : strlen(p);
     snprintf(line, sizeof line, "%.*s", (int)(ll < sizeof line - 1 ? ll : sizeof line - 1), p);
-    int got = !strncmp(line, "## ", 3) ? sscanf(line + 3, "%15s %39s", r, ts) : 0; /* this line only */
+    id[0] = 0;
+    int got = !strncmp(line, "## ", 3) ? sscanf(line + 3, "%15s %39s %79s", r, ts, id) : 0; /* this line only */
     if (got >= 1 && (!strcmp(r, "user") || !strcmp(r, "assistant"))) {
       if (got == 1 && ll <= 3 + strlen(r) + 1) { /* a turn with no timestamp */
         ts[0] = 0;
         head = 1;
-      } else if (got == 2 && strlen(ts) >= 19 && ts[4] == '-' && ts[10] == 'T') {
+      } else if (got >= 2 && strlen(ts) >= 19 && ts[4] == '-' && ts[10] == 'T') {
         head = 1;
+        if (got < 3) id[0] = 0;
       }
     }
     if (head || !*p) {
       if (start) {
         size_t len = (size_t)(p - start);
         while (len && c_space((unsigned char)start[len - 1])) len--;
-        emit(ctx, role, at, start, len);
+        emit(ctx, role, at, uuid, start, len);
       }
       if (!*p) break;
       snprintf(role, sizeof role, "%s", r);
       snprintf(at, sizeof at, "%s", ts);
+      snprintf(uuid, sizeof uuid, "%s", id);
       start = nl ? nl + 1 : p + strlen(p);
     }
     if (!nl) {
@@ -3902,10 +3933,11 @@ typedef struct {
   const char *id, *project;
 } note_sink;
 
-static void note_store(void *ctx, const char *role, const char *at, const char *body, size_t n) {
+static void note_store(void *ctx, const char *role, const char *at, const char *uuid, const char *body, size_t n) {
   note_sink *k = ctx;
   char turn[160];
-  snprintf(turn, sizeof turn, "note:%s:%d", k->id, k->seq);
+  if (*uuid) snprintf(turn, sizeof turn, "%s", uuid);
+  else snprintf(turn, sizeof turn, "note:%s:%d", k->id, k->seq);
   sqlite3_bind_int64(k->ins, 1, k->doc);
   sqlite3_bind_int(k->ins, 2, k->seq++);
   sqlite3_bind_text(k->ins, 3, role, -1, SQLITE_TRANSIENT);
@@ -3919,8 +3951,7 @@ static void note_store(void *ctx, const char *role, const char *at, const char *
 
 /* Turns technotes this machine did not write into searchable sessions. Technotes hold
  * each turn as "## ROLE TIMESTAMP" and its body, already redacted. */
-static void sessions_from_remote(sqlite3 *db) {
-  db_exec(db, "CREATE TABLE IF NOT EXISTS ctx_remote_note(technote TEXT PRIMARY KEY, version TEXT NOT NULL) STRICT");
+static void sessions_from_remote(sqlite3 *db, int all) {
   open_private(db);
   db_exec(db, "SELECT fsl_use('repo:me')");
   sqlite3_int64 repo = db_int(db, "SELECT id FROM ctx_repo WHERE name = 'me'");
@@ -3944,9 +3975,10 @@ static void sessions_from_remote(sqlite3 *db) {
   sqlite3_finalize(q);
   long added = 0;
   for (size_t i = 0; i < n; i++) {
-    q = db_prepare(db, "SELECT (SELECT count(*) FROM ctx_capture_day WHERE technote = ?1) + (SELECT count(*) FROM ctx_remote_note WHERE technote = ?1 AND version = ?2)");
+    q = db_prepare(db, "SELECT (NOT ?3 AND (SELECT count(*) FROM ctx_capture_day WHERE technote = ?1)) + (SELECT count(*) FROM ctx_remote_note WHERE technote = ?1 AND version = ?2)");
     sqlite3_bind_text(q, 1, notes[i].id, -1, SQLITE_STATIC);
     sqlite3_bind_text(q, 2, notes[i].version, -1, SQLITE_STATIC);
+    sqlite3_bind_int(q, 3, all);
     sqlite3_step(q);
     int known = sqlite3_column_int(q, 0);
     sqlite3_finalize(q);
@@ -4001,7 +4033,7 @@ static void sessions_from_remote(sqlite3 *db) {
     free(notes[i].project);
   }
   free(notes);
-  if (added) printf("%ld sessions from other machines indexed\n", added);
+  if (added) printf(all ? "%ld sessions indexed from technotes\n" : "%ld sessions from other machines indexed\n", added);
 }
 
 static int cmd_remote(int argc, char **argv) {
@@ -4064,7 +4096,7 @@ static int cmd_sync(int argc, char **argv) {
   for (size_t i = 0; i < n; i++) {
     int bad = sync_one(db, t[i].name, t[i].remote, 0);
     failed += bad;
-    if (!bad && !strcmp(t[i].name, "me")) sessions_from_remote(db);
+    if (!bad && !strcmp(t[i].name, "me")) sessions_from_remote(db, 0);
     free(t[i].name);
     free(t[i].remote);
     free(t[i].project);
@@ -4218,6 +4250,54 @@ static int cmd_inject(void) {
   return 0;
 }
 
+/* ctx rebuild: drops every derived table and recomputes it from the repositories:
+ * sessions from technotes, and each project's sources and wiki. State is untouched. */
+static const char *const derived_objects[] = {
+    "VIEW ctx_stale_wiki", "VIEW ctx_ready_ticket", "TRIGGER ctx_chunk_ai", "TRIGGER ctx_chunk_ad", "TRIGGER ctx_chunk_au",
+    "TABLE ctx_chunk_fts", "TABLE ctx_link", "TABLE ctx_citation", "TABLE ctx_source_meta", "TABLE ctx_supersession",
+    "TABLE ctx_remote_note", "TABLE ctx_chunk", "TABLE ctx_doc", NULL};
+
+static void rebuild_derived(sqlite3 *db) {
+  db_exec(db, "BEGIN IMMEDIATE");
+  for (int i = 0; derived_objects[i]; i++) {
+    char sql[96];
+    snprintf(sql, sizeof sql, "DROP %.*s IF EXISTS %s", (int)strcspn(derived_objects[i], " "), derived_objects[i],
+             strchr(derived_objects[i], ' ') + 1);
+    db_exec(db, sql);
+  }
+  db_exec(db, ctx_schema);
+  char v[96];
+  snprintf(v, sizeof v, "INSERT OR REPLACE INTO ctx_meta(key, value) VALUES ('derived_version', '%d')", CTX_DERIVED_VERSION);
+  db_exec(db, v);
+  db_exec(db, "COMMIT");
+  sessions_from_remote(db, 1);
+  char **projects = NULL;
+  size_t n = 0;
+  sqlite3_stmt *q = db_prepare(db, "SELECT project FROM ctx_repo WHERE scope = 'shared' ORDER BY project");
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    projects = realloc(projects, (n + 1) * sizeof *projects);
+    if (!projects) die("out of memory");
+    projects[n++] = dup_text(sqlite3_column_text(q, 0));
+  }
+  sqlite3_finalize(q);
+  for (size_t i = 0; i < n; i++) {
+    char *args[2] = {"--project", projects[i]};
+    printf("%s: ", projects[i]);
+    fflush(stdout);
+    cmd_index(2, args);
+    free(projects[i]);
+  }
+  free(projects);
+}
+
+static int cmd_rebuild(void) {
+  sqlite3 *db = ctx_open();
+  rebuild_derived(db);
+  printf("%d turns, %d documents\n", db_int(db, "SELECT count(*) FROM ctx_chunk"), db_int(db, "SELECT count(*) FROM ctx_doc"));
+  sqlite3_close(db);
+  return 0;
+}
+
 static int usage(void) {
   fputs("usage: ctx version\n"
         "       ctx init [--clone URL]\n"
@@ -4235,6 +4315,7 @@ static int usage(void) {
         "       ctx sync [NAME]\n"
         "       ctx scan [DIR]\n"
         "       ctx hook\n"
+        "       ctx rebuild\n"
         "       ctx inject\n"
         "       ctx sql STATEMENT\n",
         stderr);
@@ -4253,6 +4334,7 @@ int main(int argc, char **argv) {
   if (argc == 3 && !strcmp(argv[1], "archive")) return cmd_archive(argv[2]);
   if (argc == 3 && !strcmp(argv[1], "sql")) return cmd_sql(argv[2]);
   if (argc == 2 && !strcmp(argv[1], "hook")) return cmd_hook();
+  if (argc == 2 && !strcmp(argv[1], "rebuild")) return cmd_rebuild();
   if (argc == 2 && !strcmp(argv[1], "inject")) return cmd_inject();
   if ((argc == 2 || argc == 3) && !strcmp(argv[1], "scan")) return cmd_scan(argc == 3 ? argv[2] : NULL);
   if (argc >= 2 && !strcmp(argv[1], "audit")) return cmd_audit(argc - 2, argv + 2);
