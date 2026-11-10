@@ -103,3 +103,8 @@ CREATE TABLE IF NOT EXISTS ctx_rule_proposal(
   status  TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'accepted', 'rejected')),
   rule    TEXT                         -- the rule an accepted one became
 ) STRICT;
+
+-- Turns the rule classifier has already seen, so each is sent once.
+CREATE TABLE IF NOT EXISTS ctx_rule_seen(
+  turn TEXT PRIMARY KEY
+) STRICT, WITHOUT ROWID;

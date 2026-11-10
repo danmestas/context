@@ -179,18 +179,28 @@ and records the session it was written in. Redaction applies as for transcripts.
 When a file changes, its rule gets a new version; when it is deleted, its rule is
 retired. `ctx rules import` does this at once.
 
-What you type that reads like a standing instruction ("from now on", "always",
-"never", "every time") is proposed as a rule when the session is archived. Tool
-output and harness text never are. Nothing becomes a rule until you accept it:
+A classifier proposes rules from what you type. It is any command that reads a
+prompt on stdin and answers on stdout, so it works with whatever model you use;
+ctx supplies the prompt and only ever records proposals. It sees the turns you
+typed, never tool output, and nothing becomes a rule until you accept it:
 
 ```sh
+ctx rules classifier "claude -p --model haiku --tools ''"   # or llm, codex exec, a local model
+ctx rules propose              # classify new turns now; the hourly scan does it too
 ctx rules proposed             # this project's waiting proposals; --all for every project
-ctx rules accept 12 --text "Use strata when several changes are in flight" [--until DATE]
+ctx rules accept 12 [--text "better wording"] [--until DATE]
 ctx rules reject 13            # never proposed again
-ctx rules scan --since 2026-09-01   # look through turns archived earlier
+ctx rules classifier --off     # stop
+ctx rules candidates           # the turns a classifier would see, as JSON lines
+ctx rules prompt               # the question it is asked
+ctx rules suggest TURN TEXT    # record a proposal from any other tool
 ctx remember "..." --from 444886    # a rule that records the turn you said it in
 ctx turn turn:UUID                  # read that turn again later, by the id a rule records
 ```
+
+`eval/rules_bench.py --classify "CMD"` scores a classifier against a labelled set of
+your turns. On 1,000 of them, Haiku found 84% of the standing instructions at 76%
+precision, DeepSeek 80% at 60%; matching words such as "always" found 17%.
 
 `ctx rules offer` is a SessionStart hook. It tells the agent that past sessions are
 searchable, lists rules it would not otherwise load (those from `ctx remember`, and
