@@ -601,6 +601,93 @@ grep -q 'Cache: stale, source changed: sources/a.md' "$T/wk/c2.txt" || fail "sta
 "$CTX" source uses a.md | grep -q 'older version' || fail "uses shows an older pin"
 cd - >/dev/null
 
+# Retirement: nothing is erased, retired material leaves retrieval, and claims follow their sources.
+export CTX_DB="$T/retire.sqlite"
+"$CTX" init >/dev/null
+mkdir -p "$T/rt/co" "$T/rt/root"
+cd "$T/rt/root"
+"$CTX" project add kb >/dev/null
+r_repo() { "$CTX" sql "SELECT fsl_open('repo:kb', 'tester'), fsl_use('repo:kb'), $1" | cut -f3-; }
+r_co() { "$CTX" sql "SELECT fsl_open('$T/rt/co', 'tester'), fsl_use('repo:kb'), $1" | cut -f3-; }
+r_commit() { r_co "fsl_add('sources')" >/dev/null 2>&1; r_co "fsl_commit('{\"comment\":\"$1\"}')" >/dev/null; }
+r_repo "fsl_checkout('$T/rt/co')" >/dev/null
+mkdir -p "$T/rt/co/sources"
+"$CTX" project add tmpsrc --root "$T/rt/co" >/dev/null
+printf 'The zebra limit is five.\nThe heron timeout is ten.\n' > "$T/rt/old.md"
+printf 'The zebra limit is five.\nThe heron timeout is forty.\n' > "$T/rt/new.md"
+printf 'The albatross rule is firm.\n' > "$T/rt/bad.md"
+(cd "$T/rt/co" && "$CTX" source add "$T/rt/old.md" --origin u1 --class versioned --valid-from 2026-01-01 >/dev/null; "$CTX" source add "$T/rt/bad.md" --origin u2 --class evergreen --valid-from 2026-01-01 >/dev/null)
+r_commit one
+CI=$(r_repo "fsl_resolve('trunk')")
+python3 - "$T/rt/p.md" "$CI" <<'EOF'
+import sys
+out, ci = sys.argv[1:3]
+open(out, "w").write(f"""# Limits
+
+The limit is five.[^a] The timeout is ten.[^b] The rule is firm.[^c]
+
+[^a]: "The zebra limit is five." [o](/file?name=sources/old.md&ci={ci})
+[^b]: "The heron timeout is ten." [o](/file?name=sources/old.md&ci={ci})
+[^c]: "The albatross rule is firm." [b](/file?name=sources/bad.md&ci={ci})
+""")
+EOF
+"$CTX" index >/dev/null
+"$CTX" wiki save Limits "$T/rt/p.md" --model m >/dev/null || fail "first page saves"
+(cd "$T/rt/co" && "$CTX" source add "$T/rt/new.md" --origin u3 --class versioned --valid-from 2026-06-01 >/dev/null)
+ev() { (cd "$T/rt/co" && "$CTX" source supersede "$@"); }
+if ev old.md --relation replaces --reason r 2>/dev/null; then fail "replaces needs a successor"; fi
+if ev old.md --relation replaces --by new.md 2>/dev/null; then fail "a reason is required"; fi
+if ev old.md --relation nonsense --by new.md --reason r 2>/dev/null; then fail "relation is checked"; fi
+if ev old.md --relation retracts --by new.md --reason r 2>/dev/null; then fail "a retraction has no successor"; fi
+if ev old.md --relation replaces --by nosuch.md --reason r 2>/dev/null; then fail "successor needs an origin"; fi
+if ev old.md --relation replaces --by old.md --reason r 2>/dev/null; then fail "no self supersession"; fi
+ev old.md --relation replaces --by new.md --reason "heron timeout raised" >/dev/null || fail "supersede"
+ev bad.md --relation retracts --reason "was wrong" >/dev/null || fail "retract"
+if ev old.md --relation replaces --by new.md --reason again 2>/dev/null; then fail "superseded once"; fi
+if ev new.md --relation replaces --by old.md --reason cycle 2>/dev/null; then fail "a successor must be current"; fi
+(cd "$T/rt/co" && "$CTX" source check) | grep -q ' 0 problems' || fail "the events file is not a source"
+[ "$(wc -l < "$T/rt/co/sources/SUPERSEDED.jsonl" | tr -d ' ')" = 2 ] || fail "events are appended"
+r_commit two
+"$CTX" index >/dev/null
+q() { "$CTX" sql "$1"; }
+[ "$(q "SELECT status FROM ctx_doc WHERE name='sources/old.md'")" = superseded ] || fail "old is superseded"
+[ "$(q "SELECT status FROM ctx_doc WHERE name='sources/bad.md'")" = retracted ] || fail "bad is retracted"
+[ "$("$CTX" search zebra | grep -c '^#[0-9]* kb source')" = 1 ] || fail "only the current source is served"
+"$CTX" search albatross 2>/dev/null | grep -q '^#[0-9]* kb source' && fail "a retracted source is not served"
+"$CTX" search --history albatross | grep -q '^#[0-9]* kb source' || fail "--history brings it back"
+if "$CTX" wiki check > "$T/rt/c.txt"; then fail "check sees superseded citations"; fi
+grep -q 'cites a superseded source' "$T/rt/c.txt" && grep -q 'cites a retracted source' "$T/rt/c.txt" || fail "check names them"
+page2() { sed 's/old.md/old.md/' "$T/rt/p.md" > "$T/rt/p2.md"; }
+page2; if "$CTX" wiki save Limits "$T/rt/p2.md" --model m > "$T/rt/g.txt"; then fail "the gate refuses a superseded source"; fi
+grep -q 'cites a superseded source' "$T/rt/g.txt" || fail "gate names supersession"
+"$CTX" wiki repin > "$T/rt/r.txt"
+grep -q '^1 re-pinned, 2 tickets opened' "$T/rt/r.txt" || fail "repin: $(cat "$T/rt/r.txt")"
+r_repo "fsl_wiki('Limits')" > "$T/rt/s.md"
+grep -q 'name=sources/new.md' "$T/rt/s.md" || fail "a surviving quote moves to the successor"
+grep -q '\[^b\]: .*name=sources/old.md' "$T/rt/s.md" || fail "a lost quote keeps its old pin"
+[ "$("$CTX" ticket ready --all | grep -c 'Wiki: re-source')" = 2 ] || fail "lost quotes become tickets"
+"$CTX" wiki repin | grep -q '^0 re-pinned, 0 tickets' || fail "repin is idempotent"
+[ "$("$CTX" ticket ready --all | grep -c 'Wiki: re-source')" = 2 ] || fail "tickets are not repeated"
+# as-of answers from what was known then.
+"$CTX" sql "UPDATE ctx_source_meta SET added_at='2026-02-01'" >/dev/null
+"$CTX" sql "UPDATE ctx_supersession SET at='2026-07-01'" >/dev/null
+"$CTX" search --as-of 2026-03-01 heron | grep -q '^#[0-9]* kb source' || fail "as-of sees the old source"
+[ "$("$CTX" search --as-of 2026-03-01 heron | grep -c '^#')" = 1 ] || fail "as-of excludes what was not yet valid"
+[ "$("$CTX" search --as-of 2026-08-01 heron | grep -c '^#')" = 1 ] || fail "as-of respects a later supersession"
+# A retired page keeps its history, leaves retrieval, and can come back.
+if "$CTX" wiki retire Limits 2>/dev/null; then fail "retirement needs a reason"; fi
+"$CTX" wiki retire Limits --reason "no longer relevant" | grep -q 'retired' || fail "retire"
+r_repo "fsl_wiki('Limits')" | head -1 | grep -q '^> \*\*Retired' || fail "the page carries a banner"
+[ "$(q "SELECT status FROM ctx_doc WHERE kind='wiki' AND name='Limits'")" = retired ] || fail "retired status"
+"$CTX" search limit 2>/dev/null | grep -q '^#[0-9]* kb wiki' && fail "a retired page is not served"
+"$CTX" search --history limit | grep -q '^#[0-9]* kb wiki' || fail "--history finds a retired page"
+"$CTX" index >/dev/null
+[ "$(q "SELECT status FROM ctx_doc WHERE kind='wiki' AND name='Limits'")" = retired ] || fail "retirement survives a rebuild"
+[ "$(q "SELECT count(*) FROM fslrepo_kb_event WHERE type='w'")" -ge 2 ] || fail "history is kept"
+"$CTX" wiki restore Limits | grep -q 'restored' || fail "restore"
+if r_repo "fsl_wiki('Limits')" | head -1 | grep -q 'Retired'; then fail "restore removes the banner"; fi
+cd - >/dev/null
+
 # The skill eval harness works end to end with a stand-in for the model.
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"
 
