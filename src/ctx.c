@@ -516,6 +516,8 @@ static int ex_line(extractor *e, const char *line, size_t len, turn_t *t) {
         first = 0;
         e->clean.n = 0;
         add_redacted(&e->clean, text, n);
+        for (size_t z = 0; z < e->clean.n; z++) /* a NUL in text ends it for C readers, Fossil's included */
+          if (!e->clean.p[z]) e->clean.p[z] = ' ';
         if (is_text) buf_add(&e->body, e->clean.p, e->clean.n);
         else add_tool_text(&e->body, e->clean.p, e->clean.n);
       }
@@ -3872,9 +3874,17 @@ static void sessions_from_remote(sqlite3 *db) {
     sqlite3_finalize(q);
     char *text = NULL;
     if (!known) {
-      q = db_prepare(db, "SELECT fsl_technote(?1)");
+      q = db_prepare(db, "SELECT CAST(fsl_technote(?1) AS BLOB)");
       sqlite3_bind_text(q, 1, notes[i].id, -1, SQLITE_STATIC);
-      if (sqlite3_step(q) == SQLITE_ROW && sqlite3_column_text(q, 0)) text = dup_text(sqlite3_column_text(q, 0));
+      if (sqlite3_step(q) == SQLITE_ROW && sqlite3_column_type(q, 0) != SQLITE_NULL) {
+        size_t len = (size_t)sqlite3_column_bytes(q, 0);
+        text = malloc(len + 1);
+        if (!text) die("out of memory");
+        memcpy(text, sqlite3_column_blob(q, 0), len);
+        for (size_t z = 0; z < len; z++) /* older technotes can hold NUL bytes from tool output */
+          if (!text[z]) text[z] = ' ';
+        text[len] = 0;
+      }
       sqlite3_finalize(q);
     }
     if (text) {
