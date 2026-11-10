@@ -56,9 +56,9 @@ A snippet is rarely the answer. Read the turns after a hit: a plan is often
 reversed a few turns later, and the final word is what counts.
 
 BEFORE and AFTER are counts of neighboring turns, and those are the only `ctx`
-commands for reading. To find what a person asked for, read just the human side
-of a stretch. Tool output is also labeled `user`, so skip the turns that are
-output:
+commands for reading. Each turn is labeled `user` (what the person typed),
+`assistant`, `tool` (tool output) or `meta` (text the harness added). To find what
+a person asked for, read just their side of a stretch:
 
 ```sh
 ctx turn ID 0 60 | grep -A3 -- '--- #[0-9]* user'

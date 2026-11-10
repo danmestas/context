@@ -5,10 +5,10 @@ Why did the build fail?
 Checking the log.
 Bash {"command":"make test","timeout":5}
 
---- fixture turn 3 user 2026-01-02T03:04:07Z u-3
+--- fixture turn 3 tool 2026-01-02T03:04:07Z u-3
 cc: error: missing zlib
 
---- fixture turn 4 user 2026-01-02T03:04:08Z u-4
+--- fixture turn 4 tool 2026-01-02T03:04:08Z u-4
 first block
 second block
 

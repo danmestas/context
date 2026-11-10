@@ -85,6 +85,15 @@ ctx archive FILE.jsonl    # archive one transcript
 ctx extract FILE.jsonl    # print the redacted turns without storing them
 ```
 
+Each turn records who it is from: `user` for what you typed, `assistant`, `tool`
+for tool output and `meta` for text the harness added, such as reminders,
+notifications and messages from other sessions. Transcripts call all but the
+assistant "user"; ctx tells them apart. The first scan after upgrading corrects
+turns archived before this, from the transcripts still on disk, and drops the
+`api-request-blob` copies older versions archived as extra turns. The corrected
+technotes sync; upgrade ctx on every machine before syncing, since older versions
+read only `user` and `assistant` turns.
+
 Before anything is stored, known secret shapes (API keys, tokens, private keys,
 passwords in URLs and the like) become `[REDACTED]`, and long tool output is
 trimmed. Each session becomes a technote in your private repository, `repo:me`,
