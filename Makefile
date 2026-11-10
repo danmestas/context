@@ -73,13 +73,10 @@ build/fuzz/libfossil.o: $(VENDOR)/libfossil.c
 	@test -n "$(FUZZCC)" || { echo "no clang with libFuzzer; set FUZZCC" >&2; exit 1; }
 	mkdir -p build/fuzz
 	$(FUZZCC) $(SANFLAGS) -fno-sanitize=alignment $(SQLITE) -DHAVE_LIBFOSSIL_CONFIG_H -w -I$(VENDOR) -c -o $@ $<
-# libfossil defines fsl_sqlext_init with a void pointer where SQLite passes its API
-# struct, so SQLite's call through the extension pointer trips -fsanitize=function.
-# Reported to libfossil on 2026-11-10; only that check is off, only for this object.
 build/fuzz/sqlite3.o: $(VENDOR)/sqlite3.c
 	@test -n "$(FUZZCC)" || { echo "no clang with libFuzzer; set FUZZCC" >&2; exit 1; }
 	mkdir -p build/fuzz
-	$(FUZZCC) $(SANFLAGS) -fno-sanitize=function $(SQLITE) -w -c -o $@ $<
+	$(FUZZCC) $(SANFLAGS) $(SQLITE) -w -c -o $@ $<
 build/fuzz/%: fuzz/fuzz_%.c src/ctx.c build/fuzz/libfossil.o build/fuzz/sqlite3.o build/schema.h build/state_schema.h build/ticket_schema.h
 	$(FUZZCC) $(SANFLAGS) -fsanitize=fuzzer -w -I$(VENDOR) -Ibuild -o $@ $< build/fuzz/libfossil.o build/fuzz/sqlite3.o $(LDLIBS)
 # CI fuzzes briefly where a fuzzing clang exists, and says so where it does not.

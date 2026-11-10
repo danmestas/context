@@ -32,7 +32,7 @@
 /* A tool's output is kept up to this size at each end; the middle is cut. */
 #define TOOL_KEEP (16 * 1024)
 
-int fsl_sqlext_init(sqlite3 *db, char **err, const void *api); /* as libfossil defines it */
+int fsl_sqlext_init(sqlite3 *db, char **err, const sqlite3_api_routines *api); /* as libfossil defines it */
 char *fsl_sha3sum_cstr(const char *in, long long len);
 void fsl_free(void *p);
 
