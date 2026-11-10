@@ -62,7 +62,8 @@ open(skill, "w").write("skill text\n")
 se.write_json(se.BANK, {"projects": {"proj": {"repo": f"{T}/repo/proj", "sessions": f"{T}/repo/proj"}},
                         "questions": [{"id": i, "project": "proj", "kind": "fix", "question": f"what about {i}?",
                                        "answer": "it", "must_include": ["it"]} for i in ("a", "b", "c")]})
-env = dict(os.environ, SKILL_EVAL_CLAUDE=FAKE, CTX=os.path.abspath(sys.argv[1]))
+env = dict(os.environ, SKILL_EVAL_CLAUDE=FAKE, CTX=os.path.abspath(sys.argv[1]), CTX_DB=f"{T}/ctx.sqlite")
+subprocess.run([env["CTX"], "init"], env=env, capture_output=True, check=True)  # never the real archive
 
 
 def cli(*args, ok=True, **extra):
@@ -106,5 +107,7 @@ rows = json.load(open(f"{sw}/runs.json"))
 assert sorted(r["cond"] for r in rows) == ["S", "S", "S", "W", "W", "W"], rows
 ri = cli("run", "--set", "all", "--cond", "I", "--skill", skill, "--name", "inj").strip()
 assert all(r["cond"] == "I" and "injected" in r for r in json.load(open(f"{ri}/runs.json")))
+rh = cli("run", "--set", "all", "--cond", "C,H", "--skill", skill, "--name", "hook").strip()
+assert sorted(r["cond"] for r in json.load(open(f"{rh}/runs.json"))) == ["C", "C", "C", "H", "H", "H"], "the hook condition runs"
 assert "--bank" in subprocess.run([sys.executable, f"{HERE}/skill_eval.py", "-h"], capture_output=True, text=True).stdout
 print("eval tests passed")
