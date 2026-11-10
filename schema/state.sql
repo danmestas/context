@@ -84,3 +84,10 @@ CREATE TABLE IF NOT EXISTS ctx_meta(
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 ) STRICT, WITHOUT ROWID;
+
+-- Rules: which technote holds each rule, by its key. A memory file's key is its
+-- path; a rule added by hand gets a random one.
+CREATE TABLE IF NOT EXISTS ctx_rule(
+  key      TEXT PRIMARY KEY,
+  technote TEXT NOT NULL
+) STRICT, WITHOUT ROWID;

@@ -20,11 +20,12 @@ CREATE TABLE IF NOT EXISTS ctx_doc(
   id       INTEGER PRIMARY KEY,
   project  TEXT NOT NULL,
   repo_id  INTEGER REFERENCES ctx_repo(id) ON DELETE CASCADE,  -- NULL for code on disk
-  kind     TEXT NOT NULL CHECK (kind IN ('source', 'wiki', 'session', 'ticket', 'code')),
+  kind     TEXT NOT NULL CHECK (kind IN ('source', 'wiki', 'session', 'ticket', 'code', 'rule')),
   name     TEXT NOT NULL,
   title    TEXT,
   hash     TEXT NOT NULL,  -- Fossil artifact hash, or content hash for code
-  status   TEXT,           -- tickets: Open, Claimed, Done, Dropped; sources: superseded, retracted, amended; wiki: retired
+  status   TEXT,           -- tickets: Open, Claimed, Done, Dropped; sources: superseded, retracted, amended; wiki: retired;
+                           -- rules: retired, replaced, expired
   size     INTEGER NOT NULL,
   mtime    INTEGER NOT NULL,
   UNIQUE (project, kind, name)

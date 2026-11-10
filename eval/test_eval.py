@@ -88,6 +88,15 @@ assert "FAIL: score dropped" in cli("compare", good, bad, ok=False)
 assert "PASS" in cli("compare", bad, good)
 assert "tokens rose" in cli("compare", good, cost, ok=False)
 assert "ctx commands by agents" in cli("usage")
+via = f"{T}/via.json"
+json.dump({"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:1", "ANTHROPIC_DEFAULT_SONNET_MODEL": "cheap", "ANTHROPIC_AUTH_TOKEN": "s3cret"}}, open(via, "w"))
+routed = subprocess.run([sys.executable, f"{HERE}/skill_eval.py", "--via", via, "--yolo", "run", "--set", "all", "--skill", skill, "--name", "routed"],
+                        env=env, capture_output=True, text=True).stdout.strip()
+meta = json.load(open(f"{routed}/meta.json"))
+assert meta["yolo"] and meta["via"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "cheap", meta
+assert "s3cret" not in open(f"{routed}/meta.json").read(), "a token is never recorded"
+mixed = subprocess.run([sys.executable, f"{HERE}/skill_eval.py", "compare", good, routed], env=env, capture_output=True, text=True)
+assert mixed.returncode and "different models" in mixed.stderr, mixed.stderr
 known = se.known_commands(os.path.abspath(sys.argv[1]))
 assert {"wiki", "source", "project", "index", "sync", "remote", "rebuild", "search", "turn"} <= known, known
 assert "nonsense" not in known

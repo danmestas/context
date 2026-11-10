@@ -7,6 +7,7 @@ arguments lists them all, and `ctx version` prints its version and SQLite's.
 - [Archive your sessions](#archive-your-sessions)
 - [Search past work](#search-past-work)
 - [Check the archive for secrets](#check-the-archive-for-secrets)
+- [Keep standing rules](#keep-standing-rules)
 - [Set up a project](#set-up-a-project)
 - [Work with tickets](#work-with-tickets)
 - [Add sources](#add-sources)
@@ -154,6 +155,34 @@ your-secret-tool export | ctx audit --known
 you can read, leaving out settings whose names mark them as not secret. A finding
 names the value by its line number; `tools/doppler-values.py --name N` says which
 secret line N is.
+
+## Keep standing rules
+
+A rule is something you want every future session to follow, such as "add a
+changelog entry when we cut a release". Rules are kept on purpose, not found by
+chance in old sessions, and each one says where it came from.
+
+```sh
+ctx remember "Add a changelog entry when we cut a release"            # this project
+ctx remember "Bump versions by x.x.1 until we leave beta" --until 2027-03-01
+ctx remember "Never push straight to main" --project '*'               # every project
+ctx rules                     # the rules in force here, with every-project ones
+ctx rules --all               # every rule anywhere, with retired and expired ones
+ctx rules retire KEY --reason "we left beta"
+ctx rules retire KEY --reason "now says more" --by NEWKEY             # replaced
+```
+
+Every scan also imports `~/.claude/CLAUDE.md`, each project's `CLAUDE.md` and
+`AGENTS.md`, and Claude Code's memory files, the ones it writes on its own when you
+correct it. A memory file belongs to the project whose transcripts sit beside it,
+and records the session it was written in. Redaction applies as for transcripts.
+When a file changes, its rule gets a new version; when it is deleted, its rule is
+retired. `ctx rules import` does this at once.
+
+Each rule is a technote in your private repository, so every version is kept and
+rules sync with your archive. A rule past its `--until` date expires. Search shows
+rules in force, each under its file name or key; `--history` brings back expired,
+replaced and retired ones.
 
 ## Set up a project
 

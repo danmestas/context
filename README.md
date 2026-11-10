@@ -19,6 +19,10 @@ file per machine.
   first; `ctx turn` reads around a hit. The `ctx` skill teaches agents to do both.
 - **Audits the archive** for secret-shaped strings that redaction missed, and
   for values you already know are secret.
+- **Keeps standing rules.** `ctx remember` records an instruction for future
+  sessions, with an optional end date, and every scan imports CLAUDE.md and
+  Claude Code's memory files as rules. Rules keep their history, sync, and can be
+  replaced or retired.
 - **Tracks tickets** for each project, offered to agents at the start of a
   session.
 - **Keeps sources with provenance.** Each source records where it came from, its
