@@ -92,5 +92,7 @@ assert "ctx commands by agents" in cli("usage")
 sw = cli("run", "--set", "all", "--cond", "S,W", "--skill", skill, "--name", "docs").strip()
 rows = json.load(open(f"{sw}/runs.json"))
 assert sorted(r["cond"] for r in rows) == ["S", "S", "S", "W", "W", "W"], rows
+ri = cli("run", "--set", "all", "--cond", "I", "--skill", skill, "--name", "inj").strip()
+assert all(r["cond"] == "I" and "injected" in r for r in json.load(open(f"{ri}/runs.json")))
 assert "--bank" in subprocess.run([sys.executable, f"{HERE}/skill_eval.py", "-h"], capture_output=True, text=True).stdout
 print("eval tests passed")

@@ -298,15 +298,21 @@ def cmd_run(a):
                 dirs = glob.glob(os.path.expanduser(f"~/.claude/projects/{slug(project['sessions'])}*"))
                 prompt += "\n\nTranscripts of past coding sessions on this project are JSONL files in:\n" + "\n".join(dirs)
                 allow += ["Bash(jq*)", "Bash(python3*)"]
-            if cond == "C":
+            if cond in "CI":
                 allow.append("Bash(ctx *)")
             if cond in "SWF":  # same tools; only the wiki differs: W in the index, F as files, S neither
                 allow += ["Bash(ctx search *)", "Bash(ctx turn *)"]
             db = w.without_wiki() if cond in "SF" else None
-            p = spawn(claude(prompt, a.model, "stream-json", "Bash,Read,Grep,Glob,Skill", allow, dirs), cwd,
-                      w.env(cond in "CSWF", db), RUN_DEADLINE)
+            cmd = claude(prompt, a.model, "stream-json", "Bash,Read,Grep,Glob,Skill", allow, dirs)
+            if cond == "I":  # what the UserPromptSubmit hook would add for this prompt
+                hook = subprocess.run([f"{w.bin}/ctx", "inject"], input=json.dumps({"session_id": "eval", "cwd": cwd, "prompt": prompt}),
+                                      env=w.env(True), cwd=cwd, capture_output=True, text=True, timeout=30).stdout
+                extra = json.loads(hook)["hookSpecificOutput"]["additionalContext"] if hook.strip() else ""
+                if extra:
+                    cmd += ["--append-system-prompt", extra]
+            p = spawn(cmd, cwd, w.env(cond in "CSWFI", db), RUN_DEADLINE)
             r = digest(p.stdout, cond, own)
-            r.update(qid=q["id"], cond=cond, project=q["project"], kind=q["kind"])
+            r.update(qid=q["id"], cond=cond, project=q["project"], kind=q["kind"], injected=cond == "I" and "--append-system-prompt" in cmd)
             return r
 
         for q in qs:  # copies are made up front so parallel jobs never race
@@ -314,7 +320,7 @@ def cmd_run(a):
                 cwd = w.repo(cond, q["project"], bank["projects"][q["project"]]["repo"])
                 if cond == "F":
                     w.wiki_files(cwd)
-                if cond in "CSWF":
+                if cond in "CSWFI":
                     os.makedirs(f"{cwd}/.claude/skills/ctx", exist_ok=True)
                     with open(f"{cwd}/.claude/skills/ctx/SKILL.md", "w") as f:
                         f.write(skill)
@@ -542,7 +548,7 @@ def main():
     p.set_defaults(fn=cmd_author)
     p = sub.add_parser("run", help="answer questions in fresh isolated processes")
     p.add_argument("--set", choices=("dev", "holdout", "all"), default="dev")
-    p.add_argument("--cond", default="C", help="A repo only, B grep over transcripts, C the skill; for documents, S sources only, W wiki in the index, F wiki as files")
+    p.add_argument("--cond", default="C", help="A repo only, B grep over transcripts, C the skill, I the skill plus injection; for documents, S sources only, W wiki in the index, F wiki as files")
     p.add_argument("--skill", default=DEFAULT_SKILL)
     p.add_argument("--only", help="comma-separated question ids")
     p.add_argument("--name")
