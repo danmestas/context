@@ -686,6 +686,37 @@ r_repo "fsl_wiki('Limits')" | head -1 | grep -q '^> \*\*Retired' || fail "the pa
 [ "$(q "SELECT count(*) FROM fslrepo_kb_event WHERE type='w'")" -ge 2 ] || fail "history is kept"
 "$CTX" wiki restore Limits | grep -q 'restored' || fail "restore"
 if r_repo "fsl_wiki('Limits')" | head -1 | grep -q 'Retired'; then fail "restore removes the banner"; fi
+# The review queue orders stale knowledge by what depends on it.
+"$CTX" index >/dev/null
+"$CTX" wiki queue > "$T/rt/q.txt"
+grep -Eq '^[0-9.]+ sources/(bad|old).md' "$T/rt/q.txt" || fail "queue lists stale sources: $(cat "$T/rt/q.txt")"
+grep -q 'sources/new.md' "$T/rt/q.txt" && fail "a current source is not queued"
+# Generated pages are computed, change only when the facts do, and are not knowledge.
+"$CTX" wiki publish | grep -q ' 2 generated pages updated' || fail "publish writes both pages"
+"$CTX" wiki publish | grep -q ' 0 generated pages updated' || fail "publish is stable"
+r_repo "fsl_wiki('Wiki Index')" | grep -q '^- \[Limits\](/wiki?name=Limits): 3 claims' || fail "index lists the page"
+r_repo "fsl_wiki('Wiki Health')" | grep -q 'sources/bad.md' || fail "health lists the queue"
+[ "$(q "SELECT count(*) FROM ctx_doc WHERE kind='wiki' AND name LIKE 'Wiki %'")" = 0 ] || fail "generated pages are not indexed"
+if "$CTX" wiki save "Wiki Index" "$T/rt/p.md" --model m 2>/dev/null; then fail "generated pages cannot be saved by hand"; fi
+# Automatic retirement touches only what nothing needs.
+printf '# Dead\n\nOld claim.[^x]\n\n[^x]: "The albatross rule is firm." [b](/file?name=sources/bad.md&ci=%s)\n' "$CI" > "$T/rt/dead.md"
+python3 - "$CTX" "$T/rt/dead.md" <<'EOF'
+import subprocess, sys
+ctx, p = sys.argv[1:3]
+t = open(p).read().replace("'", "''")
+for name in ("Dead Page", "Kept Page"):
+    body = t if name == "Dead Page" else t + "\nSee [Dead](/wiki?name=Dead+Page).\n"
+    subprocess.run([ctx, "sql", f"SELECT fsl_open('repo:kb','t'), fsl_use('repo:kb'), fsl_wiki_save('{name}', '{body}', 'text/x-markdown')"], check=True, capture_output=True)
+EOF
+"$CTX" index >/dev/null
+"$CTX" wiki retire --auto > "$T/rt/a.txt"
+grep -q 'needs a person: Dead Page' "$T/rt/a.txt" || fail "linked page needs a person: $(cat "$T/rt/a.txt")"
+grep -q 'would retire: Kept Page' "$T/rt/a.txt" || fail "unused page is eligible: $(cat "$T/rt/a.txt")"
+[ "$(q "SELECT count(*) FROM ctx_doc WHERE kind='wiki' AND status='retired'")" = 0 ] || fail "a dry run changes nothing"
+"$CTX" wiki retire --auto --apply > "$T/rt/a2.txt"
+[ "$(q "SELECT status FROM ctx_doc WHERE name='Kept Page'")" = retired ] || fail "auto retires the eligible page"
+[ "$(q "SELECT coalesce(status,'current') FROM ctx_doc WHERE name='Dead Page'")" = current ] || fail "a linked page stays"
+"$CTX" ticket ready --all | grep -q 'decide whether to retire Dead Page' || fail "a person is asked"
 cd - >/dev/null
 
 # The skill eval harness works end to end with a stand-in for the model.

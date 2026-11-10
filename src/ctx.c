@@ -2013,7 +2013,7 @@ static int source_class_ok(const char *c) {
 
 static int source_add(int argc, char **argv) {
   const char *file = NULL, *origin = NULL, *klass = NULL, *as = NULL, *retrieved = NULL, *how = "added";
-  const char *review = NULL, *from = NULL, *until = NULL, *project = NULL;
+  const char *review = NULL, *from = NULL, *until = NULL, *project = NULL, *risk = NULL;
   for (int i = 0; i < argc; i++) {
     if (strncmp(argv[i], "--", 2)) {
       if (file) die("only one file at a time");
@@ -2031,8 +2031,10 @@ static int source_add(int argc, char **argv) {
     else if (!strcmp(o, "--valid-from")) from = v;
     else if (!strcmp(o, "--valid-until")) until = v;
     else if (!strcmp(o, "--project")) project = v;
+    else if (!strcmp(o, "--risk")) risk = v;
     else die("unknown option %s", o);
   }
+  if (risk && strcmp(risk, "security") && strcmp(risk, "money") && strcmp(risk, "legal") && strcmp(risk, "api")) die("--risk must be security, money, legal or api");
   if (!file) die("usage: ctx source add FILE --origin WHERE --class evergreen|versioned|perishable [--as PATH]");
   if (!origin || !*origin) die("--origin is required: say where this source came from");
   if (!source_class_ok(klass)) die("--class must be evergreen, versioned or perishable");
@@ -2071,7 +2073,7 @@ static int source_add(int argc, char **argv) {
   }
   sqlite3_stmt *q = db_prepare(db,
       "SELECT json_pretty(json_object('name', ?1, 'sha3', ?2, 'size', ?3, 'origin', ?4, 'retrieved', coalesce(?5, date('now')),"
-      " 'how', ?6, 'class', ?7, 'review_after', ?8, 'valid_from', ?9, 'valid_until', ?10, 'added_by', ?11, 'added_at', date('now')))");
+      " 'how', ?6, 'class', ?7, 'review_after', ?8, 'valid_from', ?9, 'valid_until', ?10, 'added_by', ?11, 'added_at', date('now'), 'risk', ?12))");
   sqlite3_bind_text(q, 1, as, -1, SQLITE_STATIC);
   sqlite3_bind_text(q, 2, hash, -1, SQLITE_STATIC);
   sqlite3_bind_int64(q, 3, (sqlite3_int64)n);
@@ -2083,6 +2085,7 @@ static int source_add(int argc, char **argv) {
   sqlite3_bind_text(q, 9, from, -1, SQLITE_STATIC);
   sqlite3_bind_text(q, 10, until, -1, SQLITE_STATIC);
   sqlite3_bind_text(q, 11, person(), -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 12, risk, -1, SQLITE_STATIC);
   if (sqlite3_step(q) != SQLITE_ROW) die("%s", sqlite3_errmsg(db));
   buf out = {0};
   buf_str(&out, (const char *)sqlite3_column_text(q, 0));
@@ -2189,6 +2192,10 @@ static int cmd_source(int argc, char **argv) {
  * Everything it writes is derived, so a project can always be indexed again. */
 #define CHUNK_MAX 8000
 #define RETIRED_MARK "> **Retired" /* the first line of a retired page */
+#define INDEX_PAGE "Wiki Index"
+#define HEALTH_PAGE "Wiki Health"
+
+static int is_generated(const char *page) { return !strcmp(page, INDEX_PAGE) || !strcmp(page, HEALTH_PAGE); }
 
 static void chunk_insert(sqlite3_stmt *ins, sqlite3_int64 doc, int *seq, const char *heading, const char *project, const char *p, size_t n) {
   size_t a = 0;
@@ -2491,9 +2498,9 @@ static void source_meta(sqlite3 *db, const char *project, const char *name, cons
   char *m = slurp(path, &n);
   if (!m) return;
   sqlite3_stmt *q = db_prepare(db,
-      "INSERT OR REPLACE INTO ctx_source_meta(doc_id, class, review_after, valid_from, valid_until, added_at, origin)"
+      "INSERT OR REPLACE INTO ctx_source_meta(doc_id, class, review_after, valid_from, valid_until, added_at, origin, risk)"
       " SELECT d.id, json_extract(?3, '$.class'), json_extract(?3, '$.review_after'), json_extract(?3, '$.valid_from'),"
-      " json_extract(?3, '$.valid_until'), json_extract(?3, '$.added_at'), json_extract(?3, '$.origin')"
+      " json_extract(?3, '$.valid_until'), json_extract(?3, '$.added_at'), json_extract(?3, '$.origin'), json_extract(?3, '$.risk')"
       " FROM ctx_doc d WHERE d.project = ?1 AND d.kind = 'source' AND d.name = ?2 AND json_valid(?3)");
   sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
   sqlite3_bind_text(q, 2, name, -1, SQLITE_STATIC);
@@ -2592,7 +2599,7 @@ static void index_prepare(sqlite3 *db) {
           "CREATE INDEX IF NOT EXISTS ctx_citation_target ON ctx_citation(target_kind, target);"
           "CREATE INDEX IF NOT EXISTS ctx_citation_doc ON ctx_citation(doc_id);"
           "CREATE TABLE IF NOT EXISTS ctx_source_meta(doc_id INTEGER PRIMARY KEY, class TEXT, review_after TEXT, valid_from TEXT,"
-          " valid_until TEXT, added_at TEXT, origin TEXT) STRICT;"
+          " valid_until TEXT, added_at TEXT, origin TEXT, risk TEXT) STRICT;"
           "CREATE TABLE IF NOT EXISTS ctx_supersession(project TEXT NOT NULL, old TEXT NOT NULL, new TEXT, relation TEXT NOT NULL,"
           " reason TEXT, by_whom TEXT, at TEXT, PRIMARY KEY (project, old)) STRICT;"
           "CREATE TEMP TABLE IF NOT EXISTS seen(kind TEXT, name TEXT, PRIMARY KEY (kind, name));"
@@ -2641,6 +2648,10 @@ static int cmd_index(int argc, char **argv) {
   }
   sqlite3_finalize(q);
   for (size_t i = 0; i < nn; i++) {
+    if (is_generated(names[i])) { /* derived views, not knowledge */
+      free(names[i]);
+      continue;
+    }
     q = db_prepare(db, "SELECT fsl_wiki(?1)");
     sqlite3_bind_text(q, 1, names[i], -1, SQLITE_STATIC);
     char *text = sqlite3_step(q) == SQLITE_ROW && sqlite3_column_text(q, 0) ? dup_text(sqlite3_column_text(q, 0)) : NULL;
@@ -2903,6 +2914,8 @@ static int wiki_commit(sqlite3 *db, const char *project, sqlite3_int64 repo_id, 
 }
 
 static int wiki_repin(int argc, char **argv);
+static int wiki_queue(int argc, char **argv);
+static int wiki_publish(int argc, char **argv);
 static int wiki_retire(int argc, char **argv);
 static int wiki_restore(int argc, char **argv);
 
@@ -2923,6 +2936,7 @@ static int wiki_save(int argc, char **argv) {
   }
   if (!name || !file) die("usage: ctx wiki save NAME FILE --model M [--ticket ID]");
   if (!model || !*model) die("--model is required: say what compiled this page");
+  if (is_generated(name)) die("%s is generated by ctx wiki publish", name);
   size_t n = 0;
   char *raw = slurp(file, &n);
   if (!raw) die("cannot read %s: %s", file, strerror(errno));
@@ -3064,6 +3078,35 @@ static int wiki_why(int argc, char **argv) {
   return 0;
 }
 
+typedef struct {
+  char *title, *body;
+} repin_ticket;
+
+/* Opens each ticket unless one with its title is already in progress. Returns how many. */
+static long tickets_file(sqlite3 *db, const char *project, repin_ticket *t, size_t n, const char *acceptance) {
+  if (!n) return 0;
+  open_private(db);
+  tickets_prepare(db);
+  db_exec(db, "SELECT fsl_use('repo:me')");
+  long opened = 0;
+  for (size_t i = 0; i < n; i++) {
+    sqlite3_stmt *q = db_prepare(db, "SELECT count(*) FROM fslrepo_me_ticket WHERE title = ?1 AND status IN ('Open', 'Claimed')");
+    sqlite3_bind_text(q, 1, t[i].title, -1, SQLITE_STATIC);
+    sqlite3_step(q);
+    int dup = sqlite3_column_int(q, 0);
+    sqlite3_finalize(q);
+    if (!dup) {
+      char *id = ticket_new(db, t[i].title, "Task", project, t[i].body, acceptance, "");
+      printf("ticket %.10s %s\n", id, t[i].title);
+      free(id);
+      opened++;
+    }
+    free(t[i].title);
+    free(t[i].body);
+  }
+  return opened;
+}
+
 static char *page_text(sqlite3 *db, const char *name) {
   sqlite3_stmt *q = db_prepare(db, "SELECT fsl_wiki(?1)");
   sqlite3_bind_text(q, 1, name, -1, SQLITE_STATIC);
@@ -3132,7 +3175,307 @@ static int wiki_set_banner(int argc, char **argv, int retire) {
   return 0;
 }
 
-static int wiki_retire(int argc, char **argv) { return wiki_set_banner(argc, argv, 1); }
+/* How often past sessions mention a name: a rough, free measure of use. */
+static int session_mentions(sqlite3 *db, const char *name) {
+  const char *base = strrchr(name, '/');
+  base = base ? base + 1 : name;
+  char phrase[600];
+  size_t o = 0;
+  phrase[o++] = '"';
+  for (const char *c = base; *c && o + 3 < sizeof phrase; c++) phrase[o++] = c_word((unsigned char)*c) ? *c : ' ';
+  phrase[o++] = '"';
+  phrase[o] = 0;
+  sqlite3_stmt *q = db_prepare(db, "SELECT count(*) FROM ctx_chunk_fts f JOIN ctx_chunk c ON c.id = f.rowid WHERE ctx_chunk_fts MATCH ?1 AND c.turn IS NOT NULL");
+  sqlite3_bind_text(q, 1, phrase, -1, SQLITE_STATIC);
+  int n = sqlite3_step(q) == SQLITE_ROW ? sqlite3_column_int(q, 0) : 0;
+  sqlite3_finalize(q);
+  return n;
+}
+
+typedef struct {
+  char *source, *why;
+  int claims, risk, mentions;
+  double score;
+} queue_item;
+
+static int queue_cmp(const void *a, const void *b) {
+  const queue_item *x = a, *y = b;
+  if (x->score != y->score) return x->score < y->score ? 1 : -1;
+  return strcmp(x->source, y->source);
+}
+
+/* What to review first: stale knowledge that many claims depend on. It only orders
+ * work, so nothing here changes what is served. */
+static size_t queue_build(sqlite3 *db, const char *project, queue_item **out) {
+  sqlite3_stmt *q = db_prepare(db,
+      "SELECT s.name, CASE WHEN s.status IN ('superseded', 'retracted') THEN s.status"
+      "  WHEN m.review_after <= date('now') THEN 'past its review date'"
+      "  WHEN EXISTS (SELECT 1 FROM ctx_citation c WHERE c.target = s.name AND c.file_hash IS NOT s.hash"
+      "       AND c.doc_id IN (SELECT id FROM ctx_doc w WHERE w.project = s.project AND w.kind = 'wiki')) THEN 'changed since cited' END AS why,"
+      " (SELECT count(*) FROM ctx_citation c JOIN ctx_doc w ON w.id = c.doc_id WHERE w.project = s.project AND w.kind = 'wiki'"
+      "   AND coalesce(w.status, '') <> 'retired' AND c.target = s.name),"
+      " m.risk IS NOT NULL"
+      " FROM ctx_doc s LEFT JOIN ctx_source_meta m ON m.doc_id = s.id WHERE s.project = ?1 AND s.kind = 'source' AND why IS NOT NULL");
+  sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  queue_item *items = NULL;
+  size_t n = 0;
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    items = realloc(items, (n + 1) * sizeof *items);
+    if (!items) die("out of memory");
+    items[n].source = dup_text(sqlite3_column_text(q, 0));
+    items[n].why = dup_text(sqlite3_column_text(q, 1));
+    items[n].claims = sqlite3_column_int(q, 2);
+    items[n].risk = sqlite3_column_int(q, 3);
+    n++;
+  }
+  sqlite3_finalize(q);
+  for (size_t i = 0; i < n; i++) {
+    items[i].mentions = session_mentions(db, items[i].source);
+    items[i].score = (1.0 + items[i].claims) * (items[i].risk ? 3.0 : 1.0) * (1.0 + log(1.0 + items[i].mentions));
+  }
+  qsort(items, n, sizeof *items, queue_cmp);
+  *out = items;
+  return n;
+}
+
+static int wiki_queue(int argc, char **argv) {
+  const char *project_opt = argc == 2 && !strcmp(argv[0], "--project") ? argv[1] : NULL;
+  if (argc && !project_opt) die("usage: ctx wiki queue [--project P]");
+  int rc = cmd_index(argc, argv);
+  if (rc) return rc;
+  sqlite3 *db = ctx_open();
+  char *project = project_opt ? dup_text((const unsigned char *)project_opt) : current_project(db);
+  queue_item *items = NULL;
+  size_t n = queue_build(db, project, &items);
+  for (size_t i = 0; i < n; i++) {
+    printf("%.1f %s: %s, %d claims%s, %d session mentions\n", items[i].score, items[i].source, items[i].why, items[i].claims, items[i].risk ? ", risk" : "", items[i].mentions);
+    free(items[i].source);
+    free(items[i].why);
+  }
+  free(items);
+  printf("%zu to review\n", n);
+  free(project);
+  sqlite3_close(db);
+  return 0;
+}
+
+/* Saves a generated page only if it changed, so history stays meaningful. */
+static int generated_save(sqlite3 *db, const char *name, const char *text) {
+  char *old = page_text(db, name);
+  int same = old && !strcmp(old, text);
+  free(old);
+  if (same) return 0;
+  sqlite3_stmt *q = db_prepare(db, "SELECT fsl_wiki_save(?1, ?2, 'text/x-markdown')");
+  sqlite3_bind_text(q, 1, name, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 2, text, -1, SQLITE_STATIC);
+  if (sqlite3_step(q) != SQLITE_ROW) die("cannot save %s: %s", name, sqlite3_errmsg(db));
+  sqlite3_finalize(q);
+  return 1;
+}
+
+static void page_link(buf *b, const char *name) {
+  buf_str(b, "[");
+  buf_str(b, name);
+  buf_str(b, "](/wiki?name=");
+  for (const char *c = name; *c; c++) buf_add(b, *c == ' ' ? "+" : c, 1);
+  buf_str(b, ")");
+}
+
+/* The index and health pages are computed, never kept by hand. */
+static int wiki_publish(int argc, char **argv) {
+  const char *project_opt = argc == 2 && !strcmp(argv[0], "--project") ? argv[1] : NULL;
+  if (argc && !project_opt) die("usage: ctx wiki publish [--project P]");
+  int rc = cmd_index(argc, argv);
+  if (rc) return rc;
+  sqlite3 *db = ctx_open();
+  char *project, repo[80];
+  sqlite3_int64 repo_id;
+  project_of(db, project_opt, &project, repo, &repo_id);
+  (void)repo_id;
+  index_prepare(db);
+  open_project(db, repo);
+  buf ix = {0};
+  buf_str(&ix, "# Wiki Index\n\nGenerated by `ctx wiki publish`. Do not edit.\n\n");
+  sqlite3_stmt *q = db_prepare(db,
+      "SELECT d.name, coalesce(d.status, ''),"
+      " (SELECT count(*) FROM ctx_citation c WHERE c.doc_id = d.id), (SELECT count(DISTINCT c.target) FROM ctx_citation c WHERE c.doc_id = d.id),"
+      " (SELECT group_concat(n, char(1)) FROM (SELECT DISTINCT s.name n FROM ctx_link l JOIN ctx_doc s ON s.id = l.src_id"
+      "   WHERE s.project = d.project AND l.kind = 'links_to' AND l.dst_name = d.name AND s.id <> d.id ORDER BY 1))"
+      " FROM ctx_doc d WHERE d.project = ?1 AND d.kind = 'wiki' ORDER BY d.status IS NOT NULL, d.name");
+  sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  int pages = 0;
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    const char *name = (const char *)sqlite3_column_text(q, 0), *status = (const char *)sqlite3_column_text(q, 1);
+    char line[96];
+    buf_str(&ix, "- ");
+    page_link(&ix, name);
+    snprintf(line, sizeof line, ": %d claims, %d sources", sqlite3_column_int(q, 2), sqlite3_column_int(q, 3));
+    buf_str(&ix, line);
+    if (*status) {
+      buf_str(&ix, ", ");
+      buf_str(&ix, status);
+    }
+    const char *from = (const char *)sqlite3_column_text(q, 4);
+    if (from) {
+      buf_str(&ix, "; linked from ");
+      char *copy = strdup(from);
+      int first = 1;
+      for (char *t = strtok(copy, "\001"); t; t = strtok(NULL, "\001")) {
+        if (!first) buf_str(&ix, ", ");
+        page_link(&ix, t);
+        first = 0;
+      }
+      free(copy);
+    }
+    buf_str(&ix, "\n");
+    pages++;
+  }
+  sqlite3_finalize(q);
+  buf_str(&ix, "\nSee [Wiki Health](/wiki?name=Wiki+Health).\n");
+  buf_add(&ix, "", 1);
+  queue_item *items = NULL;
+  size_t n = queue_build(db, project, &items);
+  buf hp = {0};
+  buf_str(&hp, "# Wiki Health\n\nGenerated by `ctx wiki publish`. Do not edit. See [Wiki Index](/wiki?name=Wiki+Index).\n\n## Review queue\n\n");
+  if (!n) buf_str(&hp, "Nothing to review.\n");
+  for (size_t i = 0; i < n; i++) {
+    char line[160];
+    buf_str(&hp, "- `");
+    buf_str(&hp, items[i].source);
+    buf_str(&hp, "`: ");
+    buf_str(&hp, items[i].why);
+    snprintf(line, sizeof line, ", %d claims%s, score %.1f\n", items[i].claims, items[i].risk ? ", risk" : "", items[i].score);
+    buf_str(&hp, line);
+    free(items[i].source);
+    free(items[i].why);
+  }
+  free(items);
+  buf_str(&hp, "\n## Failing citations\n\n");
+  q = db_prepare(db, "SELECT d.name, c.ref, c.status FROM ctx_citation c JOIN ctx_doc d ON d.id = c.doc_id WHERE d.project = ?1 AND c.status <> 'ok' AND coalesce(d.status, '') <> 'retired' ORDER BY 1, 2");
+  sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  int failing = 0;
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    buf_str(&hp, "- ");
+    page_link(&hp, (const char *)sqlite3_column_text(q, 0));
+    buf_str(&hp, " [^");
+    buf_str(&hp, (const char *)sqlite3_column_text(q, 1));
+    buf_str(&hp, "]: ");
+    buf_str(&hp, (const char *)sqlite3_column_text(q, 2));
+    buf_str(&hp, "\n");
+    failing++;
+  }
+  sqlite3_finalize(q);
+  if (!failing) buf_str(&hp, "None.\n");
+  buf_add(&hp, "", 1);
+  int saved = generated_save(db, INDEX_PAGE, ix.p) + generated_save(db, HEALTH_PAGE, hp.p);
+  printf("%d pages, %zu to review, %d failing, %d generated pages updated\n", pages, n, failing, saved);
+  free(ix.p);
+  free(hp.p);
+  free(project);
+  sqlite3_close(db);
+  return 0;
+}
+
+/* Retires only what nothing needs: every source gone, nothing linking in, unused and
+ * no risk class. Anything else that looks finished goes to a person as a ticket. */
+#define RETIRE_HORIZON_DAYS 90
+
+static int wiki_retire_auto(int argc, char **argv) {
+  int apply = 0;
+  const char *project_opt = NULL;
+  for (int i = 0; i < argc; i++) {
+    if (!strcmp(argv[i], "--auto")) continue;
+    else if (!strcmp(argv[i], "--apply")) apply = 1;
+    else if (!strcmp(argv[i], "--project") && i + 1 < argc) project_opt = argv[++i];
+    else die("usage: ctx wiki retire --auto [--apply] [--project P]");
+  }
+  char *fwd[2] = {"--project", (char *)project_opt};
+  int rc = cmd_index(project_opt ? 2 : 0, fwd);
+  if (rc) return rc;
+  sqlite3 *db = ctx_open();
+  char *project, repo[80];
+  sqlite3_int64 repo_id;
+  project_of(db, project_opt, &project, repo, &repo_id);
+  (void)repo_id;
+  index_prepare(db);
+  sqlite3_stmt *q = db_prepare(db,
+      "SELECT d.name,"
+      " (SELECT count(*) FROM ctx_link l JOIN ctx_doc s ON s.id = l.src_id WHERE s.project = d.project AND l.kind = 'links_to' AND l.dst_name = d.name"
+      "   AND s.id <> d.id AND coalesce(s.status, '') <> 'retired'),"
+      " EXISTS (SELECT 1 FROM ctx_citation c JOIN ctx_doc t ON t.project = d.project AND t.kind = 'source' AND t.name = c.target"
+      "   JOIN ctx_source_meta m ON m.doc_id = t.id WHERE c.doc_id = d.id AND m.risk IS NOT NULL)"
+      " FROM ctx_doc d WHERE d.project = ?1 AND d.kind = 'wiki' AND coalesce(d.status, '') <> 'retired'"
+      " AND EXISTS (SELECT 1 FROM ctx_citation c WHERE c.doc_id = d.id AND c.target_kind = 'source')"
+      " AND NOT EXISTS (SELECT 1 FROM ctx_citation c LEFT JOIN ctx_doc t ON t.project = d.project AND t.kind = 'source' AND t.name = c.target"
+      "   LEFT JOIN ctx_source_meta m ON m.doc_id = t.id WHERE c.doc_id = d.id AND c.target_kind = 'source' AND t.id IS NOT NULL"
+      "   AND coalesce(t.status, '') NOT IN ('superseded', 'retracted')"
+      "   AND NOT coalesce(m.review_after <= date('now', '-" "90" " days'), 0))"
+      " ORDER BY 1");
+  sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  char **names = NULL;
+  int *blocked = NULL;
+  size_t n = 0;
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    names = realloc(names, (n + 1) * sizeof *names);
+    blocked = realloc(blocked, (n + 1) * sizeof *blocked);
+    if (!names || !blocked) die("out of memory");
+    names[n] = dup_text(sqlite3_column_text(q, 0));
+    blocked[n++] = sqlite3_column_int(q, 1) > 0 || sqlite3_column_int(q, 2);
+  }
+  sqlite3_finalize(q);
+  sqlite3_close(db);
+  repin_ticket *tickets = NULL;
+  size_t nt = 0;
+  long retired = 0, eligible = 0;
+  for (size_t i = 0; i < n; i++) {
+    db = ctx_open();
+    int used = blocked[i] || session_mentions(db, names[i]) > 0;
+    sqlite3_close(db);
+    if (used) {
+      printf("needs a person: %s\n", names[i]);
+      tickets = realloc(tickets, (nt + 1) * sizeof *tickets);
+      if (!tickets) die("out of memory");
+      char *t = sqlite3_mprintf("Wiki: decide whether to retire %s", names[i]);
+      char *b = sqlite3_mprintf("All sources behind page %s are superseded, retracted or long past review, but something still depends on it, it is still mentioned in sessions, or a source carries a risk class.", names[i]);
+      tickets[nt].title = strdup(t);
+      tickets[nt++].body = strdup(b);
+      sqlite3_free(t);
+      sqlite3_free(b);
+    } else {
+      eligible++;
+      printf("%s: %s\n", apply ? "retiring" : "would retire", names[i]);
+      if (apply) {
+        char *args[3] = {names[i], "--reason", "automatic: every source behind this page is retired or long past review, and nothing uses it."};
+        char *full[5] = {args[0], args[1], args[2], "--project", (char *)project};
+        if (!wiki_set_banner(5, full, 1)) retired++;
+      }
+    }
+    free(names[i]);
+  }
+  free(names);
+  free(blocked);
+  long opened = 0;
+  if (apply && nt) {
+    db = ctx_open();
+    opened = tickets_file(db, project, tickets, nt, "The page is retired, restored to current sources, or marked as still needed.");
+    sqlite3_close(db);
+  } else {
+    for (size_t i = 0; i < nt; i++) {
+      free(tickets[i].title);
+      free(tickets[i].body);
+    }
+  }
+  free(tickets);
+  printf("%ld eligible, %ld retired, %zu need a person, %ld tickets opened\n", eligible, retired, nt, opened);
+  free(project);
+  return 0;
+}
+
+static int wiki_retire(int argc, char **argv) {
+  for (int i = 0; i < argc; i++)
+    if (!strcmp(argv[i], "--auto")) return wiki_retire_auto(argc, argv);
+  return wiki_set_banner(argc, argv, 1);
+}
 static int wiki_restore(int argc, char **argv) { return wiki_set_banner(argc, argv, 0); }
 
 /* Replaces the link of footnote REF with one pinned to path at ci. */
@@ -3165,10 +3508,6 @@ static char *footnote_repin(const char *text, const char *ref, const char *path,
   buf_add(&out, "", 1);
   return out.p;
 }
-
-typedef struct {
-  char *title, *body;
-} repin_ticket;
 
 /* After a source changes: a quote still found moves its pin, and propagation stops
  * there. A quote that is gone, or a retracted source, becomes a ticket. */
@@ -3282,27 +3621,7 @@ static int wiki_repin(int argc, char **argv) {
     free(pages[pg]);
   }
   free(pages);
-  long opened = 0;
-  if (ntickets) {
-    open_private(db);
-    tickets_prepare(db);
-    db_exec(db, "SELECT fsl_use('repo:me')");
-    for (size_t i = 0; i < ntickets; i++) {
-      q = db_prepare(db, "SELECT count(*) FROM fslrepo_me_ticket WHERE title = ?1 AND status IN ('Open', 'Claimed')");
-      sqlite3_bind_text(q, 1, tickets[i].title, -1, SQLITE_STATIC);
-      sqlite3_step(q);
-      int dup = sqlite3_column_int(q, 0);
-      sqlite3_finalize(q);
-      if (!dup) {
-        char *id = ticket_new(db, tickets[i].title, "Task", project, tickets[i].body, "ctx wiki check reports no problem for this claim.", "");
-        printf("ticket %.10s %s\n", id, tickets[i].title);
-        free(id);
-        opened++;
-      }
-      free(tickets[i].title);
-      free(tickets[i].body);
-    }
-  }
+  long opened = tickets_file(db, project, tickets, ntickets, "ctx wiki check reports no problem for this claim.");
   free(tickets);
   printf("%ld re-pinned, %ld tickets opened\n", moved, opened);
   free(tip);
@@ -3315,6 +3634,8 @@ static int cmd_wiki(int argc, char **argv) {
   if (argc >= 1 && !strcmp(argv[0], "check")) return wiki_check(argc - 1, argv + 1);
   if (argc >= 1 && !strcmp(argv[0], "why")) return wiki_why(argc - 1, argv + 1);
   if (argc >= 1 && !strcmp(argv[0], "repin")) return wiki_repin(argc - 1, argv + 1);
+  if (argc >= 1 && !strcmp(argv[0], "queue")) return wiki_queue(argc - 1, argv + 1);
+  if (argc >= 1 && !strcmp(argv[0], "publish")) return wiki_publish(argc - 1, argv + 1);
   if (argc >= 1 && !strcmp(argv[0], "retire")) return wiki_retire(argc - 1, argv + 1);
   if (argc >= 1 && !strcmp(argv[0], "restore")) return wiki_restore(argc - 1, argv + 1);
   die("usage: ctx wiki save NAME FILE --model M [--ticket ID] | check | why PAGE | repin | retire PAGE --reason WHY [--by PAGE] | restore PAGE");
