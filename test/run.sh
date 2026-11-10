@@ -501,6 +501,8 @@ export CTX_DB="$T/index2.sqlite"
 "$CTX" init >/dev/null
 (cd "$T/ix/root" && "$CTX" project add kb2 --root "$T/other" --import "$T/ix/upstream.fossil" >/dev/null)
 "$CTX" project pull kb2 --from "$T/ix/upstream.fossil" | grep -q 'received' || fail "pull"
+(cd "$T/ix/root" && "$CTX" project add kb3 --root "$T/ix" --clone "$T/ix/upstream.fossil" >/dev/null) || fail "clone from a repository"
+"$CTX" project pull kb3 | grep -q 'received' || fail "a clone remembers where to pull from"
 if "$CTX" project pull kb2 2>/dev/null; then fail "pull needs a source"; fi
 
 # The write gate: a page saves only if its whole provenance chain holds.

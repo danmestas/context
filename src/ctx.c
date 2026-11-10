@@ -1878,12 +1878,13 @@ static int cmd_project(int argc, char **argv) {
     return 0;
   }
   if (argc >= 2 && !strcmp(argv[0], "pull")) return project_pull(argc - 1, argv + 1);
-  if (argc < 2 || strcmp(argv[0], "add")) die("usage: ctx project add NAME [--root DIR] [--import FILE] [--remote URL] | list | pull NAME [--from URL]");
-  const char *name = argv[1], *root_opt = ".", *import = NULL, *remote = NULL;
+  if (argc < 2 || strcmp(argv[0], "add")) die("usage: ctx project add NAME [--root DIR] [--import FILE | --clone URL] [--remote URL] | list | pull NAME [--from URL]");
+  const char *name = argv[1], *root_opt = ".", *import = NULL, *remote = NULL, *clone = NULL;
   for (int i = 2; i < argc; i++) {
     if (i + 1 >= argc) die("%s needs a value", argv[i]);
     if (!strcmp(argv[i], "--root")) root_opt = argv[++i];
     else if (!strcmp(argv[i], "--import")) import = argv[++i];
+    else if (!strcmp(argv[i], "--clone")) clone = argv[++i];
     else if (!strcmp(argv[i], "--remote")) remote = argv[++i];
     else die("unknown option %s", argv[i]);
   }
@@ -1897,7 +1898,13 @@ static int cmd_project(int argc, char **argv) {
   sqlite3_step(q);
   if (sqlite3_column_int(q, 0)) die("project %s already exists", name);
   sqlite3_finalize(q);
-  if (import) {
+  if (import && clone) die("use --import or --clone, not both");
+  if (clone) {
+    if (!remote) remote = clone;
+    q = db_prepare(db, "SELECT fsl_clone(?1, ?2)");
+    sqlite3_bind_text(q, 1, clone, -1, SQLITE_STATIC);
+    sqlite3_bind_text(q, 2, handle, -1, SQLITE_STATIC);
+  } else if (import) {
     q = db_prepare(db, "SELECT fsl_import(?1, ?2)");
     sqlite3_bind_text(q, 1, import, -1, SQLITE_STATIC);
     sqlite3_bind_text(q, 2, handle, -1, SQLITE_STATIC);
@@ -3753,7 +3760,7 @@ static int usage(void) {
         "       ctx turn ID [BEFORE [AFTER]] [--full]\n"
         "       ctx audit [--all] [--known] [--tickets] [--limit N] | --allow ID [NOTE]\n"
         "       ctx ticket new|ready|show|claim|done|drop|offer ...\n"
-        "       ctx project add NAME [--root DIR] [--import FILE] [--remote URL] | list | pull NAME [--from URL]\n"
+        "       ctx project add NAME [--root DIR] [--import FILE | --clone URL] [--remote URL] | list | pull NAME [--from URL]\n"
         "       ctx source add FILE --origin WHERE --class CLASS [--as PATH] | supersede OLD | uses PATH | check\n"
         "       ctx index [--project P]\n"
         "       ctx wiki save NAME FILE --model M [--ticket ID] | check | why PAGE | repin | retire PAGE --reason WHY | restore PAGE\n"

@@ -1,0 +1,15 @@
+{
+    "name": "research/retiring-knowledge.md",
+    "sha3": "62f9c4ba2ae5531930cdf9172dd51717d2b97255844020fefcb62ce847322bc6",
+    "size": 11573,
+    "origin": "web research by agent, sources cited inside",
+    "retrieved": "2026-11-10",
+    "how": "agent-research",
+    "class": "perishable",
+    "review_after": "2027-05-09",
+    "valid_from": "2026-11-09",
+    "valid_until": null,
+    "added_by": "dmestas",
+    "added_at": "2026-11-10",
+    "risk": null
+}
