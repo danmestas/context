@@ -179,6 +179,24 @@ and records the session it was written in. Redaction applies as for transcripts.
 When a file changes, its rule gets a new version; when it is deleted, its rule is
 retired. `ctx rules import` does this at once.
 
+What you type that reads like a standing instruction ("from now on", "always",
+"never", "every time") is proposed as a rule when the session is archived. Tool
+output and harness text never are. Nothing becomes a rule until you accept it:
+
+```sh
+ctx rules proposed             # this project's waiting proposals; --all for every project
+ctx rules accept 12 --text "Use strata when several changes are in flight" [--until DATE]
+ctx rules reject 13            # never proposed again
+ctx rules scan --since 2026-09-01   # look through turns archived earlier
+ctx remember "..." --from 444886    # a rule that records the turn you said it in
+ctx turn turn:UUID                  # read that turn again later, by the id a rule records
+```
+
+`ctx rules offer` is a SessionStart hook. It tells the agent that past sessions are
+searchable, lists rules it would not otherwise load (those from `ctx remember`, and
+memory from this project's other folders) and mentions waiting proposals. It is not
+installed by default yet; the eval decides.
+
 Each rule is a technote in your private repository, so every version is kept and
 rules sync with your archive. A rule past its `--until` date expires. Search shows
 rules in force, each under its file name or key; `--history` brings back expired,

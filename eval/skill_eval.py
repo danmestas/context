@@ -260,7 +260,7 @@ def breaches(inputs, own):
 
 def digest(stdout, cond, own):
     r = dict(tools=0, ctx=0, skill=0, breach=[], result=None, ok=False, new=0, cached=0, secs=0, turns=0,
-             denials=0, denied=[], cost=0)
+             denials=0, denied=[], cost=0, calls=[])
     uses, inputs = {}, []
     for line in stdout.splitlines():
         try:
@@ -279,6 +279,10 @@ def digest(stdout, cond, own):
             for c in d["message"]["content"]:
                 if c.get("type") == "tool_result" and c.get("tool_use_id") in uses:
                     inputs.append((*uses[c["tool_use_id"]], bool(c.get("is_error"))))
+                    out = c.get("content")
+                    out = out if isinstance(out, str) else " ".join(x.get("text", "") for x in out or [] if isinstance(x, dict))
+                    name, text = uses[c["tool_use_id"]]
+                    r["calls"].append(dict(tool=name, input=text[:400], error=bool(c.get("is_error")), output=out[:300]))
         elif d.get("type") == "result":
             u = d["usage"]
             r.update(ok=d.get("subtype") == "success", result=d.get("result"), turns=d.get("num_turns", 0),
@@ -317,7 +321,7 @@ def cmd_run(a):
                 dirs = glob.glob(os.path.expanduser(f"~/.claude/projects/{slug(project['sessions'])}*"))
                 prompt += "\n\nTranscripts of past coding sessions on this project are JSONL files in:\n" + "\n".join(dirs)
                 allow += ["Bash(jq*)", "Bash(python3*)"]
-            if cond in "CI":
+            if cond in "CIH":
                 allow.append("Bash(ctx *)")
             if cond in "SWF":  # same tools; only the wiki differs: W in the index, F as files, S neither
                 allow += ["Bash(ctx search *)", "Bash(ctx turn *)"]
@@ -329,9 +333,15 @@ def cmd_run(a):
                 extra = json.loads(hook)["hookSpecificOutput"]["additionalContext"] if hook.strip() else ""
                 if extra:
                     cmd += ["--append-system-prompt", extra]
-            p = spawn(cmd, cwd, w.env(cond in "CSWFI", db), RUN_DEADLINE)
+            if cond == "H":  # what the SessionStart hook would add for this project
+                hook = subprocess.run([f"{w.bin}/ctx", "rules", "offer"], env=w.env(True), cwd=cwd,
+                                      capture_output=True, text=True, timeout=30).stdout
+                extra = json.loads(hook)["hookSpecificOutput"]["additionalContext"] if hook.strip() else ""
+                if extra:
+                    cmd += ["--append-system-prompt", extra]
+            p = spawn(cmd, cwd, w.env(cond in "CSWFIH", db), a.deadline)
             r = digest(p.stdout, cond, own)
-            r.update(qid=q["id"], cond=cond, project=q["project"], kind=q["kind"], injected=cond == "I" and "--append-system-prompt" in cmd)
+            r.update(qid=q["id"], cond=cond, project=q["project"], kind=q["kind"], injected=cond in "IH" and "--append-system-prompt" in cmd)
             return r
 
         for q in qs:  # copies are made up front so parallel jobs never race
@@ -339,7 +349,7 @@ def cmd_run(a):
                 cwd = w.repo(cond, q["project"], bank["projects"][q["project"]]["repo"])
                 if cond == "F":
                     w.wiki_files(cwd)
-                if cond in "CSWFI":
+                if cond in "CSWFIH":
                     os.makedirs(f"{cwd}/.claude/skills/ctx", exist_ok=True)
                     with open(f"{cwd}/.claude/skills/ctx/SKILL.md", "w") as f:
                         f.write(skill)
@@ -350,7 +360,7 @@ def cmd_run(a):
         with cf.ThreadPoolExecutor(a.jobs) as ex:
             rows = list(ex.map(job, items))
     write_json(f"{out}/runs.json", rows)
-    write_json(f"{out}/meta.json", dict(skill=skill_id, set=a.set, conds=conds, model=a.model, at=time.time(),
+    write_json(f"{out}/meta.json", dict(skill=skill_id, set=a.set, conds=conds, model=a.model, at=time.time(), deadline=a.deadline,
                                         questions=[q["id"] for q in qs], via=route(), yolo=YOLO))
     bad = sum(not r["ok"] for r in rows)
     void = sum(bool(r["breach"]) for r in rows)
@@ -583,12 +593,13 @@ def main():
     p.set_defaults(fn=cmd_author)
     p = sub.add_parser("run", help="answer questions in fresh isolated processes")
     p.add_argument("--set", choices=("dev", "holdout", "all"), default="dev")
-    p.add_argument("--cond", default="C", help="A repo only, B grep over transcripts, C the skill, I the skill plus injection; for documents, S sources only, W wiki in the index, F wiki as files")
+    p.add_argument("--cond", default="C", help="A repo only, B grep over transcripts, C the skill, I the skill plus injection, H the skill plus the SessionStart hook; for documents, S sources only, W wiki in the index, F wiki as files")
     p.add_argument("--skill", default=DEFAULT_SKILL)
     p.add_argument("--only", help="comma-separated question ids")
     p.add_argument("--name")
     p.add_argument("--model", default="sonnet")
     p.add_argument("--jobs", type=int, default=6)
+    p.add_argument("--deadline", type=int, default=RUN_DEADLINE, help="seconds each answer may take; slower models need more")
     p.set_defaults(fn=cmd_run)
     p = sub.add_parser("grade", help="grade runs blind, in one pass")
     p.add_argument("runs", nargs="+")

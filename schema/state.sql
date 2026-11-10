@@ -91,3 +91,15 @@ CREATE TABLE IF NOT EXISTS ctx_rule(
   key      TEXT PRIMARY KEY,
   technote TEXT NOT NULL
 ) STRICT, WITHOUT ROWID;
+
+-- Proposed rules: turns the person typed that read like standing instructions. Only
+-- the person accepts one into a rule; a rejected one is never proposed again.
+CREATE TABLE IF NOT EXISTS ctx_rule_proposal(
+  id      INTEGER PRIMARY KEY,
+  turn    TEXT NOT NULL UNIQUE,        -- transcript uuid, stable across rebuilds
+  project TEXT NOT NULL,
+  at      TEXT,
+  text    TEXT NOT NULL,               -- already redacted
+  status  TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'accepted', 'rejected')),
+  rule    TEXT                         -- the rule an accepted one became
+) STRICT;

@@ -26,7 +26,7 @@
 #include "ticket_schema.h"
 
 #define CTX_VERSION "0.0.1"
-#define CTX_USER_VERSION 2    /* PRAGMA user_version once initialized */
+#define CTX_USER_VERSION 3    /* PRAGMA user_version once initialized */
 #define CTX_DERIVED_VERSION 3 /* raise when schema/index.sql changes; ctx then rebuilds */
 
 /* A tool's output is kept up to this size at each end; the middle is cut. */
@@ -404,6 +404,21 @@ static void add_tool_text(buf *b, const char *s, size_t n) {
   buf_add(b, s, head);
   buf_str(b, note);
   buf_add(b, s + tail, n - tail);
+}
+
+/* Whether a turn the person typed reads like a standing instruction, worth proposing
+ * as a rule. Long turns are pasted material, not instructions. */
+static int is_standing(const char *s, size_t n) {
+  static const char *const cues[] = {"from now on", "going forward", "remember to", "remember that", "always ",
+                                     "never ", "every time", "whenever ", "don't ever", "next time", "make sure to",
+                                     "default to", NULL};
+  if (n > 1500) return 0;
+  char low[1501];
+  for (size_t i = 0; i < n; i++) low[i] = (char)tolower((unsigned char)s[i]);
+  low[n] = 0;
+  for (int i = 0; cues[i]; i++)
+    if (strstr(low, cues[i])) return 1;
+  return 0;
 }
 
 /* Harness text injected into turns, which is not part of the conversation. */
@@ -798,6 +813,7 @@ static long archive_batch(sqlite3 *db, const char *session, const char *path, co
       " ON CONFLICT(project, kind, name) DO UPDATE SET size = excluded.size, mtime = excluded.mtime"
       " RETURNING id, (SELECT coalesce(max(seq), -1) FROM ctx_chunk WHERE doc_id = ctx_doc.id)");
   sqlite3_stmt *chunk = db_prepare(db, "INSERT INTO ctx_chunk(doc_id, seq, heading, at, turn, body, project) VALUES (?1,?2,?3,?4,?5,?6,?7)");
+  sqlite3_stmt *propose = db_prepare(db, "INSERT OR IGNORE INTO ctx_rule_proposal(turn, project, at, text) VALUES (?1, ?2, ?3, ?4)");
   char *last_cwd = NULL, *last_proj = NULL; /* most turns repeat the previous directory */
 
   buf text = {0};
@@ -889,6 +905,14 @@ static long archive_batch(sqlite3 *db, const char *session, const char *path, co
       }
       sqlite3_bind_text(chunk, 7, last_proj ? last_proj : project, -1, SQLITE_STATIC);
       if (sqlite3_step(chunk) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+      if (!strcmp(turns[j].role, "user") && *turns[j].uuid && is_standing(turns[j].body, turns[j].body_n)) {
+        sqlite3_bind_text(propose, 1, turns[j].uuid, -1, SQLITE_STATIC);
+        sqlite3_bind_text(propose, 2, last_proj ? last_proj : project, -1, SQLITE_STATIC);
+        sqlite3_bind_text(propose, 3, turns[j].ts, -1, SQLITE_STATIC);
+        sqlite3_bind_text(propose, 4, turns[j].body, (int)turns[j].body_n, SQLITE_STATIC);
+        sqlite3_step(propose);
+        sqlite3_reset(propose);
+      }
       sqlite3_reset(chunk);
       done[j] = 1;
       stored++;
@@ -906,6 +930,7 @@ static long archive_batch(sqlite3 *db, const char *session, const char *path, co
   sqlite3_finalize(day_in);
   sqlite3_finalize(doc);
   sqlite3_finalize(chunk);
+  sqlite3_finalize(propose);
 
   char hash[17];
   head_hash(path, offset, hash);
@@ -1152,13 +1177,24 @@ static int cmd_search(int argc, char **argv) {
 /* ctx turn ID [BEFORE [AFTER]] [--full] */
 static int cmd_turn(int argc, char **argv) {
   int full = 0, nums[3] = {0, 0, 0}, have = 0;
+  const char *ref = NULL; /* a transcript turn id, as rules record, instead of a number */
   for (int i = 0; i < argc; i++) {
     if (!strcmp(argv[i], "--full")) full = 1;
+    else if (!have && argv[i][strspn(argv[i], "0123456789")]) { ref = argv[i]; have++; }
     else if (have < 3) nums[have++] = atoi(argv[i]);
     else return 2;
   }
+  sqlite3 *db = NULL;
+  if (ref) {
+    const char *t = !strncmp(ref, "turn:", 5) ? ref + 5 : ref;
+    db = ctx_open();
+    sqlite3_stmt *f = db_prepare(db, "SELECT id FROM ctx_chunk WHERE turn = ?1");
+    sqlite3_bind_text(f, 1, t, -1, SQLITE_STATIC);
+    if (sqlite3_step(f) == SQLITE_ROW) nums[0] = sqlite3_column_int(f, 0);
+    sqlite3_finalize(f);
+  }
   if (have < 1 || nums[0] <= 0) die("usage: ctx turn ID [BEFORE [AFTER]] [--full]");
-  sqlite3 *db = ctx_open();
+  if (!db) db = ctx_open();
   sqlite3_stmt *q = db_prepare(db,
       "SELECT n.id, n.heading, coalesce(n.at,''), n.body"
       " FROM ctx_chunk c JOIN ctx_chunk n ON n.doc_id = c.doc_id"
@@ -4954,16 +4990,27 @@ static long rules_import(sqlite3 *db) {
 /* ctx remember TEXT [--project P] [--until DATE]
  * ctx rules [--all] [--project P] | import | retire KEY --reason WHY [--by KEY] */
 static int cmd_remember(int argc, char **argv) {
-  const char *text = NULL, *project = NULL, *until = NULL;
+  const char *text = NULL, *project = NULL, *until = NULL, *from = NULL;
   for (int i = 0; i < argc; i++) {
     if (!strcmp(argv[i], "--project") && i + 1 < argc) project = argv[++i];
     else if (!strcmp(argv[i], "--until") && i + 1 < argc) until = argv[++i];
+    else if (!strcmp(argv[i], "--from") && i + 1 < argc) from = argv[++i];
     else if (!text) text = argv[i];
-    else die("usage: ctx remember TEXT [--project P] [--until DATE]");
+    else die("usage: ctx remember TEXT [--project P] [--until DATE] [--from TURN]");
   }
-  if (!text || !*text) die("usage: ctx remember TEXT [--project P] [--until DATE]");
+  if (!text || !*text) die("usage: ctx remember TEXT [--project P] [--until DATE] [--from TURN]");
   sqlite3 *db = ctx_open();
   if (until) require_date(db, "--until", until);
+  char origin[120] = "";
+  if (from) { /* the turn it was said in, by its transcript id, which a rebuild keeps */
+    sqlite3_stmt *f = db_prepare(db, "SELECT turn, coalesce(project, '') FROM ctx_chunk WHERE (id = ?1 OR turn = ?2) AND turn IS NOT NULL");
+    sqlite3_bind_int64(f, 1, atoll(from));
+    sqlite3_bind_text(f, 2, from, -1, SQLITE_STATIC);
+    if (sqlite3_step(f) != SQLITE_ROW) die("no turn %s with a transcript id", from);
+    snprintf(origin, sizeof origin, "turn:%s", sqlite3_column_text(f, 0));
+    if (!project) project = dup_text(sqlite3_column_text(f, 1)); /* leaked once, on purpose: a short-lived command */
+    sqlite3_finalize(f);
+  }
   char *proj = project ? dup_text((const unsigned char *)project) : current_project(db);
   char key[40];
   sqlite3_stmt *q = db_prepare(db, "SELECT 'manual:' || lower(hex(randomblob(6)))");
@@ -4977,7 +5024,7 @@ static int cmd_remember(int argc, char **argv) {
   open_private(db);
   db_exec(db, "SELECT fsl_use('repo:me')");
   db_exec(db, "BEGIN IMMEDIATE");
-  rule_t r = {.key = key, .project = proj, .origin = session ? session : "", .until = until, .body = clean.p};
+  rule_t r = {.key = key, .project = proj, .origin = *origin ? origin : session ? session : "", .until = until, .body = clean.p};
   rule_save(db, &r);
   db_exec(db, "COMMIT");
   rules_index(db);
@@ -4988,8 +5035,187 @@ static int cmd_remember(int argc, char **argv) {
   return 0;
 }
 
+/* ctx rules offer: a SessionStart hook. Claude Code already loads CLAUDE.md files and
+ * the memory folder it starts in, so this adds what it would not: rules from ctx
+ * remember, and memory written while this project lived in another folder. It says
+ * the archive is there, opens the database read-only and never fails a session. */
+#define OFFER_RULES 15
+#define OFFER_MAX 1800
+static int rules_offer(void) {
+  char *path = db_path();
+  sqlite3 *db = NULL;
+  if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) { free(path); return 0; }
+  sqlite3_busy_timeout(db, 200);
+  char cwd[4096], here[4200] = "";
+  if (getcwd(cwd, sizeof cwd)) { /* the memory folder Claude Code already loads for this directory */
+    const char *cfg = getenv("CLAUDE_CONFIG_DIR"), *home = getenv("HOME");
+    char slug[4096];
+    snprintf(slug, sizeof slug, "%s", cwd);
+    for (char *c = slug; *c; c++) if (*c == '/' || *c == '.') *c = '-';
+    if (cfg && *cfg) snprintf(here, sizeof here, "%s/projects/%s/", cfg, slug);
+    else if (home) snprintf(here, sizeof here, "%s/.claude/projects/%s/", home, slug);
+  }
+  char *project = current_project(db);
+  sqlite3_stmt *q = NULL;
+  buf text = {0};
+  int n = 0;
+  if (sqlite3_prepare_v2(db,
+          "SELECT CASE WHEN name GLOB 'manual:*' THEN substr(name, 8) ELSE replace(name, rtrim(name, replace(name, '/', '')), '') END, title"
+          " FROM ctx_doc WHERE kind = 'rule' AND status IS NULL AND project IN (?1, '*')"
+          " AND name NOT GLOB '*/CLAUDE.md' AND name NOT GLOB '*/AGENTS.md' AND (?2 = '' OR name NOT GLOB ?2 || '*')"
+          " ORDER BY name GLOB 'manual:*' DESC, mtime DESC LIMIT 15" /* manual rules first */, -1, &q, NULL) == SQLITE_OK) {
+    sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+    sqlite3_bind_text(q, 2, here, -1, SQLITE_STATIC);
+    while (sqlite3_step(q) == SQLITE_ROW && n < OFFER_RULES && text.n < OFFER_MAX) {
+      buf_str(&text, "\n- ");
+      buf_str(&text, (const char *)sqlite3_column_text(q, 1));
+      buf_str(&text, " (");
+      buf_str(&text, (const char *)sqlite3_column_text(q, 0));
+      buf_str(&text, ")");
+      n++;
+    }
+    sqlite3_finalize(q);
+  }
+  int sessions = 0;
+  if (sqlite3_prepare_v2(db, "SELECT count(*) FROM ctx_doc WHERE kind = 'session' AND project = ?1", -1, &q, NULL) == SQLITE_OK) {
+    sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+    if (sqlite3_step(q) == SQLITE_ROW) sessions = sqlite3_column_int(q, 0);
+    sqlite3_finalize(q);
+  }
+  int waiting = 0;
+  if (sqlite3_prepare_v2(db, "SELECT count(*) FROM ctx_rule_proposal WHERE status = 'open' AND project = ?1", -1, &q, NULL) == SQLITE_OK) {
+    sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+    if (sqlite3_step(q) == SQLITE_ROW) waiting = sqlite3_column_int(q, 0);
+    sqlite3_finalize(q);
+  }
+  if (sessions || n || waiting) {
+    buf all = {0};
+    char line[600];
+    if (sessions) {
+      snprintf(line, sizeof line, "Past sessions of %s are archived (%d session days), tool output included. Before guessing at history,"
+               " search them: `ctx search WORDS` with two or three exact names or error words, then `ctx turn ID 2 5` to read around a hit.",
+               project, sessions);
+      buf_str(&all, line);
+    }
+    if (n) {
+      buf_str(&all, sessions ? "\n\n" : "");
+      buf_str(&all, "Standing rules the user gave for this project that are not in your loaded memory. A newer instruction from"
+                    " the user overrides them; `ctx rules` lists them all.");
+      buf_add(&all, text.p, text.n);
+    }
+    if (waiting) {
+      snprintf(line, sizeof line, "%s%d things the user said earlier read like standing rules and wait for their decision"
+               " (`ctx rules proposed`). Mention this once if it fits; accept one only after the user says yes.",
+               all.n ? "\n\n" : "", waiting);
+      buf_str(&all, line);
+    }
+    sqlite3_stmt *j = NULL;
+    if (sqlite3_prepare_v2(db, "SELECT json_object('hookSpecificOutput', json_object('hookEventName', 'SessionStart', 'additionalContext', ?1))", -1, &j, NULL) == SQLITE_OK) {
+      sqlite3_bind_text(j, 1, all.p, (int)all.n, SQLITE_STATIC);
+      if (sqlite3_step(j) == SQLITE_ROW) puts((const char *)sqlite3_column_text(j, 0));
+      sqlite3_finalize(j);
+    }
+    free(all.p);
+  }
+  free(text.p);
+  free(project);
+  sqlite3_close(db);
+  free(path);
+  return 0;
+}
+
+/* Proposed rules: list, accept into a rule, reject, or look for them in turns already
+ * archived. Only the person decides; an agent asks them first. */
+static int rules_proposals(sqlite3 *db, int argc, char **argv) {
+  const char *sub = argv[0];
+  if (!strcmp(sub, "scan")) {
+    const char *since = argc >= 3 && !strcmp(argv[1], "--since") ? argv[2] : "0000";
+    sqlite3_stmt *q = db_prepare(db,
+        "SELECT c.turn, coalesce(c.project, d.project), c.at, c.body FROM ctx_chunk c JOIN ctx_doc d ON d.id = c.doc_id"
+        " WHERE d.kind = 'session' AND c.heading = 'user' AND c.turn IS NOT NULL AND c.at >= ?1 AND length(c.body) <= 1500");
+    sqlite3_bind_text(q, 1, since, -1, SQLITE_STATIC);
+    sqlite3_stmt *ins = db_prepare(db, "INSERT OR IGNORE INTO ctx_rule_proposal(turn, project, at, text) VALUES (?1, ?2, ?3, ?4)");
+    long found = 0;
+    db_exec(db, "BEGIN IMMEDIATE");
+    while (sqlite3_step(q) == SQLITE_ROW) {
+      const char *body = (const char *)sqlite3_column_text(q, 3);
+      if (!is_standing(body, (size_t)sqlite3_column_bytes(q, 3))) continue;
+      for (int i = 0; i < 4; i++) sqlite3_bind_value(ins, i + 1, sqlite3_column_value(q, i));
+      sqlite3_step(ins);
+      found += sqlite3_changes(db);
+      sqlite3_reset(ins);
+    }
+    db_exec(db, "COMMIT");
+    sqlite3_finalize(q);
+    sqlite3_finalize(ins);
+    printf("%ld new proposals\n", found);
+    return 0;
+  }
+  if (!strcmp(sub, "proposed")) {
+    int all = argc >= 2 && !strcmp(argv[1], "--all");
+    char *proj = all ? NULL : current_project(db);
+    sqlite3_stmt *q = db_prepare(db, "SELECT id, project, substr(coalesce(at, ''), 1, 10), replace(substr(text, 1, 160), char(10), ' ')"
+                                     " FROM ctx_rule_proposal WHERE status = 'open' AND (?1 IS NULL OR project = ?1) ORDER BY at");
+    sqlite3_bind_text(q, 1, proj, -1, SQLITE_STATIC);
+    while (sqlite3_step(q) == SQLITE_ROW)
+      printf("%d  %s %s  %s\n", sqlite3_column_int(q, 0), sqlite3_column_text(q, 1), sqlite3_column_text(q, 2), sqlite3_column_text(q, 3));
+    sqlite3_finalize(q);
+    free(proj);
+    return 0;
+  }
+  int accept = !strcmp(sub, "accept");
+  if (argc < 2) die("usage: ctx rules accept N [--text TEXT] [--until DATE] | reject N");
+  sqlite3_int64 id = atoll(argv[1]);
+  const char *text = NULL, *until = NULL;
+  for (int i = 2; i < argc; i++) {
+    if (accept && !strcmp(argv[i], "--text") && i + 1 < argc) text = argv[++i];
+    else if (accept && !strcmp(argv[i], "--until") && i + 1 < argc) until = argv[++i];
+    else die("usage: ctx rules accept N [--text TEXT] [--until DATE] | reject N");
+  }
+  sqlite3_stmt *q = db_prepare(db, "SELECT turn, project, text FROM ctx_rule_proposal WHERE id = ?1 AND status = 'open'");
+  sqlite3_bind_int64(q, 1, id);
+  if (sqlite3_step(q) != SQLITE_ROW) die("no open proposal %lld", (long long)id);
+  char key[40] = "";
+  if (accept) {
+    if (until) require_date(db, "--until", until);
+    sqlite3_stmt *k = db_prepare(db, "SELECT 'manual:' || lower(hex(randomblob(6)))");
+    sqlite3_step(k);
+    snprintf(key, sizeof key, "%s", sqlite3_column_text(k, 0));
+    sqlite3_finalize(k);
+    char origin[120];
+    snprintf(origin, sizeof origin, "turn:%s", sqlite3_column_text(q, 0));
+    buf body = {0};
+    if (text) add_redacted(&body, text, strlen(text));
+    else buf_str(&body, (const char *)sqlite3_column_text(q, 2));
+    buf_add(&body, "\n", 2);
+    open_private(db);
+    db_exec(db, "SELECT fsl_use('repo:me')");
+    db_exec(db, "BEGIN IMMEDIATE");
+    rule_t r = {.key = key, .project = (const char *)sqlite3_column_text(q, 1), .origin = origin, .until = until, .body = body.p};
+    rule_save(db, &r);
+    db_exec(db, "COMMIT");
+    free(body.p);
+  }
+  sqlite3_finalize(q);
+  q = db_prepare(db, "UPDATE ctx_rule_proposal SET status = ?2, rule = nullif(?3, '') WHERE id = ?1");
+  sqlite3_bind_int64(q, 1, id);
+  sqlite3_bind_text(q, 2, accept ? "accepted" : "rejected", -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 3, key, -1, SQLITE_STATIC);
+  sqlite3_step(q);
+  sqlite3_finalize(q);
+  if (accept) rules_index(db);
+  printf(accept ? "%lld accepted as %s\n" : "%lld rejected%s\n", (long long)id, accept ? key + 7 : "");
+  return 0;
+}
+
 static int cmd_rules(int argc, char **argv) {
+  if (argc >= 1 && !strcmp(argv[0], "offer")) return rules_offer();
   sqlite3 *db = ctx_open();
+  if (argc >= 1 && (!strcmp(argv[0], "proposed") || !strcmp(argv[0], "accept") || !strcmp(argv[0], "reject") || !strcmp(argv[0], "scan"))) {
+    int rc = rules_proposals(db, argc, argv);
+    sqlite3_close(db);
+    return rc;
+  }
   if (argc >= 1 && !strcmp(argv[0], "import")) {
     long n = rules_import(db);
     rules_index(db);
@@ -5140,8 +5366,9 @@ static int usage(void) {
         "       ctx rebuild\n"
         "       ctx inject\n"
         "       ctx stats [--weeks N]\n"
-        "       ctx remember TEXT [--project P] [--until DATE]\n"
-        "       ctx rules [--all] [--project P] | import | retire KEY --reason WHY [--by KEY]\n"
+        "       ctx remember TEXT [--project P] [--until DATE] [--from TURN]\n"
+        "       ctx rules [--all] [--project P] | import | retire KEY --reason WHY [--by KEY] | offer\n"
+        "       ctx rules proposed [--all] | accept N [--text TEXT] [--until DATE] | reject N | scan [--since DATE]\n"
         "       ctx sql STATEMENT\n",
         stderr);
   return 2;
