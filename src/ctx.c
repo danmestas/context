@@ -1816,13 +1816,15 @@ static int cmd_ticket(int argc, char **argv) {
   return rc;
 }
 
-/* Projects and their shared repositories. libfossil allows only letters, digits
- * and underscores in a repository's name. */
+/* Projects and their shared repositories. libfossil allows letters, digits and
+ * underscores, and refuses a name that is another's followed by an underscore, as
+ * dagnats_agents would be beside dagnats. So the name keeps only letters and digits. */
 static void repo_name(const char *project, char *out, size_t cap) {
-  size_t i = 0;
-  for (; project[i] && i + 1 < cap; i++) out[i] = c_alnum((unsigned char)project[i]) ? project[i] : '_';
-  out[i] = 0;
-  if (!strcmp(out, "repo") || !strncmp(out, "repo_", 5) || !strcmp(out, "me") || !i || i > 64)
+  size_t o = 0;
+  for (size_t i = 0; project[i] && o + 1 < cap; i++)
+    if (c_alnum((unsigned char)project[i])) out[o++] = project[i];
+  out[o] = 0;
+  if (!strcmp(out, "repo") || !strcmp(out, "me") || !o || o > 64)
     die("a project cannot use the repository name '%s'", out);
 }
 
@@ -2821,8 +2823,19 @@ static void project_of(sqlite3 *db, const char *opt, char **project, char repo[8
   sqlite3_finalize(q);
 }
 
+/* A space in a Markdown link target ends it, so page links get + instead. Lossless. */
+static void encode_page_links(char *t) {
+  for (char *p = strstr(t, "](/wiki?name="); p; p = strstr(p + 1, "](/wiki?name=")) {
+    char *end = strchr(p + 2, ')'), *nl = strchr(p + 2, '\n');
+    if (!end || (nl && nl < end)) continue;
+    for (char *c = p + 13; c < end; c++)
+      if (*c == ' ') *c = '+';
+  }
+}
+
 static int wiki_commit(sqlite3 *db, const char *project, sqlite3_int64 repo_id, const char *name, char *raw, const char *model, const char *ticket, const char *session, int repinning) {
   raw[generated_at(raw)] = 0;
+  encode_page_links(raw);
   wiki_parse(db, raw);
   int bad = 0;
   if (strlen(raw) > PAGE_MAX) bad += refuse("the page is over %s%s", "32 KB", "");

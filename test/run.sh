@@ -391,12 +391,13 @@ export CTX_DB="$T/sources.sqlite"
 "$CTX" init >/dev/null
 mkdir -p "$T/work/sub" "$T/other"
 cd "$T/work"
-"$CTX" project add my-proj | grep -q 'repo:my_proj' || fail "project add maps the name"
+"$CTX" project add my-proj | grep -q 'repo:myproj' || fail "project add maps the name"
+mkdir -p "$T/other/two"; (cd "$T/other" && "$CTX" project add my-proj-two --root "$T/other/two" >/dev/null) || fail "a name extending another one works"
 if "$CTX" project add my-proj 2>/dev/null; then fail "a project is added once"; fi
 "$CTX" sql "SELECT fsl_export('repo:me', '$T/export.fossil')" >/dev/null
 (cd "$T/other" && "$CTX" project add imported --import "$T/export.fossil" >/dev/null) || fail "project import"
-[ "$("$CTX" project list | wc -l | tr -d ' ')" = 2 ] || fail "project list"
-if "$CTX" project add repo_2 --root "$T/other" 2>/dev/null; then fail "reserved repository names"; fi
+[ "$("$CTX" project list | wc -l | tr -d ' ')" = 3 ] || fail "project list"
+if "$CTX" project add repo --root "$T/other" 2>/dev/null; then fail "reserved repository names"; fi
 
 # A source needs an origin and a class, and keeps its exact bytes.
 printf 'The cache TTL is 30 seconds.\n' > "$T/design.md"
@@ -572,6 +573,9 @@ refused quote 'quote-missing'
 refused short 'full check-in hash'
 refused wiki 'must cite a source'
 refused dead 'does not exist: Nowhere'
+printf '# Other\n\nBack to [Cache](/wiki?name=Cache).\n' > "$T/wk/op.md"; "$CTX" wiki save "Other Page" "$T/wk/op.md" --model m >/dev/null || fail "a second page saves"
+printf '# Spaced\n\nSee [Other](/wiki?name=Other Page).\n' > "$T/wk/sp.md"; "$CTX" wiki save Spaced "$T/wk/sp.md" --model m >/dev/null || fail "a raw space in a link is accepted"
+w_repo "fsl_wiki('Spaced')" | grep -q '(/wiki?name=Other+Page)' || fail "a raw space in a link is encoded"
 refused undefined 'zz\] is not a quoted'
 refused synth1 'synthesis must cite'
 refused origin 'no-origin'
