@@ -386,6 +386,51 @@ if "$CTX" ticket claim nosuch 2>/dev/null; then fail "unknown ticket"; fi
 if "$CTX" ticket new "bad type" --type Nope 2>/dev/null; then fail "ticket type is checked"; fi
 cd - >/dev/null
 
+# Projects: a shared repository is created, or imported, and the directory is mapped.
+export CTX_DB="$T/sources.sqlite"
+"$CTX" init >/dev/null
+mkdir -p "$T/work/sub" "$T/other"
+cd "$T/work"
+"$CTX" project add my-proj | grep -q 'repo:my_proj' || fail "project add maps the name"
+if "$CTX" project add my-proj 2>/dev/null; then fail "a project is added once"; fi
+"$CTX" sql "SELECT fsl_export('repo:me', '$T/export.fossil')" >/dev/null
+(cd "$T/other" && "$CTX" project add imported --import "$T/export.fossil" >/dev/null) || fail "project import"
+[ "$("$CTX" project list | wc -l | tr -d ' ')" = 2 ] || fail "project list"
+if "$CTX" project add repo_2 --root "$T/other" 2>/dev/null; then fail "reserved repository names"; fi
+
+# A source needs an origin and a class, and keeps its exact bytes.
+printf 'The cache TTL is 30 seconds.\n' > "$T/design.md"
+if "$CTX" source add "$T/design.md" --class evergreen 2>/dev/null; then fail "origin is required"; fi
+if "$CTX" source add "$T/design.md" --origin "x" 2>/dev/null; then fail "class is required"; fi
+if "$CTX" source add "$T/design.md" --origin "x" --class stale 2>/dev/null; then fail "class is checked"; fi
+if "$CTX" source add "$T/design.md" --origin "x" --class perishable 2>/dev/null; then fail "perishable needs a review date"; fi
+if "$CTX" source add "$T/design.md" --origin "x" --class evergreen --as ../escape.md 2>/dev/null; then fail "paths stay inside sources"; fi
+if (cd "$T" && "$CTX" source add "$T/design.md" --origin x --class evergreen 2>/dev/null); then fail "needs a registered project"; fi
+(cd sub && "$CTX" source add "$T/design.md" --origin "https://example.test/design" --class evergreen --as notes/design.md --how fetched >/dev/null) || fail "source add"
+cmp -s "$T/design.md" sources/notes/design.md || fail "bytes are kept"
+python3 - sources/notes/design.md <<'EOF' || fail "origin record"
+import hashlib, json, sys
+p = sys.argv[1]
+m = json.load(open(p + ".origin.json"))
+assert m["sha3"] == hashlib.sha3_256(open(p, "rb").read()).hexdigest()
+assert m["origin"] == "https://example.test/design" and m["class"] == "evergreen" and m["how"] == "fetched" and m["name"] == "notes/design.md"
+assert m["size"] == 29 and m["added_by"] and m["retrieved"]
+EOF
+"$CTX" source add "$T/design.md" --origin other --class evergreen --as notes/design.md | grep -q 'already recorded' || fail "adding again changes nothing"
+grep -q 'example.test' sources/notes/design.md.origin.json || fail "the first origin stands"
+printf 'changed\n' > "$T/changed.md"
+if "$CTX" source add "$T/changed.md" --origin x --class evergreen --as notes/design.md 2>/dev/null; then fail "a source is not edited in place"; fi
+"$CTX" source check | grep -q '^1 sources, 0 problems' || fail "check passes"
+"$CTX" source add "$T/design.md" --origin x --class perishable --review-after 2020-01-01 --as old.md >/dev/null
+"$CTX" source check > "$T/c1.txt" || fail "due is not a failure"
+grep -q 'due for review: sources/old.md' "$T/c1.txt" || fail "due is reported"
+printf 'tampered\n' >> sources/notes/design.md
+if "$CTX" source check > "$T/c2.txt"; then fail "tampering fails the check"; fi
+grep -q 'it changed after its origin' "$T/c2.txt" || fail "tampering is named"
+printf 'no record\n' > sources/bare.md
+"$CTX" source check | grep -q 'no origin recorded for sources/bare.md' || fail "missing origin is named"
+cd - >/dev/null
+
 # The skill eval harness works end to end with a stand-in for the model.
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"
 

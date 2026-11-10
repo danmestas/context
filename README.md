@@ -14,6 +14,11 @@ transcripts, redacted, into a private repository, and searches them.
 - `schema/check.sql`: checks for the index schema.
 - `bench/`: a retrieval bench that scores grep and BM25, with the metrics in SQL.
 
+Sources live in each project's repository under `sources/`. `ctx source add` keeps
+the exact bytes and writes `NAME.origin.json` beside them, saying where the source
+came from and how long it can be trusted. `ctx source check` fails if a source has
+no origin or has changed since it was recorded, so a repository's CI can run it.
+
 Source documents are check-ins, the compiled wiki is Fossil wiki in Markdown,
 work items are tickets, and session transcripts are technotes in a per-person
 repository.

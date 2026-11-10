@@ -29,6 +29,8 @@
 #define TOOL_KEEP (16 * 1024)
 
 int fsl_sqlext_init(sqlite3 *db, char **err, const void *api);
+char *fsl_sha3sum_cstr(const char *in, long long len);
+void fsl_free(void *p);
 
 static void die(const char *fmt, ...) {
   va_list ap;
@@ -1791,6 +1793,329 @@ static int cmd_ticket(int argc, char **argv) {
   return rc;
 }
 
+/* Projects and their shared repositories. libfossil allows only letters, digits
+ * and underscores in a repository's name. */
+static void repo_name(const char *project, char *out, size_t cap) {
+  size_t i = 0;
+  for (; project[i] && i + 1 < cap; i++) out[i] = c_alnum((unsigned char)project[i]) ? project[i] : '_';
+  out[i] = 0;
+  if (!strcmp(out, "repo") || !strncmp(out, "repo_", 5) || !strcmp(out, "me") || !i || i > 64)
+    die("a project cannot use the repository name '%s'", out);
+}
+
+static int cmd_project(int argc, char **argv) {
+  if (argc >= 1 && !strcmp(argv[0], "list")) {
+    sqlite3 *db = ctx_open();
+    sqlite3_stmt *q = db_prepare(db,
+        "SELECT r.project, r.name, coalesce(p.root, '-') FROM ctx_repo r LEFT JOIN ctx_project p ON p.project = r.project"
+        " WHERE r.scope = 'shared' ORDER BY 1");
+    while (sqlite3_step(q) == SQLITE_ROW)
+      printf("%s repo:%s %s\n", sqlite3_column_text(q, 0), sqlite3_column_text(q, 1), sqlite3_column_text(q, 2));
+    sqlite3_finalize(q);
+    sqlite3_close(db);
+    return 0;
+  }
+  if (argc < 2 || strcmp(argv[0], "add")) die("usage: ctx project add NAME [--root DIR] [--import FILE] [--remote URL] | ctx project list");
+  const char *name = argv[1], *root_opt = ".", *import = NULL, *remote = NULL;
+  for (int i = 2; i < argc; i++) {
+    if (i + 1 >= argc) die("%s needs a value", argv[i]);
+    if (!strcmp(argv[i], "--root")) root_opt = argv[++i];
+    else if (!strcmp(argv[i], "--import")) import = argv[++i];
+    else if (!strcmp(argv[i], "--remote")) remote = argv[++i];
+    else die("unknown option %s", argv[i]);
+  }
+  char root[4096], repo[80], handle[96];
+  if (!realpath(root_opt, root)) die("cannot find %s: %s", root_opt, strerror(errno));
+  repo_name(name, repo, sizeof repo);
+  snprintf(handle, sizeof handle, "repo:%s", repo);
+  sqlite3 *db = ctx_open();
+  sqlite3_stmt *q = db_prepare(db, "SELECT count(*) FROM ctx_repo WHERE name = ?1");
+  sqlite3_bind_text(q, 1, repo, -1, SQLITE_STATIC);
+  sqlite3_step(q);
+  if (sqlite3_column_int(q, 0)) die("project %s already exists", name);
+  sqlite3_finalize(q);
+  if (import) {
+    q = db_prepare(db, "SELECT fsl_import(?1, ?2)");
+    sqlite3_bind_text(q, 1, import, -1, SQLITE_STATIC);
+    sqlite3_bind_text(q, 2, handle, -1, SQLITE_STATIC);
+  } else {
+    q = db_prepare(db, "SELECT fsl_open(?2, ?1, '{\"create\":true}')");
+    sqlite3_bind_text(q, 1, person(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(q, 2, handle, -1, SQLITE_STATIC);
+  }
+  if (sqlite3_step(q) != SQLITE_ROW) die("cannot create the repository: %s", sqlite3_errmsg(db));
+  sqlite3_finalize(q);
+  db_exec(db, "BEGIN IMMEDIATE");
+  q = db_prepare(db, "INSERT INTO ctx_repo(name, project, scope, remote) VALUES (?1, ?2, 'shared', ?3)");
+  sqlite3_bind_text(q, 1, repo, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 2, name, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 3, remote, -1, SQLITE_STATIC);
+  if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+  sqlite3_finalize(q);
+  q = db_prepare(db, "INSERT OR REPLACE INTO ctx_project(root, project) VALUES (?1, ?2)");
+  sqlite3_bind_text(q, 1, root, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 2, name, -1, SQLITE_STATIC);
+  if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+  sqlite3_finalize(q);
+  db_exec(db, "COMMIT");
+  printf("%s %s %s\n", name, handle, root);
+  sqlite3_close(db);
+  return 0;
+}
+
+/* Sources. Each file under sources/ has NAME.origin.json beside it, saying where it
+ * came from and what bytes it had. Both are ordinary files, committed like code. */
+#define ORIGIN_SUFFIX ".origin.json"
+
+static char *slurp(const char *path, size_t *n) {
+  FILE *f = fopen(path, "rb");
+  if (!f) return NULL;
+  buf b = {0};
+  char chunk[65536];
+  size_t got;
+  while ((got = fread(chunk, 1, sizeof chunk, f)) > 0) buf_add(&b, chunk, got);
+  int bad = ferror(f);
+  fclose(f);
+  if (bad) die("cannot read %s", path);
+  if (!b.p) buf_add(&b, "", 0);
+  if (!b.p) {
+    b.p = malloc(1);
+    if (!b.p) die("out of memory");
+  }
+  *n = b.n;
+  return b.p;
+}
+
+static void spit(const char *path, const char *p, size_t n) {
+  char tmp[4400];
+  snprintf(tmp, sizeof tmp, "%s.tmp%d", path, (int)getpid());
+  FILE *f = fopen(tmp, "wb");
+  if (!f) die("cannot write %s: %s", path, strerror(errno));
+  if (fwrite(p, 1, n, f) != n || fclose(f)) die("cannot write %s", path);
+  if (rename(tmp, path)) die("cannot write %s: %s", path, strerror(errno));
+}
+
+static void mkdirs(const char *path) { /* every parent of path */
+  char d[4400];
+  snprintf(d, sizeof d, "%s", path);
+  for (char *p = d + 1; *p; p++)
+    if (*p == '/') {
+      *p = 0;
+      if (mkdir(d, 0755) && errno != EEXIST) die("cannot create %s: %s", d, strerror(errno));
+      *p = '/';
+    }
+}
+
+static char *sha3_hex(const char *p, size_t n) {
+  char *h = fsl_sha3sum_cstr(p, (long long)n);
+  if (!h) die("cannot hash");
+  char *out = strdup(h);
+  fsl_free(h);
+  if (!out) die("out of memory");
+  return out;
+}
+
+static int has_suffix(const char *s, const char *suffix) {
+  size_t a = strlen(s), b = strlen(suffix);
+  return a >= b && !strcmp(s + a - b, suffix);
+}
+
+/* Finds this project's root. Sources need a registered project, not a guess. */
+static char *project_root(sqlite3 *db, const char *project_opt) {
+  char cwd[4096];
+  if (!getcwd(cwd, sizeof cwd)) die("cannot read the current directory");
+  sqlite3_stmt *q = db_prepare(db, project_opt
+      ? "SELECT root FROM ctx_project WHERE project = ?2 ORDER BY (?1 = root OR substr(?1, 1, length(root) + 1) = root || '/') DESC, length(root) DESC LIMIT 1"
+      : "SELECT root FROM ctx_project WHERE ?1 = root OR substr(?1, 1, length(root) + 1) = root || '/' ORDER BY length(root) DESC LIMIT 1");
+  sqlite3_bind_text(q, 1, cwd, -1, SQLITE_STATIC);
+  if (project_opt) sqlite3_bind_text(q, 2, project_opt, -1, SQLITE_STATIC);
+  if (sqlite3_step(q) != SQLITE_ROW) die("no registered project here; run: ctx project add NAME");
+  char *root = dup_text(sqlite3_column_text(q, 0));
+  sqlite3_finalize(q);
+  return root;
+}
+
+static void require_date(sqlite3 *db, const char *flag, const char *value) {
+  sqlite3_stmt *q = db_prepare(db, "SELECT ?1 GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' AND date(?1) = ?1");
+  sqlite3_bind_text(q, 1, value, -1, SQLITE_STATIC);
+  sqlite3_step(q);
+  if (!sqlite3_column_int(q, 0)) die("%s must be a date like 2026-03-31", flag);
+  sqlite3_finalize(q);
+}
+
+static int source_class_ok(const char *c) {
+  return c && (!strcmp(c, "evergreen") || !strcmp(c, "versioned") || !strcmp(c, "perishable"));
+}
+
+static int source_add(int argc, char **argv) {
+  const char *file = NULL, *origin = NULL, *klass = NULL, *as = NULL, *retrieved = NULL, *how = "added";
+  const char *review = NULL, *from = NULL, *until = NULL, *project = NULL;
+  for (int i = 0; i < argc; i++) {
+    if (strncmp(argv[i], "--", 2)) {
+      if (file) die("only one file at a time");
+      file = argv[i];
+      continue;
+    }
+    if (i + 1 >= argc) die("%s needs a value", argv[i]);
+    const char *o = argv[i], *v = argv[++i];
+    if (!strcmp(o, "--origin")) origin = v;
+    else if (!strcmp(o, "--class")) klass = v;
+    else if (!strcmp(o, "--as")) as = v;
+    else if (!strcmp(o, "--retrieved")) retrieved = v;
+    else if (!strcmp(o, "--how")) how = v;
+    else if (!strcmp(o, "--review-after")) review = v;
+    else if (!strcmp(o, "--valid-from")) from = v;
+    else if (!strcmp(o, "--valid-until")) until = v;
+    else if (!strcmp(o, "--project")) project = v;
+    else die("unknown option %s", o);
+  }
+  if (!file) die("usage: ctx source add FILE --origin WHERE --class evergreen|versioned|perishable [--as PATH]");
+  if (!origin || !*origin) die("--origin is required: say where this source came from");
+  if (!source_class_ok(klass)) die("--class must be evergreen, versioned or perishable");
+  if (!strcmp(klass, "perishable") && !review) die("a perishable source needs --review-after DATE");
+  if (!as) {
+    const char *slash = strrchr(file, '/');
+    as = slash ? slash + 1 : file;
+  }
+  if (as[0] == '/' || !strcmp(as, "..") || !strncmp(as, "../", 3) || strstr(as, "/../") || has_suffix(as, "/..") || has_suffix(as, ORIGIN_SUFFIX))
+    die("--as must be a plain path inside sources/");
+  sqlite3 *db = ctx_open();
+  if (retrieved) require_date(db, "--retrieved", retrieved);
+  if (review) require_date(db, "--review-after", review);
+  if (from) require_date(db, "--valid-from", from);
+  if (until) require_date(db, "--valid-until", until);
+  char *root = project_root(db, project);
+  char dest[4400], meta[4500];
+  snprintf(dest, sizeof dest, "%s/sources/%s", root, as);
+  snprintf(meta, sizeof meta, "%s%s", dest, ORIGIN_SUFFIX);
+  size_t n = 0, have = 0;
+  char *data = slurp(file, &n);
+  if (!data) die("cannot read %s: %s", file, strerror(errno));
+  char *hash = sha3_hex(data, n);
+  char *old = slurp(dest, &have);
+  if (old) {
+    char *oldh = sha3_hex(old, have);
+    if (strcmp(oldh, hash)) die("sources/%s already exists with different content; a source is never edited in place", as);
+    free(oldh);
+    if (exists(meta)) {
+      printf("sources/%s is already recorded\n", as);
+      return 0;
+    }
+  } else {
+    mkdirs(dest);
+    spit(dest, data, n);
+  }
+  sqlite3_stmt *q = db_prepare(db,
+      "SELECT json_pretty(json_object('name', ?1, 'sha3', ?2, 'size', ?3, 'origin', ?4, 'retrieved', coalesce(?5, date('now')),"
+      " 'how', ?6, 'class', ?7, 'review_after', ?8, 'valid_from', ?9, 'valid_until', ?10, 'added_by', ?11, 'added_at', date('now')))");
+  sqlite3_bind_text(q, 1, as, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 2, hash, -1, SQLITE_STATIC);
+  sqlite3_bind_int64(q, 3, (sqlite3_int64)n);
+  sqlite3_bind_text(q, 4, origin, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 5, retrieved, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 6, how, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 7, klass, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 8, review, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 9, from, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 10, until, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 11, person(), -1, SQLITE_STATIC);
+  if (sqlite3_step(q) != SQLITE_ROW) die("%s", sqlite3_errmsg(db));
+  buf out = {0};
+  buf_str(&out, (const char *)sqlite3_column_text(q, 0));
+  buf_str(&out, "\n");
+  sqlite3_finalize(q);
+  spit(meta, out.p, out.n);
+  printf("sources/%s %.12s\ncommit sources/%s and its %s file to record it\n", as, hash, as, ORIGIN_SUFFIX);
+  sqlite3_close(db);
+  return 0;
+}
+
+typedef struct {
+  long sources, problems, due;
+} source_tally;
+
+static void source_walk(sqlite3 *db, const char *root, const char *rel, source_tally *t) {
+  char dir[4400];
+  snprintf(dir, sizeof dir, "%s/%s", root, rel);
+  DIR *d = opendir(dir);
+  if (!d) return;
+  struct dirent *e;
+  while ((e = readdir(d))) {
+    if (e->d_name[0] == '.') continue;
+    char sub[4500], full[4600];
+    snprintf(sub, sizeof sub, "%s/%s", rel, e->d_name);
+    snprintf(full, sizeof full, "%s/%s", root, sub);
+    struct stat st;
+    if (stat(full, &st)) continue;
+    if (S_ISDIR(st.st_mode)) {
+      source_walk(db, root, sub, t);
+      continue;
+    }
+    if (has_suffix(e->d_name, ORIGIN_SUFFIX)) {
+      char base[4600];
+      snprintf(base, sizeof base, "%s", full);
+      base[strlen(base) - strlen(ORIGIN_SUFFIX)] = 0;
+      if (!exists(base)) {
+        printf("no source for %s\n", sub);
+        t->problems++;
+      }
+      continue;
+    }
+    t->sources++;
+    char meta[4700];
+    snprintf(meta, sizeof meta, "%s%s", full, ORIGIN_SUFFIX);
+    size_t n = 0, mn = 0;
+    char *m = slurp(meta, &mn);
+    if (!m) {
+      printf("no origin recorded for %s\n", sub);
+      t->problems++;
+      continue;
+    }
+    char *data = slurp(full, &n);
+    char *hash = data ? sha3_hex(data, n) : NULL;
+    sqlite3_stmt *q = db_prepare(db,
+        "SELECT json_valid(?1), json_extract(?1, '$.sha3'), json_extract(?1, '$.origin'), json_extract(?1, '$.class'),"
+        " json_extract(?1, '$.review_after') < date('now')");
+    sqlite3_bind_text(q, 1, m, (int)mn, SQLITE_STATIC);
+    const char *problem = NULL;
+    if (sqlite3_step(q) != SQLITE_ROW || !sqlite3_column_int(q, 0)) problem = "its origin file is not valid";
+    else if (!hash || !sqlite3_column_text(q, 1) || strcmp((const char *)sqlite3_column_text(q, 1), hash)) problem = "it changed after its origin was recorded";
+    else if (!sqlite3_column_text(q, 2) || !*sqlite3_column_text(q, 2)) problem = "it has no origin";
+    else if (!source_class_ok((const char *)sqlite3_column_text(q, 3))) problem = "it has no valid class";
+    else if (sqlite3_column_int(q, 4)) {
+      printf("due for review: %s\n", sub);
+      t->due++;
+    }
+    if (problem) {
+      printf("%s: %s\n", sub, problem);
+      t->problems++;
+    }
+    sqlite3_finalize(q);
+    free(hash);
+    free(data);
+    free(m);
+  }
+  closedir(d);
+}
+
+static int cmd_source(int argc, char **argv) {
+  if (argc >= 1 && !strcmp(argv[0], "add")) return source_add(argc - 1, argv + 1);
+  if (argc >= 1 && !strcmp(argv[0], "check")) {
+    const char *project = argc == 3 && !strcmp(argv[1], "--project") ? argv[2] : NULL;
+    if (argc != 1 && !project) die("usage: ctx source check [--project P]");
+    sqlite3 *db = ctx_open();
+    char *root = project_root(db, project);
+    source_tally t = {0, 0, 0};
+    source_walk(db, root, "sources", &t);
+    printf("%ld sources, %ld problems, %ld due for review\n", t.sources, t.problems, t.due);
+    free(root);
+    sqlite3_close(db);
+    return t.problems ? 1 : 0;
+  }
+  die("usage: ctx source add FILE --origin WHERE --class CLASS [options] | ctx source check [--project P]");
+  return 2;
+}
+
 static int usage(void) {
   fputs("usage: ctx version\n"
         "       ctx init\n"
@@ -1800,6 +2125,8 @@ static int usage(void) {
         "       ctx turn ID [BEFORE [AFTER]] [--full]\n"
         "       ctx audit [--all] [--known] [--tickets] [--limit N] | --allow ID [NOTE]\n"
         "       ctx ticket new|ready|show|claim|done|drop|offer ...\n"
+        "       ctx project add NAME [--root DIR] [--import FILE] [--remote URL] | list\n"
+        "       ctx source add FILE --origin WHERE --class CLASS [--as PATH] | check\n"
         "       ctx scan [DIR]\n"
         "       ctx hook\n"
         "       ctx sql STATEMENT\n",
@@ -1820,6 +2147,8 @@ int main(int argc, char **argv) {
   if ((argc == 2 || argc == 3) && !strcmp(argv[1], "scan")) return cmd_scan(argc == 3 ? argv[2] : NULL);
   if (argc >= 2 && !strcmp(argv[1], "audit")) return cmd_audit(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "ticket")) return cmd_ticket(argc - 2, argv + 2);
+  if (argc >= 3 && !strcmp(argv[1], "project")) return cmd_project(argc - 2, argv + 2);
+  if (argc >= 3 && !strcmp(argv[1], "source")) return cmd_source(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "search")) return cmd_search(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "turn")) return cmd_turn(argc - 2, argv + 2);
   return usage();
