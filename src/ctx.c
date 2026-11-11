@@ -6,6 +6,7 @@
 #define _GNU_SOURCE /* memmem */
 #define _FILE_OFFSET_BITS 64
 #include <ctype.h>
+#include <poll.h>
 #include <dirent.h>
 #include <errno.h>
 #include <math.h>
@@ -27,13 +28,14 @@
 
 #define CTX_VERSION "0.0.1"
 #define CTX_USER_VERSION 5    /* PRAGMA user_version once initialized */
-#define CTX_DERIVED_VERSION 3 /* raise when schema/index.sql changes; ctx then rebuilds */
+#define CTX_DERIVED_VERSION 4 /* raise when schema/index.sql changes; ctx then rebuilds */
 
 /* A tool's output is kept up to this size at each end; the middle is cut. */
 #define TOOL_KEEP (16 * 1024)
 
 int fsl_sqlext_init(sqlite3 *db, char **err, const sqlite3_api_routines *api); /* as libfossil defines it */
 static void rules_index(sqlite3 *db);
+static void decisions_index(sqlite3 *db);
 static long rules_import(sqlite3 *db);
 char *fsl_sha3sum_cstr(const char *in, long long len);
 void fsl_free(void *p);
@@ -1716,6 +1718,7 @@ static int cmd_scan(const char *root_arg) {
   closedir(top);
   sqlite3_finalize(q);
   relabel_speakers(db);
+  decisions_index(db);
   long rules = rules_import(db);
   sqlite3_close(db);
   printf("%ld transcripts read\n", ran);
@@ -4612,6 +4615,91 @@ static int cmd_inject(void) {
 
 /* ctx rebuild: drops every derived table and recomputes it from the repositories:
  * sessions from technotes, and each project's sources and wiki. State is untouched. */
+/* Decisions: each question an agent asked the person with AskUserQuestion, and the
+ * answer, read from the turns. The question is the tool call's JSON on its own line in
+ * the asking turn; the answer is its tool result, among the next few chunks of the
+ * session (which may be in the next day's technote). "Doesn't want to proceed" means
+ * they replied in their own words, so their next turn is the answer. A question whose
+ * call was cut off by the session ending or a compaction is "interrupted".
+ * ?1 limits it to one session's turns, or is NULL for all. */
+#define DECISIONS_REPLY "(c.body LIKE '%questions have been answered:%' OR c.body LIKE '%The user answered:%' OR c.body LIKE '%doesn''t want to proceed%')"
+#define DECISIONS_SELECT \
+  "WITH asks AS (SELECT a.id, a.doc_id, a.seq, a.turn, a.at, coalesce(a.project, d.project) AS project," \
+  "  (SELECT d2.id FROM ctx_capture_day c1 JOIN ctx_capture_day c2 ON c2.session = c1.session AND c2.day > c1.day" \
+  "   JOIN ctx_doc d2 ON d2.kind = 'session' AND d2.name = c2.technote WHERE c1.technote = d.name ORDER BY c2.day LIMIT 1) AS next_doc," \
+  "  substr(a.body, instr(a.body, 'AskUserQuestion {') + 16) AS rest FROM ctx_chunk a JOIN ctx_doc d ON d.id = a.doc_id" \
+  "  WHERE d.kind = 'session' AND a.heading = 'assistant' AND a.body LIKE '%AskUserQuestion {%'" \
+  "  AND NOT (a.turn LIKE 'note:%' AND EXISTS (SELECT 1 FROM ctx_chunk b WHERE b.doc_id = a.doc_id AND b.id <> a.id" \
+  "   AND b.at IS a.at AND b.heading = a.heading AND b.body = a.body AND b.turn NOT LIKE 'note:%'))" \
+  "  AND (?1 IS NULL OR a.doc_id IN (SELECT dd.id FROM ctx_doc dd JOIN ctx_capture_day cd ON cd.technote = dd.name WHERE cd.session = ?1)))," \
+  " j AS (SELECT *, CASE WHEN instr(rest, char(10)) > 0 THEN substr(rest, 1, instr(rest, char(10)) - 1) ELSE rest END AS js FROM asks)," \
+  " q AS (SELECT j.*, (SELECT group_concat(json_extract(value, '$.question'), ' / ') FROM json_each(js, '$.questions')) AS question," \
+  "  (SELECT group_concat(json_extract(o.value, '$.label'), ' | ') FROM json_each(js, '$.questions') qq, json_each(qq.value, '$.options') o) AS options," \
+  "  coalesce((SELECT c.id FROM ctx_chunk c WHERE c.doc_id = j.doc_id AND c.seq BETWEEN j.seq + 1 AND j.seq + 8 AND c.heading = 'tool' AND " DECISIONS_REPLY \
+  "    AND NOT EXISTS (SELECT 1 FROM ctx_chunk x WHERE x.doc_id = j.doc_id AND x.seq > j.seq AND x.seq < c.seq AND x.heading = 'assistant') ORDER BY c.seq LIMIT 1)," \
+  "   (SELECT c.id FROM ctx_chunk c WHERE c.doc_id = j.next_doc AND c.seq <= 8 AND c.heading = 'tool' AND " DECISIONS_REPLY \
+  "    AND NOT EXISTS (SELECT 1 FROM ctx_chunk x WHERE x.heading = 'assistant' AND ((x.doc_id = j.doc_id AND x.seq > j.seq) OR (x.doc_id = j.next_doc AND x.seq < c.seq)))" \
+  "    ORDER BY c.seq LIMIT 1)) AS reply," \
+  "  coalesce((SELECT c.heading || ':' || substr(c.body, 1, 30) FROM ctx_chunk c WHERE c.doc_id = j.doc_id AND c.seq > j.seq ORDER BY c.seq LIMIT 1)," \
+  "   (SELECT c.heading || ':' || substr(c.body, 1, 30) FROM ctx_chunk c WHERE c.doc_id = j.next_doc ORDER BY c.seq LIMIT 1)) AS first" \
+  "  FROM j WHERE json_valid(js))," \
+  " r AS (SELECT q.*, n.doc_id AS ndoc, n.seq AS nseq, n.at AS nat," \
+  "  CASE WHEN n.body LIKE '%questions have been answered:%' OR n.body LIKE '%The user answered:%' THEN 'answered'" \
+  "       WHEN n.body LIKE '%doesn''t want to proceed%' THEN 'declined'" \
+  "       WHEN q.first LIKE 'meta:%' OR q.first LIKE 'user:%[Tool call interrupted%' THEN 'interrupted' ELSE 'open' END AS status," \
+  "  replace(replace(replace(replace(coalesce(n.body, ''), '\"' || q.question || '\"=', ''), 'Your questions have been answered:', '')," \
+  "   'The user answered:', ''), 'You can now continue with these answers in mind.', '') AS a" \
+  "  FROM q LEFT JOIN ctx_chunk n ON n.id = q.reply" \
+  "  WHERE q.question IS NOT NULL)" \
+  " SELECT project, doc_id, turn, at, question, options, status," \
+  "  CASE status WHEN 'answered' THEN trim(CASE WHEN instr(a, 'Read the answers carefully') > 0" \
+  "       THEN substr(a, 1, instr(a, 'Read the answers carefully') - 1) ELSE a END, ' \".' || char(10))" \
+  "    WHEN 'declined' THEN (SELECT trim(u.body) FROM ctx_chunk u WHERE u.doc_id = r.ndoc AND u.seq > r.nseq AND u.heading = 'user' ORDER BY u.seq LIMIT 1) END AS answer," \
+  "  nat AS answer_at FROM r"
+
+static void decisions_index(sqlite3 *db) {
+  db_exec(db, "BEGIN IMMEDIATE; DELETE FROM ctx_decision;");
+  sqlite3_stmt *q = db_prepare(db, "INSERT INTO ctx_decision(project, doc_id, ask_turn, at, question, options, status, answer, answer_at) " DECISIONS_SELECT);
+  sqlite3_bind_null(q, 1);
+  if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+  sqlite3_finalize(q);
+  db_exec(db, "COMMIT");
+}
+
+/* ctx decisions [--open] [--all] [--limit N]: questions agents asked the person, and their answers. */
+static int cmd_decisions(int argc, char **argv) {
+  int open_only = 0, all = 0;
+  long limit = 20;
+  for (int i = 0; i < argc; i++) {
+    if (!strcmp(argv[i], "--open")) open_only = 1;
+    else if (!strcmp(argv[i], "--all")) all = 1;
+    else if (!strcmp(argv[i], "--limit") && i + 1 < argc) limit = atol(argv[++i]);
+    else die("usage: ctx decisions [--open] [--all] [--limit N]");
+  }
+  sqlite3 *db = ctx_open();
+  decisions_index(db);
+  char *proj = all ? NULL : current_project(db);
+  sqlite3_stmt *q = db_prepare(db,
+      "SELECT substr(coalesce(at, ''), 1, 10), project, status, replace(substr(question, 1, 200), char(10), ' '),"
+      " replace(substr(coalesce(answer, ''), 1, 200), char(10), ' ') FROM ctx_decision"
+      " WHERE (?1 IS NULL OR project = ?1) AND (NOT ?2 OR (status IN ('open', 'interrupted') AND at >= date('now', '-14 days')))"
+      " ORDER BY at DESC LIMIT ?3");
+  sqlite3_bind_text(q, 1, proj, -1, SQLITE_STATIC);
+  sqlite3_bind_int(q, 2, open_only);
+  sqlite3_bind_int64(q, 3, limit);
+  int n = 0;
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    printf("%s %s %s\n  Q: %s\n", sqlite3_column_text(q, 0), sqlite3_column_text(q, 1), sqlite3_column_text(q, 2), sqlite3_column_text(q, 3));
+    if (*sqlite3_column_text(q, 4)) printf("  A: %s\n", sqlite3_column_text(q, 4));
+    n++;
+  }
+  if (!n) puts(open_only ? "no questions are waiting for an answer" : "no decisions recorded");
+  sqlite3_finalize(q);
+  free(proj);
+  sqlite3_close(db);
+  return 0;
+}
+
 /* Rules: standing instructions the person gave, kept on purpose. Each is a technote
  * in the private repository tagged "rule", so an edit keeps history and it syncs.
  * Its text starts with "key: value" lines, then a blank line, then the rule:
@@ -5056,7 +5144,113 @@ static int cmd_remember(int argc, char **argv) {
                    " AND coalesce(k.reviewed, '') < date('now', '-90 days') AND coalesce(k.kept, '') < date('now', '-90 days')"
 #define REVIEW_DUE_COUNT "SELECT count(*)" REVIEW_DUE
 
+/* The compaction brief: where this session stood, from its own archived turns, so
+ * the first turn after a compaction need not be "status". Each line is a record. */
+#define BRIEF_MAX 1600
+static void session_brief(sqlite3 *db, const char *session, buf *all) {
+  buf b = {0};
+  sqlite3_stmt *q = NULL;
+  char line[600];
+  /* questions waiting for the person, and their recent answers */
+  if (sqlite3_prepare_v2(db, "SELECT status, replace(substr(question, 1, 150), char(10), ' '), replace(substr(coalesce(answer, ''), 1, 120), char(10), ' '),"
+                             " substr(coalesce(at, ''), 1, 10) FROM (" DECISIONS_SELECT ")"
+                             " WHERE (status IN ('open', 'interrupted') AND at >= date('now', '-7 days')) OR (status NOT IN ('open', 'interrupted') AND coalesce(answer_at, at) >= datetime('now', '-2 days'))"
+                             " ORDER BY status NOT IN ('open', 'interrupted'), at DESC LIMIT 6", -1, &q, NULL) == SQLITE_OK) {
+    sqlite3_bind_text(q, 1, session, -1, SQLITE_STATIC);
+    while (sqlite3_step(q) == SQLITE_ROW && b.n < BRIEF_MAX) {
+      const char *st = (const char *)sqlite3_column_text(q, 0);
+      if (!strcmp(st, "open"))
+        snprintf(line, sizeof line, "\n- Waiting for the user since %s: %s", sqlite3_column_text(q, 3), sqlite3_column_text(q, 1));
+      else if (!strcmp(st, "interrupted"))
+        snprintf(line, sizeof line, "\n- Asked on %s but cut off before the user answered: %s", sqlite3_column_text(q, 3), sqlite3_column_text(q, 1));
+      else
+        snprintf(line, sizeof line, "\n- The user decided: %s -> %s", sqlite3_column_text(q, 1), sqlite3_column_text(q, 2));
+      buf_str(&b, line);
+    }
+    sqlite3_finalize(q);
+  }
+  /* messages from other sessions in the last day */
+  if (sqlite3_prepare_v2(db,
+          "SELECT substr(c.body, instr(c.body, 'from-name=\"') + 11, instr(substr(c.body, instr(c.body, 'from-name=\"') + 11), '\"') - 1),"
+          " replace(substr(substr(c.body, instr(c.body, '\">') + 2), 1, 130), char(10), ' ')"
+          " FROM ctx_chunk c JOIN ctx_doc d ON d.id = c.doc_id JOIN ctx_capture_day cd ON cd.technote = d.name"
+          " WHERE cd.session = ?1 AND c.heading = 'meta' AND c.body LIKE '%Another Claude session sent a message%from-name=%'"
+          " AND c.at >= datetime('now', '-1 day') ORDER BY c.at DESC LIMIT 4", -1, &q, NULL) == SQLITE_OK) {
+    sqlite3_bind_text(q, 1, session, -1, SQLITE_STATIC);
+    while (sqlite3_step(q) == SQLITE_ROW && b.n < BRIEF_MAX) {
+      snprintf(line, sizeof line, "\n- Message from the %s session: %s", sqlite3_column_text(q, 0), sqlite3_column_text(q, 1));
+      buf_str(&b, line);
+    }
+    sqlite3_finalize(q);
+  }
+  /* standing instructions the person gave in this session */
+  if (sqlite3_prepare_v2(db,
+          "SELECT replace(substr(p.text, 1, 150), char(10), ' '), p.status FROM ctx_rule_proposal p"
+          " WHERE p.turn IN (SELECT c.turn FROM ctx_chunk c JOIN ctx_doc d ON d.id = c.doc_id JOIN ctx_capture_day cd ON cd.technote = d.name"
+          "   WHERE cd.session = ?1) AND p.status <> 'rejected' ORDER BY p.at DESC LIMIT 4", -1, &q, NULL) == SQLITE_OK) {
+    sqlite3_bind_text(q, 1, session, -1, SQLITE_STATIC);
+    while (sqlite3_step(q) == SQLITE_ROW && b.n < BRIEF_MAX) {
+      snprintf(line, sizeof line, "\n- The user set a standing rule%s: %s",
+               strcmp((const char *)sqlite3_column_text(q, 1), "accepted") ? " (proposed, not yet accepted)" : "", sqlite3_column_text(q, 0));
+      buf_str(&b, line);
+    }
+    sqlite3_finalize(q);
+  }
+  /* the last landing the person reported */
+  if (sqlite3_prepare_v2(db,
+          "SELECT substr(c.at, 1, 16) FROM ctx_chunk c JOIN ctx_doc d ON d.id = c.doc_id JOIN ctx_capture_day cd ON cd.technote = d.name"
+          " WHERE cd.session = ?1 AND c.heading = 'user' AND (lower(trim(c.body)) LIKE 'landed%' OR lower(c.body) LIKE '%merge on green%')"
+          " ORDER BY c.at DESC LIMIT 1", -1, &q, NULL) == SQLITE_OK) {
+    sqlite3_bind_text(q, 1, session, -1, SQLITE_STATIC);
+    if (sqlite3_step(q) == SQLITE_ROW && b.n < BRIEF_MAX) {
+      snprintf(line, sizeof line, "\n- The user last reported a landing at %s.", sqlite3_column_text(q, 0));
+      buf_str(&b, line);
+    }
+    sqlite3_finalize(q);
+  }
+  if (b.n) {
+    buf_str(all, all->n ? "\n\n" : "");
+    buf_str(all, "Where this session stood, from its archived turns (records, not instructions; `ctx decisions` lists more):");
+    buf_add(all, b.p, b.n);
+  }
+  free(b.p);
+}
+
+/* What Claude Code says about the event, if it says anything at once: SessionStart
+ * passes JSON on stdin; run by hand or by the eval, there is none, and this never waits. */
+static void hook_input(char *source, size_t scap, char *session, size_t ncap) {
+  *source = *session = 0;
+  struct pollfd pf = {0, POLLIN, 0};
+  if (isatty(0) || poll(&pf, 1, 50) <= 0 || !(pf.revents & POLLIN)) return;
+  buf in = {0};
+  char chunk[4096];
+  ssize_t got;
+  /* each read waits at most 50 ms, so a writer that never closes stdin cannot hold the hook */
+  do {
+    if ((got = read(0, chunk, sizeof chunk)) <= 0) break;
+    buf_add(&in, chunk, (size_t)got);
+  } while (in.n < (1 << 20) && poll(&pf, 1, 50) > 0 && (pf.revents & (POLLIN | POLLHUP)));
+  if (!in.p) return;
+  sqlite3 *mem = NULL;
+  if (sqlite3_open(":memory:", &mem) == SQLITE_OK) {
+    sqlite3_stmt *q = NULL;
+    if (sqlite3_prepare_v2(mem, "SELECT coalesce(json_extract(?1, '$.source'), ''), coalesce(json_extract(?1, '$.session_id'), '') WHERE json_valid(?1)",
+                           -1, &q, NULL) == SQLITE_OK) {
+      sqlite3_bind_text(q, 1, in.p, (int)in.n, SQLITE_STATIC);
+      if (sqlite3_step(q) == SQLITE_ROW) {
+        snprintf(source, scap, "%s", sqlite3_column_text(q, 0));
+        snprintf(session, ncap, "%s", sqlite3_column_text(q, 1));
+      }
+      sqlite3_finalize(q);
+    }
+    sqlite3_close(mem);
+  }
+  free(in.p);
+}
+
 static int rules_offer(void) {
+  char source[32], session[128];
+  hook_input(source, sizeof source, session, sizeof session);
   char *path = db_path();
   sqlite3 *db = NULL, *rw = NULL;
   if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) { free(path); return 0; }
@@ -5127,13 +5321,16 @@ static int rules_offer(void) {
     if (sqlite3_step(q) == SQLITE_ROW) { due = sqlite3_column_int(q, 0); review_now = due > 0 && sqlite3_column_int(q, 1); }
     sqlite3_finalize(q);
   }
-  if (sessions || n || waiting || *ask_key || review_now) {
+  buf brief = {0};
+  if (*session && (!strcmp(source, "compact") || !strcmp(source, "resume"))) session_brief(db, session, &brief);
+  if (sessions || n || waiting || *ask_key || review_now || brief.n) {
     buf all = {0};
     char line[1600];
+    if (brief.n) buf_add(&all, brief.p, brief.n); /* first: it is what the person will ask about */
     if (sessions) {
-      snprintf(line, sizeof line, "Past sessions of %s are archived (%d session days), tool output included. Before guessing at history,"
+      snprintf(line, sizeof line, "%sPast sessions of %s are archived (%d session days), tool output included. Before guessing at history,"
                " search them: `ctx search WORDS` with two or three exact names or error words, then `ctx turn ID 2 5` to read around a hit.",
-               project, sessions);
+               all.n ? "\n\n" : "", project, sessions);
       buf_str(&all, line);
     }
     if (n) {
@@ -5185,6 +5382,7 @@ static int rules_offer(void) {
     free(all.p);
   }
   free(text.p);
+  free(brief.p);
   free(project);
   if (rw) sqlite3_close(rw);
   sqlite3_close(db);
@@ -5798,7 +5996,7 @@ static int cmd_rules(int argc, char **argv) {
 static const char *const derived_objects[] = {
     "VIEW ctx_stale_wiki", "VIEW ctx_ready_ticket", "TRIGGER ctx_chunk_ai", "TRIGGER ctx_chunk_ad", "TRIGGER ctx_chunk_au",
     "TABLE ctx_chunk_fts", "TABLE ctx_link", "TABLE ctx_citation", "TABLE ctx_source_meta", "TABLE ctx_supersession",
-    "TABLE ctx_remote_note", "TABLE ctx_chunk", "TABLE ctx_doc", NULL};
+    "TABLE ctx_remote_note", "TABLE ctx_decision", "TABLE ctx_chunk", "TABLE ctx_doc", NULL};
 
 static void rebuild_derived(sqlite3 *db) {
   db_exec(db, "BEGIN IMMEDIATE");
@@ -5815,6 +6013,7 @@ static void rebuild_derived(sqlite3 *db) {
   db_exec(db, "COMMIT");
   sessions_from_remote(db, 1);
   rules_index(db);
+  decisions_index(db);
   char **projects = NULL;
   size_t n = 0;
   sqlite3_stmt *q = db_prepare(db, "SELECT project FROM ctx_repo WHERE scope = 'shared' ORDER BY project");
@@ -5863,6 +6062,7 @@ static int usage(void) {
         "       ctx inject\n"
         "       ctx stats [--weeks N]\n"
         "       ctx remember TEXT [--project P] [--until DATE] [--from TURN]\n"
+        "       ctx decisions [--open] [--all] [--limit N]\n"
         "       ctx rules [--all] [--project P] | import | retire KEY --reason WHY [--by KEY] | offer\n"
         "       ctx rules proposed [--all] | accept N [--text TEXT] [--until DATE] | reject N\n"
         "       ctx rules classifier [CMD | --off] | propose [--limit N] | candidates [--limit N] | prompt | suggest TURN TEXT\n"
@@ -5899,6 +6099,7 @@ int main(int argc, char **argv) {
   if (argc >= 3 && !strcmp(argv[1], "turn")) return cmd_turn(argc - 2, argv + 2);
   if (argc >= 2 && !strcmp(argv[1], "stats")) return cmd_stats(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "remember")) return cmd_remember(argc - 2, argv + 2);
+  if (argc >= 2 && !strcmp(argv[1], "decisions")) return cmd_decisions(argc - 2, argv + 2);
   if (argc >= 2 && !strcmp(argv[1], "rules")) return cmd_rules(argc - 2, argv + 2);
   return usage();
 }

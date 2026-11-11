@@ -289,6 +289,50 @@ assert "Past sessions of rp are archived" in c, c
 assert "release note" in c and "Never push straight to main" not in c, c
 PY
 [ -z "$(cd "$T" && CTX_DB="$T/none.sqlite" "$CTX" rules offer)" ] || fail "the hook says nothing without a database"
+# Decisions: each AskUserQuestion and its answer, read from the turns; an answer may land
+# in the next day's technote, and a call cut off by the session ending is interrupted.
+python3 - "$RC/projects/-w-rp/d00d0002-0000-0000-0000-000000000002.jsonl" <<'PY'
+import datetime as dt, json, sys
+now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+day = (now - dt.timedelta(days=1)).replace(hour=23, minute=58)
+def at(t): return t.strftime("%Y-%m-%dT%H:%M:%SZ")
+def ask(u, t, q, opts): return {"uuid": u, "timestamp": at(t), "cwd": "/w/rp", "message": {"role": "assistant", "content": [
+    {"type": "text", "text": "One question."}, {"type": "tool_use", "id": "t" + u, "name": "AskUserQuestion",
+    "input": {"questions": [{"question": q, "header": "h", "multiSelect": False, "options": [{"label": o, "description": "d"} for o in opts]}]}}]}}
+def res(u, t, text): return {"uuid": u, "timestamp": at(t), "cwd": "/w/rp", "message": {"role": "user", "content": [
+    {"type": "tool_result", "tool_use_id": "t", "content": text}]}}
+rows = [
+    ask("q-1", day - dt.timedelta(hours=2), "Which store for the plover index?", ["SQLite", "Files"]),
+    res("a-1", day - dt.timedelta(hours=1, minutes=59), 'Your questions have been answered: "Which store for the plover index?"="SQLite". You can now continue with these answers in mind.'),
+    ask("q-2", day, "Ship the plover hook tonight?", ["Yes", "No"]),
+    res("a-2", day + dt.timedelta(minutes=3), 'Your questions have been answered: "Ship the plover hook tonight?"="No". You can now continue with these answers in mind.'),
+    ask("q-3", day + dt.timedelta(minutes=10), "Rename the plover table?", ["Yes", "No"]),
+    {"uuid": "u-3", "timestamp": at(day + dt.timedelta(minutes=11)), "cwd": "/w/rp", "message": {"role": "user", "content": "[Tool call interrupted: the session ended before this call's result was recorded]"}},
+    {"uuid": "s-3", "timestamp": at(day + dt.timedelta(minutes=12)), "cwd": "/w/rp", "message": {"role": "assistant", "content": "Back again."}},
+    ask("q-4", day + dt.timedelta(minutes=20), "Which plover colour?", ["Grey", "Brown"]),
+]
+open(sys.argv[1], "w").write("".join(json.dumps(r) + "\n" for r in rows))
+PY
+"$CTX" archive "$RC/projects/-w-rp/d00d0002-0000-0000-0000-000000000002.jsonl" >/dev/null
+(cd "$T/w/rp" && "$CTX" decisions) > "$T/dec.txt"
+grep -A1 'answered' "$T/dec.txt" | grep -q 'Which store for the plover index' || fail "a question and its answer are recorded: $(cat "$T/dec.txt")"
+grep -q 'A: SQLite$' "$T/dec.txt" || fail "the answer is the chosen option alone: $(cat "$T/dec.txt")"
+grep -q 'A: No$' "$T/dec.txt" || fail "an answer in the next day's technote is found: $(cat "$T/dec.txt")"
+[ "$("$CTX" sql "SELECT status FROM ctx_decision WHERE question LIKE 'Rename the plover%'")" = interrupted ] || fail "a call cut off by the session ending is interrupted"
+[ "$("$CTX" sql "SELECT status FROM ctx_decision WHERE question LIKE 'Which plover colour%'")" = open ] || fail "an unanswered question is open"
+(cd "$T/w/rp" && "$CTX" decisions --open) | grep -q 'Which store' && fail "--open leaves answered questions out"
+# After a compaction the hook carries where the session stood; at a fresh start it does not.
+printf '{"source":"compact","session_id":"d00d0002-0000-0000-0000-000000000002"}' | (cd "$T/w/rp" && "$CTX" rules offer) > "$T/brief.json"
+python3 - "$T/brief.json" <<'PY'
+import json, sys
+c = json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]
+assert "Waiting for the user" in c and "Which plover colour" in c, c
+assert "cut off before the user answered" in c and "Rename the plover table" in c, c
+assert "The user decided: Ship the plover hook tonight? -> No" in c, c
+PY
+printf '{"source":"startup","session_id":"d00d0002-0000-0000-0000-000000000002"}' | (cd "$T/w/rp" && "$CTX" rules offer) | grep -q 'Which plover colour' && fail "a fresh start carries no brief"
+s0=$(date +%s); sleep 4 | (cd "$T/w/rp" && "$CTX" rules offer >/dev/null; date +%s > "$T/end"); [ $(( $(cat "$T/end") - s0 )) -lt 3 ] || fail "the hook does not wait on a stdin that stays open"
+s0=$(date +%s); (printf '{"source":"compact"'; sleep 4) | (cd "$T/w/rp" && "$CTX" rules offer >/dev/null; date +%s > "$T/end"); [ $(( $(cat "$T/end") - s0 )) -lt 3 ] || fail "the hook does not wait on a writer that never closes"
 # A classifier, any command that answers a prompt on stdin, proposes rules from what the
 # person typed; tool output never reaches it, and only the person accepts a rule.
 cat >> "$RC/projects/-w-rp/d00d0001-0000-0000-0000-000000000001.jsonl" <<'JL'
@@ -1037,7 +1081,7 @@ CTX_DB=/nonexistent/x.sqlite "$CTX" inject < /dev/null || fail "inject never fai
 export CTX_DB="$T/rebuild.sqlite"
 "$CTX" init >/dev/null
 [ "$("$CTX" sql "PRAGMA user_version")" = 5 ] || fail "a new file is at the current version"
-[ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 3 ] || fail "derived version recorded"
+[ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 4 ] || fail "derived version recorded"
 printf '{"uuid":"rb-1","timestamp":"2026-09-01T10:00:00Z","cwd":"/w/rb","message":{"role":"user","content":"the capybara rollout"}}\n{"uuid":"rb-2","timestamp":"2026-09-01T10:00:05Z","cwd":"/w/rb","message":{"role":"assistant","content":"rolled out the capybara"}}\n' > "$T/ab12cd99-rb.jsonl"
 "$CTX" archive "$T/ab12cd99-rb.jsonl" >/dev/null
 RT=$("$CTX" ticket new "Kept across a rebuild" --project rb)
@@ -1052,7 +1096,7 @@ before=$("$CTX" search --all capybara | grep -c '^#')
 "$CTX" sql "UPDATE ctx_meta SET value='1' WHERE key='derived_version'" >/dev/null
 "$CTX" search --all capybara 2>"$T/rb.err" >/dev/null
 grep -q 'rebuilding it once' "$T/rb.err" || fail "an old index is rebuilt on open"
-[ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 3 ] || fail "then it is current"
+[ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 4 ] || fail "then it is current"
 "$CTX" search --all capybara 2>"$T/rb2.err" >/dev/null; [ -s "$T/rb2.err" ] && fail "and is not rebuilt again"
 # A file from before versioning upgrades in place, without a rebuild.
 "$CTX" sql "DROP TABLE ctx_meta" >/dev/null; "$CTX" sql "PRAGMA user_version = 1" >/dev/null

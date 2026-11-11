@@ -242,6 +242,27 @@ rules sync with your archive. A rule past its `--until` date expires. Search sho
 rules in force, each under its file name or key; `--history` brings back expired,
 replaced and retired ones.
 
+## Pick up after a compaction
+
+Every question an agent asked you with AskUserQuestion is a decision record: the
+question, its options, and your answer, read from the archived turns.
+
+```sh
+ctx decisions            # this project's latest questions and answers
+ctx decisions --open     # those still waiting for you, from the last 14 days
+ctx decisions --all      # every project
+```
+
+A question is `answered`, `declined` (you replied in your own words, which become the
+answer), `interrupted` (the session ended or was compacted before you answered) or
+`open`. On one archive of 745 questions, 727 were answered, 15 declined, 2 interrupted
+and 1 open; 83% of the answers name one of the offered options.
+
+When a session is compacted or resumed, `ctx rules offer` begins with where it stood,
+from that session's own turns: questions still waiting for you or cut off, what you
+decided in the last two days, messages from other sessions in the last day, rules you
+set in it, and when you last reported a landing. A fresh session gets none of this.
+
 ## Set up a project
 
 A project maps a directory to a shared Fossil repository held inside the ctx

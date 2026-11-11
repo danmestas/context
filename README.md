@@ -23,6 +23,9 @@ file per machine.
   sessions, with an optional end date, and every scan imports CLAUDE.md and
   Claude Code's memory files as rules. Rules keep their history, sync, and can be
   replaced or retired.
+- **Records decisions.** `ctx decisions` lists each question an agent asked you
+  and your answer. After a compaction the agent is told where the session stood:
+  questions still waiting, recent answers, messages from other sessions.
 - **Tracks tickets** for each project, offered to agents at the start of a
   session.
 - **Keeps sources with provenance.** Each source records where it came from, its
