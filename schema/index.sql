@@ -180,3 +180,23 @@ CREATE TABLE IF NOT EXISTS ctx_decision(
   answer_at TEXT
 ) STRICT;
 CREATE INDEX IF NOT EXISTS ctx_decision_doc ON ctx_decision(doc_id);
+
+-- Each publish of an artifact page, read from the tool result that reported it, and the
+-- turn in which the person approved that version, when one followed.
+CREATE TABLE IF NOT EXISTS ctx_artifact(
+  id            INTEGER PRIMARY KEY,
+  url           TEXT NOT NULL,
+  version       INTEGER NOT NULL,
+  version_id    TEXT,
+  project       TEXT,
+  session       TEXT NOT NULL,   -- the session, or doc:ID for one this machine did not capture
+  turn          TEXT,            -- transcript id of the tool turn that reported the publish
+  at            TEXT,
+  path          TEXT,            -- the file that was published
+  title         TEXT,
+  approved_turn TEXT,
+  approved_at   TEXT,
+  UNIQUE (url, version, turn)
+) STRICT;
+CREATE INDEX IF NOT EXISTS ctx_artifact_url ON ctx_artifact(url, version);
+CREATE INDEX IF NOT EXISTS ctx_artifact_session ON ctx_artifact(session, at);

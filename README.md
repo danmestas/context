@@ -25,7 +25,9 @@ file per machine.
   replaced or retired.
 - **Records decisions.** `ctx decisions` lists each question an agent asked you
   and your answer. After a compaction the agent is told where the session stood:
-  questions still waiting, recent answers, messages from other sessions.
+  questions still waiting, recent answers, messages from other sessions, and the
+  pages it published. `ctx artifacts` lists every published page and the version
+  you approved.
 - **Tracks tickets** for each project, offered to agents at the start of a
   session.
 - **Keeps sources with provenance.** Each source records where it came from, its

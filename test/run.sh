@@ -335,6 +335,46 @@ assert "cut off before the user answered" in c and "Rename the plover table" in 
 assert "The user decided: Ship the plover hook tonight? -> No" in c, c
 PY
 printf '{"source":"startup","session_id":"d00d0002-0000-0000-0000-000000000002"}' | (cd "$T/w/rp" && "$CTX" rules offer) | grep -q 'Which plover colour' && fail "a fresh start carries no brief"
+# Artifacts: each publish is read from its tool result; a short yes in the person's next
+# turn approves that version; text that only quotes a publish line is not one.
+python3 - "$RC/projects/-w-rp/d00d0003-0000-0000-0000-000000000003.jsonl" <<'PY'
+import datetime as dt, json, sys
+now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0) - dt.timedelta(hours=3)
+def at(m): return (now + dt.timedelta(minutes=m)).strftime("%Y-%m-%dT%H:%M:%SZ")
+def call(u, m, path, extra): return {"uuid": u, "timestamp": at(m), "cwd": "/w/rp", "message": {"role": "assistant", "content": [
+    {"type": "tool_use", "id": "t" + u, "name": "Artifact", "input": dict({"file_path": path}, **extra)}]}}
+def res(u, m, text): return {"uuid": u, "timestamp": at(m), "cwd": "/w/rp", "message": {"role": "user", "content": [
+    {"type": "tool_result", "tool_use_id": "t", "content": text}]}}
+def said(u, m, text): return {"uuid": u, "timestamp": at(m), "cwd": "/w/rp", "message": {"role": "user", "content": text}}
+pub = "Published %s at https://claude.ai/artifact/%s (Version %d, version id %d-ab)\n\nLive subscription: connected"
+rows = [
+    call("c-1", 0, "/s/heron-plan/index.html", {"title": "Heron Plan", "icon": "map"}), res("p-1", 1, pub % ("/s/heron-plan/index.html", "HERON1", 1, 1)),
+    said("y-1", 2, "Yes."),
+    call("c-2", 3, "/s/heron-plan/index.html", {}), res("p-2", 4, pub % ("/s/heron-plan/index.html", "HERON1", 2, 2)),
+    said("n-2", 5, "what about the colours on the second chart, they look off to me"),
+    call("c-3", 6, "/s/egret.html", {}), res("p-3", 7, pub % ("/s/egret.html", "EGRET2", 1, 3)),
+    call("c-4", 8, "/s/egret.html", {}), res("p-4", 9, pub % ("/s/egret.html", "EGRET2", 2, 4)),
+    said("y-4", 10, "do it"),
+    res("p-5", 11, "grep output:\n" + pub % ("/s/quoted.html", "QUOTED3", 1, 5)),
+]
+open(sys.argv[1], "w").write("".join(json.dumps(r) + "\n" for r in rows))
+PY
+"$CTX" archive "$RC/projects/-w-rp/d00d0003-0000-0000-0000-000000000003.jsonl" >/dev/null
+(cd "$T/w/rp" && "$CTX" artifacts) > "$T/art.txt"
+grep -q 'Heron Plan' "$T/art.txt" && grep -A1 'Heron Plan' "$T/art.txt" | grep -q 'artifact/HERON1  version 2 of 2 publishes' || fail "an artifact lists its title, address and versions: $(cat "$T/art.txt")"
+grep -A2 'Heron Plan' "$T/art.txt" | grep -q 'approved: version 1 on .* (turn:y-1)' || fail "a short yes approves the version before it, citing the turn: $(cat "$T/art.txt")"
+grep -A2 'egret.html' "$T/art.txt" | grep -q 'approved: version 2 on' || fail "the approval belongs to the latest version before it: $(cat "$T/art.txt")"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_artifact WHERE approved_turn IS NOT NULL")" = 2 ] || fail "a superseded version and one followed by a comment are not approved"
+grep -q QUOTED3 "$T/art.txt" && fail "text that quotes a publish line is not a publish"
+(cd "$T/w/rp" && "$CTX" artifacts heron | grep -q 'Heron Plan') && ! (cd "$T/w/rp" && "$CTX" artifacts heron | grep -q egret) || fail "words narrow the list"
+(cd "$T/w/rp" && "$CTX" artifacts) >/dev/null
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_artifact")" = 4 ] || fail "reading again adds nothing"
+printf '{"source":"compact","session_id":"d00d0003-0000-0000-0000-000000000003"}' | (cd "$T/w/rp" && "$CTX" rules offer) > "$T/abrief.json"
+python3 - "$T/abrief.json" <<'PY'
+import json, sys
+c = json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]
+assert 'Artifact "Heron Plan" at https://claude.ai/artifact/HERON1 is at version 2; the user approved version 1 on' in c, c
+PY
 # A subagent starts without the note, so it gets that one line: no rules, no brief, no questions.
 printf '{"hook_event_name":"SubagentStart","agent_type":"Explore","session_id":"d00d0002-0000-0000-0000-000000000002"}' | (cd "$T/w/rp" && "$CTX" rules offer) > "$T/sub.json"
 python3 - "$T/sub.json" <<'PY'
@@ -1104,7 +1144,7 @@ rc "Do you remember why the flamingo cache stalls?" | python3 -c "import json,sy
 export CTX_DB="$T/rebuild.sqlite"
 "$CTX" init >/dev/null
 [ "$("$CTX" sql "PRAGMA user_version")" = 5 ] || fail "a new file is at the current version"
-[ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 5 ] || fail "derived version recorded"
+[ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 6 ] || fail "derived version recorded"
 printf '{"uuid":"rb-1","timestamp":"2026-09-01T10:00:00Z","cwd":"/w/rb","message":{"role":"user","content":"the capybara rollout"}}\n{"uuid":"rb-2","timestamp":"2026-09-01T10:00:05Z","cwd":"/w/rb","message":{"role":"assistant","content":"rolled out the capybara"}}\n' > "$T/ab12cd99-rb.jsonl"
 "$CTX" archive "$T/ab12cd99-rb.jsonl" >/dev/null
 RT=$("$CTX" ticket new "Kept across a rebuild" --project rb)
@@ -1119,7 +1159,7 @@ before=$("$CTX" search --all capybara | grep -c '^#')
 "$CTX" sql "UPDATE ctx_meta SET value='1' WHERE key='derived_version'" >/dev/null
 "$CTX" search --all capybara 2>"$T/rb.err" >/dev/null
 grep -q 'rebuilding it once' "$T/rb.err" || fail "an old index is rebuilt on open"
-[ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 5 ] || fail "then it is current"
+[ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 6 ] || fail "then it is current"
 "$CTX" search --all capybara 2>"$T/rb2.err" >/dev/null; [ -s "$T/rb2.err" ] && fail "and is not rebuilt again"
 # A file from before versioning upgrades in place, without a rebuild.
 "$CTX" sql "DROP TABLE ctx_meta" >/dev/null; "$CTX" sql "PRAGMA user_version = 1" >/dev/null
