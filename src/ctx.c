@@ -4756,6 +4756,35 @@ static void artifacts_index(sqlite3 *db) {
   if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
   sqlite3_finalize(q);
   db_exec(db, "INSERT OR REPLACE INTO ctx_meta(key, value) VALUES ('artifact_seen', (SELECT coalesce(max(id), 0) FROM ctx_chunk))");
+  /* Pages from html-artifact-publisher: its JSON result gives the read link and the check-in. The
+   * link, with its read token, is the address; an edit link is never taken. Such a result counts
+   * only after a publish command, with a real token, so quoted examples are not publishes.
+   * Versions are numbered in the order they were published. */
+  q = db_prepare(db,
+      "WITH pub AS (SELECT c.id, c.doc_id, c.seq, c.turn, c.at, coalesce(c.project, d.project) AS project, " ARTIFACT_SESSION " AS session,"
+      "   substr(c.body, instr(c.body, '\"viewerUrl\":') + 12, 300) AS r1,"
+      "   substr(c.body, instr(c.body, '\"checkin\":') + 10, 120) AS r2"
+      "  FROM ctx_chunk c JOIN ctx_doc d ON d.id = c.doc_id"
+      "  WHERE c.id > coalesce((SELECT CAST(value AS INTEGER) FROM ctx_meta WHERE key = 'artifact_seen_publisher'), 0)"
+      "   AND d.kind = 'session' AND c.heading = 'tool' AND c.body LIKE '%\"viewerUrl\":%/v/%#%' AND c.body LIKE '%\"checkin\":%'),"
+      " u AS (SELECT pub.*, substr(r1, instr(r1, '\"') + 1, instr(substr(r1, instr(r1, '\"') + 1), '\"') - 1) AS url,"
+      "   substr(r2, instr(r2, '\"') + 1, instr(substr(r2, instr(r2, '\"') + 1), '\"') - 1) AS checkin FROM pub),"
+      " v AS (SELECT u.*, (SELECT substr(a.body, instr(a.body, 'publish'), 1500) FROM ctx_chunk a WHERE a.doc_id = u.doc_id AND a.seq < u.seq"
+      "    AND a.seq >= u.seq - 3 AND a.heading = 'assistant' AND instr(a.body, 'publish') > 0 ORDER BY a.seq DESC LIMIT 1) AS call"
+      "  FROM u WHERE url LIKE 'https://%/v/%#%' AND length(substr(url, instr(url, '#') + 1)) >= 32"
+      "   AND substr(url, instr(url, '#') + 1) NOT GLOB '*[^0-9a-f]*'),"
+      /* the title is quoted in the command, as \"...\" inside the call's JSON or as '...' */
+      " t AS (SELECT v.*, CASE WHEN instr(call, '--title \\\"') > 0"
+      "    THEN substr(call, instr(call, '--title \\\"') + 10, instr(substr(call, instr(call, '--title \\\"') + 10), '\\\"') - 1)"
+      "   WHEN instr(call, '--title ''') > 0"
+      "    THEN substr(call, instr(call, '--title ''') + 9, instr(substr(call, instr(call, '--title ''') + 9), '''') - 1) END AS title"
+      "  FROM v WHERE call IS NOT NULL)"
+      " INSERT OR IGNORE INTO ctx_artifact(url, version, version_id, project, session, turn, at, path, title)"
+      " SELECT url, (SELECT count(*) FROM ctx_artifact x WHERE x.url = t.url) + row_number() OVER (PARTITION BY url ORDER BY at, id),"
+      "  nullif(checkin, ''), project, session, turn, at, NULL, nullif(title, '') FROM t");
+  if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+  sqlite3_finalize(q);
+  db_exec(db, "INSERT OR REPLACE INTO ctx_meta(key, value) VALUES ('artifact_seen_publisher', (SELECT coalesce(max(id), 0) FROM ctx_chunk))");
   /* approvals: for each version not yet approved, the person's next turn in its session */
   q = db_prepare(db,
       "WITH todo AS (SELECT id, url, session, at FROM ctx_artifact WHERE approved_turn IS NULL),"
@@ -4783,7 +4812,8 @@ static void artifacts_index(sqlite3 *db) {
   " (SELECT t.title FROM ctx_artifact t WHERE t.url = a.url AND t.title IS NOT NULL ORDER BY t.at DESC LIMIT 1)," \
   " CASE WHEN a.path LIKE '%/index.htm%' THEN replace(rtrim(rtrim(a.path, replace(a.path, '/', '')), '/')," \
   "   rtrim(rtrim(rtrim(a.path, replace(a.path, '/', '')), '/'), replace(rtrim(rtrim(a.path, replace(a.path, '/', '')), '/'), '/', '')), '')" \
-  "  ELSE replace(a.path, rtrim(a.path, replace(a.path, '/', '')), '') END)"
+  "  ELSE replace(a.path, rtrim(a.path, replace(a.path, '/', '')), '') END," \
+  " replace(substr(a.url, 1, instr(a.url || '#', '#') - 1), rtrim(substr(a.url, 1, instr(a.url || '#', '#') - 1), replace(a.url, '/', '')), ''))"
 #define ARTIFACTS_SELECT \
   "SELECT substr(a.at, 1, 10) AS day, coalesce(a.project, '') AS project, " ARTIFACT_NAME " AS name, a.url AS url, a.version AS version," \
   " (SELECT count(*) FROM ctx_artifact n WHERE n.url = a.url) AS publishes," \
@@ -6416,7 +6446,7 @@ static const char *const derived_objects[] = {
 
 static void rebuild_derived(sqlite3 *db) {
   db_exec(db, "BEGIN IMMEDIATE");
-  db_exec(db, "DELETE FROM ctx_meta WHERE key = 'artifact_seen'"); /* chunk ids change */
+  db_exec(db, "DELETE FROM ctx_meta WHERE key IN ('artifact_seen', 'artifact_seen_publisher')"); /* chunk ids change */
   for (int i = 0; derived_objects[i]; i++) {
     char sql[96];
     snprintf(sql, sizeof sql, "DROP %.*s IF EXISTS %s", (int)strcspn(derived_objects[i], " "), derived_objects[i],

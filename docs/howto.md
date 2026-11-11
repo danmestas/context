@@ -270,6 +270,10 @@ ctx artifacts --all      # every project
 ctx artifacts forge      # those whose title, file or address has the word
 ```
 
+Pages published with html-artifact-publisher are listed as well, under their read
+link, with one version for each check-in. Their files stay on the publisher, which
+already keeps every version; an edit link is never recorded.
+
 A version counts as approved only when your very next turn was a short yes ("yes",
 "go", "do it", "approved") and no newer version came first; the record names that
 turn, so `ctx turn turn:ID` shows it. This is strict on purpose: on one archive of
