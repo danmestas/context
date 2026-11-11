@@ -212,6 +212,20 @@ B=$("$CTX" sql "SELECT count(*) FROM ctx_doc WHERE kind='rule'")
 "$CTX" rebuild >/dev/null
 [ "$("$CTX" sql "SELECT count(*) FROM ctx_doc WHERE kind='rule'")" = "$B" ] || fail "a rebuild keeps the rules"
 "$CTX" sql "SELECT count(*) FROM ctx_doc WHERE kind='session' AND name IN (SELECT technote FROM ctx_rule)" | grep -qx 0 || fail "a rebuild does not read rules as sessions"
+# A memory note about project status fades 30 days after it was written; a correction does not.
+printf -- '---\nname: backlog\ndescription: Backlog after the grooming, in the chosen order\nmetadata:\n  type: project\n---\n\nThe kestrel backlog is groomed.\n' > "$RC/projects/-w-rp/memory/backlog.md"
+printf -- '---\nname: short-commits\ndescription: Commit messages are short\nmetadata:\n  type: feedback\n---\n\nKeep kestrel commit messages short.\n' > "$RC/projects/-w-rp/memory/short-commits.md"
+touch -t 202601010000 "$RC/projects/-w-rp/memory/backlog.md" "$RC/projects/-w-rp/memory/short-commits.md"
+CLAUDE_CONFIG_DIR="$RC" "$CTX" rules import >/dev/null
+"$CTX" rules --all --project rp | grep -q '^backlog.md  rp faded' || fail "an old status note fades: $("$CTX" rules --all --project rp)"
+"$CTX" rules --project rp | grep -q 'Commit messages are short' || fail "an old correction does not fade"
+"$CTX" rules --project rp | grep -q 'Backlog after' && fail "a faded note is not in force"
+"$CTX" search --all kestrel | grep -q 'backlog.md' && fail "search leaves a faded note out"
+"$CTX" search --all --history kestrel | grep -q 'backlog.md' || fail "--history brings a faded note back"
+"$CTX" sql "SELECT fsl_technote(technote) FROM ctx_rule WHERE key LIKE '%backlog.md'" | grep -q '^kind: project$' || fail "a rule records its kind"
+touch "$RC/projects/-w-rp/memory/backlog.md"
+CLAUDE_CONFIG_DIR="$RC" "$CTX" rules import >/dev/null
+"$CTX" rules --project rp | grep -q 'Backlog after' || fail "editing a status note brings it back"
 # At session start the hook offers what Claude Code would not load: remembered rules, never CLAUDE.md.
 mkdir -p "$T/w/rp" && (cd "$T/w/rp" && "$CTX" rules offer) > "$T/offer.json"
 python3 - "$T/offer.json" <<'PY'
