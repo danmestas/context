@@ -62,6 +62,7 @@ Then add the hooks to `~/.claude/settings.json`, merged with any you have:
       { "type": "command", "command": "ctx ticket offer", "timeout": 3 },
       { "type": "command", "command": "ctx rules offer", "timeout": 3 }
     ] }],
+    "SubagentStart": [{ "hooks": [{ "type": "command", "command": "ctx rules offer", "timeout": 3 }] }],
     "Stop":       [{ "hooks": [{ "type": "command", "command": "ctx hook", "async": true }] }],
     "PreCompact": [{ "hooks": [{ "type": "command", "command": "ctx hook", "async": true }] }],
     "SessionEnd": [{ "hooks": [{ "type": "command", "command": "ctx hook", "async": true }] }]
@@ -487,6 +488,23 @@ no better than the `ctx` skill alone. To try it, add to `settings.json`:
 ```json
 "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "ctx inject", "timeout": 3 }] }]
 ```
+
+`ctx recall` is a lighter `UserPromptSubmit` hook: when your prompt opens with a
+reference to earlier work ("do you remember", "last time", "didn't we"), it adds one
+line telling the agent to search first. It matches words only and never opens the
+database. It is not installed by default either: on your prompts it would fire less
+than once a day, and in the eval agents already searched on all 13 questions that
+would trigger it.
+
+A subagent starts without the session-start note, so `ctx rules offer` also answers
+the `SubagentStart` event with that one line (about 45 tokens) and nothing else.
+
+Two measurements shaped this. Asked plainly, with no hint that a question is about
+past work, fresh agents with the skill searched the archive on 18 of 23 held-out
+questions; rewording the skill's triggers made it 19, so the wording stayed. And a
+hook that held back an agent's question when you had answered a similar one before
+was dropped: replayed over 743 real questions it fired on 133, and the earlier turns
+held your eventual answer in 16% of those and a conflicting one in 8%.
 
 ## Rebuild and upgrade
 
