@@ -28,7 +28,7 @@
 #include "ticket_schema.h"
 
 #define CTX_VERSION "0.0.1"
-#define CTX_USER_VERSION 5    /* PRAGMA user_version once initialized */
+#define CTX_USER_VERSION 6    /* PRAGMA user_version once initialized */
 #define CTX_DERIVED_VERSION 6 /* raise when schema/index.sql changes; ctx then rebuilds */
 
 /* A tool's output is kept up to this size at each end; the middle is cut. */
@@ -38,6 +38,7 @@ int fsl_sqlext_init(sqlite3 *db, char **err, const sqlite3_api_routines *api); /
 static void rules_index(sqlite3 *db);
 static void decisions_index(sqlite3 *db);
 static void artifacts_index(sqlite3 *db);
+static void artifacts_file(sqlite3 *db);
 static long rules_import(sqlite3 *db);
 char *fsl_sha3sum_cstr(const char *in, long long len);
 void fsl_free(void *p);
@@ -1722,6 +1723,7 @@ static int cmd_scan(const char *root_arg) {
   relabel_speakers(db);
   decisions_index(db);
   artifacts_index(db);
+  artifacts_file(db);
   long rules = rules_import(db);
   sqlite3_close(db);
   printf("%ld transcripts read\n", ran);
@@ -4310,7 +4312,7 @@ static void sessions_from_remote(sqlite3 *db, int all) {
       "   WHERE px.rid = e.objid AND pt.tagname GLOB 'sym-*' AND pt.tagname <> 'sym-session' LIMIT 1)"
       " FROM fslrepo_me_event e JOIN fslrepo_me_tag t ON t.tagid = e.tagid JOIN fslrepo_me_blob b ON b.rid = e.objid"
       " WHERE e.type = 'e' AND NOT EXISTS (SELECT 1 FROM fslrepo_me_tagxref x JOIN fslrepo_me_tag rt ON rt.tagid = x.tagid"
-      "   WHERE x.rid = e.objid AND rt.tagname = 'sym-rule')" /* rules are not sessions */
+      "   WHERE x.rid = e.objid AND rt.tagname IN ('sym-rule', 'sym-artifact'))" /* rules and kept pages are not sessions */
       " GROUP BY t.tagname");
   while (sqlite3_step(q) == SQLITE_ROW) {
     notes = realloc(notes, (n + 1) * sizeof *notes);
@@ -4777,7 +4779,8 @@ static void artifacts_index(sqlite3 *db) {
 /* One row per page: its latest publish, a title (the newest one given, else the file's
  * folder or name), how many publishes, and the newest approved version. ?1 project or NULL. */
 #define ARTIFACT_NAME \
-  "coalesce((SELECT t.title FROM ctx_artifact t WHERE t.url = a.url AND t.title IS NOT NULL ORDER BY t.at DESC LIMIT 1)," \
+  "coalesce((SELECT nullif(f.title, '') FROM ctx_artifact_file f WHERE f.url = a.url)," \
+  " (SELECT t.title FROM ctx_artifact t WHERE t.url = a.url AND t.title IS NOT NULL ORDER BY t.at DESC LIMIT 1)," \
   " CASE WHEN a.path LIKE '%/index.htm%' THEN replace(rtrim(rtrim(a.path, replace(a.path, '/', '')), '/')," \
   "   rtrim(rtrim(rtrim(a.path, replace(a.path, '/', '')), '/'), replace(rtrim(rtrim(a.path, replace(a.path, '/', '')), '/'), '/', '')), '')" \
   "  ELSE replace(a.path, rtrim(a.path, replace(a.path, '/', '')), '') END)"
@@ -4785,23 +4788,207 @@ static void artifacts_index(sqlite3 *db) {
   "SELECT substr(a.at, 1, 10) AS day, coalesce(a.project, '') AS project, " ARTIFACT_NAME " AS name, a.url AS url, a.version AS version," \
   " (SELECT count(*) FROM ctx_artifact n WHERE n.url = a.url) AS publishes," \
   " (SELECT p.version || ' on ' || substr(p.approved_at, 1, 10) || ' (turn:' || p.approved_turn || ')' FROM ctx_artifact p" \
-  "   WHERE p.url = a.url AND p.approved_turn IS NOT NULL ORDER BY p.approved_at DESC LIMIT 1) AS approved, a.session AS session, a.at AS at" \
+  "   WHERE p.url = a.url AND p.approved_turn IS NOT NULL ORDER BY p.approved_at DESC LIMIT 1) AS approved, a.session AS session, a.at AS at," \
+  " (SELECT f.version FROM ctx_artifact_file f WHERE f.url = a.url) AS kept" \
   " FROM ctx_artifact a WHERE a.id = (SELECT m.id FROM ctx_artifact m WHERE m.url = a.url ORDER BY m.at DESC, m.id DESC LIMIT 1)"
+
+#define ARTIFACT_MAX (16 << 20)
+#define ARTIFACT_SETTLE_SECS 86400
+
+/* The id in an artifact address, or 0. It becomes a folder name, so only letters and digits pass. */
+static int artifact_id(const char *url, char *id, size_t cap) {
+  const char *p = strstr(url, "https://claude.ai/artifact/");
+  size_t n = 0;
+  if (!p) return 0;
+  for (p += 27; isalnum((unsigned char)*p) && n < cap - 1; p++) id[n++] = *p;
+  id[n] = 0;
+  return n > 0;
+}
+
+/* ctx artifacts keep: a PostToolUse hook on the Artifact tool. A page's file lives in
+ * scratch space that a reboot clears, so each published version is copied beside the
+ * database at once. It touches neither the database nor the repository; a scan later
+ * files the versions worth keeping. */
+static int artifacts_keep(void) {
+  buf in = {0};
+  char chunk[65536];
+  size_t got;
+  while (in.n < (4 << 20) && (got = fread(chunk, 1, sizeof chunk, stdin)) > 0) buf_add(&in, chunk, got);
+  if (!in.p) return 0;
+  buf_add(&in, "", 1);
+  char id[64], path[4200] = "";
+  const char *pub = strstr(in.p, "Published "), *ver = pub ? strstr(pub, "(Version ") : NULL;
+  int version = ver ? atoi(ver + 9) : 0;
+  if (!pub || version <= 0 || !artifact_id(pub, id, sizeof id)) { free(in.p); return 0; }
+  sqlite3 *mem = NULL;
+  if (sqlite3_open(":memory:", &mem) == SQLITE_OK) {
+    sqlite3_stmt *q = NULL;
+    if (sqlite3_prepare_v2(mem, "SELECT json_extract(?1, '$.tool_input.file_path') WHERE json_valid(?1)", -1, &q, NULL) == SQLITE_OK) {
+      sqlite3_bind_text(q, 1, in.p, -1, SQLITE_STATIC);
+      if (sqlite3_step(q) == SQLITE_ROW && sqlite3_column_text(q, 0)) snprintf(path, sizeof path, "%s", sqlite3_column_text(q, 0));
+      sqlite3_finalize(q);
+    }
+    sqlite3_close(mem);
+  }
+  free(in.p);
+  struct stat st;
+  if (!*path || stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size > ARTIFACT_MAX) return 0;
+  size_t n = 0;
+  char *text = slurp(path, &n);
+  if (!text) return 0;
+  char *root = sidecar(".artifacts"), dst[4400], tmp[4420];
+  mkdir(root, 0700);
+  snprintf(dst, sizeof dst, "%s/%s", root, id);
+  mkdir(dst, 0700);
+  snprintf(dst, sizeof dst, "%s/%s/v%d.html", root, id, version);
+  snprintf(tmp, sizeof tmp, "%s.part", dst);
+  int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+  if (fd >= 0) {
+    int ok = write(fd, text, n) == (ssize_t)n;
+    close(fd);
+    if (!ok || rename(tmp, dst) != 0) unlink(tmp);
+  }
+  free(root);
+  free(text);
+  return 0;
+}
+
+/* Files copied pages into the private repository, redacted: every approved version, and
+ * a page's newest version once a day has passed without another. One technote per page,
+ * so its history is the kept versions. Copies no longer needed are removed. */
+static void artifacts_file(sqlite3 *db) {
+  char *root = sidecar(".artifacts");
+  DIR *top = opendir(root);
+  if (!top) { free(root); return; }
+  int opened = 0;
+  struct dirent *e;
+  while ((e = readdir(top))) {
+    if (e->d_name[0] == '.') continue;
+    char dir[4400], url[160];
+    snprintf(dir, sizeof dir, "%s/%s", root, e->d_name);
+    snprintf(url, sizeof url, "https://claude.ai/artifact/%s", e->d_name);
+    int have[256], nh = 0;
+    DIR *d = opendir(dir);
+    if (!d) continue;
+    struct dirent *f;
+    while ((f = readdir(d)))
+      if (f->d_name[0] == 'v' && atoi(f->d_name + 1) > 0 && strstr(f->d_name, ".html") && !strstr(f->d_name, ".part") && nh < 256)
+        have[nh++] = atoi(f->d_name + 1);
+    closedir(d);
+    for (int i = 1; i < nh; i++) /* oldest first, so the technote's history is in order */
+      for (int j = i; j > 0 && have[j - 1] > have[j]; j--) { int t = have[j]; have[j] = have[j - 1]; have[j - 1] = t; }
+    sqlite3_stmt *q = db_prepare(db, "SELECT coalesce((SELECT max(version) FROM ctx_artifact WHERE url = ?1), 0),"
+                                     " coalesce((SELECT version FROM ctx_artifact_file WHERE url = ?1), 0)");
+    sqlite3_bind_text(q, 1, url, -1, SQLITE_STATIC);
+    int latest = 0, filed = 0;
+    if (sqlite3_step(q) == SQLITE_ROW) { latest = sqlite3_column_int(q, 0); filed = sqlite3_column_int(q, 1); }
+    sqlite3_finalize(q);
+    for (int i = 0; i < nh; i++) {
+      char file[4500];
+      snprintf(file, sizeof file, "%s/v%d.html", dir, have[i]);
+      struct stat st;
+      if (stat(file, &st) != 0) continue;
+      int settled = time(NULL) - st.st_mtime >= ARTIFACT_SETTLE_SECS;
+      q = db_prepare(db, "SELECT max(approved_turn), max(substr(approved_at, 1, 10)), max(project), max(path) FROM ctx_artifact WHERE url = ?1 AND version = ?2");
+      sqlite3_bind_text(q, 1, url, -1, SQLITE_STATIC);
+      sqlite3_bind_int(q, 2, have[i]);
+      int known = sqlite3_step(q) == SQLITE_ROW && sqlite3_column_text(q, 3);
+      int approved = known && sqlite3_column_text(q, 0);
+      int newest = have[i] >= latest && i == nh - 1;
+      if (have[i] > filed && known && (approved || (newest && settled))) {
+        size_t n = 0;
+        char *raw = slurp(file, &n);
+        buf clean = {0}, text = {0};
+        if (raw) add_redacted(&clean, raw, n);
+        buf_add(&clean, "", 1);
+        for (size_t z = 0; z + 1 < clean.n; z++) if (!clean.p[z]) clean.p[z] = ' ';
+        char title[200] = "", hdr[5200];
+        const char *t = strstr(clean.p, "<title>"), *te = t ? strstr(t, "</title>") : NULL;
+        if (te && te - t - 7 < (long)sizeof title) {
+          memcpy(title, t + 7, (size_t)(te - t - 7));
+          title[te - t - 7] = 0;
+          for (char *c = title; *c; c++) if (*c == '\n' || *c == '\r') *c = ' ';
+        }
+        snprintf(hdr, sizeof hdr, "url: %s\nversion: %d\ntitle: %s\nproject: %s\nfile: %.4000s\n", url, have[i], title,
+                 sqlite3_column_text(q, 2) ? (const char *)sqlite3_column_text(q, 2) : "", sqlite3_column_text(q, 3));
+        buf_str(&text, hdr);
+        if (approved) {
+          snprintf(hdr, sizeof hdr, "approved: turn:%s on %s\n", sqlite3_column_text(q, 0), sqlite3_column_text(q, 1));
+          buf_str(&text, hdr);
+        }
+        buf_str(&text, "\n");
+        buf_add(&text, clean.p, clean.n);
+        if (!opened) { open_private(db); db_exec(db, "SELECT fsl_use('repo:me')"); opened = 1; }
+        char *note = NULL;
+        sqlite3_stmt *s = db_prepare(db, "SELECT technote FROM ctx_artifact_file WHERE url = ?1");
+        sqlite3_bind_text(s, 1, url, -1, SQLITE_STATIC);
+        if (sqlite3_step(s) == SQLITE_ROW) note = dup_text(sqlite3_column_text(s, 0));
+        sqlite3_finalize(s);
+        char comment[260];
+        snprintf(comment, sizeof comment, "artifact: %.200s", *title ? title : url);
+        s = db_prepare(db, note ? "SELECT fsl_technote_save(?1, json_object('id', ?2))"
+                                : "SELECT fsl_technote_save(?1, json_object('comment', ?3, 'mimetype', 'text/x-markdown', 'tags', json_array('artifact')))");
+        sqlite3_bind_text(s, 1, text.p, -1, SQLITE_STATIC);
+        if (note) sqlite3_bind_text(s, 2, note, -1, SQLITE_STATIC);
+        else sqlite3_bind_text(s, 3, comment, -1, SQLITE_STATIC);
+        if (sqlite3_step(s) != SQLITE_ROW) die("cannot keep %s: %s", url, sqlite3_errmsg(db));
+        if (!note) note = dup_text(sqlite3_column_text(s, 0));
+        sqlite3_finalize(s);
+        s = db_prepare(db, "INSERT OR REPLACE INTO ctx_artifact_file(url, technote, version, title, kept) VALUES (?1, ?2, ?3, ?4, datetime('now'))");
+        sqlite3_bind_text(s, 1, url, -1, SQLITE_STATIC);
+        sqlite3_bind_text(s, 2, note, -1, SQLITE_STATIC);
+        sqlite3_bind_int(s, 3, have[i]);
+        sqlite3_bind_text(s, 4, title, -1, SQLITE_STATIC);
+        sqlite3_step(s);
+        sqlite3_finalize(s);
+        filed = have[i];
+        free(note);
+        free(raw);
+        free(clean.p);
+        free(text.p);
+      }
+      sqlite3_finalize(q);
+      /* done with a copy once it is filed, or once it is neither newest nor recent */
+      if (have[i] <= filed || (!newest && settled && !approved)) unlink(file);
+    }
+    rmdir(dir); /* only succeeds when empty */
+  }
+  closedir(top);
+  free(root);
+}
+
+/* ctx artifacts show URL: the kept copy of a page, as it was filed. */
+static int artifacts_show(const char *url) {
+  sqlite3 *db = ctx_open();
+  open_private(db);
+  db_exec(db, "SELECT fsl_use('repo:me')");
+  sqlite3_stmt *q = db_prepare(db, "SELECT CAST(fsl_technote(technote) AS TEXT) FROM ctx_artifact_file WHERE url = ?1 OR url LIKE '%/' || ?1");
+  sqlite3_bind_text(q, 1, url, -1, SQLITE_STATIC);
+  if (sqlite3_step(q) != SQLITE_ROW || !sqlite3_column_text(q, 0)) die("no copy of %s is kept; `ctx artifacts` lists those that are", url);
+  const char *text = (const char *)sqlite3_column_text(q, 0), *body = strstr(text, "\n\n");
+  fputs(body ? body + 2 : text, stdout);
+  sqlite3_finalize(q);
+  sqlite3_close(db);
+  return 0;
+}
 
 /* ctx artifacts [--all] [--limit N] [WORDS...]: pages agents published, newest first. */
 static int cmd_artifacts(int argc, char **argv) {
+  if (argc == 1 && !strcmp(argv[0], "keep")) return artifacts_keep();
+  if (argc == 2 && !strcmp(argv[0], "show")) return artifacts_show(argv[1]);
   int all = 0;
   long limit = 20;
   buf words = {0};
   for (int i = 0; i < argc; i++) {
     if (!strcmp(argv[i], "--all")) all = 1;
     else if (!strcmp(argv[i], "--limit") && i + 1 < argc) limit = atol(argv[++i]);
-    else if (argv[i][0] == '-') die("usage: ctx artifacts [--all] [--limit N] [WORDS...]");
+    else if (argv[i][0] == '-') die("usage: ctx artifacts [--all] [--limit N] [WORDS...] | show URL | keep");
     else { buf_str(&words, argv[i]); buf_add(&words, "\n", 1); }
   }
   buf_add(&words, "", 1);
   sqlite3 *db = ctx_open();
   artifacts_index(db);
+  artifacts_file(db);
   char *proj = all ? NULL : current_project(db);
   /* every word must be in the title, the file path or the address */
   sqlite3_stmt *q = db_prepare(db,
@@ -4818,6 +5005,7 @@ static int cmd_artifacts(int argc, char **argv) {
     printf("%s %s  %s\n  %s  version %d of %d publishes\n", sqlite3_column_text(q, 0), sqlite3_column_text(q, 1), sqlite3_column_text(q, 2),
            sqlite3_column_text(q, 3), sqlite3_column_int(q, 4), sqlite3_column_int(q, 5));
     if (sqlite3_column_text(q, 6)) printf("  approved: version %s\n", sqlite3_column_text(q, 6));
+    if (sqlite3_column_int(q, 9)) printf("  kept: version %d; read it with `ctx artifacts show %s`\n", sqlite3_column_int(q, 9), sqlite3_column_text(q, 3));
     n++;
   }
   sqlite3_finalize(q);
@@ -6294,7 +6482,7 @@ static int usage(void) {
         "       ctx stats [--weeks N]\n"
         "       ctx remember TEXT [--project P] [--until DATE] [--from TURN]\n"
         "       ctx decisions [--open] [--all] [--limit N]\n"
-        "       ctx artifacts [--all] [--limit N] [WORDS...]\n"
+        "       ctx artifacts [--all] [--limit N] [WORDS...] | show URL | keep\n"
         "       ctx rules [--all] [--project P] | import | retire KEY --reason WHY [--by KEY] | offer\n"
         "       ctx rules proposed [--all] | accept N [--text TEXT] [--until DATE] | reject N\n"
         "       ctx rules classifier [CMD | --off] | propose [--limit N] | candidates [--limit N] | prompt | suggest TURN TEXT\n"
