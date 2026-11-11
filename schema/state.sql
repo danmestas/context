@@ -108,3 +108,15 @@ CREATE TABLE IF NOT EXISTS ctx_rule_proposal(
 CREATE TABLE IF NOT EXISTS ctx_rule_seen(
   turn TEXT PRIMARY KEY
 ) STRICT, WITHOUT ROWID;
+
+-- Checks on rules: the judge's last verdict with a quote from the person's own turns,
+-- when the agent last asked about it, and when the person kept or reviewed it.
+CREATE TABLE IF NOT EXISTS ctx_rule_check(
+  key      TEXT PRIMARY KEY,
+  checked  TEXT,           -- when the judge last looked
+  verdict  TEXT,           -- stale or true
+  evidence TEXT,           -- a quote found word for word in the person's turns
+  asked    TEXT,           -- when a session last asked the person about it
+  kept     TEXT,           -- when the person said it still holds
+  reviewed TEXT            -- when it was last in a monthly review
+) STRICT, WITHOUT ROWID;

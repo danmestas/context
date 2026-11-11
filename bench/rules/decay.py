@@ -69,7 +69,7 @@ def load(a):
             body, born = s.get("text", ""), day(s.get("at", ""))
         if not body or not born:
             continue
-        rules.append(dict(n=x["n"], project=x["project"], label=x["label"], since=x.get("since", ""), body=body,
+        rules.append(dict(n=x["n"], kind=x["kind"], project=x["project"], label=x["label"], since=x.get("since", ""), body=body,
                           born=born, terms=terms(body)))
     return rules
 

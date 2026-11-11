@@ -226,6 +226,60 @@ CLAUDE_CONFIG_DIR="$RC" "$CTX" rules import >/dev/null
 touch "$RC/projects/-w-rp/memory/backlog.md"
 CLAUDE_CONFIG_DIR="$RC" "$CTX" rules import >/dev/null
 "$CTX" rules --project rp | grep -q 'Backlog after' || fail "editing a status note brings it back"
+# A judge flags a rule only with a quote of the person's own words; the agent asks once.
+mkdir -p "$T/w/rp"
+printf '{"uuid":"r-5","timestamp":"2026-11-03T10:00:00Z","cwd":"/w/rp","message":{"role":"user","content":"we no longer keep kestrel commit messages short, write full ones now"}}\n' >> "$RC/projects/-w-rp/d00d0001-0000-0000-0000-000000000001.jsonl"
+"$CTX" archive "$RC/projects/-w-rp/d00d0001-0000-0000-0000-000000000001.jsonl" >/dev/null
+cat > "$T/judge.py" <<'PY'
+import json, sys
+text = sys.stdin.read()
+rule = text.split("Rule:\n", 1)[1].split("\n\nRecent messages:", 1)[0]
+quote = sys.argv[1] if len(sys.argv) > 1 else "we no longer keep kestrel commit messages short"
+print(json.dumps({"verdict": "stale", "evidence": quote}) if "kestrel commit messages short" in rule else '{"verdict": "true", "evidence": ""}')
+PY
+"$CTX" rules judge 2>&1 | grep -q 'no judge' || fail "the judge is off until set"
+"$CTX" rules judge-with "python3 $T/judge.py" >/dev/null
+"$CTX" rules judge | grep -q '1 may be outdated' || fail "the judge flags a contradicted rule: $("$CTX" rules judge 2>&1)"
+(cd "$T/w/rp" && "$CTX" rules offer) > "$T/ask.json"
+grep -q 'One rule may be outdated' "$T/ask.json" && grep -q 'we no longer keep kestrel commit messages short' "$T/ask.json" || fail "the hook asks once, with the quote: $(cat "$T/ask.json")"
+(cd "$T/w/rp" && "$CTX" rules offer) | grep -q 'One rule may be outdated' && fail "the same rule is not asked about again within 30 days"
+"$CTX" rules keep short-commits.md | grep -q kept || fail "keep records the person's answer"
+[ "$("$CTX" sql "SELECT verdict FROM ctx_rule_check WHERE key LIKE '%short-commits.md'")" = true ] || fail "a kept rule is no longer flagged"
+"$CTX" sql "UPDATE ctx_rule_check SET checked = '2026-01-01', kept = NULL, asked = NULL" >/dev/null
+"$CTX" rules judge-with "python3 $T/judge.py 'the person never said this at all'" >/dev/null
+"$CTX" rules judge >/dev/null
+[ "$("$CTX" sql "SELECT verdict FROM ctx_rule_check WHERE key LIKE '%short-commits.md'")" = true ] || fail "an invented quote is not evidence"
+"$CTX" sql "UPDATE ctx_rule_check SET checked = '2026-01-01'" >/dev/null
+if CTX_JUDGE="sh -c 'exit 3'" "$CTX" rules judge 2>"$T/jf.txt" >/dev/null; then fail "a failing judge fails"; fi
+grep -q 'judge failed (exit 3)' "$T/jf.txt" || fail "the judge's real exit code is reported: $(cat "$T/jf.txt")"
+CTX_JUDGE="echo '{\"verdict\": \"stale\", \"evidence\": \"he said \"x\"\"}'" "$CTX" rules judge 2>"$T/jf.txt" >/dev/null || true
+grep -q 'unreadable' "$T/jf.txt" || fail "an unreadable answer is reported"
+[ "$("$CTX" sql "SELECT checked FROM ctx_rule_check WHERE key LIKE '%short-commits.md'")" = 2026-01-01 ] || fail "a failing or unreadable judge records nothing for the rule it judged"
+"$CTX" rules judge-with "python3 $T/judge.py 'several changes are in flight I never got the email'" >/dev/null
+"$CTX" rules judge >/dev/null
+[ "$("$CTX" sql "SELECT verdict FROM ctx_rule_check WHERE key LIKE '%short-commits.md'")" = true ] || fail "a quote spanning two turns is not evidence"
+printf 'Always run the kestrel commit messages short check.\n' > "$T/w/rp/CLAUDE.md"
+"$CTX" project add rp --root "$T/w/rp" >/dev/null
+CLAUDE_CONFIG_DIR="$RC" "$CTX" rules import >/dev/null
+"$CTX" sql "UPDATE ctx_rule_check SET checked = '2026-01-01'" >/dev/null
+"$CTX" rules judge-with "python3 $T/judge.py" >/dev/null
+"$CTX" rules judge >/dev/null
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_rule_check WHERE key GLOB '*/CLAUDE.md'")" = 0 ] || fail "a project's CLAUDE.md is never judged"
+"$CTX" rules retire short-commits.md --reason "full messages now" >/dev/null
+"$CTX" sql "UPDATE ctx_rule_check SET asked = NULL" >/dev/null
+(cd "$T/w/rp" && "$CTX" rules offer) | grep -q 'One rule may be outdated' && fail "a retired rule is never asked about"
+"$CTX" rules judge-with --off >/dev/null
+# Rules due a check come up once a month in a short list.
+(cd "$T/w/rp" && "$CTX" rules review) > "$T/review.txt"
+grep -q 'backlog.md' "$T/review.txt" || fail "review lists rules due a check: $(cat "$T/review.txt")"
+grep -q 'short-commits.md' "$T/review.txt" && fail "review leaves retired rules out"
+(cd "$T/w/rp" && "$CTX" rules review --done) | grep -q 'marked reviewed' || fail "review --done marks them"
+(cd "$T/w/rp" && "$CTX" rules review) | grep -q 'no rules are due' || fail "reviewed rules are not due again"
+"$CTX" sql "UPDATE ctx_rule_check SET reviewed = NULL" >/dev/null
+"$CTX" sql "DELETE FROM ctx_meta WHERE key = 'review_offered'" >/dev/null
+(cd "$T/w/rp" && "$CTX" rules offer) | grep -q 'monthly check' || fail "the hook mentions a due review"
+(cd "$T/w/rp" && "$CTX" rules offer) | grep -q 'monthly check' && fail "the review is mentioned once a month"
+(cd "$T/w/rp" && "$CTX" rules review --done) >/dev/null
 # At session start the hook offers what Claude Code would not load: remembered rules, never CLAUDE.md.
 mkdir -p "$T/w/rp" && (cd "$T/w/rp" && "$CTX" rules offer) > "$T/offer.json"
 python3 - "$T/offer.json" <<'PY'
@@ -413,6 +467,9 @@ while time.time() < end:
     time.sleep(0.2)
 assert n == want, "all turns landed: %d of %d" % (n, want)
 EOF
+
+i=0; while [ ! -e "$T/hook.sqlite.scan" ] && [ $i -lt 60 ]; do sleep 0.5; i=$((i+1)); done
+[ -e "$T/hook.sqlite.scan" ] || fail "a turn's Stop hook runs the hourly scan, so long sessions get it too"
 
 # Junk on stdin never disturbs a session.
 echo 'not json' | "$CTX" hook || fail "hook on junk input"
@@ -979,7 +1036,7 @@ CTX_DB=/nonexistent/x.sqlite "$CTX" inject < /dev/null || fail "inject never fai
 # Rebuild: derived tables come back from the repositories; state is untouched.
 export CTX_DB="$T/rebuild.sqlite"
 "$CTX" init >/dev/null
-[ "$("$CTX" sql "PRAGMA user_version")" = 4 ] || fail "a new file is at the current version"
+[ "$("$CTX" sql "PRAGMA user_version")" = 5 ] || fail "a new file is at the current version"
 [ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 3 ] || fail "derived version recorded"
 printf '{"uuid":"rb-1","timestamp":"2026-09-01T10:00:00Z","cwd":"/w/rb","message":{"role":"user","content":"the capybara rollout"}}\n{"uuid":"rb-2","timestamp":"2026-09-01T10:00:05Z","cwd":"/w/rb","message":{"role":"assistant","content":"rolled out the capybara"}}\n' > "$T/ab12cd99-rb.jsonl"
 "$CTX" archive "$T/ab12cd99-rb.jsonl" >/dev/null
@@ -1001,7 +1058,7 @@ grep -q 'rebuilding it once' "$T/rb.err" || fail "an old index is rebuilt on ope
 "$CTX" sql "DROP TABLE ctx_meta" >/dev/null; "$CTX" sql "PRAGMA user_version = 1" >/dev/null
 "$CTX" search --all capybara 2>"$T/rb3.err" | grep -q capybara || fail "an unversioned file still works"
 [ -s "$T/rb3.err" ] && fail "an unversioned file is upgraded without a rebuild"
-[ "$("$CTX" sql "PRAGMA user_version")" = 4 ] || fail "and is marked current"
+[ "$("$CTX" sql "PRAGMA user_version")" = 5 ] || fail "and is marked current"
 
 # The skill eval harness works end to end with a stand-in for the model.
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"
