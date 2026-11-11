@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -46,7 +47,8 @@ if "BLIND-GRADE" in prompt:
     sys.exit(0)
 with open({LOG!r}, "a") as f:
     f.write(json.dumps(dict(skill=os.path.exists(".claude/skills/ctx/SKILL.md"), db=os.environ.get("CTX_DB"),
-        persist="--no-session-persistence" in a, hooks="disableAllHooks" in a[a.index("--settings") + 1])) + "\\n")
+        persist="--no-session-persistence" in a, prompt=prompt,
+        extra=a[a.index("--append-system-prompt") + 1] if "--append-system-prompt" in a else None, hooks="disableAllHooks" in a[a.index("--settings") + 1])) + "\\n")
 print(json.dumps({{"type": "assistant", "message": {{"content": [{{"type": "tool_use", "id": "1", "name": "Bash",
     "input": {{"command": "ctx search thing"}}}}]}}}}))
 print(json.dumps({{"type": "result", "subtype": "success", "result": os.environ.get("ANSWER", "good answer"),
@@ -109,5 +111,62 @@ ri = cli("run", "--set", "all", "--cond", "I", "--skill", skill, "--name", "inj"
 assert all(r["cond"] == "I" and "injected" in r for r in json.load(open(f"{ri}/runs.json")))
 rh = cli("run", "--set", "all", "--cond", "C,H", "--skill", skill, "--name", "hook").strip()
 assert sorted(r["cond"] for r in json.load(open(f"{rh}/runs.json"))) == ["C", "C", "C", "H", "H", "H"], "the hook condition runs"
+# Plain ask, condition R, --kind and reach.
+mark = len(open(LOG).readlines())
+STUB, RLOG = f"{T}/stubctx", f"{T}/recall.log"
+with open(STUB, "w") as f:
+    f.write(f"""#!{sys.executable}
+import json, os, re, sys
+if sys.argv[1] == "recall":
+    with open({RLOG!r}, "a") as f:
+        f.write(sys.stdin.read() + "\\n")
+    if not os.environ.get("RECALL_EMPTY"):
+        print(json.dumps({{"hookSpecificOutput": {{"hookEventName": "UserPromptSubmit", "additionalContext": "recalled text"}}}}))
+elif sys.argv[1] == "sql":
+    m = re.search(r"VACUUM INTO '(.*)'", sys.argv[2])
+    if m:
+        open(m.group(1), "w").close()
+""")
+os.chmod(STUB, 0o755)
+rr = cli("run", "--set", "all", "--cond", "R", "--skill", skill, "--name", "recall", CTX=STUB).strip()
+rows = json.load(open(f"{rr}/runs.json"))
+new = [json.loads(x) for x in open(LOG)][mark:]
+assert len(new) == 3 and all(r["cond"] == "R" and r["injected"] for r in rows), rows
+assert all(x["extra"] == "recalled text" and x["skill"] and x["db"] for x in new), "R gets the skill, archive and hook text"
+asked = [json.loads(x) for x in open(RLOG)]
+assert sorted(x["prompt"] for x in asked) == ["what about a?", "what about b?", "what about c?"], asked
+assert all(x["session_id"] == "eval" and x["cwd"] for x in asked), asked
+open(RLOG, "w").close()
+re_ = cli("run", "--set", "all", "--cond", "R", "--skill", skill, "--name", "recall-empty", CTX=STUB, RECALL_EMPTY="1").strip()
+assert not any(r["injected"] for r in json.load(open(f"{re_}/runs.json"))), "no output, no injection"
+cli("grade", rr)
+rep_r = cli("report", rr)
+assert "reached ctx 3/3 (100%)" in rep_r and "fired 3, reached 3 of them" in rep_r, rep_r
+assert "fired" not in cli("report", good), "fired is for I, H and R"
+pl = cli("run", "--set", "all", "--cond", "C", "--ask", "plain", "--skill", skill, "--name", "plain").strip()
+new = [json.loads(x) for x in open(LOG)][mark + 3 + 3:]
+assert sorted(x["prompt"] for x in new) == sorted(f"what about {i}?\n\nReply in under 120 words; if you do not know, say so rather than guessing." for i in "abc"), new
+assert json.load(open(f"{pl}/meta.json"))["ask"] == "plain" and json.load(open(f"{good}/meta.json"))["ask"] == "teammate"
+assert "past work" in open(LOG).read(), "teammate is still the default"
+diff = subprocess.run([sys.executable, f"{HERE}/skill_eval.py", "compare", good, pl], env=env, capture_output=True, text=True)
+assert diff.returncode and "different prompts" in diff.stderr, diff.stderr
+old = f"{T}/noask"
+shutil.copytree(good, old)
+meta = json.load(open(f"{old}/meta.json"))
+del meta["ask"]
+json.dump(meta, open(f"{old}/meta.json", "w"))
+assert "PASS" in cli("compare", old, good), "no ask recorded counts as teammate"
+bank2 = f"{T}/bank2.json"
+se.write_json(bank2, {"projects": {"proj": {"repo": f"{T}/repo/proj", "sessions": f"{T}/repo/proj"}},
+                      "questions": [{"id": i, "project": "proj", "kind": k, "question": f"q {i}", "answer": "it", "must_include": ["it"]}
+                                    for i, k in (("x", "code"), ("y", "fix"), ("z", "decision"))]})
+
+
+def qids(*kind):
+    r = cli("--bank", bank2, "run", "--set", "all", "--skill", skill, "--name", "kinds", *kind).strip()
+    return sorted(r_["qid"] for r_ in json.load(open(f"{r}/runs.json")))
+
+
+assert qids("--kind", "code") == ["x"] and qids("--kind", "code,fix") == ["x", "y"] and qids() == ["x", "y", "z"]
 assert "--bank" in subprocess.run([sys.executable, f"{HERE}/skill_eval.py", "-h"], capture_output=True, text=True).stdout
 print("eval tests passed")

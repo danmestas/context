@@ -4495,6 +4495,50 @@ static int terms_matched(sqlite3 *db, sqlite3_int64 chunk, const char *match) {
   return n;
 }
 
+/* ctx recall: a UserPromptSubmit hook. When the person's prompt refers to earlier
+ * work, it adds one line telling the agent to search the archive first. It matches
+ * words only and never opens the database. */
+static int cmd_recall(void) {
+  static const char *const cues[] = {
+      "do you remember", "do you recall", "remember when", "remember how", "remember what", "remember why", "remember that",
+      "did we ever", "did we already", "have we already", "haven't we", "didn't we", "did i already", "did i tell", "i told you",
+      "as i said", "like i said", "i already said", "last time", "why did we", "why didn't we", "what happened with",
+      "what happened to", "remind me", "what did we decide", "what did i say", "we decided", "we talked about", "we discussed",
+      "where did we leave", "where were we", "where did we land", "earlier session", "previous session", "another session",
+      "a while ago", "the other day", "yesterday", "last week", NULL};
+  buf in = {0};
+  char chunk[4096];
+  size_t got;
+  while (in.n < (1 << 20) && (got = fread(chunk, 1, sizeof chunk, stdin)) > 0) buf_add(&in, chunk, got);
+  if (!in.p) return 0;
+  char *path = db_path();
+  struct stat st;
+  int have = stat(path, &st) == 0;
+  free(path);
+  sqlite3 *mem = NULL;
+  if (!have || sqlite3_open(":memory:", &mem) != SQLITE_OK) return 0;
+  sqlite3_stmt *q = NULL;
+  char head[401] = ""; /* the opening of the prompt: a cue deep in pasted text is not the person asking */
+  if (sqlite3_prepare_v2(mem, "SELECT lower(substr(json_extract(?1, '$.prompt'), 1, 400)) WHERE json_valid(?1)", -1, &q, NULL) == SQLITE_OK) {
+    sqlite3_bind_text(q, 1, in.p, (int)in.n, SQLITE_STATIC);
+    if (sqlite3_step(q) == SQLITE_ROW && sqlite3_column_text(q, 0)) snprintf(head, sizeof head, "%s", sqlite3_column_text(q, 0));
+    sqlite3_finalize(q);
+  }
+  free(in.p);
+  sqlite3_close(mem);
+  for (char *c = head; *c; c++) /* typographic apostrophes, so "didn't" matches */
+    if ((unsigned char)c[0] == 0xe2 && (unsigned char)c[1] == 0x80 && (unsigned char)c[2] == 0x99) { c[0] = '\''; memmove(c + 1, c + 3, strlen(c + 3) + 1); }
+  if (head[0] == '<' || head[0] == '/') return 0; /* harness text and slash commands */
+  for (int i = 0; cues[i]; i++)
+    if (strstr(head, cues[i])) {
+      puts("{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":"
+           "\"This prompt refers to earlier work. Before answering from memory or asking the user, search the session archive: "
+           "`ctx search` with two or three exact words from it, then `ctx turn ID 2 5` around the best hit.\"}}");
+      break;
+    }
+  return 0;
+}
+
 static int cmd_inject(void) {
   buf in = {0};
   char chunk[4096];
@@ -5219,6 +5263,8 @@ static void session_brief(sqlite3 *db, const char *session, buf *all) {
 
 /* What Claude Code says about the event, if it says anything at once: SessionStart
  * passes JSON on stdin; run by hand or by the eval, there is none, and this never waits. */
+static char hook_event[32]; /* hook_event_name, when the harness gave one */
+
 static void hook_input(char *source, size_t scap, char *session, size_t ncap) {
   *source = *session = 0;
   struct pollfd pf = {0, POLLIN, 0};
@@ -5235,12 +5281,14 @@ static void hook_input(char *source, size_t scap, char *session, size_t ncap) {
   sqlite3 *mem = NULL;
   if (sqlite3_open(":memory:", &mem) == SQLITE_OK) {
     sqlite3_stmt *q = NULL;
-    if (sqlite3_prepare_v2(mem, "SELECT coalesce(json_extract(?1, '$.source'), ''), coalesce(json_extract(?1, '$.session_id'), '') WHERE json_valid(?1)",
+    if (sqlite3_prepare_v2(mem, "SELECT coalesce(json_extract(?1, '$.source'), ''), coalesce(json_extract(?1, '$.session_id'), ''),"
+                                " coalesce(json_extract(?1, '$.hook_event_name'), '') WHERE json_valid(?1)",
                            -1, &q, NULL) == SQLITE_OK) {
       sqlite3_bind_text(q, 1, in.p, (int)in.n, SQLITE_STATIC);
       if (sqlite3_step(q) == SQLITE_ROW) {
         snprintf(source, scap, "%s", sqlite3_column_text(q, 0));
         snprintf(session, ncap, "%s", sqlite3_column_text(q, 1));
+        snprintf(hook_event, sizeof hook_event, "%s", sqlite3_column_text(q, 2));
       }
       sqlite3_finalize(q);
     }
@@ -5267,6 +5315,20 @@ static int rules_offer(void) {
   }
   char *project = current_project(db);
   sqlite3_stmt *q = NULL;
+  if (!strcmp(hook_event, "SubagentStart")) { /* a subagent starts without the note; it gets that one line and nothing else */
+    if (sqlite3_prepare_v2(db, "SELECT json_object('hookSpecificOutput', json_object('hookEventName', 'SubagentStart', 'additionalContext',"
+                               " 'Past sessions of ' || ?1 || ' are archived (' || count(*) || ' session days), tool output included. Before guessing at"
+                               " history, search them: `ctx search WORDS` with two or three exact names or error words, then `ctx turn ID 2 5` to read"
+                               " around a hit.')) FROM ctx_doc WHERE kind = 'session' AND project = ?1 HAVING count(*) > 0", -1, &q, NULL) == SQLITE_OK) {
+      sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+      if (sqlite3_step(q) == SQLITE_ROW) puts((const char *)sqlite3_column_text(q, 0));
+      sqlite3_finalize(q);
+    }
+    free(project);
+    free(path);
+    sqlite3_close(db);
+    return 0;
+  }
   buf text = {0};
   int n = 0;
   if (sqlite3_prepare_v2(db,
@@ -6095,6 +6157,7 @@ static int usage(void) {
         "       ctx hook\n"
         "       ctx rebuild\n"
         "       ctx inject\n"
+        "       ctx recall\n"
         "       ctx stats [--weeks N]\n"
         "       ctx remember TEXT [--project P] [--until DATE] [--from TURN]\n"
         "       ctx decisions [--open] [--all] [--limit N]\n"
@@ -6121,6 +6184,7 @@ int main(int argc, char **argv) {
   if (argc == 2 && !strcmp(argv[1], "hook")) return cmd_hook();
   if (argc == 2 && !strcmp(argv[1], "rebuild")) return cmd_rebuild();
   if (argc == 2 && !strcmp(argv[1], "inject")) return cmd_inject();
+  if (argc == 2 && !strcmp(argv[1], "recall")) return cmd_recall();
   if ((argc == 2 || argc == 3) && !strcmp(argv[1], "scan")) return cmd_scan(argc == 3 ? argv[2] : NULL);
   if (argc >= 2 && !strcmp(argv[1], "audit")) return cmd_audit(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "ticket")) return cmd_ticket(argc - 2, argv + 2);

@@ -335,6 +335,16 @@ assert "cut off before the user answered" in c and "Rename the plover table" in 
 assert "The user decided: Ship the plover hook tonight? -> No" in c, c
 PY
 printf '{"source":"startup","session_id":"d00d0002-0000-0000-0000-000000000002"}' | (cd "$T/w/rp" && "$CTX" rules offer) | grep -q 'Which plover colour' && fail "a fresh start carries no brief"
+# A subagent starts without the note, so it gets that one line: no rules, no brief, no questions.
+printf '{"hook_event_name":"SubagentStart","agent_type":"Explore","session_id":"d00d0002-0000-0000-0000-000000000002"}' | (cd "$T/w/rp" && "$CTX" rules offer) > "$T/sub.json"
+python3 - "$T/sub.json" <<'PY'
+import json, sys
+h = json.load(open(sys.argv[1]))["hookSpecificOutput"]
+c = h["additionalContext"]
+assert h["hookEventName"] == "SubagentStart", h
+assert "Past sessions of rp are archived" in c and "ctx search" in c, c
+assert "Standing rules" not in c and "Where this session stood" not in c and "\n" not in c, c
+PY
 s0=$(date +%s); sleep 4 | (cd "$T/w/rp" && "$CTX" rules offer >/dev/null; date +%s > "$T/end"); [ $(( $(cat "$T/end") - s0 )) -lt 3 ] || fail "the hook does not wait on a stdin that stays open"
 s0=$(date +%s); (printf '{"source":"compact"'; sleep 4) | (cd "$T/w/rp" && "$CTX" rules offer >/dev/null; date +%s > "$T/end"); [ $(( $(cat "$T/end") - s0 )) -lt 3 ] || fail "the hook does not wait on a writer that never closes"
 # A classifier, any command that answers a prompt on stdin, proposes rules from what the
@@ -1080,6 +1090,15 @@ printf '%s' "$out" | grep -q 'why does the flamingo' && fail "the current sessio
 [ -z "$(inj aa000004-now 'please run the tests again')" ] || fail "a prompt with no strong match gets nothing"
 [ -z "$(echo 'not json' | "$CTX" inject)" ] || fail "junk input gets nothing"
 CTX_DB=/nonexistent/x.sqlite "$CTX" inject < /dev/null || fail "inject never fails a prompt"
+# recall: one line telling the agent to search, only when the person's prompt opens with a reference to earlier work.
+rc() { printf '{"session_id":"s","cwd":"/x","prompt":"%s"}' "$1" | "$CTX" recall; }
+rc "Do you remember why the flamingo cache stalls?" | python3 -c "import json,sys; c=json.load(sys.stdin)['hookSpecificOutput']; assert c['hookEventName'] == 'UserPromptSubmit' and 'ctx search' in c['additionalContext'], c" || fail "recall fires on a reference to earlier work"
+[ -n "$(rc "Didn\u2019t we already land that?")" ] || fail "recall reads a typographic apostrophe"
+[ -z "$(rc "fix the build and run the tests")" ] || fail "recall says nothing for an ordinary prompt"
+[ -z "$(rc "<task-notification> do you remember")" ] || fail "recall ignores harness text"
+[ -z "$(rc "$(printf 'x%.0s' $(seq 1 450)) do you remember")" ] || fail "recall ignores a cue deep in pasted text"
+[ -z "$(echo 'not json' | "$CTX" recall)" ] || fail "recall ignores junk input"
+[ -z "$(printf '{"prompt":"do you remember"}' | CTX_DB=/nonexistent/x.sqlite "$CTX" recall)" ] || fail "recall says nothing without an archive"
 
 # Rebuild: derived tables come back from the repositories; state is untouched.
 export CTX_DB="$T/rebuild.sqlite"

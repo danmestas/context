@@ -39,6 +39,21 @@ questions need no bookkeeping.
 - Conditions: **A** the repo only, **B** grep over transcripts, **C** the skill.
   Only C has `ctx` or the skill. The skill is never mentioned in the prompt, so
   `report` also shows how often agents reach for it.
+- `run --ask plain` asks the bare question, with no mention of past work or
+  sources, so a run shows whether the agent reaches for `ctx` unprompted. The
+  default, `teammate`, frames it as a question about past work. `compare`
+  refuses runs with different `--ask` values. Condition B still lists its
+  transcript folders in the prompt.
+- Condition **R** is C plus what the UserPromptSubmit recall hook would add: it
+  runs `ctx recall` on the question text and appends the output to the system
+  prompt. I and H are the same idea with `ctx inject` and the SessionStart hook.
+- `run --kind KIND[,KIND]` keeps only questions of those kinds. Questions of
+  kind `code` can be answered from the code alone, so any `ctx` use on them is
+  a false reach.
+- Reach is the share of runs with at least one `ctx` call. `report` prints it
+  per condition and, for I, H and R, how many runs had text injected and how
+  many of those reached `ctx`. `compare` prints old and new reach; the gate
+  does not use it.
 - Runs that reached session history they should not have are voided.
 - `compare` grades both runs in one shuffled pass with sources masked.
 - `author` drafts questions, then a separate review pass checks each against

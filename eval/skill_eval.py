@@ -44,6 +44,8 @@ ASK = ("A teammate asks about past work on this project: {q}\n\n"
        "Find the answer from whatever sources you have here. If you cannot find it, say you do not know "
        "rather than guessing. Reply with the answer in under 120 words and name the evidence you relied on.")
 
+ASK_PLAIN = "{q}\n\nReply in under 120 words; if you do not know, say so rather than guessing."
+
 AUTHOR = """Write a gold question set for a memory benchmark about past work on the project `{project}`.
 Reply with only a JSON array, no other text.
 
@@ -300,6 +302,8 @@ def cmd_run(a):
     qs = [q for q in bank["questions"] if a.set == "all" or set_of(q["id"]) == a.set]
     if a.only:
         qs = [q for q in qs if q["id"] in a.only.split(",")]
+    if a.kind:
+        qs = [q for q in qs if q["kind"] in a.kind.split(",")]
     if not qs:
         sys.exit("no questions in that set; run `author` first")
     with open(a.skill) as f:
@@ -315,13 +319,13 @@ def cmd_run(a):
             q, cond = item
             project = bank["projects"][q["project"]]
             cwd = w.repo(cond, q["project"], project["repo"])
-            prompt = (ASK_DOCS if cond in "SWF" else ASK).format(q=q["question"])
+            prompt = (ASK_PLAIN if a.ask == "plain" else ASK_DOCS if cond in "SWF" else ASK).format(q=q["question"])
             allow, dirs = list(READ_ONLY), []
             if cond == "B":
                 dirs = glob.glob(os.path.expanduser(f"~/.claude/projects/{slug(project['sessions'])}*"))
                 prompt += "\n\nTranscripts of past coding sessions on this project are JSONL files in:\n" + "\n".join(dirs)
                 allow += ["Bash(jq*)", "Bash(python3*)"]
-            if cond in "CIH":
+            if cond in "CIHR":
                 allow.append("Bash(ctx *)")
             if cond in "SWF":  # same tools; only the wiki differs: W in the index, F as files, S neither
                 allow += ["Bash(ctx search *)", "Bash(ctx turn *)"]
@@ -333,15 +337,21 @@ def cmd_run(a):
                 extra = json.loads(hook)["hookSpecificOutput"]["additionalContext"] if hook.strip() else ""
                 if extra:
                     cmd += ["--append-system-prompt", extra]
+            if cond == "R":  # what the UserPromptSubmit recall hook would add for the bare question
+                hook = subprocess.run([f"{w.bin}/ctx", "recall"], input=json.dumps({"session_id": "eval", "cwd": cwd, "prompt": q["question"]}),
+                                      env=w.env(True), cwd=cwd, capture_output=True, text=True, timeout=30).stdout
+                extra = json.loads(hook)["hookSpecificOutput"]["additionalContext"] if hook.strip() else ""
+                if extra:
+                    cmd += ["--append-system-prompt", extra]
             if cond == "H":  # what the SessionStart hook would add for this project
                 hook = subprocess.run([f"{w.bin}/ctx", "rules", "offer"], env=w.env(True), cwd=cwd,
                                       capture_output=True, text=True, timeout=30).stdout
                 extra = json.loads(hook)["hookSpecificOutput"]["additionalContext"] if hook.strip() else ""
                 if extra:
                     cmd += ["--append-system-prompt", extra]
-            p = spawn(cmd, cwd, w.env(cond in "CSWFIH", db), a.deadline)
+            p = spawn(cmd, cwd, w.env(cond in "CSWFIHR", db), a.deadline)
             r = digest(p.stdout, cond, own)
-            r.update(qid=q["id"], cond=cond, project=q["project"], kind=q["kind"], injected=cond in "IH" and "--append-system-prompt" in cmd)
+            r.update(qid=q["id"], cond=cond, project=q["project"], kind=q["kind"], injected=cond in "IHR" and "--append-system-prompt" in cmd)
             return r
 
         for q in qs:  # copies are made up front so parallel jobs never race
@@ -349,7 +359,7 @@ def cmd_run(a):
                 cwd = w.repo(cond, q["project"], bank["projects"][q["project"]]["repo"])
                 if cond == "F":
                     w.wiki_files(cwd)
-                if cond in "CSWFIH":
+                if cond in "CSWFIHR":
                     os.makedirs(f"{cwd}/.claude/skills/ctx", exist_ok=True)
                     with open(f"{cwd}/.claude/skills/ctx/SKILL.md", "w") as f:
                         f.write(skill)
@@ -361,7 +371,7 @@ def cmd_run(a):
             rows = list(ex.map(job, items))
     write_json(f"{out}/runs.json", rows)
     write_json(f"{out}/meta.json", dict(skill=skill_id, set=a.set, conds=conds, model=a.model, at=time.time(), deadline=a.deadline,
-                                        questions=[q["id"] for q in qs], via=route(), yolo=YOLO))
+                                        questions=[q["id"] for q in qs], via=route(), yolo=YOLO, ask=a.ask))
     bad = sum(not r["ok"] for r in rows)
     void = sum(bool(r["breach"]) for r in rows)
     print(out)
@@ -447,7 +457,11 @@ def cmd_report(a):
     for cond in sorted(t):
         s = stats(t[cond])
         print(f"{cond}: score {s['score']:.1f}/{s['n']}  correct {s['correct']} partial {s['partial']} wrong {s['wrong']} "
-              f"dont_know {s['dont_know']}  new tokens {s['new']}  tools {s['tools']:g}  secs {s['secs']:g}  used ctx {s['used']}")
+              f"dont_know {s['dont_know']}  new tokens {s['new']}  tools {s['tools']:g}  secs {s['secs']:g}  "
+              f"reached ctx {s['used']}/{s['n']} ({round(100 * s['used'] / s['n'])}%)")
+        if cond in "IHR":
+            fired = [c for c in t[cond].values() if c.get("injected")]
+            print(f"   fired {len(fired)}, reached {sum(c['ctx'] > 0 for c in fired)} of them")
     conds = sorted(t)
     for i, x in enumerate(conds):
         for y in conds[i + 1 :]:
@@ -458,6 +472,10 @@ def cmd_compare(a):
     def how(path):
         m = json.load(open(f"{path}/meta.json"))
         return (m.get("model"), m.get("via"), m.get("yolo", False))
+    def ask(path):
+        return json.load(open(f"{path}/meta.json")).get("ask", "teammate")
+    if ask(a.old) != ask(a.new):
+        sys.exit(f"the runs used different prompts: --ask {ask(a.old)} against {ask(a.new)}")
     if how(a.old) != how(a.new):
         sys.exit(f"the runs used different models or permissions: {how(a.old)} against {how(a.new)}")
     told, pold = table(a.old) if os.path.exists(f"{a.old}/grades.json") else (None, None)
@@ -474,8 +492,8 @@ def cmd_compare(a):
     sn = stats({q: new[q] for q in shared})
     better, worse, p = paired(new, old)
     print(f"questions {len(shared)}")
-    print(f"old: score {so['score']:.1f} wrong {so['wrong']} new tokens {so['new']}")
-    print(f"new: score {sn['score']:.1f} wrong {sn['wrong']} new tokens {sn['new']}")
+    print(f"old: score {so['score']:.1f} wrong {so['wrong']} new tokens {so['new']} reached ctx {so['used']}/{len(shared)}")
+    print(f"new: score {sn['score']:.1f} wrong {sn['wrong']} new tokens {sn['new']} reached ctx {sn['used']}/{len(shared)}")
     print(f"new better on {better}, worse on {worse}, p={p:.3f}")
     fails = []
     if sn["score"] < so["score"]:
@@ -593,9 +611,12 @@ def main():
     p.set_defaults(fn=cmd_author)
     p = sub.add_parser("run", help="answer questions in fresh isolated processes")
     p.add_argument("--set", choices=("dev", "holdout", "all"), default="dev")
-    p.add_argument("--cond", default="C", help="A repo only, B grep over transcripts, C the skill, I the skill plus injection, H the skill plus the SessionStart hook; for documents, S sources only, W wiki in the index, F wiki as files")
+    p.add_argument("--cond", default="C", help="A repo only, B grep over transcripts, C the skill, I the skill plus injection, H the skill plus the SessionStart hook, R the skill plus the recall hook; for documents, S sources only, W wiki in the index, F wiki as files")
     p.add_argument("--skill", default=DEFAULT_SKILL)
     p.add_argument("--only", help="comma-separated question ids")
+    p.add_argument("--kind", help="comma-separated question kinds; code questions are answerable from the code alone")
+    p.add_argument("--ask", choices=("teammate", "plain"), default="teammate",
+                   help="teammate frames each question as past work; plain asks only the question")
     p.add_argument("--name")
     p.add_argument("--model", default="sonnet")
     p.add_argument("--jobs", type=int, default=6)
