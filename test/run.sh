@@ -397,6 +397,32 @@ import json, sys
 c = json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]
 assert 'Artifact "Heron Plan" at https://claude.ai/artifact/HERON1 is at version 2; the user approved version 1 on' in c, c
 PY
+# Pages from html-artifact-publisher are listed too, by their read link; an example in a document is not one.
+python3 - "$RC/projects/-w-rp/d00d0004-0000-0000-0000-000000000004.jsonl" <<'PY'
+import datetime as dt, json, sys
+now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0) - dt.timedelta(hours=2)
+def at(m): return (now + dt.timedelta(minutes=m)).strftime("%Y-%m-%dT%H:%M:%SZ")
+def bash(u, m, cmd): return {"uuid": u, "timestamp": at(m), "cwd": "/w/rp", "message": {"role": "assistant", "content": [
+    {"type": "tool_use", "id": "t" + u, "name": "Bash", "input": {"command": cmd}}]}}
+def res(u, m, text): return {"uuid": u, "timestamp": at(m), "cwd": "/w/rp", "message": {"role": "user", "content": [
+    {"type": "tool_result", "tool_use_id": "t", "content": text}]}}
+tok = "ab12" * 16
+out = lambda c: json.dumps({"id": "kite7", "viewerUrl": "https://pages.example.test/v/kite7#" + tok, "checkin": c, "linkVerified": True}, indent=1)
+rows = [
+    bash("b-1", 0, 'node scripts/publish-html.mjs --json --title "Kite Report" kite.html'), res("o-1", 1, out("c0ffee01")),
+    bash("b-2", 2, 'node scripts/publish-html.mjs update "$EDIT" kite.html --message "fix"'), res("o-2", 3, out("c0ffee02")),
+    {"uuid": "y-2", "timestamp": at(4), "cwd": "/w/rp", "message": {"role": "user", "content": "approved"}},
+    bash("b-3", 5, "cat skills/publish-html-page/SKILL.md"),
+    res("o-3", 6, '{\n "viewerUrl": "https://artifacts.example.com/v/abc123#<readToken>",\n "checkin": "5f1c2e"\n}'),
+]
+open(sys.argv[1], "w").write("".join(json.dumps(r) + "\n" for r in rows))
+PY
+"$CTX" archive "$RC/projects/-w-rp/d00d0004-0000-0000-0000-000000000004.jsonl" >/dev/null
+(cd "$T/w/rp" && "$CTX" artifacts kite) > "$T/kite.txt"
+grep -q 'Kite Report' "$T/kite.txt" && grep -q 'pages.example.test/v/kite7#ab12.*  version 2 of 2 publishes' "$T/kite.txt" || fail "a publisher page lists its title, read link and versions: $(cat "$T/kite.txt")"
+grep -q 'approved: version 2 on .* (turn:y-2)' "$T/kite.txt" || fail "a publisher page records an approval: $(cat "$T/kite.txt")"
+[ "$("$CTX" sql "SELECT group_concat(version_id) FROM (SELECT version_id FROM ctx_artifact WHERE url LIKE '%kite7%' ORDER BY version)")" = c0ffee01,c0ffee02 ] || fail "each version keeps its check-in"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_artifact WHERE url LIKE '%abc123%'")" = 0 ] || fail "an example link in a document is not a publish"
 # A subagent starts without the note, so it gets that one line: no rules, no brief, no questions.
 printf '{"hook_event_name":"SubagentStart","agent_type":"Explore","session_id":"d00d0002-0000-0000-0000-000000000002"}' | (cd "$T/w/rp" && "$CTX" rules offer) > "$T/sub.json"
 python3 - "$T/sub.json" <<'PY'
