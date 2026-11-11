@@ -210,6 +210,14 @@ waiting proposals. On 90 questions about past work it raised Claude's score from
 66.5 to 73.5 (better on 16, worse on 6) with 7% fewer tokens; on DeepSeek, agents
 used ctx in 89 answers instead of 66 and needed half the tool calls.
 
+Rules fade by kind, not by age. Claude Code files status snapshots ("what shipped",
+"the backlog") as memory of type `project`; most go stale within weeks, so such a
+note fades 30 days after its file was last written, and editing it brings it back.
+Rules in your own words and corrections stay until you retire them. On 42 rules you
+labelled, 12% of your own rules had gone stale, 44% of corrections and 83% of status
+notes; age-based fading caught more stale rules but quieted a quarter of true ones.
+A faded rule is listed by `ctx rules --all` and found by `ctx search --history`.
+
 Each rule is a technote in your private repository, so every version is kept and
 rules sync with your archive. A rule past its `--until` date expires. Search shows
 rules in force, each under its file name or key; `--history` brings back expired,

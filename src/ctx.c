@@ -1069,7 +1069,7 @@ static int search_run(sqlite3 *db, const char *match, const char *project, int l
       " JOIN ctx_chunk c ON c.id = ctx_chunk_fts.rowid"
       " JOIN ctx_doc d ON d.id = c.doc_id"
       " WHERE ctx_chunk_fts MATCH ?1 AND (?2 IS NULL OR coalesce(c.project, d.project) IN (?2, '*'))";
-  static const char current[] = " AND (?4 OR coalesce(d.status, '') NOT IN ('superseded', 'retracted', 'retired', 'replaced', 'expired'))";
+  static const char current[] = " AND (?4 OR coalesce(d.status, '') NOT IN ('superseded', 'retracted', 'retired', 'replaced', 'expired', 'faded'))";
   static const char then[] =
       " AND ?4 IS NOT NULL AND ((d.kind = 'session' AND substr(c.at, 1, 10) <= ?5)"
       "  OR (d.kind = 'source' AND EXISTS (SELECT 1 FROM ctx_source_meta m WHERE m.doc_id = d.id AND m.added_at <= ?5"
@@ -4665,14 +4665,15 @@ static void rule_title(const char *body, char *out, size_t cap) {
 
 typedef struct {
   const char *key, *project, *source, *origin, *until, *status, *by, *reason, *body;
+  const char *kind, *written; /* a memory note's type, and the day its file was last written */
 } rule_t;
 
 /* Saves a rule unless its technote already says the same. Returns 1 if saved. */
 static int rule_save(sqlite3 *db, const rule_t *r) {
   buf text = {0};
-  const char *names[] = {"key", "project", "source", "origin", "until", "status", "by", "reason"};
-  const char *vals[] = {r->key, r->project, r->source, r->origin, r->until, r->status, r->by, r->reason};
-  for (int i = 0; i < 8; i++) {
+  const char *names[] = {"key", "project", "kind", "written", "source", "origin", "until", "status", "by", "reason"};
+  const char *vals[] = {r->key, r->project, r->kind, r->written, r->source, r->origin, r->until, r->status, r->by, r->reason};
+  for (int i = 0; i < 10; i++) {
     if (!vals[i] || !*vals[i]) continue;
     buf_str(&text, names[i]);
     buf_str(&text, ": ");
@@ -4716,6 +4717,7 @@ static int rule_save(sqlite3 *db, const rule_t *r) {
   return 1;
 }
 
+#define FADE_DAYS "30"
 /* Rebuilds the rule documents from the rule technotes, every machine's. A rule past
  * its until date is expired. Two technotes with one key: the newer wins. */
 static void rules_index(sqlite3 *db) {
@@ -4740,6 +4742,7 @@ static void rules_index(sqlite3 *db) {
   sqlite3_stmt *chunk = db_prepare(db, "INSERT INTO ctx_chunk(doc_id, seq, heading, project, body) VALUES (?1, 0, ?4, ?2, ?3)");
   sqlite3_stmt *key = db_prepare(db, "INSERT OR REPLACE INTO ctx_rule(key, technote) VALUES (?1, ?2)");
   sqlite3_stmt *past = db_prepare(db, "SELECT ?1 <> '' AND ?1 < date('now')");
+  sqlite3_stmt *faded = db_prepare(db, "SELECT ?1 < date('now', '-" FADE_DAYS " days')");
   sqlite3_stmt *older = db_prepare(db, "DELETE FROM ctx_chunk WHERE doc_id IN (SELECT id FROM ctx_doc WHERE kind = 'rule' AND name = ?1)");
   sqlite3_stmt *older_doc = db_prepare(db, "DELETE FROM ctx_doc WHERE kind = 'rule' AND name = ?1");
   while (sqlite3_step(notes) == SQLITE_ROW) {
@@ -4755,6 +4758,17 @@ static void rules_index(sqlite3 *db) {
     sqlite3_bind_text(past, 1, until, -1, SQLITE_STATIC);
     if (!*status && sqlite3_step(past) == SQLITE_ROW && sqlite3_column_int(past, 0)) snprintf(status, sizeof status, "expired");
     sqlite3_reset(past);
+    char kind[24], written[16];
+    rule_field(text, "kind", kind, sizeof kind);
+    rule_field(text, "written", written, sizeof written);
+    /* A memory note about project status is a snapshot: most go stale within weeks, while
+     * rules in the person's own words rarely do. It fades 30 days after it was last
+     * written; editing the note brings it back. Nothing else fades on its own. */
+    if (!*status && !strcmp(kind, "project") && *written) {
+      sqlite3_bind_text(faded, 1, written, -1, SQLITE_STATIC);
+      if (sqlite3_step(faded) == SQLITE_ROW && sqlite3_column_int(faded, 0)) snprintf(status, sizeof status, "faded");
+      sqlite3_reset(faded);
+    }
     const char *body = rule_body(text);
     char title[200];
     rule_title(body, title, sizeof title);
@@ -4795,6 +4809,7 @@ static void rules_index(sqlite3 *db) {
   sqlite3_finalize(chunk);
   sqlite3_finalize(key);
   sqlite3_finalize(past);
+  sqlite3_finalize(faded);
   sqlite3_finalize(older);
   sqlite3_finalize(older_doc);
   db_exec(db, "COMMIT");
@@ -4869,10 +4884,19 @@ static int import_file(sqlite3 *db, const char *path, const char *project, const
   size_t n = 0;
   char *data = slurp(path, &n);
   if (!data || !n) { free(data); return 0; }
+  char kind[24] = "", written[16] = "";
+  if (!strncmp(data, "---", 3)) { /* a memory note says what kind it is in its frontmatter */
+    const char *end = strstr(data + 3, "\n---"), *t = strstr(data, "\ntype:");
+    if (!t) t = strstr(data, "  type:");
+    if (t && (!end || t < end)) sscanf(strchr(t, ':') + 1, " %23[a-z]", kind);
+  }
+  struct stat st;
+  if (!stat(path, &st)) strftime(written, sizeof written, "%Y-%m-%d", gmtime(&st.st_mtime));
   buf clean = {0};
   add_redacted(&clean, data, n); /* the same rules as transcripts */
   buf_add(&clean, "", 1);
-  rule_t r = {.key = path, .project = project, .source = path, .origin = origin, .body = clean.p};
+  rule_t r = {.key = path, .project = project, .source = path, .origin = origin, .kind = *kind ? kind : NULL,
+              .written = written, .body = clean.p};
   int saved = rule_save(db, &r);
   free(clean.p);
   free(data);
@@ -4952,11 +4976,14 @@ static long rules_import(sqlite3 *db) {
   while (sqlite3_step(gone) == SQLITE_ROW) {
     const char *text = (const char *)sqlite3_column_text(gone, 2);
     if (!text) continue;
-    char origin[80], src[600];
+    char origin[80], src[600], kind[24], written[16];
     rule_field(text, "origin", origin, sizeof origin);
     rule_field(text, "source", src, sizeof src);
+    rule_field(text, "kind", kind, sizeof kind);
+    rule_field(text, "written", written, sizeof written);
     rule_t r = {.key = (const char *)sqlite3_column_text(gone, 0), .project = (const char *)sqlite3_column_text(gone, 1),
-                .source = src, .origin = origin, .status = "retired", .reason = "its file was removed", .body = rule_body(text)};
+                .source = src, .origin = origin, .kind = kind, .written = written, .status = "retired",
+                .reason = "its file was removed", .body = rule_body(text)};
     changed += rule_save(db, &r);
   }
   sqlite3_finalize(gone);
@@ -5393,12 +5420,14 @@ static int cmd_rules(int argc, char **argv) {
     sqlite3_bind_text(q, 1, full, -1, SQLITE_STATIC);
     if (sqlite3_step(q) != SQLITE_ROW || !sqlite3_column_text(q, 1)) die("no rule %s", k);
     const char *text = (const char *)sqlite3_column_text(q, 1);
-    char src[600], origin[80], until[40];
+    char src[600], origin[80], until[40], kind[24], written[16];
     rule_field(text, "source", src, sizeof src);
     rule_field(text, "origin", origin, sizeof origin);
     rule_field(text, "until", until, sizeof until);
+    rule_field(text, "kind", kind, sizeof kind);
+    rule_field(text, "written", written, sizeof written);
     rule_t r = {.key = full, .project = (const char *)sqlite3_column_text(q, 0), .source = src, .origin = origin, .until = until,
-                .status = by ? "replaced" : "retired", .by = by_full, .reason = reason, .body = rule_body(text)};
+                .kind = kind, .written = written, .status = by ? "replaced" : "retired", .by = by_full, .reason = reason, .body = rule_body(text)};
     db_exec(db, "BEGIN IMMEDIATE");
     rule_save(db, &r);
     db_exec(db, "COMMIT");
