@@ -251,6 +251,10 @@ grep -q 'One rule may be outdated' "$T/ask.json" && grep -q 'we no longer keep k
 [ "$("$CTX" sql "SELECT verdict FROM ctx_rule_check WHERE key LIKE '%short-commits.md'")" = true ] || fail "an invented quote is not evidence"
 "$CTX" sql "UPDATE ctx_rule_check SET checked = '2026-01-01'" >/dev/null
 if CTX_JUDGE="sh -c 'exit 3'" "$CTX" rules judge 2>"$T/jf.txt" >/dev/null; then fail "a failing judge fails"; fi
+s0=$(date +%s)
+if CTX_MODEL_DEADLINE=1 CTX_JUDGE="sh -c 'sleep 30 & sleep 30; echo late'" "$CTX" rules judge 2>"$T/jd.txt" >/dev/null; then fail "a judge past its deadline fails"; fi
+[ $(( $(date +%s) - s0 )) -lt 10 ] && grep -q 'passed 1 seconds; stopped' "$T/jd.txt" || fail "a stuck judge is stopped at its deadline: $(cat "$T/jd.txt")"
+sleep 1; pgrep -f 'sleep 30' >/dev/null && fail "the stuck judge's children are stopped too"
 grep -q 'judge failed (exit 3)' "$T/jf.txt" || fail "the judge's real exit code is reported: $(cat "$T/jf.txt")"
 CTX_JUDGE="echo '{\"verdict\": \"stale\", \"evidence\": \"he said \"x\"\"}'" "$CTX" rules judge 2>"$T/jf.txt" >/dev/null || true
 grep -q 'unreadable' "$T/jf.txt" || fail "an unreadable answer is reported"
@@ -1081,7 +1085,7 @@ CTX_DB=/nonexistent/x.sqlite "$CTX" inject < /dev/null || fail "inject never fai
 export CTX_DB="$T/rebuild.sqlite"
 "$CTX" init >/dev/null
 [ "$("$CTX" sql "PRAGMA user_version")" = 5 ] || fail "a new file is at the current version"
-[ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 4 ] || fail "derived version recorded"
+[ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 5 ] || fail "derived version recorded"
 printf '{"uuid":"rb-1","timestamp":"2026-09-01T10:00:00Z","cwd":"/w/rb","message":{"role":"user","content":"the capybara rollout"}}\n{"uuid":"rb-2","timestamp":"2026-09-01T10:00:05Z","cwd":"/w/rb","message":{"role":"assistant","content":"rolled out the capybara"}}\n' > "$T/ab12cd99-rb.jsonl"
 "$CTX" archive "$T/ab12cd99-rb.jsonl" >/dev/null
 RT=$("$CTX" ticket new "Kept across a rebuild" --project rb)
@@ -1096,7 +1100,7 @@ before=$("$CTX" search --all capybara | grep -c '^#')
 "$CTX" sql "UPDATE ctx_meta SET value='1' WHERE key='derived_version'" >/dev/null
 "$CTX" search --all capybara 2>"$T/rb.err" >/dev/null
 grep -q 'rebuilding it once' "$T/rb.err" || fail "an old index is rebuilt on open"
-[ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 4 ] || fail "then it is current"
+[ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 5 ] || fail "then it is current"
 "$CTX" search --all capybara 2>"$T/rb2.err" >/dev/null; [ -s "$T/rb2.err" ] && fail "and is not rebuilt again"
 # A file from before versioning upgrades in place, without a rebuild.
 "$CTX" sql "DROP TABLE ctx_meta" >/dev/null; "$CTX" sql "PRAGMA user_version = 1" >/dev/null

@@ -17,6 +17,7 @@
 #include <string.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <signal.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -28,7 +29,7 @@
 
 #define CTX_VERSION "0.0.1"
 #define CTX_USER_VERSION 5    /* PRAGMA user_version once initialized */
-#define CTX_DERIVED_VERSION 4 /* raise when schema/index.sql changes; ctx then rebuilds */
+#define CTX_DERIVED_VERSION 5 /* raise when schema/index.sql changes; ctx then rebuilds */
 
 /* A tool's output is kept up to this size at each end; the middle is cut. */
 #define TOOL_KEEP (16 * 1024)
@@ -5431,19 +5432,52 @@ static char *rules_judge_cmd(sqlite3 *db) {
 static int exit_code(int status) { return status == -1 ? -1 : WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status); }
 
 /* Runs a model command on a prompt. Returns its exit status; the answer is in out. */
+#define MODEL_DEADLINE_SECS 120
+
+/* Runs a classifier or judge command with the prompt on stdin and collects its answer.
+ * The command runs in its own process group, killed whole at the deadline, so a stuck
+ * model call cannot hold the background scan. Returns a wait status, or -1. */
 static int model_answer(const char *cmd, const char *prompt, size_t n, buf *out) {
   char tmp[] = "/tmp/ctx-model-XXXXXX"; /* private text: 0600, removed at once */
-  int fd = mkstemp(tmp);
+  int fd = mkstemp(tmp), pfd[2] = {-1, -1}, rc = -1;
   if (fd < 0) { buf_add(out, "", 1); return -1; }
-  if (write(fd, prompt, n) != (ssize_t)n) { close(fd); unlink(tmp); buf_add(out, "", 1); return -1; }
-  close(fd);
-  char sh[8400];
-  snprintf(sh, sizeof sh, "%s < '%s'", cmd, tmp);
-  FILE *p = popen(sh, "r");
+  if (write(fd, prompt, n) != (ssize_t)n || lseek(fd, 0, SEEK_SET) != 0 || pipe(pfd) != 0) goto done;
+  pid_t pid = fork();
+  if (pid < 0) goto done;
+  if (pid == 0) {
+    setpgid(0, 0);
+    dup2(fd, 0);
+    dup2(pfd[1], 1);
+    close(pfd[0]);
+    execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+    _exit(127);
+  }
+  setpgid(pid, pid); /* also here, so the group exists before any kill */
+  close(pfd[1]);
+  pfd[1] = -1;
+  const char *dl = getenv("CTX_MODEL_DEADLINE"); /* seconds; for tests */
+  int secs = dl && atoi(dl) > 0 ? atoi(dl) : MODEL_DEADLINE_SECS;
+  time_t end = time(NULL) + secs;
   char chunk[4096];
-  size_t got;
-  while (p && (got = fread(chunk, 1, sizeof chunk, p)) > 0) buf_add(out, chunk, got);
-  int rc = p ? pclose(p) : -1;
+  for (;;) {
+    int left = (int)(end - time(NULL));
+    struct pollfd pf = {pfd[0], POLLIN, 0};
+    if (left <= 0 || poll(&pf, 1, left * 1000) <= 0) {
+      fprintf(stderr, "ctx: the model command passed %d seconds; stopped\n", secs);
+      killpg(pid, SIGKILL);
+      break;
+    }
+    ssize_t got = read(pfd[0], chunk, sizeof chunk);
+    if (got <= 0) break;
+    buf_add(out, chunk, (size_t)got);
+  }
+  int st = 0;
+  while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+  rc = st;
+done:
+  if (pfd[0] >= 0) close(pfd[0]);
+  if (pfd[1] >= 0) close(pfd[1]);
+  close(fd);
   unlink(tmp);
   buf_add(out, "", 1);
   return rc;
@@ -5473,15 +5507,16 @@ static int rules_judge(sqlite3 *db, long limit, int quiet) {
   }
   open_private(db);
   db_exec(db, "SELECT fsl_use('repo:me')");
+  /* each project's latest turn of the person's, found once rather than per rule */
   sqlite3_stmt *pick = db_prepare(db,
-      "SELECT d.name, d.project, c.body, CAST(fsl_technote(r.technote) AS TEXT) FROM ctx_doc d JOIN ctx_chunk c ON c.doc_id = d.id"
-      " JOIN ctx_rule r ON r.key = d.name LEFT JOIN ctx_rule_check k ON k.key = d.name"
+      "WITH last AS (SELECT coalesce(u.project, ud.project) AS project, max(u.at) AS at FROM ctx_chunk u JOIN ctx_doc ud ON ud.id = u.doc_id"
+      "  WHERE ud.kind = 'session' AND u.heading = 'user' GROUP BY 1)"
+      " SELECT d.name, d.project, c.body, CAST(fsl_technote(r.technote) AS TEXT) FROM ctx_doc d JOIN ctx_chunk c ON c.doc_id = d.id"
+      " JOIN ctx_rule r ON r.key = d.name JOIN last l ON l.project = d.project LEFT JOIN ctx_rule_check k ON k.key = d.name"
       " WHERE d.kind = 'rule' AND d.status IS NULL AND d.project <> '*'"
       " AND d.name NOT GLOB '*/CLAUDE.md' AND d.name NOT GLOB '*/AGENTS.md'" /* whole instruction files are not one rule */
       " AND coalesce(k.checked, '') < date('now', '-7 days') AND coalesce(k.kept, '') < date('now', '-90 days')"
-      " AND EXISTS (SELECT 1 FROM ctx_chunk u JOIN ctx_doc ud ON ud.id = u.doc_id WHERE ud.kind = 'session' AND u.heading = 'user'"
-      "   AND coalesce(u.project, ud.project) = d.project AND u.at > coalesce(k.checked, ''))"
-      " ORDER BY (SELECT max(u.at) FROM ctx_chunk u WHERE u.project = d.project AND u.heading = 'user') DESC LIMIT ?1");
+      " AND l.at > coalesce(k.checked, '') ORDER BY l.at DESC LIMIT ?1");
   sqlite3_bind_int64(pick, 1, limit);
   typedef struct { char *key, *project, *body, *since; } pending;
   pending *todo = NULL;
