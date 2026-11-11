@@ -263,7 +263,8 @@ static size_t token_end(const char *s, size_t n, size_t i, const char **name) {
           return e;
         }
       }
-  if (at(s, n, i, "dp.") && i + 5 < n && s[i + 5] == '.') {
+  /* dp.st., dp.pt., dp.ct., dp.sa.: the kind is two letters, never a line break, which would join two lines */
+  if (at(s, n, i, "dp.") && i + 5 < n && s[i + 5] == '.' && c_alnum((unsigned char)s[i + 3]) && c_alnum((unsigned char)s[i + 4])) {
     e = span(s, n, i + 6, c_alnum);
     *name = "doppler";
     return e - (i + 6) >= 20 ? e : 0;
@@ -4676,8 +4677,10 @@ static int cmd_inject(void) {
   "WITH asks AS (SELECT a.id, a.doc_id, a.seq, a.turn, a.at, coalesce(a.project, d.project) AS project," \
   "  (SELECT d2.id FROM ctx_capture_day c1 JOIN ctx_capture_day c2 ON c2.session = c1.session AND c2.day > c1.day" \
   "   JOIN ctx_doc d2 ON d2.kind = 'session' AND d2.name = c2.technote WHERE c1.technote = d.name ORDER BY c2.day LIMIT 1) AS next_doc," \
-  "  substr(a.body, instr(a.body, 'AskUserQuestion {') + 16) AS rest FROM ctx_chunk a JOIN ctx_doc d ON d.id = a.doc_id" \
-  "  WHERE d.kind = 'session' AND a.heading = 'assistant' AND a.body LIKE '%AskUserQuestion {%'" \
+  "  substr(a.body, instr(a.body, 'AskUserQuestion {') + 16) AS rest" \
+  /* found through the search index: reading every turn's text takes seconds on a busy machine, and a hook has three */ \
+  "  FROM ctx_chunk_fts f CROSS JOIN ctx_chunk a ON a.id = f.rowid CROSS JOIN ctx_doc d ON d.id = a.doc_id" /* in this order */ \
+  "  WHERE f.ctx_chunk_fts MATCH 'body:askuserquestion' AND d.kind = 'session' AND a.heading = 'assistant' AND a.body LIKE '%AskUserQuestion {%'" \
   "  AND NOT (a.turn LIKE 'note:%' AND EXISTS (SELECT 1 FROM ctx_chunk b WHERE b.doc_id = a.doc_id AND b.id <> a.id" \
   "   AND b.at IS a.at AND b.heading = a.heading AND b.body = a.body AND b.turn NOT LIKE 'note:%'))" \
   "  AND (?1 IS NULL OR a.doc_id IN (SELECT dd.id FROM ctx_doc dd JOIN ctx_capture_day cd ON cd.technote = dd.name WHERE cd.session = ?1)))," \
@@ -5580,8 +5583,9 @@ static void session_brief(sqlite3 *db, const char *session, buf *all) {
   /* standing instructions the person gave in this session */
   if (sqlite3_prepare_v2(db,
           "SELECT replace(substr(p.text, 1, 150), char(10), ' '), p.status FROM ctx_rule_proposal p"
-          " WHERE p.turn IN (SELECT c.turn FROM ctx_chunk c JOIN ctx_doc d ON d.id = c.doc_id JOIN ctx_capture_day cd ON cd.technote = d.name"
-          "   WHERE cd.session = ?1) AND p.status <> 'rejected' ORDER BY p.at DESC LIMIT 4", -1, &q, NULL) == SQLITE_OK) {
+          /* each proposal's turn is looked up by its id; listing the session's turns would read all of them */
+          " WHERE EXISTS (SELECT 1 FROM ctx_chunk c JOIN ctx_doc d ON d.id = c.doc_id JOIN ctx_capture_day cd ON cd.technote = d.name"
+          "   WHERE c.turn = p.turn AND cd.session = ?1) AND p.status <> 'rejected' ORDER BY p.at DESC LIMIT 4", -1, &q, NULL) == SQLITE_OK) {
     sqlite3_bind_text(q, 1, session, -1, SQLITE_STATIC);
     while (sqlite3_step(q) == SQLITE_ROW && b.n < BRIEF_MAX) {
       snprintf(line, sizeof line, "\n- The user set a standing rule%s: %s",
