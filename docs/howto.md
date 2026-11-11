@@ -260,10 +260,27 @@ answer), `interrupted` (the session ended or was compacted before you answered) 
 `open`. On one archive of 745 questions, 727 were answered, 15 declined, 2 interrupted
 and 1 open; 83% of the answers name one of the offered options.
 
+Every page an agent published is an artifact record: its address, each version, the
+file it came from, and the turn in which you approved a version.
+
+```sh
+ctx artifacts            # this project's pages, newest first
+ctx artifacts --all      # every project
+ctx artifacts forge      # those whose title, file or address has the word
+```
+
+A version counts as approved only when your very next turn was a short yes ("yes",
+"go", "do it", "approved") and no newer version came first; the record names that
+turn, so `ctx turn turn:ID` shows it. This is strict on purpose: on one archive of
+1,124 publishes of 322 pages it recorded 43 approvals, and most approvals, which come
+after some discussion, are not recorded. A page with no approval listed may still have
+been approved.
+
 When a session is compacted or resumed, `ctx rules offer` begins with where it stood,
 from that session's own turns: questions still waiting for you or cut off, what you
-decided in the last two days, messages from other sessions in the last day, rules you
-set in it, and when you last reported a landing. A fresh session gets none of this.
+decided in the last two days, the pages it published in the last three days with their
+addresses, messages from other sessions in the last day, rules you set in it, and when
+you last reported a landing. A fresh session gets none of this.
 
 ## Set up a project
 

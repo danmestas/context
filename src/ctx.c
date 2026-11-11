@@ -29,7 +29,7 @@
 
 #define CTX_VERSION "0.0.1"
 #define CTX_USER_VERSION 5    /* PRAGMA user_version once initialized */
-#define CTX_DERIVED_VERSION 5 /* raise when schema/index.sql changes; ctx then rebuilds */
+#define CTX_DERIVED_VERSION 6 /* raise when schema/index.sql changes; ctx then rebuilds */
 
 /* A tool's output is kept up to this size at each end; the middle is cut. */
 #define TOOL_KEEP (16 * 1024)
@@ -37,6 +37,7 @@
 int fsl_sqlext_init(sqlite3 *db, char **err, const sqlite3_api_routines *api); /* as libfossil defines it */
 static void rules_index(sqlite3 *db);
 static void decisions_index(sqlite3 *db);
+static void artifacts_index(sqlite3 *db);
 static long rules_import(sqlite3 *db);
 char *fsl_sha3sum_cstr(const char *in, long long len);
 void fsl_free(void *p);
@@ -1720,6 +1721,7 @@ static int cmd_scan(const char *root_arg) {
   sqlite3_finalize(q);
   relabel_speakers(db);
   decisions_index(db);
+  artifacts_index(db);
   long rules = rules_import(db);
   sqlite3_close(db);
   printf("%ld transcripts read\n", ran);
@@ -4711,6 +4713,121 @@ static void decisions_index(sqlite3 *db) {
   db_exec(db, "COMMIT");
 }
 
+/* Artifacts: each page an agent published, read from the tool result that reported it
+ * ("Published FILE at URL (Version N, version id X)"), with a title from the call when
+ * it gave one. Only turns newer than the last run are read. A version is approved when
+ * the person's next turn in that session is a short yes, before any later publish of
+ * the same page; the record keeps that turn, so the approval can be checked. */
+#define ARTIFACT_SESSION "coalesce((SELECT cd.session FROM ctx_capture_day cd JOIN ctx_doc sd ON sd.name = cd.technote AND sd.kind = 'session'" \
+                         " WHERE sd.id = c.doc_id LIMIT 1), 'doc:' || c.doc_id)"
+#define ARTIFACT_YES \
+  "(b IN ('yes', 'y', 'go', 'ok', 'okay', 'sure', 'do it', 'approved', 'approve', 'accepted', 'lgtm', 'ship it', 'build it', 'go ahead'," \
+  " 'proceed', 'yes pls', 'yes please', 'as you recommend', 'take it', 'looks good', 'sounds good', 'a', 'b', 'c', 'd')" \
+  " OR b LIKE 'yes %' OR b LIKE 'yes,%' OR b LIKE 'do it%' OR b LIKE 'approved%' OR b LIKE 'looks good%' OR b LIKE 'lgtm%'" \
+  " OR b LIKE 'ship it%' OR b LIKE 'go ahead%' OR b LIKE 'build it%' OR b LIKE 'option _' OR b LIKE 'option _ %')"
+
+static void artifacts_index(sqlite3 *db) {
+  db_exec(db, "BEGIN IMMEDIATE");
+  sqlite3_stmt *q = db_prepare(db,
+      "WITH pub AS (SELECT c.id, c.doc_id, c.seq, c.turn, c.at, coalesce(c.project, d.project) AS project, " ARTIFACT_SESSION " AS session,"
+      "   substr(c.body, instr(c.body, 'Published ') + 10, 900) AS rest"
+      "  FROM ctx_chunk c JOIN ctx_doc d ON d.id = c.doc_id"
+      "  WHERE c.id > coalesce((SELECT CAST(value AS INTEGER) FROM ctx_meta WHERE key = 'artifact_seen'), 0)"
+      "   AND d.kind = 'session' AND c.heading = 'tool' AND c.body LIKE '%Published %https://claude.ai/%(Version %'"
+      "   AND ltrim(substr(c.body, 1, 40), ' ' || char(9, 10, 13)) LIKE 'Published %'),"  /* the result itself, not text that quotes one */
+      " p AS (SELECT pub.*, substr(rest, 1, instr(rest, ' at https://') - 1) AS path, substr(rest, instr(rest, ' at https://') + 4) AS r2"
+      "  FROM pub WHERE instr(rest, ' at https://') > 0),"
+      " v AS (SELECT p.*, substr(r2, 1, instr(r2, ' ') - 1) AS url, CAST(substr(r2, instr(r2, '(Version ') + 9, 12) AS INTEGER) AS version,"
+      "   CASE WHEN instr(r2, 'version id ') > 0"
+      "    THEN substr(r2, instr(r2, 'version id ') + 11, instr(substr(r2, instr(r2, 'version id ') + 11, 60), ')') - 1) END AS version_id"
+      "  FROM p WHERE instr(r2, '(Version ') > 0 AND instr(r2, ' ') > 0),"
+      /* the call that published this file, a few turns back, for its title */
+      " t AS (SELECT v.*, (SELECT substr(a.body, instr(a.body, 'Artifact {\"file_path\":\"' || v.path || '\"'), 2000)"
+      "    FROM ctx_chunk a WHERE a.doc_id = v.doc_id AND a.seq < v.seq AND a.seq >= v.seq - 3 AND a.heading = 'assistant'"
+      "     AND instr(a.body, 'Artifact {\"file_path\":\"' || v.path || '\"') > 0 ORDER BY a.seq DESC LIMIT 1) AS call FROM v),"
+      " l AS (SELECT t.*, CASE WHEN instr(call, char(10)) > 0 THEN substr(call, 1, instr(call, char(10)) - 1) ELSE call END AS line FROM t)"
+      " INSERT OR IGNORE INTO ctx_artifact(url, version, version_id, project, session, turn, at, path, title)"
+      " SELECT url, version, version_id, project, session, turn, at, path,"
+      "  CASE WHEN instr(line, '\"title\":\"') > 0"
+      "   THEN nullif(substr(line, instr(line, '\"title\":\"') + 9, instr(substr(line, instr(line, '\"title\":\"') + 9), '\"') - 1), '') END"
+      " FROM l WHERE url <> '' AND version > 0");
+  if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+  sqlite3_finalize(q);
+  db_exec(db, "INSERT OR REPLACE INTO ctx_meta(key, value) VALUES ('artifact_seen', (SELECT coalesce(max(id), 0) FROM ctx_chunk))");
+  /* approvals: for each version not yet approved, the person's next turn in its session */
+  q = db_prepare(db,
+      "WITH todo AS (SELECT id, url, session, at FROM ctx_artifact WHERE approved_turn IS NULL),"
+      " ut AS MATERIALIZED (SELECT " ARTIFACT_SESSION " AS session, c.at,"
+      "   c.at || char(31) || coalesce(c.turn, '') || char(31) || CASE WHEN length(c.body) < 80 THEN lower(trim(c.body, ' .!' || char(9, 10, 13))) ELSE '' END AS packed"
+      "  FROM ctx_chunk c WHERE c.heading = 'user' AND c.at >= (SELECT min(at) FROM todo)),"
+      " ev AS (SELECT session, at, id, NULL AS packed FROM todo"
+      "  UNION ALL SELECT session, at, NULL, packed FROM ut WHERE session IN (SELECT session FROM todo)),"
+      " nx AS (SELECT id, min(packed) OVER (PARTITION BY session ORDER BY at ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING) AS nu FROM ev),"
+      " hit AS (SELECT todo.id, substr(nu, 1, instr(nu, char(31)) - 1) AS uat, substr(nu, instr(nu, char(31)) + 1) AS r FROM todo"
+      "  JOIN nx ON nx.id = todo.id WHERE nu IS NOT NULL),"
+      " yes AS (SELECT id, uat, substr(r, 1, instr(r, char(31)) - 1) AS uturn, substr(r, instr(r, char(31)) + 1) AS b FROM hit)"
+      " UPDATE ctx_artifact SET approved_turn = y.uturn, approved_at = y.uat FROM (SELECT * FROM yes WHERE " ARTIFACT_YES ") y"
+      " WHERE ctx_artifact.id = y.id AND NOT EXISTS (SELECT 1 FROM ctx_artifact n WHERE n.url = ctx_artifact.url"
+      "  AND n.session = ctx_artifact.session AND n.at > ctx_artifact.at AND n.at < y.uat)");
+  if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+  sqlite3_finalize(q);
+  db_exec(db, "COMMIT");
+}
+
+/* One row per page: its latest publish, a title (the newest one given, else the file's
+ * folder or name), how many publishes, and the newest approved version. ?1 project or NULL. */
+#define ARTIFACT_NAME \
+  "coalesce((SELECT t.title FROM ctx_artifact t WHERE t.url = a.url AND t.title IS NOT NULL ORDER BY t.at DESC LIMIT 1)," \
+  " CASE WHEN a.path LIKE '%/index.htm%' THEN replace(rtrim(rtrim(a.path, replace(a.path, '/', '')), '/')," \
+  "   rtrim(rtrim(rtrim(a.path, replace(a.path, '/', '')), '/'), replace(rtrim(rtrim(a.path, replace(a.path, '/', '')), '/'), '/', '')), '')" \
+  "  ELSE replace(a.path, rtrim(a.path, replace(a.path, '/', '')), '') END)"
+#define ARTIFACTS_SELECT \
+  "SELECT substr(a.at, 1, 10) AS day, coalesce(a.project, '') AS project, " ARTIFACT_NAME " AS name, a.url AS url, a.version AS version," \
+  " (SELECT count(*) FROM ctx_artifact n WHERE n.url = a.url) AS publishes," \
+  " (SELECT p.version || ' on ' || substr(p.approved_at, 1, 10) || ' (turn:' || p.approved_turn || ')' FROM ctx_artifact p" \
+  "   WHERE p.url = a.url AND p.approved_turn IS NOT NULL ORDER BY p.approved_at DESC LIMIT 1) AS approved, a.session AS session, a.at AS at" \
+  " FROM ctx_artifact a WHERE a.id = (SELECT m.id FROM ctx_artifact m WHERE m.url = a.url ORDER BY m.at DESC, m.id DESC LIMIT 1)"
+
+/* ctx artifacts [--all] [--limit N] [WORDS...]: pages agents published, newest first. */
+static int cmd_artifacts(int argc, char **argv) {
+  int all = 0;
+  long limit = 20;
+  buf words = {0};
+  for (int i = 0; i < argc; i++) {
+    if (!strcmp(argv[i], "--all")) all = 1;
+    else if (!strcmp(argv[i], "--limit") && i + 1 < argc) limit = atol(argv[++i]);
+    else if (argv[i][0] == '-') die("usage: ctx artifacts [--all] [--limit N] [WORDS...]");
+    else { buf_str(&words, argv[i]); buf_add(&words, "\n", 1); }
+  }
+  buf_add(&words, "", 1);
+  sqlite3 *db = ctx_open();
+  artifacts_index(db);
+  char *proj = all ? NULL : current_project(db);
+  /* every word must be in the title, the file path or the address */
+  sqlite3_stmt *q = db_prepare(db,
+      "SELECT * FROM (" ARTIFACTS_SELECT ") x WHERE (?1 IS NULL OR x.project = ?1)"
+      " AND NOT EXISTS (WITH RECURSIVE w(word, rest) AS (SELECT '', ?2 UNION ALL"
+      "   SELECT substr(rest, 1, instr(rest, char(10)) - 1), substr(rest, instr(rest, char(10)) + 1) FROM w WHERE instr(rest, char(10)) > 0)"
+      "  SELECT 1 FROM w WHERE word <> '' AND instr(lower(x.name || ' ' || x.url), lower(word)) = 0)"
+      " ORDER BY x.at DESC LIMIT ?3");
+  sqlite3_bind_text(q, 1, proj, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 2, words.p, -1, SQLITE_STATIC);
+  sqlite3_bind_int64(q, 3, limit);
+  int n = 0;
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    printf("%s %s  %s\n  %s  version %d of %d publishes\n", sqlite3_column_text(q, 0), sqlite3_column_text(q, 1), sqlite3_column_text(q, 2),
+           sqlite3_column_text(q, 3), sqlite3_column_int(q, 4), sqlite3_column_int(q, 5));
+    if (sqlite3_column_text(q, 6)) printf("  approved: version %s\n", sqlite3_column_text(q, 6));
+    n++;
+  }
+  sqlite3_finalize(q);
+  if (!n) puts(all ? "no artifacts" : "no artifacts in this project; --all lists every project");
+  free(proj);
+  free(words.p);
+  sqlite3_close(db);
+  return 0;
+}
+
 /* ctx decisions [--open] [--all] [--limit N]: questions agents asked the person, and their answers. */
 static int cmd_decisions(int argc, char **argv) {
   int open_only = 0, all = 0;
@@ -5210,6 +5327,20 @@ static void session_brief(sqlite3 *db, const char *session, buf *all) {
         snprintf(line, sizeof line, "\n- Asked on %s but cut off before the user answered: %s", sqlite3_column_text(q, 3), sqlite3_column_text(q, 1));
       else
         snprintf(line, sizeof line, "\n- The user decided: %s -> %s", sqlite3_column_text(q, 1), sqlite3_column_text(q, 2));
+      buf_str(&b, line);
+    }
+    sqlite3_finalize(q);
+  }
+  /* pages this session published in the last three days, and which version the person approved */
+  if (sqlite3_prepare_v2(db, "SELECT name, url, version, approved FROM (" ARTIFACTS_SELECT ") x"
+                             " WHERE x.session = ?1 AND x.at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-3 days') ORDER BY x.at DESC LIMIT 5",
+                         -1, &q, NULL) == SQLITE_OK) {
+    sqlite3_bind_text(q, 1, session, -1, SQLITE_STATIC);
+    while (sqlite3_step(q) == SQLITE_ROW && b.n < BRIEF_MAX) {
+      const char *ok = (const char *)sqlite3_column_text(q, 3);
+      /* no word on approval unless one was recorded: most approvals come after discussion and are not caught */
+      snprintf(line, sizeof line, "\n- Artifact \"%.80s\" at %s is at version %d%s%.60s", sqlite3_column_text(q, 0), sqlite3_column_text(q, 1),
+               sqlite3_column_int(q, 2), ok ? "; the user approved version " : "", ok ? ok : "");
       buf_str(&b, line);
     }
     sqlite3_finalize(q);
@@ -6093,10 +6224,11 @@ static int cmd_rules(int argc, char **argv) {
 static const char *const derived_objects[] = {
     "VIEW ctx_stale_wiki", "VIEW ctx_ready_ticket", "TRIGGER ctx_chunk_ai", "TRIGGER ctx_chunk_ad", "TRIGGER ctx_chunk_au",
     "TABLE ctx_chunk_fts", "TABLE ctx_link", "TABLE ctx_citation", "TABLE ctx_source_meta", "TABLE ctx_supersession",
-    "TABLE ctx_remote_note", "TABLE ctx_decision", "TABLE ctx_chunk", "TABLE ctx_doc", NULL};
+    "TABLE ctx_remote_note", "TABLE ctx_decision", "TABLE ctx_artifact", "TABLE ctx_chunk", "TABLE ctx_doc", NULL};
 
 static void rebuild_derived(sqlite3 *db) {
   db_exec(db, "BEGIN IMMEDIATE");
+  db_exec(db, "DELETE FROM ctx_meta WHERE key = 'artifact_seen'"); /* chunk ids change */
   for (int i = 0; derived_objects[i]; i++) {
     char sql[96];
     snprintf(sql, sizeof sql, "DROP %.*s IF EXISTS %s", (int)strcspn(derived_objects[i], " "), derived_objects[i],
@@ -6111,6 +6243,7 @@ static void rebuild_derived(sqlite3 *db) {
   sessions_from_remote(db, 1);
   rules_index(db);
   decisions_index(db);
+  artifacts_index(db);
   char **projects = NULL;
   size_t n = 0;
   sqlite3_stmt *q = db_prepare(db, "SELECT project FROM ctx_repo WHERE scope = 'shared' ORDER BY project");
@@ -6161,6 +6294,7 @@ static int usage(void) {
         "       ctx stats [--weeks N]\n"
         "       ctx remember TEXT [--project P] [--until DATE] [--from TURN]\n"
         "       ctx decisions [--open] [--all] [--limit N]\n"
+        "       ctx artifacts [--all] [--limit N] [WORDS...]\n"
         "       ctx rules [--all] [--project P] | import | retire KEY --reason WHY [--by KEY] | offer\n"
         "       ctx rules proposed [--all] | accept N [--text TEXT] [--until DATE] | reject N\n"
         "       ctx rules classifier [CMD | --off] | propose [--limit N] | candidates [--limit N] | prompt | suggest TURN TEXT\n"
@@ -6199,6 +6333,7 @@ int main(int argc, char **argv) {
   if (argc >= 2 && !strcmp(argv[1], "stats")) return cmd_stats(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "remember")) return cmd_remember(argc - 2, argv + 2);
   if (argc >= 2 && !strcmp(argv[1], "decisions")) return cmd_decisions(argc - 2, argv + 2);
+  if (argc >= 2 && !strcmp(argv[1], "artifacts")) return cmd_artifacts(argc - 2, argv + 2);
   if (argc >= 2 && !strcmp(argv[1], "rules")) return cmd_rules(argc - 2, argv + 2);
   return usage();
 }
