@@ -59,7 +59,8 @@ Then add the hooks to `~/.claude/settings.json`, merged with any you have:
   "hooks": {
     "SessionStart": [{ "hooks": [
       { "type": "command", "command": "ctx hook", "async": true },
-      { "type": "command", "command": "ctx ticket offer", "timeout": 3 }
+      { "type": "command", "command": "ctx ticket offer", "timeout": 3 },
+      { "type": "command", "command": "ctx rules offer", "timeout": 3 }
     ] }],
     "Stop":       [{ "hooks": [{ "type": "command", "command": "ctx hook", "async": true }] }],
     "PreCompact": [{ "hooks": [{ "type": "command", "command": "ctx hook", "async": true }] }],
@@ -202,10 +203,12 @@ ctx turn turn:UUID                  # read that turn again later, by the id a ru
 your turns. On 1,000 of them, Haiku found 84% of the standing instructions at 76%
 precision, DeepSeek 80% at 60%; matching words such as "always" found 17%.
 
-`ctx rules offer` is a SessionStart hook. It tells the agent that past sessions are
-searchable, lists rules it would not otherwise load (those from `ctx remember`, and
-memory from this project's other folders) and mentions waiting proposals. It is not
-installed by default yet; the eval decides.
+`ctx rules offer` is a SessionStart hook, installed by the plugin. It tells the agent
+that past sessions are searchable, lists rules it would not otherwise load (those
+from `ctx remember`, and memory from this project's other folders) and mentions
+waiting proposals. On 90 questions about past work it raised Claude's score from
+66.5 to 73.5 (better on 16, worse on 6) with 7% fewer tokens; on DeepSeek, agents
+used ctx in 89 answers instead of 66 and needed half the tool calls.
 
 Each rule is a technote in your private repository, so every version is kept and
 rules sync with your archive. A rule past its `--until` date expires. Search shows
