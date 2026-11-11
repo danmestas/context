@@ -161,3 +161,20 @@ CREATE TABLE IF NOT EXISTS ctx_remote_note(
   technote TEXT PRIMARY KEY,
   version  TEXT NOT NULL
 ) STRICT;
+
+-- Decisions: each question an agent asked the person (AskUserQuestion) and what they
+-- answered, read from the archived turns. open: no answer yet; declined: they
+-- replied in their own words instead, which becomes the answer.
+CREATE TABLE IF NOT EXISTS ctx_decision(
+  id        INTEGER PRIMARY KEY,
+  project   TEXT NOT NULL,
+  doc_id    INTEGER NOT NULL,
+  ask_turn  TEXT,            -- transcript id of the asking turn
+  at        TEXT,
+  question  TEXT NOT NULL,
+  options   TEXT,
+  status    TEXT NOT NULL CHECK (status IN ('answered', 'declined', 'interrupted', 'open')),
+  answer    TEXT,
+  answer_at TEXT
+) STRICT;
+CREATE INDEX IF NOT EXISTS ctx_decision_doc ON ctx_decision(doc_id);
