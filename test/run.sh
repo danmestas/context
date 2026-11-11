@@ -252,9 +252,9 @@ grep -q 'One rule may be outdated' "$T/ask.json" && grep -q 'we no longer keep k
 "$CTX" sql "UPDATE ctx_rule_check SET checked = '2026-01-01'" >/dev/null
 if CTX_JUDGE="sh -c 'exit 3'" "$CTX" rules judge 2>"$T/jf.txt" >/dev/null; then fail "a failing judge fails"; fi
 s0=$(date +%s)
-if CTX_MODEL_DEADLINE=1 CTX_JUDGE="sh -c 'sleep 30 & sleep 30; echo late'" "$CTX" rules judge 2>"$T/jd.txt" >/dev/null; then fail "a judge past its deadline fails"; fi
+if CTX_MODEL_DEADLINE=1 CTX_JUDGE="sh -c 'sleep 97 & sleep 97; echo late'" "$CTX" rules judge 2>"$T/jd.txt" >/dev/null; then fail "a judge past its deadline fails"; fi
 [ $(( $(date +%s) - s0 )) -lt 10 ] && grep -q 'passed 1 seconds; stopped' "$T/jd.txt" || fail "a stuck judge is stopped at its deadline: $(cat "$T/jd.txt")"
-sleep 1; pgrep -f 'sleep 30' >/dev/null && fail "the stuck judge's children are stopped too"
+sleep 1; pgrep -f 'sleep 97' >/dev/null && fail "the stuck judge's children are stopped too"
 grep -q 'judge failed (exit 3)' "$T/jf.txt" || fail "the judge's real exit code is reported: $(cat "$T/jf.txt")"
 CTX_JUDGE="echo '{\"verdict\": \"stale\", \"evidence\": \"he said \"x\"\"}'" "$CTX" rules judge 2>"$T/jf.txt" >/dev/null || true
 grep -q 'unreadable' "$T/jf.txt" || fail "an unreadable answer is reported"
@@ -369,6 +369,28 @@ grep -q QUOTED3 "$T/art.txt" && fail "text that quotes a publish line is not a p
 (cd "$T/w/rp" && "$CTX" artifacts heron | grep -q 'Heron Plan') && ! (cd "$T/w/rp" && "$CTX" artifacts heron | grep -q egret) || fail "words narrow the list"
 (cd "$T/w/rp" && "$CTX" artifacts) >/dev/null
 [ "$("$CTX" sql "SELECT count(*) FROM ctx_artifact")" = 4 ] || fail "reading again adds nothing"
+# A published page's file is copied at once; approved versions, and the newest once a day
+# has passed, are filed in the private repository, redacted, with the page's own title.
+mkdir -p "$T/pg" && printf '<!doctype html><title>Heron Plan, first cut</title><p>one</p>\n' > "$T/pg/h.html"
+kp() { printf '{"tool_name":"Artifact","tool_input":{"file_path":"%s"},"tool_response":"Published %s at https://claude.ai/artifact/%s (Version %s, version id 1-ab)"}' "$1" "$1" "$2" "$3" | "$CTX" artifacts keep; }
+kp "$T/pg/h.html" HERON1 1
+printf '<!doctype html><title>Heron Plan</title><p>two</p><p>password=hunter2hunter2</p>\n' > "$T/pg/h.html"
+kp "$T/pg/h.html" HERON1 2
+printf '<!doctype html><title>Egret</title><p>e1</p>\n' > "$T/pg/e.html" && kp "$T/pg/e.html" EGRET2 1
+printf '{"tool_name":"Artifact","tool_input":{"action":"list"},"tool_response":"3 artifacts"}' | "$CTX" artifacts keep
+kp "$T/pg/missing.html" EGRET2 2
+[ -f "$CTX_DB.artifacts/HERON1/v1.html" ] && [ -f "$CTX_DB.artifacts/HERON1/v2.html" ] && [ ! -e "$CTX_DB.artifacts/EGRET2/v2.html" ] || fail "each published version's file is copied, and only those"
+(cd "$T/w/rp" && "$CTX" artifacts) > "$T/art2.txt"
+grep -A3 'Heron Plan, first cut' "$T/art2.txt" | grep -q 'kept: version 1' || fail "an approved version is filed, under the page's own title: $(cat "$T/art2.txt")"
+"$CTX" artifacts show https://claude.ai/artifact/HERON1 | grep -q '<p>one</p>' || fail "show prints the kept copy"
+[ ! -e "$CTX_DB.artifacts/HERON1/v1.html" ] && [ -f "$CTX_DB.artifacts/HERON1/v2.html" ] || fail "a filed copy is removed; the newest waits a day"
+touch -t 202601010000 "$CTX_DB.artifacts/HERON1/v2.html" "$CTX_DB.artifacts/EGRET2/v1.html"
+(cd "$T/w/rp" && "$CTX" artifacts) > "$T/art3.txt"
+grep -A3 'Heron Plan' "$T/art3.txt" | grep -q 'kept: version 2' || fail "the newest version is filed once a day has passed: $(cat "$T/art3.txt")"
+"$CTX" artifacts show HERON1 > "$T/h2.html"
+grep -q '<p>two</p>' "$T/h2.html" && ! grep -q hunter2 "$T/h2.html" || fail "the kept copy is redacted"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_artifact_file")" = 1 ] && [ ! -e "$CTX_DB.artifacts/EGRET2/v1.html" ] || fail "a version that was neither approved nor newest is dropped, not filed"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_doc WHERE kind = 'session' AND title LIKE '%Heron%'")" = 0 ] || fail "a kept page is not a session"
 printf '{"source":"compact","session_id":"d00d0003-0000-0000-0000-000000000003"}' | (cd "$T/w/rp" && "$CTX" rules offer) > "$T/abrief.json"
 python3 - "$T/abrief.json" <<'PY'
 import json, sys
@@ -1143,7 +1165,7 @@ rc "Do you remember why the flamingo cache stalls?" | python3 -c "import json,sy
 # Rebuild: derived tables come back from the repositories; state is untouched.
 export CTX_DB="$T/rebuild.sqlite"
 "$CTX" init >/dev/null
-[ "$("$CTX" sql "PRAGMA user_version")" = 5 ] || fail "a new file is at the current version"
+[ "$("$CTX" sql "PRAGMA user_version")" = 6 ] || fail "a new file is at the current version"
 [ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 6 ] || fail "derived version recorded"
 printf '{"uuid":"rb-1","timestamp":"2026-09-01T10:00:00Z","cwd":"/w/rb","message":{"role":"user","content":"the capybara rollout"}}\n{"uuid":"rb-2","timestamp":"2026-09-01T10:00:05Z","cwd":"/w/rb","message":{"role":"assistant","content":"rolled out the capybara"}}\n' > "$T/ab12cd99-rb.jsonl"
 "$CTX" archive "$T/ab12cd99-rb.jsonl" >/dev/null
@@ -1165,7 +1187,7 @@ grep -q 'rebuilding it once' "$T/rb.err" || fail "an old index is rebuilt on ope
 "$CTX" sql "DROP TABLE ctx_meta" >/dev/null; "$CTX" sql "PRAGMA user_version = 1" >/dev/null
 "$CTX" search --all capybara 2>"$T/rb3.err" | grep -q capybara || fail "an unversioned file still works"
 [ -s "$T/rb3.err" ] && fail "an unversioned file is upgraded without a rebuild"
-[ "$("$CTX" sql "PRAGMA user_version")" = 5 ] || fail "and is marked current"
+[ "$("$CTX" sql "PRAGMA user_version")" = 6 ] || fail "and is marked current"
 
 # The skill eval harness works end to end with a stand-in for the model.
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"

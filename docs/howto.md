@@ -63,6 +63,7 @@ Then add the hooks to `~/.claude/settings.json`, merged with any you have:
       { "type": "command", "command": "ctx rules offer", "timeout": 3 }
     ] }],
     "SubagentStart": [{ "hooks": [{ "type": "command", "command": "ctx rules offer", "timeout": 3 }] }],
+    "PostToolUse": [{ "matcher": "Artifact", "hooks": [{ "type": "command", "command": "ctx artifacts keep", "timeout": 5 }] }],
     "Stop":       [{ "hooks": [{ "type": "command", "command": "ctx hook", "async": true }] }],
     "PreCompact": [{ "hooks": [{ "type": "command", "command": "ctx hook", "async": true }] }],
     "SessionEnd": [{ "hooks": [{ "type": "command", "command": "ctx hook", "async": true }] }]
@@ -275,6 +276,21 @@ turn, so `ctx turn turn:ID` shows it. This is strict on purpose: on one archive 
 1,124 publishes of 322 pages it recorded 43 approvals, and most approvals, which come
 after some discussion, are not recorded. A page with no approval listed may still have
 been approved.
+
+A page's file sits in scratch space that a reboot clears, so a `PostToolUse` hook on
+the Artifact tool, `ctx artifacts keep`, copies each published version beside the
+database at once (pages over 16 MB are skipped, and only the page itself, not its
+supporting files). The next scan files the versions worth keeping in your private
+repository, with secrets redacted: every approved version, and a page's newest version
+once a day has passed without another. Each page is one technote, so its history is
+the kept versions, and it syncs with the rest of the archive. Other copies are deleted.
+
+```sh
+ctx artifacts show URL > page.html    # the kept copy
+```
+
+A machine running a ctx from before this would read a kept page as a session, so
+upgrade every machine that syncs the archive first.
 
 When a session is compacted or resumed, `ctx rules offer` begins with where it stood,
 from that session's own turns: questions still waiting for you or cut off, what you

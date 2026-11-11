@@ -120,3 +120,13 @@ CREATE TABLE IF NOT EXISTS ctx_rule_check(
   kept     TEXT,           -- when the person said it still holds
   reviewed TEXT            -- when it was last in a monthly review
 ) STRICT, WITHOUT ROWID;
+
+-- The copy of an artifact page kept in the private repository: one technote per page,
+-- whose history holds each kept version.
+CREATE TABLE IF NOT EXISTS ctx_artifact_file(
+  url      TEXT PRIMARY KEY,
+  technote TEXT NOT NULL,
+  version  INTEGER NOT NULL,  -- the newest version kept
+  title    TEXT,              -- from the page's own <title>
+  kept     TEXT NOT NULL
+) STRICT, WITHOUT ROWID;
