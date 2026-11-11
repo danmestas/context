@@ -348,6 +348,8 @@ static size_t secret_at(const char *s, size_t n, size_t i, size_t *from_out, con
       if (at_ci(s, n, i, words[k])) {
         size_t v = assignment_value(s, n, i + strlen(words[k]));
         size_t e = v ? span(s, n, v, c_value) : 0;
+        const char *mark = e > v ? memmem(s + v, e - v, REDACTED, strlen(REDACTED)) : NULL;
+        if (mark) e = (size_t)(mark - s); /* a value counts only up to an earlier redaction, so a second pass changes nothing */
         if (v && e - v >= 8 && !strchr("$<{[", s[v])) {
           from = v;
           end = e;
