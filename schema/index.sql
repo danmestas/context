@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS ctx_chunk(
   UNIQUE (doc_id, seq)
 ) STRICT;
 CREATE UNIQUE INDEX IF NOT EXISTS ctx_chunk_turn ON ctx_chunk(turn) WHERE turn IS NOT NULL;
+-- Who spoke when, without reading bodies: the latest turns of a project, a speaker's last turn.
+CREATE INDEX IF NOT EXISTS ctx_chunk_speaker ON ctx_chunk(heading, at, project, doc_id);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS ctx_chunk_fts USING fts5(
   heading, body,

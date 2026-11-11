@@ -230,7 +230,8 @@ ctx rules review --done  # mark the listed ones reviewed
 
 The judge reads a rule beside your recent turns in its project and flags it only with
 a quote of your own words that appears exactly in those turns, so it cannot invent a
-contradiction. The next session in that project asks you once, at a natural break,
+contradiction. Each call to the judge or classifier is stopped, with anything it
+started, after 120 seconds. The next session in that project asks you once, at a natural break,
 and never about the same rule within 30 days; your answer runs `keep` or `retire`.
 In an experiment on 42 labelled rules, Sonnet flagged 3, all of them truly stale,
 while Haiku flagged 9 with 3 wrong. Most stale rules are never contradicted in
