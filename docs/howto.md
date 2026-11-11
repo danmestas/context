@@ -77,7 +77,7 @@ With the hooks installed there is nothing to do. `ctx hook` notes the transcript
 and returns at once; the archiving runs detached. At most once an hour it also
 scans `~/.claude/projects` (or `$CLAUDE_CONFIG_DIR/projects`) for transcripts that
 grew without a hook, and syncs repositories that have a remote. That check runs
-when a session starts.
+on any turn, at most once an hour, so a session that runs for days gets it too.
 
 By hand:
 
@@ -217,6 +217,25 @@ Rules in your own words and corrections stay until you retire them. On 42 rules 
 labelled, 12% of your own rules had gone stale, 44% of corrections and 83% of status
 notes; age-based fading caught more stale rules but quieted a quarter of true ones.
 A faded rule is listed by `ctx rules --all` and found by `ctx search --history`.
+
+Two checks catch the rest, and both leave the decision to you:
+
+```sh
+ctx rules judge-with "claude -p --model sonnet --tools ''"   # any command that answers on stdout
+ctx rules judge          # check rules in projects with new turns; the hourly scan does it too
+ctx rules keep KEY       # still true: not asked about again for 90 days
+ctx rules review         # the rules due their monthly check, 30 at a time
+ctx rules review --done  # mark the listed ones reviewed
+```
+
+The judge reads a rule beside your recent turns in its project and flags it only with
+a quote of your own words that appears exactly in those turns, so it cannot invent a
+contradiction. The next session in that project asks you once, at a natural break,
+and never about the same rule within 30 days; your answer runs `keep` or `retire`.
+In an experiment on 42 labelled rules, Sonnet flagged 3, all of them truly stale,
+while Haiku flagged 9 with 3 wrong. Most stale rules are never contradicted in
+conversation; the monthly review is for those, mentioned once a month at session
+start.
 
 Each rule is a technote in your private repository, so every version is kept and
 rules sync with your archive. A rule past its `--until` date expires. Search shows
@@ -426,7 +445,7 @@ ctx init --clone http://127.0.0.1:8080/
 ```
 
 Sessions archived on other machines become searchable after each sync. The hooks
-also sync when a session starts, at most once an hour.
+also sync at most once an hour while you work.
 
 A project syncs with the server it was cloned from (`ctx project add --clone URL`),
 or with one you set:
