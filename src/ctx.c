@@ -5191,20 +5191,32 @@ static int artifacts_keep(void) {
   while (in.n < (4 << 20) && (got = fread(chunk, 1, sizeof chunk, stdin)) > 0) buf_add(&in, chunk, got);
   if (!in.p) return 0;
   buf_add(&in, "", 1);
-  char id[64], path[4200] = "";
-  const char *pub = strstr(in.p, "Published "), *ver = pub ? strstr(pub, "(Version ") : NULL;
-  int version = ver ? atoi(ver + 9) : 0;
-  if (!pub || version <= 0 || !artifact_id(pub, id, sizeof id)) { free(in.p); return 0; }
+  /* Claude Code hands the hook the result as fields: the address, the file and the version's
+   * number. A result given as text ("Published FILE at URL (Version N, ...)") is read too. */
+  char id[64] = "", path[4200] = "", url[300] = "";
+  int version = 0;
   sqlite3 *mem = NULL;
   if (sqlite3_open(":memory:", &mem) == SQLITE_OK) {
     sqlite3_stmt *q = NULL;
-    if (sqlite3_prepare_v2(mem, "SELECT json_extract(?1, '$.tool_input.file_path') WHERE json_valid(?1)", -1, &q, NULL) == SQLITE_OK) {
+    if (sqlite3_prepare_v2(mem, "SELECT coalesce(json_extract(?1, '$.tool_response.path'), json_extract(?1, '$.tool_input.file_path'), ''),"
+                                " coalesce(json_extract(?1, '$.tool_response.url'), ''), coalesce(json_extract(?1, '$.tool_response.seq'), 0)"
+                                " WHERE json_valid(?1)", -1, &q, NULL) == SQLITE_OK) {
       sqlite3_bind_text(q, 1, in.p, -1, SQLITE_STATIC);
-      if (sqlite3_step(q) == SQLITE_ROW && sqlite3_column_text(q, 0)) snprintf(path, sizeof path, "%s", sqlite3_column_text(q, 0));
+      if (sqlite3_step(q) == SQLITE_ROW) {
+        snprintf(path, sizeof path, "%s", sqlite3_column_text(q, 0));
+        snprintf(url, sizeof url, "%s", sqlite3_column_text(q, 1));
+        version = sqlite3_column_int(q, 2);
+      }
       sqlite3_finalize(q);
     }
     sqlite3_close(mem);
   }
+  if (!*url || version <= 0) {
+    const char *pub = strstr(in.p, "Published "), *ver = pub ? strstr(pub, "(Version ") : NULL;
+    version = ver ? atoi(ver + 9) : 0;
+    if (pub) snprintf(url, sizeof url, "%.299s", strstr(pub, "https://claude.ai/artifact/") ? strstr(pub, "https://claude.ai/artifact/") : "");
+  }
+  if (version <= 0 || !artifact_id(url, id, sizeof id)) { free(in.p); return 0; }
   free(in.p);
   struct stat st;
   if (!*path || stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size > ARTIFACT_MAX) return 0;

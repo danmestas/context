@@ -383,7 +383,7 @@ mkdir -p "$T/pg" && printf '<!doctype html><title>Heron Plan, first cut</title><
 kp() { printf '{"tool_name":"Artifact","tool_input":{"file_path":"%s"},"tool_response":"Published %s at https://claude.ai/artifact/%s (Version %s, version id 1-ab)"}' "$1" "$1" "$2" "$3" | "$CTX" artifacts keep; }
 kp "$T/pg/h.html" HERON1 1
 printf '<!doctype html><title>Heron Plan</title><p>two</p><p>password=hunter2hunter2</p>\n' > "$T/pg/h.html"
-kp "$T/pg/h.html" HERON1 2
+printf '{"tool_name":"Artifact","tool_input":{"file_path":"%s"},"tool_response":{"url":"https://claude.ai/artifact/HERON1","path":"%s","seq":2,"version":"2-ab","title":"Heron Plan"}}' "$T/pg/h.html" "$T/pg/h.html" | "$CTX" artifacts keep  # the result as fields, as Claude Code gives it
 printf '<!doctype html><title>Egret</title><p>e1</p>\n' > "$T/pg/e.html" && kp "$T/pg/e.html" EGRET2 1
 printf '{"tool_name":"Artifact","tool_input":{"action":"list"},"tool_response":"3 artifacts"}' | "$CTX" artifacts keep
 kp "$T/pg/missing.html" EGRET2 2
