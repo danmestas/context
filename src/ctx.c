@@ -349,6 +349,25 @@ static size_t secret_at(const char *s, size_t n, size_t i, size_t *from_out, con
       *name = "url-credential";
     }
   }
+  if (!end && s[i] == '#' && i > 12) {
+    /* A page link from html-artifact-publisher, https://HOST/v/ID#TOKEN: the token after # is the
+     * page's read key or its write key, and nothing in it says which. Only the read link in the
+     * publisher's own result, under "viewerUrl" or "commentUrl", is kept; every other one is cut. */
+    size_t e = span(s, n, i + 1, c_hex), j = i;
+    while (j > 0 && (unsigned char)s[j - 1] > ' ' && !strchr("\"'<>\\`", s[j - 1])) j--;
+    for (size_t h = i; h > j + 4; h--) /* the link may follow other text, as in [title](https://...) */
+      if (at(s, n, h - 4, "http") && (at(s, n, h, "://") || at(s, n, h, "s://"))) { j = h - 4; break; }
+    if (e - (i + 1) >= 32 && at(s, n, j, "http") && memmem(s + j, i - j, "/v/", 3)) {
+      size_t k = j;
+      while (k > 0 && j - k < 8 && strchr("\" :\\", s[k - 1])) k--; /* back over `": "`, escaped or not */
+      int kept = (k >= 9 && !memcmp(s + k - 9, "viewerUrl", 9)) || (k >= 10 && !memcmp(s + k - 10, "commentUrl", 10));
+      if (!kept) {
+        from = i + 1;
+        end = e;
+        *name = "page-link";
+      }
+    }
+  }
   if (!end) {
     for (int k = 0; !end && words[k]; k++)
       if (at_ci(s, n, i, words[k])) {
@@ -792,6 +811,38 @@ static long archive_batch(sqlite3 *db, const char *session, const char *path, co
     sqlite3_reset(seen);
   }
   sqlite3_finalize(seen);
+  /* A turn stored before headings carried ids is known, after a rebuild, only by a placeholder
+   * id. Reading its transcript again must find it, not store it twice: the same speaker, time
+   * and text in this session is that turn, and it takes its real id back. */
+  sqlite3_stmt *twin = db_prepare(db,
+      "SELECT c.id, c.body FROM ctx_chunk c WHERE c.heading = ?2 AND c.at = ?3 AND c.turn GLOB 'note:*'"
+      " AND c.doc_id IN (SELECT d.id FROM ctx_capture_day cd JOIN ctx_doc d ON d.kind = 'session' AND d.name = cd.technote WHERE cd.session = ?1)");
+  sqlite3_stmt *adopt = db_prepare(db, "UPDATE ctx_chunk SET turn = ?2 WHERE id = ?1");
+  for (size_t i = 0; i < n; i++) {
+    if (done[i] || !*turns[i].uuid || !*turns[i].ts) continue;
+    sqlite3_bind_text(twin, 1, session, -1, SQLITE_STATIC);
+    sqlite3_bind_text(twin, 2, turns[i].role, -1, SQLITE_STATIC);
+    sqlite3_bind_text(twin, 3, turns[i].ts, -1, SQLITE_STATIC);
+    const char *mine = turns[i].body;
+    size_t mn = turns[i].body_n;
+    while (mn && c_space((unsigned char)*mine)) { mine++; mn--; }
+    while (mn && c_space((unsigned char)mine[mn - 1])) mn--;
+    while (!done[i] && sqlite3_step(twin) == SQLITE_ROW) {
+      const char *theirs = (const char *)sqlite3_column_text(twin, 1); /* the same text, whatever space a rebuild trimmed */
+      size_t tn = (size_t)sqlite3_column_bytes(twin, 1);
+      while (tn && c_space((unsigned char)*theirs)) { theirs++; tn--; }
+      while (tn && c_space((unsigned char)theirs[tn - 1])) tn--;
+      if (tn != mn || memcmp(theirs, mine, mn)) continue;
+      sqlite3_bind_int64(adopt, 1, sqlite3_column_int64(twin, 0));
+      sqlite3_bind_text(adopt, 2, turns[i].uuid, -1, SQLITE_STATIC);
+      sqlite3_step(adopt);
+      sqlite3_reset(adopt);
+      done[i] = 1;
+    }
+    sqlite3_reset(twin);
+  }
+  sqlite3_finalize(twin);
+  sqlite3_finalize(adopt);
 
   sqlite3_stmt *find = db_prepare(db, "SELECT technote FROM ctx_capture_day WHERE session=?1 AND day=?2");
   sqlite3_stmt *read = db_prepare(db, "SELECT fsl_technote(?1)");
@@ -1679,6 +1730,127 @@ static void relabel_speakers(sqlite3 *db) {
                              changed_turns - dropped, changed_notes, dropped);
 }
 
+#define REDACTION_VERSION "2" /* raise when a rule is added, so what is already stored is redacted again */
+
+/* Applies today's redaction rules to what this machine stored under older ones: each turn of
+ * its session technotes, then the indexed turns. Once per version. A technote changed here
+ * gets a new version; Fossil keeps the old one in its history, so a secret that mattered
+ * should still be revoked at its source. The same pass drops a turn stored twice: one
+ * without an id whose speaker, time and text match a later turn that has one. */
+static void redact_again(sqlite3 *db) {
+  if (db_int(db, "SELECT count(*) FROM ctx_meta WHERE key = 'redaction' AND value = '" REDACTION_VERSION "'")) return;
+  if (!db_int(db, "SELECT count(*) FROM ctx_capture_day")) { /* nothing stored yet */
+    db_exec(db, "INSERT OR REPLACE INTO ctx_meta(key, value) VALUES ('redaction', '" REDACTION_VERSION "')");
+    return;
+  }
+  open_private(db);
+  sqlite3_stmt *notes = db_prepare(db, "SELECT technote FROM ctx_capture_day ORDER BY 1");
+  sqlite3_stmt *read = db_prepare(db, "SELECT fsl_technote(?1)");
+  sqlite3_stmt *save = db_prepare(db, "SELECT fsl_technote_save(?1, json_object('id', ?2))");
+  long changed_notes = 0, changed_turns = 0, copies = 0;
+  struct { const char *p; size_t n, first, key; int has_id; } *seg = NULL;
+  size_t nseg = 0, capseg = 0;
+  buf out = {0};
+  while (sqlite3_step(notes) == SQLITE_ROW) {
+    const char *id = (const char *)sqlite3_column_text(notes, 0);
+    db_exec(db, "BEGIN IMMEDIATE"); /* read and save as one write, so no archive lands between them */
+    sqlite3_bind_text(read, 1, id, -1, SQLITE_STATIC);
+    if (sqlite3_step(read) != SQLITE_ROW || !sqlite3_column_text(read, 0)) { sqlite3_reset(read); db_exec(db, "COMMIT"); continue; }
+    const char *text = (const char *)sqlite3_column_text(read, 0);
+    size_t n = (size_t)sqlite3_column_bytes(read, 0);
+    out.n = 0;
+    long here = 0;
+    nseg = 0;
+    for (const char *p = text; p < text + n;) { /* one turn at a time, as it was first redacted: a rule never reaches into the next */
+      const char *q = p, *nl0 = memchr(p, '\n', (size_t)(text + n - p));
+      size_t first = nl0 ? (size_t)(nl0 - p) + 1 : (size_t)(text + n - p);
+      while (q < text + n) {
+        const char *nl = memchr(q, '\n', (size_t)(text + n - q));
+        size_t ll = nl ? (size_t)(nl - q) + 1 : (size_t)(text + n - q);
+        if (q > p && turn_heading(q, ll)) break;
+        q += ll;
+      }
+      if (nseg == capseg) {
+        capseg = capseg ? capseg * 2 : 256;
+        seg = realloc(seg, capseg * sizeof *seg);
+        if (!seg) die("out of memory");
+      }
+      /* "## speaker time" is the key; a third word on the line is the turn's id */
+      size_t key = 0, words = 0;
+      if (turn_heading(p, first) == 1)
+        for (size_t k = 3; k < first && p[k] != '\n'; k++)
+          if (p[k] == ' ' && ++words == 2) { key = k; break; }
+      if (turn_heading(p, first) == 1 && !key) { key = first; while (key > 0 && (p[key - 1] == '\n' || p[key - 1] == '\r' || p[key - 1] == ' ')) key--; }
+      seg[nseg].p = p;
+      seg[nseg].n = (size_t)(q - p);
+      seg[nseg].first = first;
+      seg[nseg].key = key;
+      seg[nseg].has_id = words == 2;
+      nseg++;
+      p = q;
+    }
+    for (size_t a = 0; a < nseg; a++) {
+      int copy = 0;
+      if (seg[a].key && !seg[a].has_id)
+        for (size_t b = 0; b < nseg && !copy; b++)
+          copy = b != a && seg[b].has_id && seg[b].key == seg[a].key && !memcmp(seg[b].p, seg[a].p, seg[a].key) &&
+                 seg[b].n - seg[b].first == seg[a].n - seg[a].first &&
+                 !memcmp(seg[b].p + seg[b].first, seg[a].p + seg[a].first, seg[a].n - seg[a].first);
+      if (copy) { here++; copies++; continue; }
+      size_t before = out.n;
+      add_redacted(&out, seg[a].p, seg[a].n);
+      if (out.n - before != seg[a].n || memcmp(out.p + before, seg[a].p, seg[a].n)) here++;
+    }
+    sqlite3_reset(read);
+    if (!here) { db_exec(db, "COMMIT"); continue; }
+    sqlite3_bind_text(save, 1, out.p, (int)out.n, SQLITE_STATIC);
+    sqlite3_bind_text(save, 2, id, -1, SQLITE_STATIC);
+    if (sqlite3_step(save) != SQLITE_ROW) die("cannot save technote %s: %s", id, sqlite3_errmsg(db));
+    sqlite3_reset(save);
+    db_exec(db, "COMMIT");
+    changed_notes++;
+    changed_turns += here;
+  }
+  free(out.p);
+  free(seg);
+  sqlite3_finalize(save);
+  sqlite3_finalize(read);
+  sqlite3_finalize(notes);
+  /* the index held the same copies: a placeholder row beside one with a real id, alike in every other way */
+  if (copies)
+    db_exec(db, "DELETE FROM ctx_chunk WHERE turn GLOB 'note:*' AND EXISTS (SELECT 1 FROM ctx_chunk t WHERE t.heading = ctx_chunk.heading"
+                " AND t.at = ctx_chunk.at AND t.doc_id = ctx_chunk.doc_id AND t.id <> ctx_chunk.id AND t.turn NOT GLOB 'note:*' AND t.body = ctx_chunk.body)");
+  /* the index holds the same turns; changed ones are collected first, then written */
+  db_exec(db, "CREATE TEMP TABLE IF NOT EXISTS redo(id INTEGER PRIMARY KEY, body TEXT)");
+  sqlite3_stmt *rows = db_prepare(db, "SELECT c.id, c.body FROM ctx_chunk c JOIN ctx_doc d ON d.id = c.doc_id WHERE d.kind = 'session'");
+  sqlite3_stmt *put = db_prepare(db, "INSERT OR REPLACE INTO temp.redo VALUES (?1, ?2)");
+  buf one = {0};
+  long changed_rows = 0;
+  while (sqlite3_step(rows) == SQLITE_ROW) {
+    const char *body = (const char *)sqlite3_column_text(rows, 1);
+    size_t n = (size_t)sqlite3_column_bytes(rows, 1);
+    one.n = 0;
+    add_redacted(&one, body, n);
+    if (one.n == n && !memcmp(one.p, body, n)) continue;
+    sqlite3_bind_int64(put, 1, sqlite3_column_int64(rows, 0));
+    sqlite3_bind_text(put, 2, one.p, (int)one.n, SQLITE_TRANSIENT);
+    sqlite3_step(put);
+    sqlite3_reset(put);
+    changed_rows++;
+  }
+  free(one.p);
+  sqlite3_finalize(put);
+  sqlite3_finalize(rows);
+  db_exec(db, "BEGIN IMMEDIATE;"
+              "UPDATE ctx_chunk SET body = (SELECT r.body FROM temp.redo r WHERE r.id = ctx_chunk.id) WHERE id IN (SELECT id FROM temp.redo);"
+              "DELETE FROM temp.redo;"
+              "INSERT OR REPLACE INTO ctx_meta(key, value) VALUES ('redaction', '" REDACTION_VERSION "');" /* last: done means done */
+              "COMMIT;");
+  if (changed_turns || changed_rows)
+    fprintf(stderr, "ctx: redacted again under newer rules: %ld turns in %ld technotes, %ld indexed turns; %ld turns stored twice removed\n",
+            changed_turns - copies, changed_notes, changed_rows, copies);
+}
+
 /* Archives any transcript that has grown since it was last read. */
 static int cmd_scan(const char *root_arg) {
   char root[4200];
@@ -1722,6 +1894,7 @@ static int cmd_scan(const char *root_arg) {
   closedir(top);
   sqlite3_finalize(q);
   relabel_speakers(db);
+  redact_again(db);
   decisions_index(db);
   artifacts_index(db);
   artifacts_file(db);

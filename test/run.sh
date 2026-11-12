@@ -65,6 +65,7 @@ python3 - "$T/secrets.jsonl" "$T/secrets.want" <<'EOF'
 import json, sys
 a20 = "aB3" * 8
 hex40 = "0123456789abcdef" * 3
+hex64 = "0123456789abcdef" * 4
 remove = [
     "gh" + "p_" + a20, "github" + "_pat_" + a20 * 2, "s" + "k-ant-" + a20,
     "AK" + "IA" + "ABCDEFGH23456789", "xo" + "xb-" + a20, "dp." + "st." + a20,
@@ -79,11 +80,18 @@ cases += [
     ("https://user:" + a20 + "@example.com/x", a20, "example.com/x"),
     ("ACCESS_KEY_ID=" + hex40, hex40, "ACCESS_KEY_ID"),
     ("-----BEGIN RSA PRIVATE KEY-----\n" + a20 + "\n-----END RSA PRIVATE KEY-----\nafter", a20, "after"),
+    ('{"editUrl": "https://pages.example.test/v/kite7#' + hex64 + '"}', hex64, "pages.example.test/v/kite7#"),
+    ("node publish-html.mjs update https://pages.example.test/v/kite7#" + hex64 + " page.html", hex64, "page.html"),
+    ("the link is https://pages.example.test/v/kite7#" + hex64, hex64, "the link is"),
+    ("see [**the report**](https://pages.example.test/v/kite7#" + hex64 + ") for more", hex64, "for more"),
 ]
 keep = [
     "the token limit was exceeded", "secret management is hard",
     "password: $DB_PASSWORD", "token = ${API_TOKEN}", "https://example.com:8080/x@y",
     "sk-short", "a task-AKIA1", "token_count: 123456789", "see the bearer of bad news here",
+    '{"viewerUrl": "https://pages.example.test/v/kite7#' + hex64 + '"}',  # the read link, in the publisher's own result
+    '{"commentUrl":"https://pages.example.test/v/kite7#' + hex64 + '"}',
+    "https://example.com/docs/v/intro#section-two", "https://example.com/v/page#abcdef12",
 ]
 with open(sys.argv[1], "w") as f:
     for i, text in enumerate([c[0] for c in cases] + keep):
@@ -1189,6 +1197,46 @@ rc "Do you remember why the flamingo cache stalls?" | python3 -c "import json,sy
 [ -z "$(printf '{"prompt":"do you remember"}' | CTX_DB=/nonexistent/x.sqlite "$CTX" recall)" ] || fail "recall says nothing without an archive"
 
 # Rebuild: derived tables come back from the repositories; state is untouched.
+# Stored turns are tidied once when the rules change: redacted again, and a turn stored twice
+# (once without an id, by an older ctx) is dropped. Reading a transcript again adopts a turn
+# known only by a placeholder id rather than storing it twice.
+export CTX_DB="$T/tidy.sqlite"
+"$CTX" init >/dev/null
+mkdir -p "$T/tidy/proj" "$T/tidy/none"
+python3 - "$T/tidy/proj/7ee70000-0000-0000-0000-000000000001.jsonl" <<'PY'
+import json, sys
+rows = [("u-1", "user", "hello heron"), ("a-1", "assistant", "a reply about herons, see https://pages.example.test/v/k#" + "0123456789abcdef" * 4),
+        ("u-2", "user", "goodbye heron")]
+open(sys.argv[1], "w").write("".join(json.dumps({"uuid": u, "timestamp": "2026-03-01T10:00:0%dZ" % i, "cwd": "/w/tidy",
+    "message": {"role": r, "content": t}}) + "\n" for i, (u, r, t) in enumerate(rows)))
+PY
+"$CTX" archive "$T/tidy/proj/7ee70000-0000-0000-0000-000000000001.jsonl" >/dev/null
+python3 - "$CTX" <<'PY'
+import re, subprocess, sys
+def sql(q): return subprocess.run([sys.argv[1], "sql", q], capture_output=True, text=True, check=True).stdout.strip()
+note = sql("SELECT technote FROM ctx_capture_day")
+text = bytes.fromhex(sql(f"SELECT fsl_use('repo:me'), hex(CAST(fsl_technote('{note}') AS BLOB))").split("\t")[1]).decode()
+assert text.count("## ") == 3, text
+copies = re.sub(r"^(## \w+ \S+) \S+$", r"\1", text, flags=re.M)  # as an older ctx wrote them: no ids
+assert copies != text
+old = (copies + text).replace("#[REDACTED]", "#" + "0123456789abcdef" * 4)  # as stored before the rule existed
+sql(f"SELECT fsl_use('repo:me'), fsl_technote_save(CAST(x'{old.encode().hex()}' AS TEXT), json_object('id', '{note}'))")
+PY
+"$CTX" rebuild >/dev/null 2>&1
+[ "$("$CTX" sql "SELECT count(*), sum(turn GLOB 'note:*') FROM ctx_chunk" | tr '\t' ' ')" = "6 3" ] || fail "the fixture holds each turn twice: $("$CTX" sql "SELECT count(*), sum(turn GLOB 'note:*') FROM ctx_chunk")"
+"$CTX" sql "DELETE FROM ctx_meta WHERE key = 'redaction'" >/dev/null
+"$CTX" scan "$T/tidy/none" 2>"$T/tidy.err" >/dev/null
+grep -q '3 turns stored twice removed' "$T/tidy.err" || fail "the pass reports what it removed: $(cat "$T/tidy.err")"
+[ "$("$CTX" sql "SELECT count(*), sum(turn GLOB 'note:*') FROM ctx_chunk" | tr '\t' ' ')" = "3 0" ] || fail "each turn is indexed once, under its own id"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE body LIKE '%0123456789abcdef%'")" = 0 ] && [ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE body LIKE '%/v/k#[REDACTED]%'")" = 1 ] || fail "an indexed turn is redacted again"
+NOTE=$("$CTX" sql "SELECT technote FROM ctx_capture_day")
+"$CTX" sql "SELECT fsl_use('repo:me'), CAST(fsl_technote('$NOTE') AS TEXT)" > "$T/tidy.note"
+[ "$(grep -c '## ' "$T/tidy.note")" = 3 ] && ! grep -q 0123456789abcdef "$T/tidy.note" && grep -q '/v/k#\[REDACTED\]' "$T/tidy.note" || fail "the stored technote holds each turn once, redacted: $(grep -c '## ' "$T/tidy.note")"
+"$CTX" scan "$T/tidy/none" 2>"$T/tidy.err" >/dev/null; [ ! -s "$T/tidy.err" ] || fail "the pass runs once: $(cat "$T/tidy.err")"
+"$CTX" sql "UPDATE ctx_chunk SET turn = 'note:zz:' || seq" >/dev/null
+"$CTX" sql "UPDATE ctx_capture SET offset = 0" >/dev/null
+"$CTX" archive "$T/tidy/proj/7ee70000-0000-0000-0000-000000000001.jsonl" >/dev/null
+[ "$("$CTX" sql "SELECT count(*), group_concat(turn) FROM (SELECT turn FROM ctx_chunk ORDER BY seq)" | tr '\t' ' ')" = "3 u-1,a-1,u-2" ] || fail "a turn known by a placeholder id is adopted, not stored twice: $("$CTX" sql "SELECT count(*), group_concat(turn) FROM ctx_chunk")"
 export CTX_DB="$T/rebuild.sqlite"
 "$CTX" init >/dev/null
 [ "$("$CTX" sql "PRAGMA user_version")" = 6 ] || fail "a new file is at the current version"

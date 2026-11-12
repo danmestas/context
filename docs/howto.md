@@ -159,6 +159,17 @@ you can read, leaving out settings whose names mark them as not secret. A findin
 names the value by its line number; `tools/doppler-values.py --name N` says which
 secret line N is.
 
+A link to a page published with html-artifact-publisher ends in a token, and nothing
+in the token says whether it only reads the page or can change it. So the token is cut
+from every such link except the read link in the publisher's own result, under
+`viewerUrl` or `commentUrl`.
+
+When a rule is added, what this machine already stored is redacted again, once, by the
+next scan: each turn of its session technotes, then the index. The same pass drops a
+turn that an older ctx stored twice. A technote changed this way gets a new version,
+and Fossil keeps the old one in its history, so a secret that mattered should still be
+revoked where it was issued.
+
 ## Keep standing rules
 
 A rule is something you want every future session to follow, such as "add a
