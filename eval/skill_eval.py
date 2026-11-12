@@ -322,7 +322,8 @@ def cmd_run(a):
             prompt = (ASK_PLAIN if a.ask == "plain" else ASK_DOCS if cond in "SWF" else ASK).format(q=q["question"])
             allow, dirs = list(READ_ONLY), []
             if cond == "B":
-                dirs = glob.glob(os.path.expanduser(f"~/.claude/projects/{slug(project['sessions'])}*"))
+                dirs = ([project["transcripts"]] if project.get("transcripts")  # a corpus kept outside ~/.claude
+                        else glob.glob(os.path.expanduser(f"~/.claude/projects/{slug(project['sessions'])}*")))
                 prompt += "\n\nTranscripts of past coding sessions on this project are JSONL files in:\n" + "\n".join(dirs)
                 allow += ["Bash(jq*)", "Bash(python3*)"]
             if cond in "CIHR":

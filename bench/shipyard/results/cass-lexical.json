@@ -1,0 +1,827 @@
+{
+ "arm": "cass-lexical",
+ "tool": "cass",
+ "version": "v0.11.0 (release binary cass-linux-arm64.tar.gz)",
+ "image_base": "debian:bookworm-slim",
+ "index_seconds": 2.16,
+ "index_bytes": 22079371,
+ "model_calls_at_index": 0,
+ "network_during_queries": false,
+ "notes": "Default search (hybrid-preferred) with no semantic model installed; every query reported search_mode=lexical, fallback 'consent required for model download'. Indexed 32 conversations, 709 messages with 'cass index --full --json'. Default lexical matching requires all query terms, so a whole question as typed returned hits for only 4 of 134 queries; the rest returned zero hits (cass suggests a wildcard query, which was not run). Container ran with --network none for indexing and queries. index_bytes is ~/.local/share/coding-agent-search (SQLite, lexical index, raw mirror of the transcripts).",
+ "results": [
+  {
+   "id": "q-001",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.253
+  },
+  {
+   "id": "q-002",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.154
+  },
+  {
+   "id": "q-003",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.155
+  },
+  {
+   "id": "q-004",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.154
+  },
+  {
+   "id": "q-005",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.189
+  },
+  {
+   "id": "q-006",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.186
+  },
+  {
+   "id": "q-007",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.191
+  },
+  {
+   "id": "q-008",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.212
+  },
+  {
+   "id": "q-009",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.278
+  },
+  {
+   "id": "q-010",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.145
+  },
+  {
+   "id": "q-011",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.127
+  },
+  {
+   "id": "q-012",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.101
+  },
+  {
+   "id": "q-013",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.099
+  },
+  {
+   "id": "q-014",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.116
+  },
+  {
+   "id": "q-015",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.096
+  },
+  {
+   "id": "q-016",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.073
+  },
+  {
+   "id": "q-017",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.079
+  },
+  {
+   "id": "q-018",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.072
+  },
+  {
+   "id": "q-019",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.067
+  },
+  {
+   "id": "q-020",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.11
+  },
+  {
+   "id": "q-021",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.134
+  },
+  {
+   "id": "q-022",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.167
+  },
+  {
+   "id": "q-023",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.098
+  },
+  {
+   "id": "q-024",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.093
+  },
+  {
+   "id": "q-025",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.146
+  },
+  {
+   "id": "q-026",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.12
+  },
+  {
+   "id": "q-027",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.105
+  },
+  {
+   "id": "q-028",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.089
+  },
+  {
+   "id": "q-029",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.108
+  },
+  {
+   "id": "q-030",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.131
+  },
+  {
+   "id": "q-031",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.13
+  },
+  {
+   "id": "q-032",
+   "wording": "question",
+   "sessions": [
+    "22a2d719-1817-4141-9dca-c607ebd8df80"
+   ],
+   "seconds": 0.12
+  },
+  {
+   "id": "q-033",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.157
+  },
+  {
+   "id": "q-034",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.129
+  },
+  {
+   "id": "q-035",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.151
+  },
+  {
+   "id": "q-036",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.093
+  },
+  {
+   "id": "q-037",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.102
+  },
+  {
+   "id": "q-038",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.125
+  },
+  {
+   "id": "q-039",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.303
+  },
+  {
+   "id": "q-040",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.198
+  },
+  {
+   "id": "q-041",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.119
+  },
+  {
+   "id": "q-042",
+   "wording": "question",
+   "sessions": [
+    "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852"
+   ],
+   "seconds": 0.166
+  },
+  {
+   "id": "q-043",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.12
+  },
+  {
+   "id": "q-044",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.165
+  },
+  {
+   "id": "q-045",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.11
+  },
+  {
+   "id": "q-046",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.112
+  },
+  {
+   "id": "q-047",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.123
+  },
+  {
+   "id": "q-048",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.086
+  },
+  {
+   "id": "q-049",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.108
+  },
+  {
+   "id": "q-050",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.085
+  },
+  {
+   "id": "q-051",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.085
+  },
+  {
+   "id": "q-052",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.084
+  },
+  {
+   "id": "q-053",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.081
+  },
+  {
+   "id": "q-054",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.097
+  },
+  {
+   "id": "q-055",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.075
+  },
+  {
+   "id": "q-056",
+   "wording": "question",
+   "sessions": [
+    "5b2aba9d-437d-4061-af3c-b5a537496104"
+   ],
+   "seconds": 0.079
+  },
+  {
+   "id": "q-057",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.068
+  },
+  {
+   "id": "q-058",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.138
+  },
+  {
+   "id": "q-059",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.093
+  },
+  {
+   "id": "q-060",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.077
+  },
+  {
+   "id": "q-061",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.068
+  },
+  {
+   "id": "q-062",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.107
+  },
+  {
+   "id": "q-063",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.092
+  },
+  {
+   "id": "q-064",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.148
+  },
+  {
+   "id": "q-065",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.172
+  },
+  {
+   "id": "q-066",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.251
+  },
+  {
+   "id": "q-067",
+   "wording": "question",
+   "sessions": [],
+   "seconds": 0.132
+  },
+  {
+   "id": "q-001",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.156
+  },
+  {
+   "id": "q-002",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.141
+  },
+  {
+   "id": "q-003",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.165
+  },
+  {
+   "id": "q-004",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.287
+  },
+  {
+   "id": "q-005",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.19
+  },
+  {
+   "id": "q-006",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.131
+  },
+  {
+   "id": "q-007",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.14
+  },
+  {
+   "id": "q-008",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.111
+  },
+  {
+   "id": "q-009",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.112
+  },
+  {
+   "id": "q-010",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.197
+  },
+  {
+   "id": "q-011",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.098
+  },
+  {
+   "id": "q-012",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.123
+  },
+  {
+   "id": "q-013",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.122
+  },
+  {
+   "id": "q-014",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.158
+  },
+  {
+   "id": "q-015",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.168
+  },
+  {
+   "id": "q-016",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.096
+  },
+  {
+   "id": "q-017",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.113
+  },
+  {
+   "id": "q-018",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.069
+  },
+  {
+   "id": "q-019",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.099
+  },
+  {
+   "id": "q-020",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.17
+  },
+  {
+   "id": "q-021",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.248
+  },
+  {
+   "id": "q-022",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.185
+  },
+  {
+   "id": "q-023",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.086
+  },
+  {
+   "id": "q-024",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.156
+  },
+  {
+   "id": "q-025",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.22
+  },
+  {
+   "id": "q-026",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.12
+  },
+  {
+   "id": "q-027",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.137
+  },
+  {
+   "id": "q-028",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.148
+  },
+  {
+   "id": "q-029",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.137
+  },
+  {
+   "id": "q-030",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.069
+  },
+  {
+   "id": "q-031",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.103
+  },
+  {
+   "id": "q-032",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.127
+  },
+  {
+   "id": "q-033",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.231
+  },
+  {
+   "id": "q-034",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.08
+  },
+  {
+   "id": "q-035",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.221
+  },
+  {
+   "id": "q-036",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.1
+  },
+  {
+   "id": "q-037",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.16
+  },
+  {
+   "id": "q-038",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.082
+  },
+  {
+   "id": "q-039",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.159
+  },
+  {
+   "id": "q-040",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.093
+  },
+  {
+   "id": "q-041",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.09
+  },
+  {
+   "id": "q-042",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.09
+  },
+  {
+   "id": "q-043",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.119
+  },
+  {
+   "id": "q-044",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.141
+  },
+  {
+   "id": "q-045",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.115
+  },
+  {
+   "id": "q-046",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.106
+  },
+  {
+   "id": "q-047",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.102
+  },
+  {
+   "id": "q-048",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.093
+  },
+  {
+   "id": "q-049",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.092
+  },
+  {
+   "id": "q-050",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.084
+  },
+  {
+   "id": "q-051",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.078
+  },
+  {
+   "id": "q-052",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.085
+  },
+  {
+   "id": "q-053",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.083
+  },
+  {
+   "id": "q-054",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.076
+  },
+  {
+   "id": "q-055",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.087
+  },
+  {
+   "id": "q-056",
+   "wording": "paraphrase",
+   "sessions": [
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc"
+   ],
+   "seconds": 0.088
+  },
+  {
+   "id": "q-057",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.147
+  },
+  {
+   "id": "q-058",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.117
+  },
+  {
+   "id": "q-059",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.113
+  },
+  {
+   "id": "q-060",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.081
+  },
+  {
+   "id": "q-061",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.105
+  },
+  {
+   "id": "q-062",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.087
+  },
+  {
+   "id": "q-063",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.087
+  },
+  {
+   "id": "q-064",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.087
+  },
+  {
+   "id": "q-065",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.069
+  },
+  {
+   "id": "q-066",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.106
+  },
+  {
+   "id": "q-067",
+   "wording": "paraphrase",
+   "sessions": [],
+   "seconds": 0.126
+  }
+ ]
+}

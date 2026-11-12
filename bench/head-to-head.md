@@ -110,5 +110,9 @@ is called the winner on a gap of a few questions.
   flag. The fault was found and the fix chosen using only the 37 questions that are not
   held out; the held-out 30 were then run once at check-in 4095a7b2dab0. Both results
   are published. The bench scripts now put `--` before the question's words.
+- 2026-11-12: the built-in memory arm was not run. The memory folder the sessions wrote
+  was deleted when the corpus was made, so that arm could not be given what it would
+  have had. The forced-use condition was not run either; the transcripts arm is in effect
+  forced, since its prompt names the transcript folder.
 - 2026-11-12: third-party tools are run in containers with only the corpus mounted, so
   their index time includes container overhead and is not compared with ctx's.

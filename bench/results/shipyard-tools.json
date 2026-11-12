@@ -1,0 +1,63 @@
+{
+ "name": "shipyard-tools",
+ "title": "Coding sessions: other tools on the same questions",
+ "section": "Search",
+ "order": 42,
+ "date": "2026-11-12",
+ "good_until": "2027-05-11",
+ "commit": "4095a7b2dab0",
+ "command": "bench/shipyard/results/score.py",
+ "conditions": {
+  "corpus": "the shipyard corpus: 32 sessions, 30 held-out questions, each asked in the session's own terms and paraphrased",
+  "tools": "each at its defaults and a recorded version, in a container with only the corpus mounted and the network off while searching; commands in bench/shipyard/results/README.md",
+  "scoring": "every session holding the answer among the first five distinct sessions returned; no model involved",
+  "versions": "cass v0.11.0; episodic-memory 1.6.0 (7e06519); agentmemory v0.9.33; TraceDecay v0.0.74",
+  "not run": "claude-mem 15.18.1 cannot load existing transcripts without a model provider, so it is not runnable under this protocol"
+ },
+ "summary": "The same held-out questions, given to four other tools that search past agent sessions. Three of them can use embeddings as well as keywords; ctx uses keywords only.",
+ "baseline": "ctx on the same questions (28 of 30 in the session's own terms, 5 of 30 paraphrased), with a sign test on the paired questions",
+ "bar": "a difference counts only if a sign test on the paired held-out questions gives p below 0.05 (set in bench/head-to-head.md before the run)",
+ "verdict": "none",
+ "meaning": "In the session's own terms every tool that ran properly is level with ctx; only TraceDecay was worse (p = 0.008). Paraphrased, the three tools using embeddings are clearly better than ctx: cass found 23 of 30, episodic-memory 20 and agentmemory 17, against ctx's 5 (each p below 0.001). That is the real gap in ctx's search. It costs them indexing time: one to nineteen minutes for 32 sessions, against seconds for keyword indexes. cass with keywords alone scored 1 of 30 because its default search needs every word of the question to match; that is its default, not its ceiling. This measures finding the session only. In the separate answer test, paraphrasing barely changed what agents got right, because agents rewrite their searches.",
+ "metrics": [
+  {
+   "label": "cass, keywords and embeddings",
+   "value": "30 and 23 of 30",
+   "note": "own terms and paraphrased; index 67 s"
+  },
+  {
+   "label": "episodic-memory, embeddings",
+   "value": "30 and 20 of 30",
+   "note": "index 584 s"
+  },
+  {
+   "label": "agentmemory, keywords and embeddings",
+   "value": "28 and 17 of 30",
+   "note": "index about 1,120 s"
+  },
+  {
+   "label": "ctx, keywords",
+   "value": "28 and 5 of 30",
+   "note": "index a few seconds"
+  },
+  {
+   "label": "ranked grep",
+   "value": "26 and 7 of 30"
+  },
+  {
+   "label": "agentmemory, keywords",
+   "value": "25 and 10 of 30",
+   "note": "index 14 s"
+  },
+  {
+   "label": "TraceDecay, session search",
+   "value": "20 and 3 of 30",
+   "note": "index 3 s"
+  },
+  {
+   "label": "cass, keywords only",
+   "value": "1 and 0 of 30",
+   "note": "its default requires every word to match"
+  }
+ ]
+}

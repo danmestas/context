@@ -19,6 +19,8 @@ This page lists what ctx has been measured to do. Every figure comes from a resu
 | A small public set of coding sessions | Passed its bar | ctx clears the check. It says little more than that: the set is 15 invented sessions, and grep does as well. A harder public set of coding sessions does not exist yet. |
 | Coding sessions: finding the session that holds the answer, first run | No bar | ctx did worse than ranked grep here, 20 against 26 of 30 held-out questions in the session's own terms, and the cause was a fault, not ranking. Questions that name a flag, such as --json, made ctx search stop with an error and return nothing; an agent searching its history for a flag would have hit the same error. The result is kept as it was measured. The next result shows the same questions after the fault was fixed. Paraphrased, both methods fail most of the time. |
 | Coding sessions: finding the session, after search accepted flag names | No bar | With the fault fixed, ctx finds the right session for 28 of 30 held-out questions in the session's own terms, against grep's 26. ctx alone was right on 3 and grep alone on 1, which is not a difference by the rule set beforehand, so the two are level on this small corpus. Over all 67 questions it is 64 against 52. The change was chosen using only the questions that are not held out, and the held-out ones were run once. Paraphrased questions did not improve: 5 of 30 for ctx and 7 for grep. That is the limit of keyword search, and it is what tools using embeddings should be tested on. |
+| Coding sessions: other tools on the same questions | No bar | In the session's own terms every tool that ran properly is level with ctx; only TraceDecay was worse (p = 0.008). Paraphrased, the three tools using embeddings are clearly better than ctx: cass found 23 of 30, episodic-memory 20 and agentmemory 17, against ctx's 5 (each p below 0.001). That is the real gap in ctx's search. It costs them indexing time: one to nineteen minutes for 32 sessions, against seconds for keyword indexes. cass with keywords alone scored 1 of 30 because its default search needs every word of the question to match; that is its default, not its ceiling. This measures finding the session only. In the separate answer test, paraphrasing barely changed what agents got right, because agents rewrite their searches. |
+| Coding sessions: do agents answer better with ctx? | No bar | Plain transcript files with a hint where they are scored highest. ctx as installed is level with them by the test set beforehand (better on 2 questions, worse on 6, p = 0.29) but three points lower, and ctx without its note is significantly worse (p = 0.04). The whole gap is use: the agent searched with ctx on 24 of 30 questions with the note and 19 without, and where it did search, its answers were as good as the transcript arm's. What ctx buys is cost: about a third fewer tokens, less than half the time, and two or three tool calls where grep needs seven to nine. Paraphrasing the question made almost no difference to any arm, because agents rewrite their own searches. With only the repository the agent could answer 6 of 30, so the questions do need session history. |
 | Answering questions about past work | Passed its bar | Telling the agent at session start that an archive exists is worth about 7 questions in 90 and costs no extra tokens. The difference is borderline by a sign test (p = 0.052), so it is kept as likely but not proven. |
 | Reaching for the archive unprompted | Failed its bar | Rewording the triggers made no real difference (one question in 23), so the wording was not changed. Fresh agents already search about four times in five without being told. |
 | A reminder when a prompt refers to earlier work | Failed its bar | The reminder changed nothing because agents already searched every time. The hook exists but is off by default. This test cannot show what happens deep in a long session, where the reminder might matter more. |
@@ -181,7 +183,71 @@ bench/shipyard.py --data DIR
 
 [Result file](../bench/results/shipyard-retrieval-after.json)
 
+### Coding sessions: other tools on the same questions
+
+The same held-out questions, given to four other tools that search past agent sessions. Three of them can use embeddings as well as keywords; ctx uses keywords only.
+
+- **Compared with:** ctx on the same questions (28 of 30 in the session's own terms, 5 of 30 paraphrased), with a sign test on the paired questions
+- **Bar:** a difference counts only if a sign test on the paired held-out questions gives p below 0.05 (set in bench/head-to-head.md before the run). **Not judged.**
+- **What it means:** In the session's own terms every tool that ran properly is level with ctx; only TraceDecay was worse (p = 0.008). Paraphrased, the three tools using embeddings are clearly better than ctx: cass found 23 of 30, episodic-memory 20 and agentmemory 17, against ctx's 5 (each p below 0.001). That is the real gap in ctx's search. It costs them indexing time: one to nineteen minutes for 32 sessions, against seconds for keyword indexes. cass with keywords alone scored 1 of 30 because its default search needs every word of the question to match; that is its default, not its ceiling. This measures finding the session only. In the separate answer test, paraphrasing barely changed what agents got right, because agents rewrite their searches.
+
+| Measure | Result |
+| --- | --- |
+| cass, keywords and embeddings | 30 and 23 of 30 (own terms and paraphrased; index 67 s) |
+| episodic-memory, embeddings | 30 and 20 of 30 (index 584 s) |
+| agentmemory, keywords and embeddings | 28 and 17 of 30 (index about 1,120 s) |
+| ctx, keywords | 28 and 5 of 30 (index a few seconds) |
+| ranked grep | 26 and 7 of 30 |
+| agentmemory, keywords | 25 and 10 of 30 (index 14 s) |
+| TraceDecay, session search | 20 and 3 of 30 (index 3 s) |
+| cass, keywords only | 1 and 0 of 30 (its default requires every word to match) |
+
+Measured 2026-11-12; check-in 4095a7b2dab0; good until 2027-05-11.
+
+- corpus: the shipyard corpus: 32 sessions, 30 held-out questions, each asked in the session's own terms and paraphrased
+- tools: each at its defaults and a recorded version, in a container with only the corpus mounted and the network off while searching; commands in bench/shipyard/results/README.md
+- scoring: every session holding the answer among the first five distinct sessions returned; no model involved
+- versions: cass v0.11.0; episodic-memory 1.6.0 (7e06519); agentmemory v0.9.33; TraceDecay v0.0.74
+- not run: claude-mem 15.18.1 cannot load existing transcripts without a model provider, so it is not runnable under this protocol
+
+```sh
+bench/shipyard/results/score.py
+```
+
+[Result file](../bench/results/shipyard-tools.json)
+
 ## Agent behaviour
+
+### Coding sessions: do agents answer better with ctx?
+
+An agent is asked each question under four conditions: with only the repository, with the transcript files and ordinary search tools, with ctx and its skill, and with ctx as it is installed (the skill plus the one-line note its session-start hook adds). A correct answer scores 1 and a partly correct one a half.
+
+- **Compared with:** the agent with the transcript files and ordinary tools, and the agent with only the repository
+- **Bar:** a difference counts only if a sign test on the paired held-out questions gives p below 0.05 (set in bench/head-to-head.md before the run). **Not judged.**
+- **What it means:** Plain transcript files with a hint where they are scored highest. ctx as installed is level with them by the test set beforehand (better on 2 questions, worse on 6, p = 0.29) but three points lower, and ctx without its note is significantly worse (p = 0.04). The whole gap is use: the agent searched with ctx on 24 of 30 questions with the note and 19 without, and where it did search, its answers were as good as the transcript arm's. What ctx buys is cost: about a third fewer tokens, less than half the time, and two or three tool calls where grep needs seven to nine. Paraphrasing the question made almost no difference to any arm, because agents rewrite their own searches. With only the repository the agent could answer 6 of 30, so the questions do need session history.
+
+| Measure | Result |
+| --- | --- |
+| Transcripts and ordinary tools | 27.0 and 26.5 of 30 (own terms and paraphrased; 7 to 9 tool calls, 15 to 21 s, 796k and 943k tokens) |
+| ctx as installed, skill and session-start note | 24.0 and 24.5 of 30 (used ctx on 24 and 26 questions; 2 to 3 tool calls, 6 to 8 s, 540k and 617k tokens) |
+| ctx, skill only | 21.5 and 22.5 of 30 (used ctx on 19 and 23 questions; 591k and 616k tokens) |
+| Repository only | 6.0 of 30 (own terms; 22 answers of "don't know") |
+| Wrong answers, own terms | 1 in every arm |
+
+Measured 2026-11-12; check-in 4095a7b2dab0; good until 2027-05-11.
+
+- corpus: the shipyard corpus; 30 held-out questions, each asked in the session's own terms and paraphrased
+- asking: the question alone, with no hint that it is about past work, to a fresh agent per question
+- answering model: Claude Sonnet
+- grading: Claude Opus, blind, every arm in one shuffled pass
+- transcripts arm: its prompt names the folder that holds the transcript files; the ctx arms are told nothing beyond what is listed
+- missing arm: the harness's built-in memory alone was not run, because that memory folder was not kept when the corpus was made
+
+```sh
+eval/skill_eval.py --bank BANK run --set all --only HELD_OUT --ask plain --cond A,B,C,H && eval/skill_eval.py grade RUNS
+```
+
+[Result file](../bench/results/shipyard-answers.json)
 
 ### Answering questions about past work
 

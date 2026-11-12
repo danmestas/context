@@ -1,0 +1,49 @@
+{
+ "name": "shipyard-answers",
+ "title": "Coding sessions: do agents answer better with ctx?",
+ "section": "Agent behaviour",
+ "order": 5,
+ "date": "2026-11-12",
+ "good_until": "2027-05-11",
+ "commit": "4095a7b2dab0",
+ "command": "eval/skill_eval.py --bank BANK run --set all --only HELD_OUT --ask plain --cond A,B,C,H && eval/skill_eval.py grade RUNS",
+ "conditions": {
+  "corpus": "the shipyard corpus; 30 held-out questions, each asked in the session's own terms and paraphrased",
+  "asking": "the question alone, with no hint that it is about past work, to a fresh agent per question",
+  "answering model": "Claude Sonnet",
+  "grading": "Claude Opus, blind, every arm in one shuffled pass",
+  "transcripts arm": "its prompt names the folder that holds the transcript files; the ctx arms are told nothing beyond what is listed",
+  "missing arm": "the harness's built-in memory alone was not run, because that memory folder was not kept when the corpus was made"
+ },
+ "summary": "An agent is asked each question under four conditions: with only the repository, with the transcript files and ordinary search tools, with ctx and its skill, and with ctx as it is installed (the skill plus the one-line note its session-start hook adds). A correct answer scores 1 and a partly correct one a half.",
+ "baseline": "the agent with the transcript files and ordinary tools, and the agent with only the repository",
+ "bar": "a difference counts only if a sign test on the paired held-out questions gives p below 0.05 (set in bench/head-to-head.md before the run)",
+ "verdict": "none",
+ "meaning": "Plain transcript files with a hint where they are scored highest. ctx as installed is level with them by the test set beforehand (better on 2 questions, worse on 6, p = 0.29) but three points lower, and ctx without its note is significantly worse (p = 0.04). The whole gap is use: the agent searched with ctx on 24 of 30 questions with the note and 19 without, and where it did search, its answers were as good as the transcript arm's. What ctx buys is cost: about a third fewer tokens, less than half the time, and two or three tool calls where grep needs seven to nine. Paraphrasing the question made almost no difference to any arm, because agents rewrite their own searches. With only the repository the agent could answer 6 of 30, so the questions do need session history.",
+ "metrics": [
+  {
+   "label": "Transcripts and ordinary tools",
+   "value": "27.0 and 26.5 of 30",
+   "note": "own terms and paraphrased; 7 to 9 tool calls, 15 to 21 s, 796k and 943k tokens"
+  },
+  {
+   "label": "ctx as installed, skill and session-start note",
+   "value": "24.0 and 24.5 of 30",
+   "note": "used ctx on 24 and 26 questions; 2 to 3 tool calls, 6 to 8 s, 540k and 617k tokens"
+  },
+  {
+   "label": "ctx, skill only",
+   "value": "21.5 and 22.5 of 30",
+   "note": "used ctx on 19 and 23 questions; 591k and 616k tokens"
+  },
+  {
+   "label": "Repository only",
+   "value": "6.0 of 30",
+   "note": "own terms; 22 answers of \"don't know\""
+  },
+  {
+   "label": "Wrong answers, own terms",
+   "value": "1 in every arm"
+  }
+ ]
+}
