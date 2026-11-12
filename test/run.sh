@@ -1237,6 +1237,20 @@ NOTE=$("$CTX" sql "SELECT technote FROM ctx_capture_day")
 "$CTX" sql "UPDATE ctx_capture SET offset = 0" >/dev/null
 "$CTX" archive "$T/tidy/proj/7ee70000-0000-0000-0000-000000000001.jsonl" >/dev/null
 [ "$("$CTX" sql "SELECT count(*), group_concat(turn) FROM (SELECT turn FROM ctx_chunk ORDER BY seq)" | tr '\t' ' ')" = "3 u-1,a-1,u-2" ] || fail "a turn known by a placeholder id is adopted, not stored twice: $("$CTX" sql "SELECT count(*), group_concat(turn) FROM ctx_chunk")"
+# Each hook and search logs when it starts and ends; a start with no end was cut off.
+export CTX_DB="$T/calls.sqlite"
+"$CTX" init >/dev/null
+"$CTX" search heron >/dev/null 2>&1 || true
+echo '{}' | "$CTX" rules offer >/dev/null
+"$CTX" version >/dev/null
+[ "$(grep -c '^B ' "$CTX_DB.calls")" = 2 ] && [ "$(grep -c '^E ' "$CTX_DB.calls")" = 2 ] || fail "a hook and a search are logged, other commands are not: $(cat "$CTX_DB.calls")"
+"$CTX" status | grep -q '^ctx 1 search · hooks [0-9]* ms$' || fail "status gives one short line: $("$CTX" status)"
+OLD=$(( $(date +%s) - 300 ))
+printf 'B %s 11 rules-offer\nB %s 12 rules-offer\nE %s 12 rules-offer 4200\n' "$OLD" "$OLD" "$OLD" >> "$CTX_DB.calls"
+"$CTX" stats --hooks > "$T/hooks.txt"
+awk '$1 == "rules-offer" && $2 == 3 && $5 == 4200 && $6 == 1 && $7 == 1 { ok = 1 } END { exit !ok }' "$T/hooks.txt" || fail "a start with no end is cut off, and a slow end is over its limit: $(cat "$T/hooks.txt")"
+"$CTX" status | grep -q '2 cut off' || fail "status warns when hooks were cut off: $("$CTX" status)"
+CTX_DB="$T/nocalls.sqlite" "$CTX" recall </dev/null; [ ! -e "$T/nocalls.sqlite.calls" ] || fail "nothing is logged without an archive"
 export CTX_DB="$T/rebuild.sqlite"
 "$CTX" init >/dev/null
 [ "$("$CTX" sql "PRAGMA user_version")" = 6 ] || fail "a new file is at the current version"

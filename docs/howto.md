@@ -583,6 +583,23 @@ about past work, with blind grading and a held-out set, so a change to the skill
 is kept only if results improve. The question bank and results stay in
 `~/.ctx/eval`. [eval/README.md](../eval/README.md) describes the loop.
 
+## See how ctx is doing
+
+Each hook and each `ctx search` or `ctx turn` writes a line when it starts and one
+when it ends to a small log beside the database (`ctx.sqlite.calls`, rotated at 1 MB).
+A hook that the harness stopped leaves a start with no end, so a slow hook shows up
+even though it never finished.
+
+```sh
+ctx stats --hooks          # runs, median, 95th percentile, slowest, cut off, over limit; last 7 days
+ctx stats --hooks --days 1
+ctx status                 # one line for a status bar: ctx 14 searches · hooks 9 ms
+```
+
+`ctx status` reads only the log, in about 10 ms. It adds a warning when hooks were cut
+off today, when the slowest took over a second, or when the hourly scan is late. To
+show it in Claude Code's status line, have your status line script print its output.
+
 ## Query the database directly
 
 ```sh
