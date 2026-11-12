@@ -1,6 +1,6 @@
 {
  "name": "shipyard-retrieval",
- "title": "Coding sessions: finding the session that holds the answer",
+ "title": "Coding sessions: finding the session that holds the answer, first run",
  "section": "Search",
  "order": 40,
  "date": "2026-11-12",
@@ -42,5 +42,5 @@
  "baseline": "ranked grep over the same transcript files: each session scored by how many of the question's words it contains, then by how often",
  "bar": "a difference counts only if a sign test on the paired held-out questions gives p below 0.05 (set in bench/head-to-head.md before the run)",
  "verdict": "none",
- "meaning": "ctx's search did not beat ranked grep at finding the right session here. In the session's own terms grep found more (26 against 20 of 30 held out; alone right on 8 questions against ctx's 2, sign test p = 0.11, so by the rule set beforehand the two are level). Paraphrased, both fail most of the time: neither keyword method copes when the question shares no distinctive word with the session. The corpus is small, 32 sessions, which suits scoring whole sessions the way this grep does; ctx ranks single turns. Whether an agent answers better with ctx than with grep is a separate measurement, not yet run."
+ "meaning": "ctx did worse than ranked grep here, 20 against 26 of 30 held-out questions in the session's own terms, and the cause was a fault, not ranking. Questions that name a flag, such as --json, made ctx search stop with an error and return nothing; an agent searching its history for a flag would have hit the same error. The result is kept as it was measured. The next result shows the same questions after the fault was fixed. Paraphrased, both methods fail most of the time."
 }

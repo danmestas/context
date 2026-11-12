@@ -106,5 +106,9 @@ is called the winner on a gap of a few questions.
 - 2026-11-12: the corpus has 32 sessions and 67 questions, of which 30 are held out.
   ctx was measured at check-in 7150d2056fec, before anything in it was changed in
   response to this corpus.
+- 2026-11-12, after the first retrieval run: ctx search failed on questions that name a
+  flag. The fault was found and the fix chosen using only the 37 questions that are not
+  held out; the held-out 30 were then run once at check-in 4095a7b2dab0. Both results
+  are published. The bench scripts now put `--` before the question's words.
 - 2026-11-12: third-party tools are run in containers with only the corpus mounted, so
   their index time includes container overhead and is not compared with ctx's.
