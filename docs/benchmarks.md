@@ -21,6 +21,7 @@ This page lists what ctx has been measured to do. Every figure comes from a resu
 | Coding sessions: finding the session, after search accepted flag names | No bar | With the fault fixed, ctx finds the right session for 28 of 30 held-out questions in the session's own terms, against grep's 26. ctx alone was right on 3 and grep alone on 1, which is not a difference by the rule set beforehand, so the two are level on this small corpus. Over all 67 questions it is 64 against 52. The change was chosen using only the questions that are not held out, and the held-out ones were run once. Paraphrased questions did not improve: 5 of 30 for ctx and 7 for grep. That is the limit of keyword search, and it is what tools using embeddings should be tested on. |
 | Coding sessions: other tools on the same questions | No bar | In the session's own terms every tool that ran properly is level with ctx; only TraceDecay was worse (p = 0.008). Paraphrased, the three tools using embeddings are clearly better than ctx: cass found 23 of 30, episodic-memory 20 and agentmemory 17, against ctx's 5 (each p below 0.001). That is the real gap in ctx's search. It costs them indexing time: one to nineteen minutes for 32 sessions, against seconds for keyword indexes. cass with keywords alone scored 1 of 30 because its default search needs every word of the question to match; that is its default, not its ceiling. This measures finding the session only. In the separate answer test, paraphrasing barely changed what agents got right, because agents rewrite their searches. |
 | Coding sessions: do agents answer better with ctx? | No bar | Plain transcript files with a hint where they are scored highest. ctx as installed is level with them by the test set beforehand (better on 2 questions, worse on 6, p = 0.29) but three points lower, and ctx without its note is significantly worse (p = 0.04). The whole gap is use: the agent searched with ctx on 24 of 30 questions with the note and 19 without, and where it did search, its answers were as good as the transcript arm's. What ctx buys is cost: about a third fewer tokens, less than half the time, and two or three tool calls where grep needs seven to nine. Paraphrasing the question made almost no difference to any arm, because agents rewrite their own searches. With only the repository the agent could answer 6 of 30, so the questions do need session history. |
+| Coding sessions: adding snippets or a reminder to the prompt | Failed its bar | Neither helps, and both arms scored below ctx as installed, significantly so on paraphrased questions. The reason is that they almost never act: snippets were added for 4 and 3 of 30 questions and the reminder for 1 and 0, so these arms are in effect the skill alone. On the few questions where snippets were added, the answers were right. The session-start note remains the one thing shown to make agents search, and both hooks stay off by default. |
 | Answering questions about past work | Passed its bar | Telling the agent at session start that an archive exists is worth about 7 questions in 90 and costs no extra tokens. The difference is borderline by a sign test (p = 0.052), so it is kept as likely but not proven. |
 | Reaching for the archive unprompted | Failed its bar | Rewording the triggers made no real difference (one question in 23), so the wording was not changed. Fresh agents already search about four times in five without being told. |
 | A reminder when a prompt refers to earlier work | Failed its bar | The reminder changed nothing because agents already searched every time. The hook exists but is off by default. This test cannot show what happens deep in a long session, where the reminder might matter more. |
@@ -248,6 +249,34 @@ eval/skill_eval.py --bank BANK run --set all --only HELD_OUT --ask plain --cond 
 ```
 
 [Result file](../bench/results/shipyard-answers.json)
+
+### Coding sessions: adding snippets or a reminder to the prompt
+
+Two ways of helping without waiting for the agent to search: put matching snippets in front of it, or remind it to search. Both are hooks that ctx has and does not install by default.
+
+- **Compared with:** ctx as installed, with the skill and the session-start note (24.0 and 24.5 of 30)
+- **Bar:** ships only if better than ctx as installed on a paired sign test at p below 0.05, with no more wrong answers (set before the run). **Failed.**
+- **What it means:** Neither helps, and both arms scored below ctx as installed, significantly so on paraphrased questions. The reason is that they almost never act: snippets were added for 4 and 3 of 30 questions and the reminder for 1 and 0, so these arms are in effect the skill alone. On the few questions where snippets were added, the answers were right. The session-start note remains the one thing shown to make agents search, and both hooks stay off by default.
+
+| Measure | Result |
+| --- | --- |
+| Snippets added to the prompt | 19.5 and 19.5 of 30 (own terms and paraphrased; added for 4 and 3 questions) |
+| Reminder to search | 20.0 and 18.5 of 30 (given for 1 and 0 questions) |
+| ctx as installed, for comparison | 24.0 and 24.5 of 30 |
+| Answers when snippets were added | 4 of 4 and 1.5 of 3 |
+
+Measured 2026-11-12; check-in 4095a7b2dab0; good until 2027-05-11.
+
+- corpus: the shipyard corpus; the same 30 held-out questions, in both wordings
+- arms: the skill plus snippets from past sessions added to the prompt when its rare words match strongly; and the skill plus a one-line reminder when the prompt refers to earlier work. Neither arm has the session-start note.
+- answering model: Claude Sonnet
+- grading: Claude Opus, blind, in one shuffled pass with the other arms
+
+```sh
+eval/skill_eval.py --bank BANK run --set all --only HELD_OUT --ask plain --cond I,R && eval/skill_eval.py grade RUNS
+```
+
+[Result file](../bench/results/shipyard-delivery.json)
 
 ### Answering questions about past work
 

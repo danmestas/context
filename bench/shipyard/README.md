@@ -11,6 +11,9 @@ only in those sessions. It is the shared input for the comparison described in
 - `questions.json` holds 67 questions. Each has two wordings (`question` reuses the
   session's own terms, `paraphrase` avoids them), an answer, the facts a correct answer
   must contain, and the sessions that hold the evidence.
+- `questions2.json` holds 40 more questions (ids starting `r-`), written later by a writer who
+  had read the first set only to avoid repeating it. It is kept for final checks: nothing
+  in ctx is tuned against it.
 - `tasks.json` is the plan the sessions were run from. The question writer did not see it.
 
 ## How it was made

@@ -1,0 +1,41 @@
+{
+ "name": "shipyard-delivery",
+ "title": "Coding sessions: adding snippets or a reminder to the prompt",
+ "section": "Agent behaviour",
+ "order": 6,
+ "date": "2026-11-12",
+ "good_until": "2027-05-11",
+ "commit": "4095a7b2dab0",
+ "command": "eval/skill_eval.py --bank BANK run --set all --only HELD_OUT --ask plain --cond I,R && eval/skill_eval.py grade RUNS",
+ "conditions": {
+  "corpus": "the shipyard corpus; the same 30 held-out questions, in both wordings",
+  "arms": "the skill plus snippets from past sessions added to the prompt when its rare words match strongly; and the skill plus a one-line reminder when the prompt refers to earlier work. Neither arm has the session-start note.",
+  "answering model": "Claude Sonnet",
+  "grading": "Claude Opus, blind, in one shuffled pass with the other arms"
+ },
+ "summary": "Two ways of helping without waiting for the agent to search: put matching snippets in front of it, or remind it to search. Both are hooks that ctx has and does not install by default.",
+ "baseline": "ctx as installed, with the skill and the session-start note (24.0 and 24.5 of 30)",
+ "bar": "ships only if better than ctx as installed on a paired sign test at p below 0.05, with no more wrong answers (set before the run)",
+ "verdict": "fail",
+ "meaning": "Neither helps, and both arms scored below ctx as installed, significantly so on paraphrased questions. The reason is that they almost never act: snippets were added for 4 and 3 of 30 questions and the reminder for 1 and 0, so these arms are in effect the skill alone. On the few questions where snippets were added, the answers were right. The session-start note remains the one thing shown to make agents search, and both hooks stay off by default.",
+ "metrics": [
+  {
+   "label": "Snippets added to the prompt",
+   "value": "19.5 and 19.5 of 30",
+   "note": "own terms and paraphrased; added for 4 and 3 questions"
+  },
+  {
+   "label": "Reminder to search",
+   "value": "20.0 and 18.5 of 30",
+   "note": "given for 1 and 0 questions"
+  },
+  {
+   "label": "ctx as installed, for comparison",
+   "value": "24.0 and 24.5 of 30"
+  },
+  {
+   "label": "Answers when snippets were added",
+   "value": "4 of 4 and 1.5 of 3"
+  }
+ ]
+}
