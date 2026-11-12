@@ -33,8 +33,9 @@ HOW = [
     "## How to read this page",
     "",
     "- **Compared with** names the baseline. It is always ctx against what an agent would do without it, or ctx "
-    "with a change against ctx without it. No other tool has been measured here, so nothing on this page says "
-    "ctx is better or worse than another product.",
+    "with a change against ctx without it. No other tool has been run here. Where another project publishes a "
+    "score on the same public data under the same scoring, it is quoted and named as theirs; nothing else on "
+    "this page says ctx is better or worse than another product.",
     "- **Bar** is the threshold that was written down before the run. \"Passed\" and \"failed\" refer to that "
     "threshold and nothing else. A result with no bar only describes; it was not a test.",
     "- **What it means** says what the result changed: what was kept, what was removed, and what is still unknown.",

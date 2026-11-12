@@ -4,7 +4,7 @@ This page lists what ctx has been measured to do. Every figure comes from a resu
 
 ## How to read this page
 
-- **Compared with** names the baseline. It is always ctx against what an agent would do without it, or ctx with a change against ctx without it. No other tool has been measured here, so nothing on this page says ctx is better or worse than another product.
+- **Compared with** names the baseline. It is always ctx against what an agent would do without it, or ctx with a change against ctx without it. No other tool has been run here. Where another project publishes a score on the same public data under the same scoring, it is quoted and named as theirs; nothing else on this page says ctx is better or worse than another product.
 - **Bar** is the threshold that was written down before the run. "Passed" and "failed" refer to that threshold and nothing else. A result with no bar only describes; it was not a test.
 - **What it means** says what the result changed: what was kept, what was removed, and what is still unknown.
 - A score such as recall is out of 1, and a score "of 90" is out of that many questions. Sample sizes are small, so a difference of one or two questions is not evidence of anything.
@@ -15,6 +15,8 @@ This page lists what ctx has been measured to do. Every figure comes from a resu
 | Result | Outcome | What it means |
 | --- | --- | --- |
 | Ranking: full-text search against grep | Passed its bar | The ranking ctx uses finds about 57% of the labelled documents in its top 10, against 37% for grep. It is a clear win over grep and still misses a lot; no target for the absolute score has been set. |
+| LongMemEval-S, retrieval only | No bar | ctx's search is level with another tool's published keyword search (two questions apart in 470, which is noise) and well ahead of grep. Both are weakest where evidence is spread over several sessions or depends on dates. Tools that use embeddings report higher figures on this benchmark, but those are their own reports under other scoring, so they are not shown as a comparison. |
+| A small public set of coding sessions | Passed its bar | ctx clears the check. It says little more than that: the set is 15 invented sessions, and grep does as well. A harder public set of coding sessions does not exist yet. |
 | Answering questions about past work | Passed its bar | Telling the agent at session start that an archive exists is worth about 7 questions in 90 and costs no extra tokens. The difference is borderline by a sign test (p = 0.052), so it is kept as likely but not proven. |
 | Reaching for the archive unprompted | Failed its bar | Rewording the triggers made no real difference (one question in 23), so the wording was not changed. Fresh agents already search about four times in five without being told. |
 | A reminder when a prompt refers to earlier work | Failed its bar | The reminder changed nothing because agents already searched every time. The hook exists but is off by default. This test cannot show what happens deep in a long session, where the reminder might matter more. |
@@ -59,6 +61,64 @@ bench/run.sh
 ```
 
 [Result file](../bench/results/search-ranking.json)
+
+### LongMemEval-S, retrieval only
+
+A public benchmark of long-term memory in chat assistants. Run retrieval-only, it asks whether a search returns the sessions that hold the evidence for each question. It is chat, not coding work, but it is data anyone can rerun and others publish scores on.
+
+- **Compared with:** the keyword search of the agentmemory project on the same file under the same scoring (84.7% strict, 96.2% any hit, measured 2026-10-28), and its grep baseline (72.1% strict)
+- **Bar:** none; this result describes and was not a test.
+- **What it means:** ctx's search is level with another tool's published keyword search (two questions apart in 470, which is noise) and well ahead of grep. Both are weakest where evidence is spread over several sessions or depends on dates. Tools that use embeddings report higher figures on this benchmark, but those are their own reports under other scoring, so they are not shown as a comparison.
+
+| Measure | Result |
+| --- | --- |
+| Strict recall at 5 (every evidence session found) | 85.1% (400 of 470) |
+| Fractional recall at 5 | 92.1% |
+| Any hit at 5 | 96.6% (454 of 470) |
+| Strict, knowledge-update | 71 of 72 |
+| Strict, multi-session | 88 of 121 |
+| Strict, single-session-assistant | 56 of 56 |
+| Strict, single-session-preference | 25 of 30 |
+| Strict, single-session-user | 63 of 64 |
+| Strict, temporal-reasoning | 97 of 127 |
+
+Measured 2026-11-12; check-in 9ca411f83487; good until 2027-05-11.
+
+- data: LongMemEval-S cleaned, 500 questions of which 470 are answerable, about 50 chat sessions each; public, checksum pinned in the script
+- pipeline: each question's sessions archived into a fresh ctx database, then ctx search with the question as typed
+- scoring: the first five distinct sessions among the ranked turns; no model involved
+
+```sh
+bench/longmemeval.py --data longmemeval_s_cleaned.json
+```
+
+[Result file](../bench/results/longmemeval.json)
+
+### A small public set of coding sessions
+
+The only public set of coding-session questions found. It is tiny and invented, and plain grep nearly ties on it, so it is a check that nothing is broken and not a measure of how good a tool is.
+
+- **Compared with:** the scores its authors publish on the same files: their keyword component found every evidence session for 14 of 15 questions, and their grep baseline for 15 of 15 (measured 2026-10-28)
+- **Bar:** every evidence session found for at least 14 of 15 questions. **Passed.**
+- **What it means:** ctx clears the check. It says little more than that: the set is 15 invented sessions, and grep does as well. A harder public set of coding sessions does not exist yet.
+
+| Measure | Result |
+| --- | --- |
+| Questions with every evidence session in the first 5 | 15 of 15 |
+| Recall at 5 | 1.000 |
+| Questions with at least one evidence session in the first 5 | 15 of 15 |
+
+Measured 2026-11-12; check-in 9ca411f83487; good until 2027-05-11.
+
+- data: coding-agent-life-v1 from the agentmemory project: 15 invented sessions on a Rust command-line tool, 15 questions with the sessions that answer them; public, checksums pinned in the script
+- pipeline: the sessions archived into a fresh ctx database, then ctx search with each question as typed
+- scoring: the first five distinct sessions among the ranked turns; no model involved
+
+```sh
+bench/coding_life.py --data DIR
+```
+
+[Result file](../bench/results/coding-life.json)
 
 ## Agent behaviour
 
