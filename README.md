@@ -67,7 +67,8 @@ ctx ticket new "Fix the importer"
 the wiki, syncing machines, rebuilding and measuring the skill.
 
 [docs/benchmarks.md](docs/benchmarks.md) lists what ctx has been measured to do, with the
-command behind each figure and the experiments that failed.
+command behind each figure and the experiments that failed. [bench/head-to-head.md](bench/head-to-head.md)
+is the plan, written before any run, for comparing ctx with other tools.
 
 ## How it is stored
 
