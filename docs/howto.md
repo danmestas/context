@@ -104,6 +104,28 @@ trimmed. Each session becomes a technote in your private repository, `repo:me`,
 one per session per day, tagged with its project. A project is the directory the
 session ran in, or the project it belongs to after `ctx project add`.
 
+## Keep sessions out, or take one out
+
+```sh
+ctx exclude /tmp/bench            # sessions run in this directory or beneath it are never archived
+ctx exclude                       # list what is excluded
+ctx exclude --remove /tmp/bench
+ctx forget SESSION                # take an archived session out of the index, and keep it out
+ctx forget                        # list forgotten sessions
+```
+
+An excluded directory covers its sessions and the memory notes Claude Code keeps for
+it, so a benchmark or a throwaway experiment does not end up in your archive or among
+your rules. Claude Code names a session's folder after its working directory with
+every character that is not a letter or digit turned into a dash, so an exclusion also
+covers a sibling whose name continues with a dash: `/tmp/bench` covers `/tmp/bench-2`
+but not `/tmp/benchmarks`.
+
+`ctx forget` removes a session's turns, decisions and page records from the index. A
+later scan does not archive it again and a rebuild does not bring it back. The text
+stays in the private repository's history, which Fossil cannot shed, so this is for
+keeping something out of search, not for destroying a secret.
+
 ## Search past work
 
 ```sh

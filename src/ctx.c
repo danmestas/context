@@ -28,7 +28,7 @@
 #include "ticket_schema.h"
 
 #define CTX_VERSION "0.0.1"
-#define CTX_USER_VERSION 6    /* PRAGMA user_version once initialized */
+#define CTX_USER_VERSION 7    /* PRAGMA user_version once initialized */
 #define CTX_DERIVED_VERSION 6 /* raise when schema/index.sql changes; ctx then rebuilds */
 
 /* A tool's output is kept up to this size at each end; the middle is cut. */
@@ -979,6 +979,30 @@ static long archive_batch(sqlite3 *db, const char *session, const char *path, co
 }
 
 /* Saves what is new in a transcript to the private repository and the index. */
+/* Whether sessions kept in this transcript folder are excluded. Claude Code names the folder
+ * after the working directory with every character that is not a letter or digit turned into
+ * a dash, so an excluded directory covers its own folder and those of everything beneath it. */
+static int folder_excluded(sqlite3 *db, const char *folder) {
+  sqlite3_stmt *q = NULL;
+  int hit = 0;
+  if (sqlite3_prepare_v2(db, "SELECT 1 FROM ctx_exclude WHERE ?1 = slug OR substr(?1, 1, length(slug) + 1) = slug || '-'", -1, &q, NULL) != SQLITE_OK)
+    return 0; /* a database from before exclusions */
+  sqlite3_bind_text(q, 1, folder, -1, SQLITE_STATIC);
+  hit = sqlite3_step(q) == SQLITE_ROW;
+  sqlite3_finalize(q);
+  return hit;
+}
+
+static int session_forgotten(sqlite3 *db, const char *session) {
+  sqlite3_stmt *q = NULL;
+  int hit = 0;
+  if (sqlite3_prepare_v2(db, "SELECT 1 FROM ctx_forgotten WHERE session = ?1", -1, &q, NULL) != SQLITE_OK) return 0;
+  sqlite3_bind_text(q, 1, session, -1, SQLITE_STATIC);
+  hit = sqlite3_step(q) == SQLITE_ROW;
+  sqlite3_finalize(q);
+  return hit;
+}
+
 static int cmd_archive(const char *path) {
   struct stat st;
   if (stat(path, &st) != 0) die("cannot read %s: %s", path, strerror(errno));
@@ -989,6 +1013,17 @@ static int cmd_archive(const char *path) {
   base = base ? base + 1 : path;
   char session[128];
   snprintf(session, sizeof session, "%.*s", (int)strcspn(base, "."), base);
+  { /* the folder the transcript sits in names its working directory */
+    char folder[1024] = "";
+    const char *end = base > path ? base - 1 : path, *start = end;
+    while (start > path && start[-1] != '/') start--;
+    snprintf(folder, sizeof folder, "%.*s", (int)(end - start), start);
+    if (folder_excluded(db, folder) || session_forgotten(db, session)) {
+      puts("0 turns archived");
+      sqlite3_close(db);
+      return 0;
+    }
+  }
 
   sqlite3_int64 repo_id = 0;
   {
@@ -2040,7 +2075,7 @@ static int cmd_scan(const char *root_arg) {
   long ran = 0;
   struct dirent *p;
   while ((p = readdir(top))) {
-    if (p->d_name[0] == '.') continue;
+    if (p->d_name[0] == '.' || folder_excluded(db, p->d_name)) continue;
     char dir[4600];
     snprintf(dir, sizeof dir, "%s/%s", root, p->d_name);
     DIR *d = opendir(dir);
@@ -2049,6 +2084,9 @@ static int cmd_scan(const char *root_arg) {
     while ((e = readdir(d))) {
       size_t n = strlen(e->d_name);
       if (n < 7 || strcmp(e->d_name + n - 6, ".jsonl")) continue;
+      char stem[128];
+      snprintf(stem, sizeof stem, "%.*s", (int)strcspn(e->d_name, "."), e->d_name);
+      if (session_forgotten(db, stem)) continue;
       char path[5000];
       snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
       struct stat st;
@@ -4670,7 +4708,8 @@ static void sessions_from_remote(sqlite3 *db, int all) {
   sqlite3_finalize(q);
   long added = 0;
   for (size_t i = 0; i < n; i++) {
-    q = db_prepare(db, "SELECT (NOT ?3 AND (SELECT count(*) FROM ctx_capture_day WHERE technote = ?1)) + (SELECT count(*) FROM ctx_remote_note WHERE technote = ?1 AND version = ?2)");
+    q = db_prepare(db, "SELECT (SELECT count(*) FROM ctx_capture_day cd JOIN ctx_forgotten f ON f.session = cd.session WHERE cd.technote = ?1)"
+                       " + (NOT ?3 AND (SELECT count(*) FROM ctx_capture_day WHERE technote = ?1)) + (SELECT count(*) FROM ctx_remote_note WHERE technote = ?1 AND version = ?2)");
     sqlite3_bind_text(q, 1, notes[i].id, -1, SQLITE_STATIC);
     sqlite3_bind_text(q, 2, notes[i].version, -1, SQLITE_STATIC);
     sqlite3_bind_int(q, 3, all);
@@ -5405,6 +5444,87 @@ static int cmd_artifacts(int argc, char **argv) {
   return 0;
 }
 
+/* ctx exclude [DIR | --remove DIR]: working directories whose sessions are never archived.
+ * With no argument it lists them. */
+static int cmd_exclude(int argc, char **argv) {
+  sqlite3 *db = ctx_open();
+  if (argc == 0) {
+    sqlite3_stmt *q = db_prepare(db, "SELECT dir FROM ctx_exclude ORDER BY 1");
+    while (sqlite3_step(q) == SQLITE_ROW) puts((const char *)sqlite3_column_text(q, 0));
+    sqlite3_finalize(q);
+    sqlite3_close(db);
+    return 0;
+  }
+  int remove = argc == 2 && !strcmp(argv[0], "--remove");
+  if (!(argc == 1 && argv[0][0] != '-') && !remove) die("usage: ctx exclude [DIR | --remove DIR]");
+  const char *given = argv[argc - 1];
+  char real[4200], slug[4200];
+  if (!realpath(given, real)) snprintf(real, sizeof real, "%s", given); /* a directory that is gone can still be excluded */
+  size_t n = strlen(real);
+  while (n > 1 && real[n - 1] == '/') real[--n] = 0;
+  snprintf(slug, sizeof slug, "%s", real);
+  for (char *c = slug; *c; c++)
+    if (!isalnum((unsigned char)*c)) *c = '-';
+  sqlite3_stmt *q = db_prepare(db, remove ? "DELETE FROM ctx_exclude WHERE dir IN (?1, ?2)"
+                                          : "INSERT OR REPLACE INTO ctx_exclude(dir, slug) VALUES (?1, ?3)");
+  sqlite3_bind_text(q, 1, given, -1, SQLITE_STATIC);
+  if (remove) sqlite3_bind_text(q, 2, real, -1, SQLITE_STATIC);
+  else sqlite3_bind_text(q, 3, slug, -1, SQLITE_STATIC);
+  if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+  sqlite3_finalize(q);
+  if (remove && !sqlite3_changes(db)) die("%s was not excluded", given);
+  printf(remove ? "%s is no longer excluded\n" : "excluded %s: its sessions and memory will not be archived\n", given);
+  sqlite3_close(db);
+  return 0;
+}
+
+/* ctx forget [SESSION]: takes a session out of the index and keeps it out: a scan does not
+ * archive it again and a rebuild does not bring it back. Its text stays in the private
+ * repository's history, which Fossil cannot shed. With no argument it lists what was forgotten. */
+static int cmd_forget(int argc, char **argv) {
+  sqlite3 *db = ctx_open();
+  if (argc == 0) {
+    sqlite3_stmt *q = db_prepare(db, "SELECT session, substr(at, 1, 10) FROM ctx_forgotten ORDER BY at");
+    while (sqlite3_step(q) == SQLITE_ROW) printf("%s %s\n", sqlite3_column_text(q, 0), sqlite3_column_text(q, 1));
+    sqlite3_finalize(q);
+    sqlite3_close(db);
+    return 0;
+  }
+  if (argc != 1 || argv[0][0] == '-') die("usage: ctx forget [SESSION]");
+  sqlite3_stmt *q = db_prepare(db, "SELECT session FROM ctx_capture WHERE session = ?1 OR session LIKE ?1 || '%' ORDER BY session = ?1 DESC LIMIT 2");
+  sqlite3_bind_text(q, 1, argv[0], -1, SQLITE_STATIC);
+  char *session = NULL;
+  int found = 0, exact = 0;
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    if (!found) session = dup_text(sqlite3_column_text(q, 0));
+    found++;
+  }
+  sqlite3_finalize(q);
+  exact = session && !strcmp(session, argv[0]);
+  if (!found) die("no archived session matches %s", argv[0]);
+  if (found > 1 && !exact) die("more than one session starts with %s; give more of the id", argv[0]);
+  db_exec(db, "BEGIN IMMEDIATE");
+  static const char *const steps[] = {
+      "DELETE FROM ctx_decision WHERE doc_id IN (SELECT d.id FROM ctx_capture_day cd JOIN ctx_doc d ON d.kind = 'session' AND d.name = cd.technote WHERE cd.session = ?1)",
+      "DELETE FROM ctx_chunk WHERE doc_id IN (SELECT d.id FROM ctx_capture_day cd JOIN ctx_doc d ON d.kind = 'session' AND d.name = cd.technote WHERE cd.session = ?1)",
+      "DELETE FROM ctx_doc WHERE kind = 'session' AND name IN (SELECT technote FROM ctx_capture_day WHERE session = ?1)",
+      "DELETE FROM ctx_artifact WHERE session = ?1",
+      "INSERT OR REPLACE INTO ctx_forgotten(session, at) VALUES (?1, datetime('now'))", NULL};
+  long turns = 0;
+  for (int i = 0; steps[i]; i++) {
+    q = db_prepare(db, steps[i]);
+    sqlite3_bind_text(q, 1, session, -1, SQLITE_STATIC);
+    if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+    if (i == 1) turns = sqlite3_changes(db);
+    sqlite3_finalize(q);
+  }
+  db_exec(db, "COMMIT");
+  printf("forgotten %s: %ld turns removed from the index; its text stays in the repository's history\n", session, turns);
+  free(session);
+  sqlite3_close(db);
+  return 0;
+}
+
 /* ctx decisions [--open] [--all] [--limit N]: questions agents asked the person, and their answers. */
 static int cmd_decisions(int argc, char **argv) {
   int open_only = 0, all = 0;
@@ -5771,7 +5891,7 @@ static long rules_import(sqlite3 *db) {
   DIR *top = opendir(path);
   struct dirent *p;
   while (top && (p = readdir(top))) {
-    if (p->d_name[0] == '.') continue;
+    if (p->d_name[0] == '.' || folder_excluded(db, p->d_name)) continue;
     char dir[4600], mem[4700];
     snprintf(dir, sizeof dir, "%s/%s", path, p->d_name);
     snprintf(mem, sizeof mem, "%s/memory", dir);
@@ -6873,6 +6993,8 @@ static int usage(void) {
         "       ctx status\n"
         "       ctx remember TEXT [--project P] [--until DATE] [--from TURN]\n"
         "       ctx decisions [--open] [--all] [--limit N]\n"
+        "       ctx exclude [DIR | --remove DIR]\n"
+        "       ctx forget [SESSION]\n"
         "       ctx artifacts [--all] [--limit N] [WORDS...] | show URL | keep\n"
         "       ctx rules [--all] [--project P] | import | retire KEY --reason WHY [--by KEY] | offer\n"
         "       ctx rules proposed [--all] | accept N [--text TEXT] [--until DATE] | reject N\n"
@@ -6914,6 +7036,8 @@ int main(int argc, char **argv) {
   if (argc >= 2 && !strcmp(argv[1], "stats")) return cmd_stats(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "remember")) return cmd_remember(argc - 2, argv + 2);
   if (argc >= 2 && !strcmp(argv[1], "decisions")) return cmd_decisions(argc - 2, argv + 2);
+  if (argc >= 2 && !strcmp(argv[1], "exclude")) return cmd_exclude(argc - 2, argv + 2);
+  if (argc >= 2 && !strcmp(argv[1], "forget")) return cmd_forget(argc - 2, argv + 2);
   if (argc >= 2 && !strcmp(argv[1], "artifacts")) return cmd_artifacts(argc - 2, argv + 2);
   if (argc >= 2 && !strcmp(argv[1], "rules")) return cmd_rules(argc - 2, argv + 2);
   return usage();

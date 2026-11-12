@@ -262,7 +262,8 @@ if CTX_JUDGE="sh -c 'exit 3'" "$CTX" rules judge 2>"$T/jf.txt" >/dev/null; then 
 s0=$(date +%s)
 if CTX_MODEL_DEADLINE=1 CTX_JUDGE="sh -c 'sleep 97 & sleep 97; echo late'" "$CTX" rules judge 2>"$T/jd.txt" >/dev/null; then fail "a judge past its deadline fails"; fi
 [ $(( $(date +%s) - s0 )) -lt 10 ] && grep -q 'passed 1 seconds; stopped' "$T/jd.txt" || fail "a stuck judge is stopped at its deadline: $(cat "$T/jd.txt")"
-sleep 1; pgrep -f 'sleep 97' >/dev/null && fail "the stuck judge's children are stopped too"
+gone=0; for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -f 'sleep 97' >/dev/null || { gone=1; break; }; sleep 1; done  # a busy machine reaps slowly
+[ $gone = 1 ] || fail "the stuck judge's children are stopped too"
 grep -q 'judge failed (exit 3)' "$T/jf.txt" || fail "the judge's real exit code is reported: $(cat "$T/jf.txt")"
 CTX_JUDGE="echo '{\"verdict\": \"stale\", \"evidence\": \"he said \"x\"\"}'" "$CTX" rules judge 2>"$T/jf.txt" >/dev/null || true
 grep -q 'unreadable' "$T/jf.txt" || fail "an unreadable answer is reported"
@@ -1257,9 +1258,41 @@ printf 'B %s 11 rules-offer\nB %s 12 rules-offer\nE %s 12 rules-offer 4200\n' "$
 awk '$1 == "rules-offer" && $2 == 3 && $5 == 4200 && $6 == 1 && $7 == 1 { ok = 1 } END { exit !ok }' "$T/hooks.txt" || fail "a start with no end is cut off, and a slow end is over its limit: $(cat "$T/hooks.txt")"
 "$CTX" status | grep -q '2 cut off' || fail "status warns when hooks were cut off: $("$CTX" status)"
 CTX_DB="$T/nocalls.sqlite" "$CTX" recall </dev/null; [ ! -e "$T/nocalls.sqlite.calls" ] || fail "nothing is logged without an archive"
+# A working directory can be kept out of the archive, and a session can be forgotten.
+export CTX_DB="$T/excl.sqlite"
+"$CTX" init >/dev/null
+XC="$T/excl/claude"
+mkdir -p "$XC/projects/-w-keep" "$XC/projects/-w-bench-run1/memory" "$XC/projects/-w-benchmarks"
+xs() { printf '{"uuid":"%s","timestamp":"2026-03-05T10:00:00Z","cwd":"%s","message":{"role":"user","content":"%s"}}\n' "$1" "$2" "$3"; }
+xs x-1 /w/keep "the osprey fix is real work" > "$XC/projects/-w-keep/5e550000-0000-0000-0000-000000000001.jsonl"
+xs x-2 /w/bench/run1 "a synthetic kestrel session" > "$XC/projects/-w-bench-run1/5e550000-0000-0000-0000-000000000002.jsonl"
+xs x-3 /w/benchmarks "the merlin timings are real work" > "$XC/projects/-w-benchmarks/5e550000-0000-0000-0000-000000000003.jsonl"
+printf -- '---\nname: synthetic\ndescription: a synthetic rule\nmetadata:\n  type: feedback\n---\nAlways do the synthetic thing.\n' > "$XC/projects/-w-bench-run1/memory/synthetic.md"
+xn() { "$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE body LIKE '%$1%'"; }
+"$CTX" exclude /w/bench | grep -q 'excluded /w/bench' || fail "exclude records a directory"
+"$CTX" exclude | grep -q '^/w/bench$' || fail "exclude lists what is excluded"
+CLAUDE_CONFIG_DIR="$XC" "$CTX" scan >/dev/null
+[ "$(xn kestrel)" = 0 ] && [ "$(xn osprey)" = 1 ] || fail "a session run under an excluded directory is not archived"
+[ "$(xn merlin)" = 1 ] || fail "a directory that only starts with the same letters is not excluded"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_doc WHERE kind = 'rule' AND name LIKE '%bench-run1%'")" = 0 ] || fail "memory under an excluded directory is not imported as rules"
+"$CTX" archive "$XC/projects/-w-bench-run1/5e550000-0000-0000-0000-000000000002.jsonl" >/dev/null
+[ "$(xn kestrel)" = 0 ] || fail "the per-turn hook does not archive an excluded session either"
+"$CTX" exclude --remove /w/bench | grep -q 'no longer excluded' || fail "an exclusion can be removed"
+CLAUDE_CONFIG_DIR="$XC" "$CTX" scan >/dev/null
+[ "$(xn kestrel)" = 1 ] || fail "once the exclusion is removed the session is archived"
+if "$CTX" forget nosuchsession 2>/dev/null; then fail "forgetting an unknown session fails"; fi
+"$CTX" forget 5e550000-0000-0000-0000-000000000002 | grep -q 'forgotten' || fail "forget names what it removed"
+[ "$(xn kestrel)" = 0 ] || fail "a forgotten session is gone from the index"
+"$CTX" search --all kestrel 2>/dev/null | grep -q kestrel && fail "a forgotten session is not found by search"
+CLAUDE_CONFIG_DIR="$XC" "$CTX" scan >/dev/null
+[ "$(xn kestrel)" = 0 ] || fail "a forgotten session is not archived again from its transcript"
+"$CTX" rebuild >/dev/null 2>&1
+[ "$(xn kestrel)" = 0 ] && [ "$(xn osprey)" = 1 ] || fail "a rebuild does not bring a forgotten session back"
+"$CTX" forget | grep -q '5e550000-0000-0000-0000-000000000002' || fail "forget lists forgotten sessions"
+"$CTX" forget 5e550000-0000-0000-0000-00000000000 2>/dev/null && fail "an ambiguous prefix is refused"
 export CTX_DB="$T/rebuild.sqlite"
 "$CTX" init >/dev/null
-[ "$("$CTX" sql "PRAGMA user_version")" = 6 ] || fail "a new file is at the current version"
+[ "$("$CTX" sql "PRAGMA user_version")" = 7 ] || fail "a new file is at the current version"
 [ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 6 ] || fail "derived version recorded"
 printf '{"uuid":"rb-1","timestamp":"2026-09-01T10:00:00Z","cwd":"/w/rb","message":{"role":"user","content":"the capybara rollout"}}\n{"uuid":"rb-2","timestamp":"2026-09-01T10:00:05Z","cwd":"/w/rb","message":{"role":"assistant","content":"rolled out the capybara"}}\n' > "$T/ab12cd99-rb.jsonl"
 "$CTX" archive "$T/ab12cd99-rb.jsonl" >/dev/null
@@ -1281,7 +1314,7 @@ grep -q 'rebuilding it once' "$T/rb.err" || fail "an old index is rebuilt on ope
 "$CTX" sql "DROP TABLE ctx_meta" >/dev/null; "$CTX" sql "PRAGMA user_version = 1" >/dev/null
 "$CTX" search --all capybara 2>"$T/rb3.err" | grep -q capybara || fail "an unversioned file still works"
 [ -s "$T/rb3.err" ] && fail "an unversioned file is upgraded without a rebuild"
-[ "$("$CTX" sql "PRAGMA user_version")" = 6 ] || fail "and is marked current"
+[ "$("$CTX" sql "PRAGMA user_version")" = 7 ] || fail "and is marked current"
 
 # The skill eval harness works end to end with a stand-in for the model.
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"

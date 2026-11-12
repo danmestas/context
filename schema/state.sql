@@ -130,3 +130,14 @@ CREATE TABLE IF NOT EXISTS ctx_artifact_file(
   title    TEXT,              -- from the page's own <title>
   kept     TEXT NOT NULL
 ) STRICT, WITHOUT ROWID;
+
+-- Working directories whose sessions are never archived, with the folder-name form Claude
+-- Code gives them, and sessions the person asked to have removed from the index.
+CREATE TABLE IF NOT EXISTS ctx_exclude(
+  dir  TEXT PRIMARY KEY,
+  slug TEXT NOT NULL
+) STRICT, WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS ctx_forgotten(
+  session TEXT PRIMARY KEY,
+  at      TEXT NOT NULL
+) STRICT, WITHOUT ROWID;
