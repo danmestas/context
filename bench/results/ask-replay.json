@@ -1,0 +1,39 @@
+{
+ "name": "ask-replay",
+ "title": "Holding back a question the archive may answer",
+ "section": "Records",
+ "order": 10,
+ "date": "2026-11-11",
+ "good_until": "2027-02-09",
+ "commit": "",
+ "command": "",
+ "conditions": {
+  "method": "every question agents had really asked was replayed as of the moment it was asked, and a judge compared the earlier turns it found with the answer the person then gave",
+  "source": "the author's own session archive; only counts leave it",
+  "judge": "Claude Sonnet"
+ },
+ "summary": "A hook that stopped an agent's question once when the person seemed to have answered it before. Most questions agents ask are new decisions, so the hook was removed.",
+ "metrics": [
+  {
+   "label": "Questions it would have held back",
+   "value": "18%",
+   "note": "133 firings"
+  },
+  {
+   "label": "Firings where the earlier turns held the answer then given",
+   "value": "16%"
+  },
+  {
+   "label": "Firings where they held a conflicting answer",
+   "value": "8%"
+  },
+  {
+   "label": "Firings that were irrelevant",
+   "value": "76%"
+  }
+ ],
+ "bar": "at least 60% holding the answer and at most 10% conflicting",
+ "verdict": "fail",
+ "baseline": "the answer the person actually gave each time",
+ "meaning": "The idea failed clearly. Three in four firings were irrelevant and one in twelve pointed at a conflicting answer, so the hook was removed before it shipped."
+}

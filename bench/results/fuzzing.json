@@ -1,0 +1,30 @@
+{
+ "name": "fuzzing",
+ "title": "Fuzzing and sanitizers",
+ "section": "Safety",
+ "order": 10,
+ "date": "2026-11-11",
+ "good_until": "2027-02-09",
+ "commit": "",
+ "command": "make check",
+ "conditions": {
+  "targets": "redaction, transcript extraction, wiki citations, technote parsing, usage statistics",
+  "each check": "20 s of libFuzzer per target under AddressSanitizer and UndefinedBehaviorSanitizer, plus the whole test suite under both"
+ },
+ "summary": "Redaction must never crash, must change nothing when run twice, and must leave no secret that a rule recognizes. Every input that ever broke one of these is kept as a seed and replayed on each check.",
+ "metrics": [
+  {
+   "label": "Bugs found by fuzzing this week",
+   "value": "1",
+   "note": "a token rule matched across a line break, so redacting twice differed from once; fixed"
+  },
+  {
+   "label": "Saved inputs replayed for redaction",
+   "value": "6"
+  }
+ ],
+ "bar": "",
+ "verdict": "none",
+ "baseline": "three properties that must always hold for redaction",
+ "meaning": "Fuzzing found a real bug this week, in a rule that could match across a line break. It did not let a secret through. The failing input is now replayed on every check."
+}

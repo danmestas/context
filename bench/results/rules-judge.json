@@ -1,0 +1,30 @@
+{
+ "name": "rules-judge",
+ "title": "Flagging rules that have gone stale",
+ "section": "Rules",
+ "order": 20,
+ "date": "2026-11-10",
+ "good_until": "2027-02-08",
+ "commit": "",
+ "command": "ctx rules judge-with CMD && ctx rules judge",
+ "conditions": {
+  "sample": "42 rules the person labelled as still true or stale",
+  "source": "the author's own session archive; only counts leave it",
+  "evidence rule": "a flag counts only with a quote found word for word in one of the person's turns"
+ },
+ "summary": "A judge reads a rule beside the person's recent turns and may flag it only with their own words as evidence. Most stale rules are never contradicted in conversation, so recall is low by design; precision is what matters.",
+ "metrics": [
+  {
+   "label": "Claude Sonnet",
+   "value": "3 flagged, 3 truly stale"
+  },
+  {
+   "label": "Claude Haiku",
+   "value": "9 flagged, 6 truly stale"
+  }
+ ],
+ "bar": "no rule that is still true flagged",
+ "verdict": "pass",
+ "baseline": "the person's own labels of which rules were stale",
+ "meaning": "The stronger model never flagged a rule that was still true, so it is the one ctx uses. It finds only a few of the stale rules, because most are never contradicted in conversation; a monthly review covers the rest."
+}

@@ -143,7 +143,10 @@ dist: build/ctx.o build/libfossil.o build/sqlite3.o
 
 # Everything CI runs, from a fresh clone: make check.
 SQLITE3 ?= $(firstword $(wildcard /opt/homebrew/opt/sqlite/bin/sqlite3 /usr/local/opt/sqlite/bin/sqlite3) sqlite3)
-check: test sanitize fuzz-ci
+check:
+	python3 tools/bench_page.py --check
+	python3 tools/test_bench_page.py
+	$(MAKE) test sanitize fuzz-ci
 	sh tools/filc.sh
 	python3 bench/check_corpus.py
 	bash -n bench/run.sh
@@ -151,7 +154,11 @@ check: test sanitize fuzz-ci
 	$(SQLITE3) :memory: -bail -cmd '.read schema/state.sql' -cmd '.read schema/index.sql' '.read schema/check.sql'
 	@echo "check: everything passed"
 
+# docs/benchmarks.md is generated from bench/results/*.json.
+bench-page:
+	python3 tools/bench_page.py
+
 clean:
 	rm -rf build ctx ctx-san ctx-filc
 
-.PHONY: check test clean sanitize fuzz fuzz-ci filc filc-ci dist
+.PHONY: check bench-page test clean sanitize fuzz fuzz-ci filc filc-ci dist

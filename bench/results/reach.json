@@ -1,0 +1,30 @@
+{
+ "name": "reach",
+ "title": "Reaching for the archive unprompted",
+ "section": "Agent behaviour",
+ "order": 20,
+ "date": "2026-11-11",
+ "good_until": "2027-02-09",
+ "commit": "",
+ "command": "eval/skill_eval.py run --set holdout --ask plain --cond C [--skill OLD.md]",
+ "conditions": {
+  "questions": "23 held out, asked plainly with no hint that they are about past work",
+  "source": "the author's own session archive; only counts leave it",
+  "answering model": "Claude Sonnet"
+ },
+ "summary": "Whether rewording the skill's trigger description around agent situations (\"before asking the user\", \"after a compaction\") makes agents search more often. It did not, so the wording was left alone.",
+ "metrics": [
+  {
+   "label": "Searched the archive, existing wording",
+   "value": "18 of 23"
+  },
+  {
+   "label": "Searched the archive, reworded triggers",
+   "value": "19 of 23"
+  }
+ ],
+ "bar": "at least 15 points more questions searched",
+ "verdict": "fail",
+ "baseline": "the same skill with its existing trigger wording",
+ "meaning": "Rewording the triggers made no real difference (one question in 23), so the wording was not changed. Fresh agents already search about four times in five without being told."
+}

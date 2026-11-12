@@ -1,0 +1,33 @@
+{
+ "name": "rules-classifier",
+ "title": "Finding standing instructions in what a person types",
+ "section": "Rules",
+ "order": 10,
+ "date": "2026-11-10",
+ "good_until": "2027-02-08",
+ "commit": "",
+ "command": "eval/rules_bench.py --classify \"CMD\"",
+ "conditions": {
+  "sample": "1,000 typed turns, each labelled by the person as a standing instruction or not",
+  "source": "the author's own session archive; only counts leave it"
+ },
+ "summary": "A classifier proposes rules from a person's own turns; only the person accepts one. Matching cue words such as \"always\" and \"never\" is the baseline.",
+ "metrics": [
+  {
+   "label": "Claude Haiku",
+   "value": "84% recall, 76% precision"
+  },
+  {
+   "label": "DeepSeek",
+   "value": "80% recall, 60% precision"
+  },
+  {
+   "label": "Cue words",
+   "value": "17% recall"
+  }
+ ],
+ "bar": "",
+ "verdict": "none",
+ "baseline": "matching cue words such as \"always\" and \"never\"",
+ "meaning": "A small model finds about five in six standing instructions; cue words find one in six. About a quarter of what it proposes is not a rule, which is why a person accepts or rejects each proposal."
+}

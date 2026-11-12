@@ -1,0 +1,54 @@
+{
+ "name": "search-ranking",
+ "title": "Ranking: full-text search against grep",
+ "section": "Search",
+ "order": 10,
+ "date": "2026-11-08",
+ "good_until": "2027-02-06",
+ "commit": "",
+ "command": "bench/run.sh",
+ "conditions": {
+  "corpora": "5 repositories, 16,434 documents",
+  "queries": "150, each labelled with the documents that answer it",
+  "grep": "ripgrep counts per term, ranked by terms matched then hits"
+ },
+ "summary": "Whether SQLite FTS5 with BM25 ranking, which ctx search uses, finds the right documents more often than ranked grep, the method an agent falls back on without it.",
+ "metrics": [
+  {
+   "label": "BM25, recall at 10",
+   "value": "0.565"
+  },
+  {
+   "label": "BM25, recall at 50",
+   "value": "0.784"
+  },
+  {
+   "label": "BM25, nDCG at 10",
+   "value": "0.470"
+  },
+  {
+   "label": "BM25, mean reciprocal rank",
+   "value": "0.517"
+  },
+  {
+   "label": "grep, recall at 10",
+   "value": "0.372"
+  },
+  {
+   "label": "grep, recall at 50",
+   "value": "0.528"
+  },
+  {
+   "label": "grep, nDCG at 10",
+   "value": "0.313"
+  },
+  {
+   "label": "grep, mean reciprocal rank",
+   "value": "0.348"
+  }
+ ],
+ "bar": "BM25 ahead of grep on recall at 10 and nDCG at 10",
+ "verdict": "pass",
+ "baseline": "ranked grep over the same files, which is how an agent searches without ctx",
+ "meaning": "The ranking ctx uses finds about 57% of the labelled documents in its top 10, against 37% for grep. It is a clear win over grep and still misses a lot; no target for the absolute score has been set."
+}
