@@ -78,7 +78,7 @@ def ctx_arm(sessions, work):
 
     def search(q):
         words = re.findall(r"[A-Za-z0-9_'-]+", q)
-        out = subprocess.run([CTX, "search", "--all", "--limit", "60", *words], env=env, capture_output=True, text=True).stdout
+        out = subprocess.run([CTX, "search", "--all", "--limit", "60", "--", *words], env=env, capture_output=True, text=True).stdout
         ids = re.findall(r"^#(\d+) ", out, re.M)
         if not ids:
             return []

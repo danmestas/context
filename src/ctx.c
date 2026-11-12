@@ -1175,13 +1175,15 @@ static int cmd_search(int argc, char **argv) {
   const char *as_of = NULL;
   char **words = calloc((size_t)argc + 1, sizeof *words);
   if (!words) die("out of memory");
+  int only_words = 0; /* after a bare --, everything is a search word */
   for (int i = 0; i < argc; i++) {
-    if (!strcmp(argv[i], "--all")) all = 1;
+    if (only_words) words[nwords++] = argv[i];
+    else if (!strcmp(argv[i], "--")) only_words = 1;
+    else if (!strcmp(argv[i], "--all")) all = 1;
     else if (!strcmp(argv[i], "--history")) history = 1;
     else if (!strcmp(argv[i], "--as-of") && i + 1 < argc) as_of = argv[++i];
     else if (!strcmp(argv[i], "--limit") && i + 1 < argc) limit = atoi(argv[++i]);
-    else if (!strncmp(argv[i], "--", 2)) die("unknown option %s", argv[i]);
-    else words[nwords++] = argv[i];
+    else words[nwords++] = argv[i]; /* a flag's name is a fair thing to search for: --json, --since */
   }
   if (limit < 1) die("--limit must be at least 1");
   buf q = {0};

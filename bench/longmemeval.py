@@ -59,7 +59,7 @@ def one(q):
                                         "message": {"role": t["role"], "content": t["content"]}}) + "\n")
         subprocess.run([CTX, "scan", f"{work}/projects"], env=env, capture_output=True, check=True)
         words = re.findall(r"[A-Za-z0-9_'-]+", q["question"])
-        out = subprocess.run([CTX, "search", "--all", "--limit", "60", *words], env=env, capture_output=True, text=True).stdout
+        out = subprocess.run([CTX, "search", "--all", "--limit", "60", "--", *words], env=env, capture_output=True, text=True).stdout
         ids = re.findall(r"^#(\d+) ", out, re.M)
         got = []
         if ids:
