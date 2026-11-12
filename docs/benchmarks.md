@@ -17,7 +17,8 @@ This page lists what ctx has been measured to do. Every figure comes from a resu
 | Ranking: full-text search against grep | Passed its bar | The ranking ctx uses finds about 57% of the labelled documents in its top 10, against 37% for grep. It is a clear win over grep and still misses a lot; no target for the absolute score has been set. |
 | LongMemEval-S, retrieval only | No bar | ctx's search is level with another tool's published keyword search (two questions apart in 470, which is noise) and well ahead of grep. Both are weakest where evidence is spread over several sessions or depends on dates. Tools that use embeddings report higher figures on this benchmark, but those are their own reports under other scoring, so they are not shown as a comparison. |
 | A small public set of coding sessions | Passed its bar | ctx clears the check. It says little more than that: the set is 15 invented sessions, and grep does as well. A harder public set of coding sessions does not exist yet. |
-| Coding sessions: finding the session that holds the answer | No bar | ctx's search did not beat ranked grep at finding the right session here. In the session's own terms grep found more (26 against 20 of 30 held out; alone right on 8 questions against ctx's 2, sign test p = 0.11, so by the rule set beforehand the two are level). Paraphrased, both fail most of the time: neither keyword method copes when the question shares no distinctive word with the session. The corpus is small, 32 sessions, which suits scoring whole sessions the way this grep does; ctx ranks single turns. Whether an agent answers better with ctx than with grep is a separate measurement, not yet run. |
+| Coding sessions: finding the session that holds the answer, first run | No bar | ctx did worse than ranked grep here, 20 against 26 of 30 held-out questions in the session's own terms, and the cause was a fault, not ranking. Questions that name a flag, such as --json, made ctx search stop with an error and return nothing; an agent searching its history for a flag would have hit the same error. The result is kept as it was measured. The next result shows the same questions after the fault was fixed. Paraphrased, both methods fail most of the time. |
+| Coding sessions: finding the session, after search accepted flag names | No bar | With the fault fixed, ctx finds the right session for 28 of 30 held-out questions in the session's own terms, against grep's 26. ctx alone was right on 3 and grep alone on 1, which is not a difference by the rule set beforehand, so the two are level on this small corpus. Over all 67 questions it is 64 against 52. The change was chosen using only the questions that are not held out, and the held-out ones were run once. Paraphrased questions did not improve: 5 of 30 for ctx and 7 for grep. That is the limit of keyword search, and it is what tools using embeddings should be tested on. |
 | Answering questions about past work | Passed its bar | Telling the agent at session start that an archive exists is worth about 7 questions in 90 and costs no extra tokens. The difference is borderline by a sign test (p = 0.052), so it is kept as likely but not proven. |
 | Reaching for the archive unprompted | Failed its bar | Rewording the triggers made no real difference (one question in 23), so the wording was not changed. Fresh agents already search about four times in five without being told. |
 | A reminder when a prompt refers to earlier work | Failed its bar | The reminder changed nothing because agents already searched every time. The hook exists but is off by default. This test cannot show what happens deep in a long session, where the reminder might matter more. |
@@ -122,13 +123,13 @@ bench/coding_life.py --data DIR
 
 [Result file](../bench/results/coding-life.json)
 
-### Coding sessions: finding the session that holds the answer
+### Coding sessions: finding the session that holds the answer, first run
 
 Each question is asked twice: once in the session's own terms, once paraphrased with none of its distinctive words. Exact terms favour keyword search; paraphrase is where it is weakest.
 
 - **Compared with:** ranked grep over the same transcript files: each session scored by how many of the question's words it contains, then by how often
 - **Bar:** a difference counts only if a sign test on the paired held-out questions gives p below 0.05 (set in bench/head-to-head.md before the run). **Not judged.**
-- **What it means:** ctx's search did not beat ranked grep at finding the right session here. In the session's own terms grep found more (26 against 20 of 30 held out; alone right on 8 questions against ctx's 2, sign test p = 0.11, so by the rule set beforehand the two are level). Paraphrased, both fail most of the time: neither keyword method copes when the question shares no distinctive word with the session. The corpus is small, 32 sessions, which suits scoring whole sessions the way this grep does; ctx ranks single turns. Whether an agent answers better with ctx than with grep is a separate measurement, not yet run.
+- **What it means:** ctx did worse than ranked grep here, 20 against 26 of 30 held-out questions in the session's own terms, and the cause was a fault, not ranking. Questions that name a flag, such as --json, made ctx search stop with an error and return nothing; an agent searching its history for a flag would have hit the same error. The result is kept as it was measured. The next result shows the same questions after the fault was fixed. Paraphrased, both methods fail most of the time.
 
 | Measure | Result |
 | --- | --- |
@@ -150,6 +151,35 @@ bench/shipyard.py --data DIR
 ```
 
 [Result file](../bench/results/shipyard-retrieval.json)
+
+### Coding sessions: finding the session, after search accepted flag names
+
+Each question is asked twice: once in the session's own terms, once paraphrased with none of its distinctive words. Exact terms favour keyword search; paraphrase is where it is weakest.
+
+- **Compared with:** ranked grep over the same transcript files, and ctx's own result before the change
+- **Bar:** a difference counts only if a sign test on the paired held-out questions gives p below 0.05 (set in bench/head-to-head.md before the run). **Not judged.**
+- **What it means:** With the fault fixed, ctx finds the right session for 28 of 30 held-out questions in the session's own terms, against grep's 26. ctx alone was right on 3 and grep alone on 1, which is not a difference by the rule set beforehand, so the two are level on this small corpus. Over all 67 questions it is 64 against 52. The change was chosen using only the questions that are not held out, and the held-out ones were run once. Paraphrased questions did not improve: 5 of 30 for ctx and 7 for grep. That is the limit of keyword search, and it is what tools using embeddings should be tested on.
+
+| Measure | Result |
+| --- | --- |
+| ctx, session's own terms | 28 of 30 |
+| grep, session's own terms | 26 of 30 |
+| ctx, paraphrased | 5 of 30 |
+| grep, paraphrased | 7 of 30 |
+| ctx, all questions, own terms and paraphrased | 64 and 18 of 67 |
+| grep, all questions, own terms and paraphrased | 52 and 16 of 67 |
+
+Measured 2026-11-12; check-in 4095a7b2dab0; good until 2027-05-11.
+
+- corpus: 32 real agent sessions on a public repository over a simulated three weeks, with 67 questions that the repository and its commit messages do not answer
+- held out: 30 questions, chosen by a hash of their ids
+- scoring: every session holding the answer among the first five returned; no model involved
+
+```sh
+bench/shipyard.py --data DIR
+```
+
+[Result file](../bench/results/shipyard-retrieval-after.json)
 
 ## Agent behaviour
 
