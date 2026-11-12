@@ -1,0 +1,40 @@
+{
+ "name": "skill-eval",
+ "title": "Answering questions about past work",
+ "section": "Agent behaviour",
+ "order": 10,
+ "date": "2026-11-10",
+ "good_until": "2027-02-08",
+ "commit": "",
+ "command": "eval/skill_eval.py run --set all --cond C,H && eval/skill_eval.py grade RUN",
+ "conditions": {
+  "questions": "90, written from real sessions in 10 projects and reviewed against the code so that only session history answers them",
+  "source": "the author's own session archive; only counts leave it",
+  "answering model": "Claude Sonnet, a fresh process per question",
+  "grading model": "Claude Opus, blind, both conditions in one shuffled pass"
+ },
+ "summary": "Agents answer questions whose answers exist only in past sessions. Both conditions have ctx and its skill; one also gets the one-line note that the session-start hook adds.",
+ "metrics": [
+  {
+   "label": "Score with the session-start note",
+   "value": "73.5 of 90"
+  },
+  {
+   "label": "Score with the skill alone",
+   "value": "66.5 of 90"
+  },
+  {
+   "label": "Questions where the note did better",
+   "value": "16",
+   "note": "worse on 6; sign test p = 0.052"
+  },
+  {
+   "label": "New tokens with the note",
+   "value": "7% fewer"
+  }
+ ],
+ "bar": "score no lower, no more wrong answers, tokens up at most 15%",
+ "verdict": "pass",
+ "baseline": "the same agent with ctx and its skill but without the session-start note",
+ "meaning": "Telling the agent at session start that an archive exists is worth about 7 questions in 90 and costs no extra tokens. The difference is borderline by a sign test (p = 0.052), so it is kept as likely but not proven."
+}

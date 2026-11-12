@@ -1,0 +1,30 @@
+{
+ "name": "recall-line",
+ "title": "A reminder when a prompt refers to earlier work",
+ "section": "Agent behaviour",
+ "order": 30,
+ "date": "2026-11-11",
+ "good_until": "2027-02-09",
+ "commit": "",
+ "command": "eval/skill_eval.py run --set all --only IDS --ask plain --cond C,R",
+ "conditions": {
+  "questions": "13 whose wording triggers the reminder (\"do you remember\", \"last time\", \"didn't we\")",
+  "source": "the author's own session archive; only counts leave it",
+  "answering model": "Claude Sonnet"
+ },
+ "summary": "ctx recall adds one line telling the agent to search first. Agents already searched every time, so the hook is not installed by default.",
+ "metrics": [
+  {
+   "label": "Searched the archive, with the reminder",
+   "value": "13 of 13"
+  },
+  {
+   "label": "Searched the archive, without it",
+   "value": "13 of 13"
+  }
+ ],
+ "bar": "at least 60% searched with it, and more than without",
+ "verdict": "fail",
+ "baseline": "the same agent without the reminder",
+ "meaning": "The reminder changed nothing because agents already searched every time. The hook exists but is off by default. This test cannot show what happens deep in a long session, where the reminder might matter more."
+}

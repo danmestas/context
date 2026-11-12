@@ -1,0 +1,33 @@
+{
+ "name": "rules-decay",
+ "title": "Which kinds of rule go stale",
+ "section": "Rules",
+ "order": 30,
+ "date": "2026-11-10",
+ "good_until": "2027-02-08",
+ "commit": "",
+ "command": "bench/rules/decay.py",
+ "conditions": {
+  "sample": "42 labelled rules of three kinds",
+  "source": "the author's own session archive; only counts leave it"
+ },
+ "summary": "Whether rules should fade by age or by kind. Fading by age quieted about a quarter of rules that were still true, so ctx fades only status notes, 30 days after their file was last written.",
+ "metrics": [
+  {
+   "label": "Stale, rules in the person's own words",
+   "value": "12%"
+  },
+  {
+   "label": "Stale, corrections",
+   "value": "44%"
+  },
+  {
+   "label": "Stale, status notes",
+   "value": "83%"
+  }
+ ],
+ "bar": "",
+ "verdict": "none",
+ "baseline": "fading every rule by age",
+ "meaning": "Status notes go stale within weeks and rules in a person's own words rarely do, so ctx fades by kind. Fading by age would have silenced about a quarter of rules that were still true."
+}

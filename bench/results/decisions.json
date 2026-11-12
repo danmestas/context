@@ -1,0 +1,29 @@
+{
+ "name": "decisions",
+ "title": "Matching answers to the questions agents asked",
+ "section": "Records",
+ "order": 20,
+ "date": "2026-11-11",
+ "good_until": "2027-02-09",
+ "commit": "",
+ "command": "ctx decisions --all",
+ "conditions": {
+  "sample": "more than 700 recorded questions",
+  "source": "the author's own session archive; only counts leave it"
+ },
+ "summary": "ctx reads each question an agent asked and the person's answer from the archived turns. An answer must belong to exactly one question, including when it arrived after midnight or the session was cut off first.",
+ "metrics": [
+  {
+   "label": "Answers credited to more than one question",
+   "value": "0"
+  },
+  {
+   "label": "Questions left without a status",
+   "value": "0"
+  }
+ ],
+ "bar": "no answer shared between questions",
+ "verdict": "pass",
+ "baseline": "a correct record, in which each answer belongs to exactly one question",
+ "meaning": "The record of questions and answers is consistent on a real archive. This checks that answers are attached to the right question, not that they were read correctly word for word."
+}

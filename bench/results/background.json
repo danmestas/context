@@ -1,0 +1,35 @@
+{
+ "name": "background",
+ "title": "Background work",
+ "section": "Speed",
+ "order": 20,
+ "date": "2026-11-11",
+ "good_until": "2027-02-09",
+ "commit": "",
+ "command": "time ctx scan",
+ "conditions": {
+  "archive": "1.3 GB, about 470,000 turns",
+  "machine": "14 cores"
+ },
+ "summary": "What ctx does away from the session: the hourly scan, the judge's pass over rules, and the one-off rebuild when the index format changes.",
+ "metrics": [
+  {
+   "label": "Hourly scan, processor time",
+   "value": "about 2.5 s",
+   "note": "20 to 32 s elapsed on a heavily loaded machine"
+  },
+  {
+   "label": "Choosing rules to judge",
+   "value": "0.12 s",
+   "note": "about 140 s before an index was added"
+  },
+  {
+   "label": "One-off index rebuild",
+   "value": "101 to 212 s"
+  }
+ ],
+ "bar": "",
+ "verdict": "none",
+ "baseline": "the same work before an index was added, where shown",
+ "meaning": "Background work costs a few seconds of processor time an hour. The rebuild is a one-off of a few minutes when the index format changes."
+}

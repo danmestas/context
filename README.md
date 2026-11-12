@@ -66,6 +66,9 @@ ctx ticket new "Fix the importer"
 [docs/howto.md](docs/howto.md) covers every task: projects, tickets, sources,
 the wiki, syncing machines, rebuilding and measuring the skill.
 
+[docs/benchmarks.md](docs/benchmarks.md) lists what ctx has been measured to do, with the
+command behind each figure and the experiments that failed.
+
 ## How it is stored
 
 Everything lives in `~/.ctx/ctx.sqlite` (or `$CTX_DB`), as SQLite tables and as
