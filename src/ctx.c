@@ -1352,14 +1352,184 @@ static void sql_ctx_calls(sqlite3_context *cx, int argc, sqlite3_value **argv) {
   sqlite3_result_int(cx, total);
 }
 
+static char *sidecar(const char *suffix);
+#define SCAN_EVERY_SECS 3600
+
+/* The call log: one line when a hook or a search starts and one when it ends, with how
+ * long it took, in a file beside the database. A hook the harness cut off leaves a start
+ * with no end, which is how a slow hook is seen at all. Nothing here opens the database. */
+#define CALLS_MAX (1 << 20) /* the log is rotated once at this size */
+static const char *call_name;
+static pid_t call_pid;
+static struct timespec call_start;
+
+static void call_line(char kind, long ms) {
+  char *path = sidecar(".calls"), line[160];
+  struct stat st;
+  if (stat(path, &st) == 0 && st.st_size > CALLS_MAX) {
+    char *old = sidecar(".calls.1");
+    rename(path, old);
+    free(old);
+  }
+  int n = kind == 'B' ? snprintf(line, sizeof line, "B %lld %d %s\n", (long long)time(NULL), (int)call_pid, call_name)
+                      : snprintf(line, sizeof line, "E %lld %d %s %ld\n", (long long)time(NULL), (int)call_pid, call_name, ms);
+  int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+  if (fd >= 0) {
+    if (write(fd, line, (size_t)n) < 0) {} /* a log that cannot be written is not worth failing a hook for */
+    close(fd);
+  }
+  free(path);
+}
+
+static void call_end(void) {
+  if (getpid() != call_pid) return; /* a detached child is not the call */
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  call_line('E', (long)((now.tv_sec - call_start.tv_sec) * 1000 + (now.tv_nsec - call_start.tv_nsec) / 1000000));
+}
+
+/* Starts the log entry when this invocation is a hook or a search. */
+static void call_begin(int argc, char **argv) {
+  static const char *const one[] = {"hook", "inject", "recall", "search", "turn", NULL};
+  static const char *const two[][3] = {{"rules", "offer", "rules-offer"}, {"ticket", "offer", "ticket-offer"},
+                                        {"artifacts", "keep", "artifacts-keep"}, {NULL, NULL, NULL}};
+  if (argc < 2) return;
+  for (int i = 0; one[i] && !call_name; i++)
+    if (!strcmp(argv[1], one[i])) call_name = one[i];
+  for (int i = 0; two[i][0] && !call_name && argc >= 3; i++)
+    if (!strcmp(argv[1], two[i][0]) && !strcmp(argv[2], two[i][1])) call_name = two[i][2];
+  char *db = db_path();
+  struct stat st;
+  int have = stat(db, &st) == 0; /* no archive, no log */
+  free(db);
+  if (!call_name || !have) { call_name = NULL; return; }
+  call_pid = getpid();
+  clock_gettime(CLOCK_MONOTONIC, &call_start);
+  call_line('B', 0);
+  atexit(call_end);
+}
+
+typedef struct {
+  char name[24];
+  long started, ended, over, *ms;
+  size_t n, cap;
+} call_stat;
+
+static int by_long(const void *a, const void *b) {
+  long x = *(const long *)a, y = *(const long *)b;
+  return (x > y) - (x < y);
+}
+
+/* Reads the log from `since` on into per-name tallies; returns how many names. A start
+ * in the last minute may still be running, so it is not counted as started. */
+static size_t calls_read(time_t since, call_stat *out, size_t cap) {
+  static const struct { const char *name; long limit; } limits[] = {
+      {"rules-offer", 3000}, {"ticket-offer", 3000}, {"artifacts-keep", 5000}, {"inject", 3000}, {"recall", 3000}, {NULL, 0}};
+  size_t names = 0;
+  time_t now = time(NULL);
+  for (int f = 1; f >= 0; f--) {
+    char *path = sidecar(f ? ".calls.1" : ".calls");
+    FILE *in = fopen(path, "r");
+    free(path);
+    if (!in) continue;
+    char line[200], kind, name[24];
+    long long at;
+    int pid;
+    long ms;
+    while (fgets(line, sizeof line, in)) {
+      ms = 0;
+      if (sscanf(line, "%c %lld %d %23s %ld", &kind, &at, &pid, name, &ms) < 4 || at < (long long)since) continue;
+      size_t k = 0;
+      while (k < names && strcmp(out[k].name, name)) k++;
+      if (k == names) {
+        if (names == cap) continue;
+        memset(&out[k], 0, sizeof out[k]);
+        snprintf(out[k].name, sizeof out[k].name, "%s", name);
+        names++;
+      }
+      if (kind == 'B') {
+        if (now - at > 60) out[k].started++;
+      } else if (kind == 'E') {
+        if (now - at > 60) out[k].ended++; /* matched against starts of the same age */
+        if (out[k].n == out[k].cap) {
+          out[k].cap = out[k].cap ? out[k].cap * 2 : 256;
+          out[k].ms = realloc(out[k].ms, out[k].cap * sizeof *out[k].ms);
+          if (!out[k].ms) die("out of memory");
+        }
+        out[k].ms[out[k].n++] = ms;
+        for (int l = 0; limits[l].name; l++)
+          if (!strcmp(limits[l].name, name) && ms > limits[l].limit) out[k].over++;
+      }
+    }
+    fclose(in);
+  }
+  for (size_t k = 0; k < names; k++) qsort(out[k].ms, out[k].n, sizeof *out[k].ms, by_long);
+  return names;
+}
+
+/* ctx stats --hooks [--days N]: how long each hook and search took, and how many were cut off. */
+static int stats_hooks(int days) {
+  call_stat st[16];
+  size_t names = calls_read(time(NULL) - (time_t)days * 86400, st, 16);
+  if (!names) {
+    puts("no calls logged yet");
+    return 0;
+  }
+  printf("%-16s %7s %9s %8s %8s %8s %10s\n", "last days", "runs", "median ms", "p95 ms", "max ms", "cut off", "over limit");
+  for (size_t k = 0; k < names; k++) {
+    long cut = st[k].started > st[k].ended ? st[k].started - st[k].ended : 0;
+    printf("%-16s %7zu %9ld %8ld %8ld %8ld %10ld\n", st[k].name, st[k].n + (size_t)cut, st[k].n ? st[k].ms[st[k].n / 2] : 0,
+           st[k].n ? st[k].ms[st[k].n * 95 / 100] : 0, st[k].n ? st[k].ms[st[k].n - 1] : 0, cut, st[k].over);
+    free(st[k].ms);
+  }
+  return 0;
+}
+
+/* ctx status: one short line for a status bar, from the log alone: searches today, how
+ * long hooks take, and a warning when hooks were cut off or the hourly scan is late. */
+static int cmd_status(void) {
+  time_t now = time(NULL);
+  struct tm day = *localtime(&now);
+  day.tm_hour = day.tm_min = day.tm_sec = 0;
+  call_stat st[16];
+  size_t names = calls_read(mktime(&day), st, 16);
+  long searches = 0, cut = 0, over = 0, worst = 0, all[4096];
+  size_t na = 0;
+  for (size_t k = 0; k < names; k++) {
+    if (!strcmp(st[k].name, "search")) { searches = (long)st[k].n; free(st[k].ms); continue; }
+    if (!strcmp(st[k].name, "turn")) { free(st[k].ms); continue; }
+    cut += st[k].started > st[k].ended ? st[k].started - st[k].ended : 0;
+    over += st[k].over;
+    for (size_t i = 0; i < st[k].n && na < 4096; i++) all[na++] = st[k].ms[i];
+    if (st[k].n && st[k].ms[st[k].n - 1] > worst) worst = st[k].ms[st[k].n - 1];
+    free(st[k].ms);
+  }
+  qsort(all, na, sizeof *all, by_long);
+  char line[200];
+  int n = snprintf(line, sizeof line, "ctx %ld search%s", searches, searches == 1 ? "" : "es");
+  if (na) n += snprintf(line + n, sizeof line - (size_t)n, " \xc2\xb7 hooks %ld ms", all[na / 2]);
+  if (cut + over) n += snprintf(line + n, sizeof line - (size_t)n, " \xc2\xb7 %ld cut off", cut + over);
+  else if (worst >= 1000) n += snprintf(line + n, sizeof line - (size_t)n, " \xc2\xb7 slowest %.1f s", (double)worst / 1000);
+  char *stamp = sidecar(".scan");
+  struct stat ss;
+  if (stat(stamp, &ss) == 0 && now - ss.st_mtime > 2 * SCAN_EVERY_SECS)
+    snprintf(line + n, sizeof line - (size_t)n, " \xc2\xb7 scan %ldh late", (long)((now - ss.st_mtime) / 3600));
+  free(stamp);
+  puts(line);
+  return 0;
+}
+
 /* ctx stats [--weeks N]: how agents used ctx, per week and per project, from the
  * archive alone. A miss is a search answered with "no matches". */
 static int cmd_stats(int argc, char **argv) {
-  int weeks = 8;
+  int weeks = 8, hooks = 0, days = 7;
   for (int i = 0; i < argc; i++) {
     if (!strcmp(argv[i], "--weeks") && i + 1 < argc) weeks = atoi(argv[++i]);
-    else die("usage: ctx stats [--weeks N]");
+    else if (!strcmp(argv[i], "--hooks")) hooks = 1;
+    else if (!strcmp(argv[i], "--days") && i + 1 < argc) days = atoi(argv[++i]);
+    else die("usage: ctx stats [--weeks N] | --hooks [--days N]");
   }
+  if (hooks) return stats_hooks(days > 0 ? days : 7);
   if (weeks <= 0) die("--weeks must be a positive number");
   sqlite3 *db = ctx_open();
   char since[32];
@@ -1419,7 +1589,6 @@ static int cmd_sql(const char *sql) {
  * time, chosen by a non-blocking file lock, turns the spool into archive runs,
  * so hooks never wait and never contend for the database. */
 #define DRAIN_DEADLINE_SECS 3600
-#define SCAN_EVERY_SECS 3600
 
 static const char *self_path;
 
@@ -6686,7 +6855,8 @@ static int usage(void) {
         "       ctx rebuild\n"
         "       ctx inject\n"
         "       ctx recall\n"
-        "       ctx stats [--weeks N]\n"
+        "       ctx stats [--weeks N] | --hooks [--days N]\n"
+        "       ctx status\n"
         "       ctx remember TEXT [--project P] [--until DATE] [--from TURN]\n"
         "       ctx decisions [--open] [--all] [--limit N]\n"
         "       ctx artifacts [--all] [--limit N] [WORDS...] | show URL | keep\n"
@@ -6702,6 +6872,8 @@ static int usage(void) {
 #ifndef CTX_NO_MAIN /* the fuzz targets include this file for its parsers */
 int main(int argc, char **argv) {
   self_path = argv[0];
+  call_begin(argc, argv);
+  if (argc == 2 && !strcmp(argv[1], "status")) return cmd_status();
   if (sqlite3_auto_extension((void (*)(void))fsl_sqlext_init) != SQLITE_OK)
     die("cannot register libfossil");
   if (argc == 2 && !strcmp(argv[1], "version")) return cmd_version();
