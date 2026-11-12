@@ -1,0 +1,270 @@
+[
+ {
+  "id": "s01",
+  "day": 1,
+  "kind": "instruction",
+  "prompt": "Add a CLAUDE.md for this repo, under 15 lines. Rules: we work directly on main here, no feature branches, no PRs. Always run `make test` before any commit and never commit if it fails. Commit messages are one line, imperative, under 72 chars. Commit it.",
+  "follow_ups": [
+   "also add: never touch anything under vendor/. amend the commit."
+  ]
+ },
+ {
+  "id": "s02",
+  "day": 1,
+  "kind": "feature",
+  "prompt": "add `--count` to `ctx search`: print only the number of hits and nothing else. test in test/run.sh, a line in docs/howto.md, commit.",
+  "follow_ups": [
+   "from now on every new flag gets its howto line in the same commit as the code, never a later one. keep that in mind for the rest of this project."
+  ]
+ },
+ {
+  "id": "s03",
+  "day": 2,
+  "kind": "decision+feature",
+  "prompt": "ctx turn cuts long turns at 8000 bytes (TURN_SHOW). I want that adjustable per call. Two options: (A) an env var CTX_TURN_SHOW, (B) a flag --max-bytes N. Give me the tradeoffs in a few lines, don't write code yet.",
+  "follow_ups": [
+   "B, the flag. env vars don't show up in shell history and I never remember they're set. implement it with a test and the howto line, commit.",
+   "one more thing while you're in there: the while loop that backs `show` off over continuation bytes is dead weight, our turns are ASCII. take the loop out, I don't want it. amend the commit."
+  ]
+ },
+ {
+  "id": "s04",
+  "day": 2,
+  "kind": "refactor+instruction",
+  "prompt": "option parsing uses atoi, which happily accepts `--limit 5x`. Add a small helper parse_count(flag, text): strtol, reject trailing junk and anything below 1, die naming the flag. Use it for search --limit and turn --max-bytes only. tests, commit.",
+  "follow_ups": [
+   "good. rule going forward: never atoi for anything new, always parse_count. and don't convert the other old call sites unless I ask."
+  ]
+ },
+ {
+  "id": "s05",
+  "day": 3,
+  "kind": "abandoned-refactor",
+  "prompt": "I keep wondering whether src/ctx.c (7k lines) should be split. Try it: move the search and turn commands into src/search.c with a shared header, update the Makefile, build, run tests. If you end up having to expose more than about five internal helpers through the header, stop, revert everything and tell me the count \u2014 single file wins in that case. Only commit if it comes out clean.",
+  "follow_ups": []
+ },
+ {
+  "id": "s06",
+  "day": 3,
+  "kind": "tests-unfinished",
+  "prompt": "cmd_turn is thinly tested. List the cases we're missing (BEFORE/AFTER windows, turn: refs, --full, bad ids, whatever else you see). Implement only the first three today, commit them, and tell me exactly which ones are left \u2014 in chat, not in a file.",
+  "follow_ups": [
+   "noted. and that's a rule: never leave TODO or notes files in the repo, I lose track of them. what's pending gets said in chat."
+  ]
+ },
+ {
+  "id": "s07",
+  "day": 4,
+  "kind": "decision+feature",
+  "prompt": "I want machine-readable output from ctx search. Options: (A) --json printing one JSON array, (B) one JSON object per line. Short pros and cons, no code yet.",
+  "follow_ups": [
+   "B, one object per line. I pipe it through head and a cut-off array is useless. call the flag --json anyway, it's shorter. fields: id, project, kind, heading, date, snippet. implement, test, howto line, commit.",
+   "no escaping code for this, it's too much machinery for one flag and snippets are plain words. printf the fields straight into the quotes. simplify and amend the commit."
+  ]
+ },
+ {
+  "id": "s08",
+  "day": 4,
+  "kind": "feature+instruction",
+  "prompt": "`ctx version` prints two lines. add `ctx version --short` that prints just the ctx version number, for scripts. test, howto, commit.",
+  "follow_ups": [
+   "naming rules from here on: long options are full words in kebab-case, no abbreviations (--max-bytes yes, --maxb no). and any new static function is prefixed with its command: search_, turn_, version_."
+  ]
+ },
+ {
+  "id": "s09",
+  "day": 5,
+  "kind": "performance",
+  "prompt": "search feels slow when the archive is big. Build a synthetic archive in a temp dir (CTX_DB pointing there, a few thousand made-up turns from a throwaway script, nothing from any real home directory) and time `ctx search` for a handful of queries. Tell me where the time goes. Measurement only: no code changes, nothing committed, no scripts left in the repo.",
+  "follow_ups": [
+   "ok. standing rule: performance is always measured on a synthetic archive in a temp dir like that, never on a real one."
+  ]
+ },
+ {
+  "id": "s10",
+  "day": 5,
+  "kind": "abandoned-performance",
+  "prompt": "following up on the search timing from this morning: try setting PRAGMA mmap_size when the database is opened and see whether it moves the numbers on the same kind of synthetic archive. If the gain is under 10% keep nothing: revert and say so.",
+  "follow_ups": []
+ },
+ {
+  "id": "s11",
+  "day": 8,
+  "kind": "bugfix",
+  "prompt": "search --json breaks jq on some hits: 'parse error: Invalid string'. find out why. write a test that fails first and show me it failing, then fix it properly and commit.",
+  "follow_ups": [
+   "make that the habit: every bug fix starts with a test that fails before the fix."
+  ]
+ },
+ {
+  "id": "s12",
+  "day": 8,
+  "kind": "abandoned-build",
+  "prompt": "the awk rules in the Makefile that turn schema/*.sql into C string headers are ugly. try replacing them with `xxd -i`. build and run the tests. tell me what had to change in src/ctx.c to make it work. don't commit yet.",
+  "follow_ups": [
+   "revert it. xxd isn't on the minimal CI image and I don't want to add a package for this. the awk stays."
+  ]
+ },
+ {
+  "id": "s13",
+  "day": 9,
+  "kind": "bugfix+decision",
+  "prompt": "bug: `ctx turn --max-bytes N` on a turn with non-ASCII text can print a broken character right at the cut. reproduce it with a failing test first. then there are two ways to fix: (A) back off to the previous character boundary, (B) extend forward to finish the character. don't fix yet, tell me which you'd pick.",
+  "follow_ups": [
+   "A. the cap is a hard limit, output must never exceed what was asked for. fix it, test green, commit."
+  ]
+ },
+ {
+  "id": "s14",
+  "day": 9,
+  "kind": "utility+decision",
+  "prompt": "I want a quick summary of a transcript .jsonl: number of user and assistant turns, tool calls per tool, first and last timestamp. Options: (A) a python script in tools/ using only the standard library, (B) a new ctx subcommand in C. which, and why, briefly.",
+  "follow_ups": [
+   "A. the binary is big enough and this is throwaway analysis. tools/transcript_stats.py, stdlib only, try it on test/fixture.jsonl, commit."
+  ]
+ },
+ {
+  "id": "s15",
+  "day": 10,
+  "kind": "undo",
+  "prompt": "that count flag on search from the first week: nobody uses it, `| wc -l` does the job. take it out completely, code, test and docs. commit.",
+  "follow_ups": []
+ },
+ {
+  "id": "s16",
+  "day": 10,
+  "kind": "docs-unfinished+decision",
+  "prompt": "README.md needs a rewrite, it reads like a feature dump. Two structures: (A) organised by command, (B) organised by what you're trying to do (find a past decision, check for secrets, pick up after a compaction...). which?",
+  "follow_ups": [
+   "B, by task. people arrive with a problem, not a command name. today do only the outline and the first two sections; leave the rest of the old text below a clear marker line. commit as WIP and tell me what's left."
+  ]
+ },
+ {
+  "id": "s17",
+  "day": 11,
+  "kind": "abandoned-tests",
+  "prompt": "make test takes a while. try running the sections of test/run.sh in parallel (background jobs and wait). if the sections turn out to depend on each other's state, don't fight it: revert and tell me which dependencies you hit.",
+  "follow_ups": []
+ },
+ {
+  "id": "s18",
+  "day": 11,
+  "kind": "refactor",
+  "prompt": "the option loop in cmd_search keeps growing. pull the parsing into a small struct plus a search_options() function. no behaviour change, tests stay green, commit.",
+  "follow_ups": []
+ },
+ {
+  "id": "s19",
+  "day": 12,
+  "kind": "tests-revisit",
+  "prompt": "pick the turn tests back up. last week you listed the missing cases and did the first three. do the rest.",
+  "follow_ups": [
+   "fine. commit."
+  ]
+ },
+ {
+  "id": "s20",
+  "day": 12,
+  "kind": "feature-revisit",
+  "prompt": "that transcript stats script from the other day: add a --json flag and a count of tool errors (tool results marked is_error). still stdlib only. commit.",
+  "follow_ups": []
+ },
+ {
+  "id": "s21",
+  "day": 15,
+  "kind": "docs-revisit",
+  "prompt": "finish the README rewrite: the remaining sections under the marker, same structure we agreed on. remove the marker when done. commit.",
+  "follow_ups": []
+ },
+ {
+  "id": "s22",
+  "day": 15,
+  "kind": "abandoned-build",
+  "prompt": "see whether we could build src/ctx.c with -Wconversion. count the warnings. more than 20 and it's not worth it: leave the Makefile alone and just give me the count and the three most common kinds.",
+  "follow_ups": []
+ },
+ {
+  "id": "s23",
+  "day": 16,
+  "kind": "audit+decision",
+  "prompt": "after the parse_count change, which count options still go through atoi? list them with the command they belong to. don't change anything yet.",
+  "follow_ups": [
+   "convert stats --weeks and --days only, they're the ones people mistype. the others wait until someone complains. tests, commit."
+  ]
+ },
+ {
+  "id": "s24",
+  "day": 16,
+  "kind": "feature+decision",
+  "prompt": "add `--since DATE` to ctx search: only hits from that day or later. reuse require_date. before you write the test: (A) add it to test/run.sh, or (B) start a separate test/search.sh, since run.sh is 1300 lines. opinion first, briefly.",
+  "follow_ups": [
+   "A, keep one file. make test runs exactly one script and the sections share setup; splitting it is a separate job for another day. go ahead, commit."
+  ]
+ },
+ {
+  "id": "s25",
+  "day": 17,
+  "kind": "refactor-unfinished",
+  "prompt": "start converting the remaining atoi call sites to parse_count, one at a time with a test each. I only have a few minutes: stop after the second one, commit what's green, and tell me which are left.",
+  "follow_ups": []
+ },
+ {
+  "id": "s26",
+  "day": 17,
+  "kind": "feature+instruction",
+  "prompt": "`ctx turn` with an id that doesn't exist dies with exit 1 like every other error. make it exit 3 so scripts can tell not-found from broken. test, commit.",
+  "follow_ups": [
+   "add a short Exit codes section to docs/howto.md and amend. rule: any new exit code gets documented there in the same commit."
+  ]
+ },
+ {
+  "id": "s27",
+  "day": 18,
+  "kind": "bugfix-revisit",
+  "prompt": "the since flag from the other day: is `--since 2026-13-45` rejected? and what happens with --as-of earlier than --since? both should be clear errors. fix what isn't, tests, commit.",
+  "follow_ups": []
+ },
+ {
+  "id": "s28",
+  "day": 19,
+  "kind": "undo+decision",
+  "prompt": "the search_options refactor from last week: I find the struct harder to read than the loop was. how big would the diff be to inline it back into cmd_search, keeping everything added since? just estimate, don't do it yet.",
+  "follow_ups": [
+   "do it. the struct hid which flags exist, I'd rather read the loop top to bottom. keep all the tests. commit."
+  ]
+ },
+ {
+  "id": "s29",
+  "day": 19,
+  "kind": "utility",
+  "prompt": "write tools/check_flags.sh: pull every --flag out of the usage text in src/ctx.c and fail if docs/howto.md doesn't mention it. plain sh, no dependencies. run it and list what's missing. don't fix the docs yet.",
+  "follow_ups": [
+   "wire it into `make check` and commit the script. the docs gaps are for next time."
+  ]
+ },
+ {
+  "id": "s30",
+  "day": 20,
+  "kind": "docs-unfinished",
+  "prompt": "the flags the check script says are missing from the howto: document the first five in alphabetical order only, commit, and tell me which flag is next in line. I'll do the rest another day.",
+  "follow_ups": []
+ },
+ {
+  "id": "s31",
+  "day": 20,
+  "kind": "abandoned-refactor",
+  "prompt": "experiment: replace the hand-written option loop in cmd_search with getopt_long. actually do it and run make test before telling me what you think. no commit until I say.",
+  "follow_ups": [
+   "revert it. getopt_long reorders argv on glibc and not on other libcs, and I want search words kept in the order they were typed everywhere. the hand loop stays."
+  ]
+ },
+ {
+  "id": "s32",
+  "day": 21,
+  "kind": "abandoned-bugfix",
+  "prompt": "searching for a two-letter word like `db` or `ci` says no search words. try dropping the minimum word length in the query builder from 3 to 2, build, run the tests, and try a few two-letter searches on a small synthetic archive in a temp dir. show me what comes back. don't commit.",
+  "follow_ups": [
+   "too noisy, revert it. two-letter words match half the archive. if we ever do this it'll be an explicit allowlist of short words, not a lower minimum. leave it for now."
+  ]
+ }
+]

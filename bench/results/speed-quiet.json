@@ -1,0 +1,72 @@
+{
+ "name": "speed-quiet",
+ "title": "Hooks and commands on a real archive, machine not busy",
+ "section": "Speed",
+ "order": 11,
+ "date": "2026-11-12",
+ "good_until": "2027-02-10",
+ "commit": "7150d2056fec",
+ "command": "bench/speed.py --runs 7",
+ "conditions": {
+  "archive": "1.3 GB, about 470,000 turns",
+  "machine": "14 cores, load average 9 while measuring",
+  "runs": "7 each; the median is reported"
+ },
+ "summary": "How long an agent session waits for ctx. Hooks run on every session start, compaction and subagent start, so they are held to a 3-second limit and should take a small fraction of it.",
+ "metrics": [
+  {
+   "label": "Session start: rules and archive note",
+   "value": "8 ms",
+   "note": "slowest 12 ms"
+  },
+  {
+   "label": "Session start: open tickets",
+   "value": "7 ms",
+   "note": "slowest 8 ms"
+  },
+  {
+   "label": "After a compaction: the brief",
+   "value": "35 ms",
+   "note": "slowest 1237 ms"
+  },
+  {
+   "label": "Subagent start: archive note",
+   "value": "6 ms",
+   "note": "slowest 7 ms"
+  },
+  {
+   "label": "Prompt submitted: recall check",
+   "value": "5 ms",
+   "note": "slowest 5 ms"
+  },
+  {
+   "label": "Status line",
+   "value": "5 ms",
+   "note": "slowest 5 ms"
+  },
+  {
+   "label": "Search, two words",
+   "value": "99 ms",
+   "note": "slowest 339 ms"
+  },
+  {
+   "label": "Read a turn with its neighbours",
+   "value": "7 ms",
+   "note": "slowest 8 ms"
+  },
+  {
+   "label": "List decisions",
+   "value": "531 ms",
+   "note": "slowest 3740 ms"
+  },
+  {
+   "label": "List published pages",
+   "value": "383 ms",
+   "note": "slowest 746 ms"
+  }
+ ],
+ "bar": "every hook's slowest run under 1,000 ms",
+ "verdict": "fail",
+ "baseline": "the 3-second limit Claude Code gives a hook, and the 1-second bar set here",
+ "meaning": "With the machine quiet every hook takes 5 to 35 ms at the median. The compaction brief still failed the bar, at 1.2 s on its first run and about 35 ms after that. The same first-run figure appeared under heavy load, so it is not caused by load: the first brief after a while reads index pages that are no longer in memory. It is inside the 3-second limit, and it is the real cost after a compaction."
+}

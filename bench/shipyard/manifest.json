@@ -1,0 +1,750 @@
+{
+ "subject": "ctx",
+ "subject_url": "https://zeitforge.app/r/dmestas/context",
+ "subject_checkin": "7150d2056fec995991c4fdb9daec53a2428e55f7f9d13229b580a4d8361694f7",
+ "day_1": "2026-10-19",
+ "working_copy": "tracked files of the check-in under src schema test fuzz tools docs skill plugin vendor, bench/*.py|sql|sh, bench/corpus.json, Makefile, README.md, LICENSE; the last step of test/run.sh (it needs eval/, which is left out) removed; .gitignore copied from .zitignore",
+ "model_requested": "sonnet",
+ "sessions": [
+  {
+   "task": "s01",
+   "kind": "instruction",
+   "day": 1,
+   "date": "2026-10-19",
+   "session": "f7b81066-40c4-485f-a754-759334e7c765",
+   "file": "f7b81066-40c4-485f-a754-759334e7c765.jsonl",
+   "sha256": "984fa42a5c9f53a4f7d53644fc01efc49881f01b3a5b5a75a17abb57a111f267",
+   "bytes": 105670,
+   "shift_days": -24,
+   "turns": 7,
+   "user_prompts": 2,
+   "assistant_messages": 9,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 51,
+   "status": "completed",
+   "first": "2026-10-19T15:58:46.545Z",
+   "last": "2026-10-19T15:59:36.874Z",
+   "side_files": []
+  },
+  {
+   "task": "s02",
+   "kind": "feature",
+   "day": 1,
+   "date": "2026-10-19",
+   "session": "71a05cfe-ae8b-4729-8f76-39757965521c",
+   "file": "71a05cfe-ae8b-4729-8f76-39757965521c.jsonl",
+   "sha256": "83548d19feb1a300765598830a3bafe14a1ee81b787fd1e107e5848923027e37",
+   "bytes": 222019,
+   "shift_days": -24,
+   "turns": 12,
+   "user_prompts": 2,
+   "assistant_messages": 16,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 47,
+   "status": "completed",
+   "first": "2026-10-19T16:00:09.052Z",
+   "last": "2026-10-19T16:00:55.257Z",
+   "side_files": [
+    {
+     "file": "71a05cfe-ae8b-4729-8f76-39757965521c/tool-results/bjxw8ozlc.txt",
+     "sha256": "fdc71323d946af0f63979b7b4fe943ce9cfcf4d042e70ac5e1fae2722356e709",
+     "bytes": 30764
+    }
+   ]
+  },
+  {
+   "task": "s03",
+   "kind": "decision+feature",
+   "day": 2,
+   "date": "2026-10-20",
+   "session": "79ae457a-27a6-42ee-a40a-850cada7a271",
+   "file": "79ae457a-27a6-42ee-a40a-850cada7a271.jsonl",
+   "sha256": "5818e8fd5701396194febde509ce9185b11cb4bcf1f61d8cc6e2a23d611794c7",
+   "bytes": 224291,
+   "shift_days": -23,
+   "turns": 14,
+   "user_prompts": 3,
+   "assistant_messages": 21,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 100,
+   "status": "completed",
+   "first": "2026-10-20T16:00:56.048Z",
+   "last": "2026-10-20T16:02:34.584Z",
+   "side_files": []
+  },
+  {
+   "task": "s04",
+   "kind": "refactor+instruction",
+   "day": 2,
+   "date": "2026-10-20",
+   "session": "fe88766c-97fc-4c82-a138-222f04834a61",
+   "file": "fe88766c-97fc-4c82-a138-222f04834a61.jsonl",
+   "sha256": "b7ccbd88364c905aec0a996ee58850a7f651916845523ab46a53e5192e998d38",
+   "bytes": 200571,
+   "shift_days": -23,
+   "turns": 14,
+   "user_prompts": 2,
+   "assistant_messages": 18,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 104,
+   "status": "completed",
+   "first": "2026-10-20T16:02:36.998Z",
+   "last": "2026-10-20T16:04:19.969Z",
+   "side_files": [
+    {
+     "file": "fe88766c-97fc-4c82-a138-222f04834a61/tool-results/toolu_01UxjdrhcABUKDwvqqmyHYkw.txt",
+     "sha256": "ff97ea926b0e2ec885816678a3e1eaf263f1e513bf749e681ff91676a5f26b8b",
+     "bytes": 21813
+    }
+   ]
+  },
+  {
+   "task": "s05",
+   "kind": "abandoned-refactor",
+   "day": 3,
+   "date": "2026-10-21",
+   "session": "f650517b-09a4-4cf2-85f3-da87bf283a52",
+   "file": "f650517b-09a4-4cf2-85f3-da87bf283a52.jsonl",
+   "sha256": "82b0967a8b0a3a24090d0d577753e7a8745f55828f09af1e12101b81d090bed2",
+   "bytes": 165007,
+   "shift_days": -22,
+   "turns": 4,
+   "user_prompts": 1,
+   "assistant_messages": 5,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 13,
+   "status": "completed",
+   "first": "2026-10-21T16:04:20.978Z",
+   "last": "2026-10-21T16:04:32.741Z",
+   "side_files": []
+  },
+  {
+   "task": "s06",
+   "kind": "tests-unfinished",
+   "day": 3,
+   "date": "2026-10-21",
+   "session": "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+   "file": "882d8a69-68bb-4f1c-bae9-e9a8753812d8.jsonl",
+   "sha256": "21f9aa58f2bb7b59f845bc8b856a5f705c29f4481aa0799674983780693fd22e",
+   "bytes": 211974,
+   "shift_days": -22,
+   "turns": 9,
+   "user_prompts": 2,
+   "assistant_messages": 11,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 56,
+   "status": "completed",
+   "first": "2026-10-21T16:04:34.137Z",
+   "last": "2026-10-21T16:05:28.894Z",
+   "side_files": []
+  },
+  {
+   "task": "s07",
+   "kind": "decision+feature",
+   "day": 4,
+   "date": "2026-10-22",
+   "session": "8d49244e-5cc6-4fe1-b566-1addf3371e99",
+   "file": "8d49244e-5cc6-4fe1-b566-1addf3371e99.jsonl",
+   "sha256": "5e8ab257a1b423293b677ebd223771c896369c43c0c7597e374cc988bcfae988",
+   "bytes": 283844,
+   "shift_days": -21,
+   "turns": 16,
+   "user_prompts": 3,
+   "assistant_messages": 24,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 121,
+   "status": "completed",
+   "first": "2026-10-22T16:05:30.565Z",
+   "last": "2026-10-22T16:07:30.471Z",
+   "side_files": [
+    {
+     "file": "8d49244e-5cc6-4fe1-b566-1addf3371e99/tool-results/bstvyb5lp.txt",
+     "sha256": "104eb9c35203228d16089d558e5eee73da4fe9762e655feb3401db35a7750855",
+     "bytes": 35760
+    }
+   ]
+  },
+  {
+   "task": "s08",
+   "kind": "feature+instruction",
+   "day": 4,
+   "date": "2026-10-22",
+   "session": "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72",
+   "file": "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72.jsonl",
+   "sha256": "8602a3c0689db830c5ed0edac6f9f26ec295b9656b923553b0381fc11e2a5ecf",
+   "bytes": 194716,
+   "shift_days": -21,
+   "turns": 18,
+   "user_prompts": 2,
+   "assistant_messages": 21,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 60,
+   "status": "completed",
+   "first": "2026-10-22T16:07:31.408Z",
+   "last": "2026-10-22T16:08:30.368Z",
+   "side_files": [
+    {
+     "file": "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72/tool-results/toolu_01WNXobcSPtoU2XMGa8BZaNv.txt",
+     "sha256": "f101f3f591ed85df8aff5294a471a85ab5b7b5143c27d7da5ae1433e6e96b98d",
+     "bytes": 20185
+    }
+   ]
+  },
+  {
+   "task": "s09",
+   "kind": "performance",
+   "day": 5,
+   "date": "2026-10-23",
+   "session": "22a2d719-1817-4141-9dca-c607ebd8df80",
+   "file": "22a2d719-1817-4141-9dca-c607ebd8df80.jsonl",
+   "sha256": "a7fbfe0df929e53e8bc7925ba894474a0db7a31952560b40c7ae9030a2f87827",
+   "bytes": 358251,
+   "shift_days": -20,
+   "turns": 23,
+   "user_prompts": 2,
+   "assistant_messages": 39,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 119,
+   "status": "completed",
+   "first": "2026-10-23T16:08:31.931Z",
+   "last": "2026-10-23T16:10:29.809Z",
+   "side_files": []
+  },
+  {
+   "task": "s10",
+   "kind": "abandoned-performance",
+   "day": 5,
+   "date": "2026-10-23",
+   "session": "3246ac72-56fa-4668-8759-e0c1c0c1b0dc",
+   "file": "3246ac72-56fa-4668-8759-e0c1c0c1b0dc.jsonl",
+   "sha256": "4494ab826a5fdb4e63141afe799c46e5ba6385d662591266fc122a0d7e56dd01",
+   "bytes": 284201,
+   "shift_days": -20,
+   "turns": 19,
+   "user_prompts": 1,
+   "assistant_messages": 31,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 391,
+   "status": "completed",
+   "first": "2026-10-23T16:10:30.990Z",
+   "last": "2026-10-23T16:17:01.083Z",
+   "side_files": []
+  },
+  {
+   "task": "s11",
+   "kind": "bugfix",
+   "day": 8,
+   "date": "2026-10-26",
+   "session": "2ffa5cae-2456-4989-aa75-d5203bc2ab0a",
+   "file": "2ffa5cae-2456-4989-aa75-d5203bc2ab0a.jsonl",
+   "sha256": "e705dfc84f12a470541a1849641242e4e3819913b8135d6bdc866ba4841847c1",
+   "bytes": 253096,
+   "shift_days": -17,
+   "turns": 12,
+   "user_prompts": 2,
+   "assistant_messages": 17,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 63,
+   "status": "completed",
+   "first": "2026-10-26T16:17:02.892Z",
+   "last": "2026-10-26T16:18:04.544Z",
+   "side_files": []
+  },
+  {
+   "task": "s12",
+   "kind": "abandoned-build",
+   "day": 8,
+   "date": "2026-10-26",
+   "session": "faa74eda-388b-4d57-a18c-bb508e153ff2",
+   "file": "faa74eda-388b-4d57-a18c-bb508e153ff2.jsonl",
+   "sha256": "9a8ed13d988e4a64b87fb983746764d774c7647c0a1900307d2c925acc7bad95",
+   "bytes": 194543,
+   "shift_days": -17,
+   "turns": 12,
+   "user_prompts": 2,
+   "assistant_messages": 19,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 191,
+   "status": "completed",
+   "first": "2026-10-26T16:18:05.574Z",
+   "last": "2026-10-26T16:21:15.340Z",
+   "side_files": []
+  },
+  {
+   "task": "s13",
+   "kind": "bugfix+decision",
+   "day": 9,
+   "date": "2026-10-27",
+   "session": "b91f5497-4145-471d-b441-1f49bfa96795",
+   "file": "b91f5497-4145-471d-b441-1f49bfa96795.jsonl",
+   "sha256": "e7d0b2bdd79a747f6e99fe7221bbc414e5786e4ba83dcf2d9bc1bcf6e81eea62",
+   "bytes": 206770,
+   "shift_days": -16,
+   "turns": 12,
+   "user_prompts": 2,
+   "assistant_messages": 15,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 85,
+   "status": "completed",
+   "first": "2026-10-27T16:21:24.128Z",
+   "last": "2026-10-27T16:22:42.453Z",
+   "side_files": []
+  },
+  {
+   "task": "s14",
+   "kind": "utility+decision",
+   "day": 9,
+   "date": "2026-10-27",
+   "session": "962209f0-950e-4930-a207-7182b80cf031",
+   "file": "962209f0-950e-4930-a207-7182b80cf031.jsonl",
+   "sha256": "f762dc87be4ec5cbb84ad32a0f59811a9b840bf7c723b9ddf1a15ae2b49e7ffe",
+   "bytes": 123512,
+   "shift_days": -16,
+   "turns": 7,
+   "user_prompts": 2,
+   "assistant_messages": 8,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 47,
+   "status": "completed",
+   "first": "2026-10-27T16:22:43.369Z",
+   "last": "2026-10-27T16:23:29.352Z",
+   "side_files": []
+  },
+  {
+   "task": "s15",
+   "kind": "undo",
+   "day": 10,
+   "date": "2026-10-28",
+   "session": "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+   "file": "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9.jsonl",
+   "sha256": "9c50c0790c5b0c3025c952f0993f8365b7328ff2daf175c9c20dccdf5c0a7bc4",
+   "bytes": 183344,
+   "shift_days": -15,
+   "turns": 9,
+   "user_prompts": 1,
+   "assistant_messages": 11,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 61,
+   "status": "completed",
+   "first": "2026-10-28T16:23:31.881Z",
+   "last": "2026-10-28T16:24:30.434Z",
+   "side_files": [
+    {
+     "file": "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9/tool-results/toolu_01HoTcKECffxak1oishTR4wB.txt",
+     "sha256": "70e2490af498aa0d794b822e962ae2415670bad288899031ad4dc1d4710bf93a",
+     "bytes": 23079
+    }
+   ]
+  },
+  {
+   "task": "s16",
+   "kind": "docs-unfinished+decision",
+   "day": 10,
+   "date": "2026-10-28",
+   "session": "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+   "file": "f6fd4e65-267b-4ffe-b40f-61c6d1e34852.jsonl",
+   "sha256": "7c4c418469f643bbdcd6c384eebebb4a18d3b6ecba41250f4d982ce6a323a258",
+   "bytes": 165953,
+   "shift_days": -15,
+   "turns": 7,
+   "user_prompts": 2,
+   "assistant_messages": 10,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 57,
+   "status": "completed",
+   "first": "2026-10-28T16:24:32.024Z",
+   "last": "2026-10-28T16:25:28.208Z",
+   "side_files": []
+  },
+  {
+   "task": "s17",
+   "kind": "abandoned-tests",
+   "day": 11,
+   "date": "2026-10-29",
+   "session": "5b2aba9d-437d-4061-af3c-b5a537496104",
+   "file": "5b2aba9d-437d-4061-af3c-b5a537496104.jsonl",
+   "sha256": "53fc3f466487134adaf069994c1e9c5995044c8537716889854ca6869556fc77",
+   "bytes": 274505,
+   "shift_days": -14,
+   "turns": 5,
+   "user_prompts": 1,
+   "assistant_messages": 8,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 18,
+   "status": "completed",
+   "first": "2026-10-29T16:25:28.939Z",
+   "last": "2026-10-29T16:25:46.453Z",
+   "side_files": []
+  },
+  {
+   "task": "s18",
+   "kind": "refactor",
+   "day": 11,
+   "date": "2026-10-29",
+   "session": "8cdb8506-646b-4867-b5e8-db8587b14d0d",
+   "file": "8cdb8506-646b-4867-b5e8-db8587b14d0d.jsonl",
+   "sha256": "d8de526e4d2df2a99b8ef795c6daa314a7a8a1dab3221feab4b2a30a653dbd51",
+   "bytes": 119065,
+   "shift_days": -14,
+   "turns": 5,
+   "user_prompts": 1,
+   "assistant_messages": 6,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 50,
+   "status": "completed",
+   "first": "2026-10-29T16:25:48.445Z",
+   "last": "2026-10-29T16:26:37.560Z",
+   "side_files": []
+  },
+  {
+   "task": "s19",
+   "kind": "tests-revisit",
+   "day": 12,
+   "date": "2026-10-30",
+   "session": "30cca397-401e-4773-bde6-34be220c2111",
+   "file": "30cca397-401e-4773-bde6-34be220c2111.jsonl",
+   "sha256": "f6e9ed1e282b43370677e4d0ee096f3ec68dd0967b52d38660ef793f22f9fec6",
+   "bytes": 332131,
+   "shift_days": -13,
+   "turns": 17,
+   "user_prompts": 2,
+   "assistant_messages": 32,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 130,
+   "status": "completed",
+   "first": "2026-10-30T16:26:38.707Z",
+   "last": "2026-10-30T16:28:47.262Z",
+   "side_files": [
+    {
+     "file": "30cca397-401e-4773-bde6-34be220c2111/tool-results/bee0fmj4b.txt",
+     "sha256": "7cea601bd9dd49e4d56e4febe42cdc1dec5c7f9ace1e8cf6fee501720deadfe0",
+     "bytes": 102339
+    }
+   ]
+  },
+  {
+   "task": "s20",
+   "kind": "feature-revisit",
+   "day": 12,
+   "date": "2026-10-30",
+   "session": "5a0cf297-d83e-4c1c-8cbb-f0326aa9d68a",
+   "file": "5a0cf297-d83e-4c1c-8cbb-f0326aa9d68a.jsonl",
+   "sha256": "6cd234ad91d9a73805b9ce4b53d565c658b69c545207fabb3ec0e2c97baa05fe",
+   "bytes": 109207,
+   "shift_days": -13,
+   "turns": 5,
+   "user_prompts": 1,
+   "assistant_messages": 6,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 38,
+   "status": "completed",
+   "first": "2026-10-30T16:28:48.611Z",
+   "last": "2026-10-30T16:29:25.371Z",
+   "side_files": []
+  },
+  {
+   "task": "s21",
+   "kind": "docs-revisit",
+   "day": 15,
+   "date": "2026-11-02",
+   "session": "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+   "file": "0273f60c-db4d-47e7-9ab0-4c76c00c29bc.jsonl",
+   "sha256": "ab03c5d999cbed04c5fa4bdda53f6f1cafb420a5404460cda3b48240438e007d",
+   "bytes": 197169,
+   "shift_days": -10,
+   "turns": 5,
+   "user_prompts": 1,
+   "assistant_messages": 7,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 52,
+   "status": "completed",
+   "first": "2026-11-02T16:29:26.235Z",
+   "last": "2026-11-02T16:30:17.858Z",
+   "side_files": []
+  },
+  {
+   "task": "s22",
+   "kind": "abandoned-build",
+   "day": 15,
+   "date": "2026-11-02",
+   "session": "2fb75935-8847-470d-93f4-909680476671",
+   "file": "2fb75935-8847-470d-93f4-909680476671.jsonl",
+   "sha256": "073a039691de995b47d1dcdfb766a9e6288876083b31eca7cd20d2c64a426195",
+   "bytes": 111219,
+   "shift_days": -10,
+   "turns": 6,
+   "user_prompts": 1,
+   "assistant_messages": 9,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 14,
+   "status": "completed",
+   "first": "2026-11-02T16:30:18.859Z",
+   "last": "2026-11-02T16:30:32.120Z",
+   "side_files": []
+  },
+  {
+   "task": "s23",
+   "kind": "audit+decision",
+   "day": 16,
+   "date": "2026-11-03",
+   "session": "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+   "file": "376aadaa-35c4-4ac5-b158-dc3a57e48c38.jsonl",
+   "sha256": "7849a2e8d529a2cb65c7992e34ae93945564659183261ea0e62b2b6900b4006d",
+   "bytes": 166314,
+   "shift_days": -9,
+   "turns": 11,
+   "user_prompts": 2,
+   "assistant_messages": 18,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 71,
+   "status": "completed",
+   "first": "2026-11-03T16:30:33.454Z",
+   "last": "2026-11-03T16:31:43.941Z",
+   "side_files": []
+  },
+  {
+   "task": "s24",
+   "kind": "feature+decision",
+   "day": 16,
+   "date": "2026-11-03",
+   "session": "842e1bfb-de93-40ff-9cf7-b92b3a9eb421",
+   "file": "842e1bfb-de93-40ff-9cf7-b92b3a9eb421.jsonl",
+   "sha256": "7eed351017191bc977d0b6462b37b8f5bde5d16d4ba2cc5e64331e8b205c0fa5",
+   "bytes": 201037,
+   "shift_days": -9,
+   "turns": 9,
+   "user_prompts": 2,
+   "assistant_messages": 18,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 198,
+   "status": "completed",
+   "first": "2026-11-03T16:31:44.881Z",
+   "last": "2026-11-03T16:35:02.166Z",
+   "side_files": []
+  },
+  {
+   "task": "s25",
+   "kind": "refactor-unfinished",
+   "day": 17,
+   "date": "2026-11-04",
+   "session": "222e174e-7f11-45df-bfef-45c56a1a734e",
+   "file": "222e174e-7f11-45df-bfef-45c56a1a734e.jsonl",
+   "sha256": "3fc2a03604ed96f7a833854c2260bd1ec295985856d04bbdc784c68cb5d21235",
+   "bytes": 146966,
+   "shift_days": -8,
+   "turns": 9,
+   "user_prompts": 1,
+   "assistant_messages": 12,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 22,
+   "status": "completed",
+   "first": "2026-11-04T16:35:04.175Z",
+   "last": "2026-11-04T16:35:24.929Z",
+   "side_files": []
+  },
+  {
+   "task": "s26",
+   "kind": "feature+instruction",
+   "day": 17,
+   "date": "2026-11-04",
+   "session": "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+   "file": "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f.jsonl",
+   "sha256": "0678eca0ece1734a18b9a564f63d33d6d07662508bb6d6b99a4da7537f67bd66",
+   "bytes": 245213,
+   "shift_days": -8,
+   "turns": 17,
+   "user_prompts": 2,
+   "assistant_messages": 24,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 156,
+   "status": "completed",
+   "first": "2026-11-04T16:35:28.757Z",
+   "last": "2026-11-04T16:38:02.477Z",
+   "side_files": []
+  },
+  {
+   "task": "s27",
+   "kind": "bugfix-revisit",
+   "day": 18,
+   "date": "2026-11-05",
+   "session": "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7",
+   "file": "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7.jsonl",
+   "sha256": "ac44a33da779e354ee989ac0fd610a45f1d06ebb23cc94101a7270e30bab5b58",
+   "bytes": 153220,
+   "shift_days": -7,
+   "turns": 8,
+   "user_prompts": 1,
+   "assistant_messages": 12,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 66,
+   "status": "completed",
+   "first": "2026-11-05T16:38:05.037Z",
+   "last": "2026-11-05T16:39:09.264Z",
+   "side_files": []
+  },
+  {
+   "task": "s28",
+   "kind": "undo+decision",
+   "day": 19,
+   "date": "2026-11-06",
+   "session": "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+   "file": "6a143f79-e640-4326-8b29-c8bdba8bcfd5.jsonl",
+   "sha256": "b5c431fda09ae7d75677794e613550012e48f8fd66987daad21978f8dd0968ce",
+   "bytes": 137865,
+   "shift_days": -6,
+   "turns": 9,
+   "user_prompts": 2,
+   "assistant_messages": 9,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 54,
+   "status": "completed",
+   "first": "2026-11-06T16:39:11.107Z",
+   "last": "2026-11-06T16:40:03.998Z",
+   "side_files": []
+  },
+  {
+   "task": "s29",
+   "kind": "utility",
+   "day": 19,
+   "date": "2026-11-06",
+   "session": "2d572e15-2620-415c-98b6-27a8d37bc734",
+   "file": "2d572e15-2620-415c-98b6-27a8d37bc734.jsonl",
+   "sha256": "fcc5d34cc9c404b5dc082be386b81a6c69f52cdc3bf22562cd6e058eb499729c",
+   "bytes": 223868,
+   "shift_days": -6,
+   "turns": 12,
+   "user_prompts": 2,
+   "assistant_messages": 15,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 46,
+   "status": "completed",
+   "first": "2026-11-06T16:40:05.352Z",
+   "last": "2026-11-06T16:40:50.351Z",
+   "side_files": []
+  },
+  {
+   "task": "s30",
+   "kind": "docs-unfinished",
+   "day": 20,
+   "date": "2026-11-07",
+   "session": "51b2903a-67ab-43a4-b11d-9f20a95b107b",
+   "file": "51b2903a-67ab-43a4-b11d-9f20a95b107b.jsonl",
+   "sha256": "398e403cc08720169977ad8695cc3e4343cfad050a8fe6e9bfe0aecbde81f3b6",
+   "bytes": 119220,
+   "shift_days": -5,
+   "turns": 5,
+   "user_prompts": 1,
+   "assistant_messages": 8,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 11,
+   "status": "completed",
+   "first": "2026-11-07T16:40:51.072Z",
+   "last": "2026-11-07T16:41:01.578Z",
+   "side_files": []
+  },
+  {
+   "task": "s31",
+   "kind": "abandoned-refactor",
+   "day": 20,
+   "date": "2026-11-07",
+   "session": "9011e458-07d1-4bc3-8593-973db9f72c83",
+   "file": "9011e458-07d1-4bc3-8593-973db9f72c83.jsonl",
+   "sha256": "cdf5d9a3b0f70db166cd0cb4bce1e2ae6b28fb2aff60a5824d881d08128120e8",
+   "bytes": 151450,
+   "shift_days": -5,
+   "turns": 7,
+   "user_prompts": 2,
+   "assistant_messages": 9,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 112,
+   "status": "completed",
+   "first": "2026-11-07T16:41:19.135Z",
+   "last": "2026-11-07T16:43:10.752Z",
+   "side_files": []
+  },
+  {
+   "task": "s32",
+   "kind": "abandoned-bugfix",
+   "day": 21,
+   "date": "2026-11-08",
+   "session": "385704d0-2c1d-409a-8147-2a0485c7f719",
+   "file": "385704d0-2c1d-409a-8147-2a0485c7f719.jsonl",
+   "sha256": "13bb0e44c4875093f139539ff802cfa7db988a2ec1401a9b8e1fb333fbfb784a",
+   "bytes": 206151,
+   "shift_days": -4,
+   "turns": 12,
+   "user_prompts": 2,
+   "assistant_messages": 14,
+   "model": [
+    "claude-sonnet-5-5"
+   ],
+   "seconds": 141,
+   "status": "completed",
+   "first": "2026-11-08T16:43:17.562Z",
+   "last": "2026-11-08T16:45:37.137Z",
+   "side_files": []
+  }
+ ]
+}
