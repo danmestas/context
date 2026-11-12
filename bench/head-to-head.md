@@ -114,5 +114,8 @@ is called the winner on a gap of a few questions.
   was deleted when the corpus was made, so that arm could not be given what it would
   have had. The forced-use condition was not run either; the transcripts arm is in effect
   forced, since its prompt names the transcript folder.
+- 2026-11-12: the 30 held-out questions have now informed three decisions, so they are
+  treated as tuning questions from here on. A second set of 40, `questions2.json`, is the
+  untouched one.
 - 2026-11-12: third-party tools are run in containers with only the corpus mounted, so
   their index time includes container overhead and is not compared with ctx's.

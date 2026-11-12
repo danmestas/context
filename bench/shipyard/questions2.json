@@ -1,0 +1,607 @@
+[
+ {
+  "id": "r-001",
+  "kind": "decision",
+  "question": "Before --max-bytes was chosen over CTX_TURN_SHOW, which option did the assistant recommend, and what precedence did it propose if both were supported?",
+  "paraphrase": "When the adjustable size cap for printing one exchange was being designed, which of the two mechanisms did the assistant favour, and in what order would the settings have applied had both been built?",
+  "answer": "It recommended the flag as the primary mechanism, with the environment variable only as an optional extra. If both existed the precedence would be flag, then environment variable, then the built-in 8000.",
+  "must_include": [
+   "recommended the flag as the primary mechanism (the environment variable only as an optional extra)",
+   "precedence: flag, then environment variable, then the 8000 default"
+  ],
+  "gold_sessions": [
+   "79ae457a-27a6-42ee-a40a-850cada7a271"
+  ],
+  "evidence": "79ae457a-27a6-42ee-a40a-850cada7a271 assistant reply to user turn 1 (Recommendation paragraph)"
+ },
+ {
+  "id": "r-002",
+  "kind": "decision",
+  "question": "When choosing between tools/transcript_stats.py and a ctx subcommand, what did the assistant call the catch with the C subcommand, and had it checked whether the catch applied?",
+  "paraphrase": "For the conversation-log tally, what drawback did the assistant raise about building it into the main program, and had it verified that drawback when the choice was made?",
+  "answer": "C has no JSON library, so counting tool calls per tool would mean pulling the name fields out of tool_use blocks by hand unless the code already has a reusable JSON field extractor. It had not yet checked src/ for one.",
+  "must_include": [
+   "C has no JSON library, so per-tool counts would need the tool names extracted by hand",
+   "it had not yet checked the source for an existing reusable extractor"
+  ],
+  "gold_sessions": [
+   "962209f0-950e-4930-a207-7182b80cf031"
+  ],
+  "evidence": "962209f0-950e-4930-a207-7182b80cf031 assistant reply to user turn 1 (The catch with B)"
+ },
+ {
+  "id": "r-003",
+  "kind": "decision",
+  "question": "Of the remaining atoi call sites, which did the assistant say it would leave as atoi whatever is decided about zero, and why?",
+  "paraphrase": "Among the leftover loosely-read numbers, which ones did the assistant propose never to tighten regardless of what the person chooses about zero, and what was the reasoning?",
+  "answer": "The artifact \"(Version N)\" parsing and the vN.html file-name scan. They read text out of a transcript and a directory listing, not user input, so parse_count's die would be wrong there.",
+  "must_include": [
+   "the artifact (Version N) parsing and the vN.html file-name scan",
+   "they are not user input (transcript text, a directory scan), so dying on junk would be wrong"
+  ],
+  "gold_sessions": [
+   "222e174e-7f11-45df-bfef-45c56a1a734e"
+  ],
+  "evidence": "222e174e-7f11-45df-bfef-45c56a1a734e closing summary (sites 3 and 4, last paragraph)"
+ },
+ {
+  "id": "r-004",
+  "kind": "decision",
+  "question": "The model-deadline atoi call: how was it classified in the first atoi audit, and what did the later conversion attempt conclude about it?",
+  "paraphrase": "One loosely-read number is a time allowance for a helper program. How was it treated when such numbers were first inventoried, and what was decided when tightening the leftovers was attempted?",
+  "answer": "The audit set it aside as not a count option, a deadline in seconds read from a variable the assistant had not traced. The later attempt identified it as the CTX_MODEL_DEADLINE environment variable and left it alone: it falls back silently to the default on junk or 0, and parse_count would make it exit with an error instead, a behaviour change.",
+  "must_include": [
+   "first audit: set aside as not a count option (its source was not traced)",
+   "later identified as the CTX_MODEL_DEADLINE environment variable",
+   "left alone because parse_count would turn the silent fallback to the default into an error (a behaviour change)"
+  ],
+  "gold_sessions": [
+   "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+   "222e174e-7f11-45df-bfef-45c56a1a734e"
+  ],
+  "evidence": "376aadaa-35c4-4ac5-b158-dc3a57e48c38 assistant reply to user turn 1 (Other atoi calls); 222e174e-7f11-45df-bfef-45c56a1a734e closing summary (site 5 and last paragraph)"
+ },
+ {
+  "id": "r-005",
+  "kind": "decision",
+  "question": "Neither the parse_count change nor the search --json escaping fix touched docs/howto.md. What reason was given each time?",
+  "paraphrase": "Two changes affecting command-line switches shipped without any edit to the usage guide: the stricter number reading, and the repair of the structured lookup results. How was not touching the guide justified in each case?",
+  "answer": "parse_count: no flag was added. Escaping fix: the --json flag and its output format are the same as before.",
+  "must_include": [
+   "parse_count change: no flag was added",
+   "escaping fix: the flag and its output format were unchanged"
+  ],
+  "gold_sessions": [
+   "fe88766c-97fc-4c82-a138-222f04834a61",
+   "2ffa5cae-2456-4989-aa75-d5203bc2ab0a"
+  ],
+  "evidence": "fe88766c-97fc-4c82-a138-222f04834a61 closing summary for user turn 1 (last line); 2ffa5cae-2456-4989-aa75-d5203bc2ab0a closing summary for user turn 1 (Left alone)"
+ },
+ {
+  "id": "r-006",
+  "kind": "decision",
+  "question": "After trying getopt_long in cmd_search, which way did the assistant lean before the user decided, and what would have made it worth keeping?",
+  "paraphrase": "Once the library-based argument reader had been tried in the lookup command and everything was green, what was the assistant's own verdict, and under what condition did it say the change would deserve to stay?",
+  "answer": "It leaned towards reverting, as there was no clear win (the loop grew from 9 lines to about 25). It would keep it only if the user wanted --opt=value syntax or `--` to end option parsing.",
+  "must_include": [
+   "it leaned towards reverting (no clear win)",
+   "worth keeping only if --opt=value syntax or -- to end options is wanted"
+  ],
+  "gold_sessions": [
+   "9011e458-07d1-4bc3-8593-973db9f72c83"
+  ],
+  "evidence": "9011e458-07d1-4bc3-8593-973db9f72c83 assistant report after make test (What I think)"
+ },
+ {
+  "id": "r-007",
+  "kind": "decision",
+  "question": "What explanation did the assistant offer for why PRAGMA mmap_size made so little difference to ctx search?",
+  "paraphrase": "When the memory-mapping tweak turned out not to help lookups much, what did the assistant suggest was the underlying reason?",
+  "answer": "On a database of that size the operating system's page cache probably already covers most of what mmap would save.",
+  "must_include": [
+   "the OS page cache already covers most of what mmap would save"
+  ],
+  "gold_sessions": [
+   "3246ac72-56fa-4668-8759-e0c1c0c1b0dc"
+  ],
+  "evidence": "3246ac72-56fa-4668-8759-e0c1c0c1b0dc closing summary (last paragraph of Results)"
+ },
+ {
+  "id": "r-008",
+  "kind": "decision",
+  "question": "When the kebab-case and command-prefix naming rules were set, were existing names such as cmd_version to be renamed?",
+  "paraphrase": "After the person laid down conventions for what new switches and internal routines are to be called, what was to happen to the ones that already existed and do not follow them?",
+  "answer": "No. The rules apply to new code only; existing functions such as cmd_version stay as they are unless the user asks.",
+  "must_include": [
+   "the rules apply to new code only",
+   "existing names are not renamed unless the user asks"
+  ],
+  "gold_sessions": [
+   "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72"
+  ],
+  "evidence": "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72 assistant reply to user turn 2"
+ },
+ {
+  "id": "r-009",
+  "kind": "decision",
+  "question": "In the assistant's proposed task-based README, what was meant to keep the one thing the by-command layout does well?",
+  "paraphrase": "When the front page was being re-planned around what people want to accomplish, what element did the assistant suggest so that a reader could still look up an individual switch?",
+  "answer": "A compact command and flag reference table at the bottom, linking to docs/howto.md rather than duplicating it.",
+  "must_include": [
+   "a compact command and flag reference table at the bottom",
+   "it links to docs/howto.md rather than duplicating it"
+  ],
+  "gold_sessions": [
+   "f6fd4e65-267b-4ffe-b40f-61c6d1e34852"
+  ],
+  "evidence": "f6fd4e65-267b-4ffe-b40f-61c6d1e34852 assistant reply to user turn 1 (item 4 and the paragraph after)"
+ },
+ {
+  "id": "r-010",
+  "kind": "failure",
+  "question": "Both the src/search.c split and the xxd -i experiment ran into the fuzz targets. What was the problem each time?",
+  "paraphrase": "Two abandoned restructurings, one of the big source file and one of how the database definitions get embedded, each had a knock-on effect on the random-data test programs. What was it in each case?",
+  "answer": "Split: the fuzz files and the fuzz and Fil-C replay build rules include src/ctx.c directly, so they would have needed reworking to link search.c as well, a cost on top of the helper count. xxd: fuzz/fuzz_wiki.c used the old schema names in two places and was updated to match, but make test does not compile it and the fuzz build was not tried, so that edit was never verified.",
+  "must_include": [
+   "split: the fuzz targets include src/ctx.c directly and would have needed reworking to link the new file",
+   "xxd: fuzz/fuzz_wiki.c used the old schema identifiers and had to be updated",
+   "that fuzz edit was never compiled or verified (make test does not build it)"
+  ],
+  "gold_sessions": [
+   "f650517b-09a4-4cf2-85f3-da87bf283a52",
+   "faa74eda-388b-4d57-a18c-bb508e153ff2"
+  ],
+  "evidence": "f650517b-09a4-4cf2-85f3-da87bf283a52 closing summary (Fuzzers and build); faa74eda-388b-4d57-a18c-bb508e153ff2 report for user turn 1 (Also changed)"
+ },
+ {
+  "id": "r-011",
+  "kind": "failure",
+  "question": "How much of src/ctx.c do cmd_search and cmd_turn account for, and which helpers would have gone from static to exported had they moved to src/search.c?",
+  "paraphrase": "In the attempt to carve two commands out of the one big source file, how small were those commands relative to the whole, and which routines that would have travelled with them are also needed by what stays behind?",
+  "answer": "They are about 100 lines of the 7k. current_project (called from about 15 other places) and fts_query (also called from cmd_inject, and dependent on is_stopword) would have had to go from static to exported.",
+  "must_include": [
+   "about 100 lines out of roughly 7,000",
+   "current_project and fts_query would have to be exported"
+  ],
+  "gold_sessions": [
+   "f650517b-09a4-4cf2-85f3-da87bf283a52"
+  ],
+  "evidence": "f650517b-09a4-4cf2-85f3-da87bf283a52 closing summary (helpers that would move out; last paragraph)"
+ },
+ {
+  "id": "r-012",
+  "kind": "failure",
+  "question": "Besides shared state, which checks in test/run.sh did the assistant say would collide or flake if the sections ran in parallel?",
+  "paraphrase": "Apart from parts relying on what earlier parts leave behind, which individual verifications in the long checks file were named as unsafe under concurrent execution?",
+  "answer": "The deadline test's `pgrep -f 'sleep 97'`, which is process-wide and would collide with other jobs, and timing assertions such as \"under 3 seconds\", which would flake under parallel load.",
+  "must_include": [
+   "the process-wide pgrep for 'sleep 97' in the deadline test",
+   "timing assertions (such as under 3 seconds) that would flake under parallel load"
+  ],
+  "gold_sessions": [
+   "5b2aba9d-437d-4061-af3c-b5a537496104"
+  ],
+  "evidence": "5b2aba9d-437d-4061-af3c-b5a537496104 closing summary (Process-wide checks)"
+ },
+ {
+  "id": "r-013",
+  "kind": "failure",
+  "question": "What regression for search words did the assistant flag in the getopt_long version of cmd_search?",
+  "paraphrase": "With the library-based argument reader in the lookup command, which kind of query term that used to work would have stopped working?",
+  "answer": "A word starting with a single dash, such as -foo, used to be a search word; it would now be rejected as an unknown option unless it comes after `--`.",
+  "must_include": [
+   "a word beginning with a single dash (such as -foo) is rejected as an unknown option, where before it was a search word"
+  ],
+  "gold_sessions": [
+   "9011e458-07d1-4bc3-8593-973db9f72c83"
+  ],
+  "evidence": "9011e458-07d1-4bc3-8593-973db9f72c83 assistant report after make test (Regressions or risks)"
+ },
+ {
+  "id": "r-014",
+  "kind": "failure",
+  "question": "In the two-letter search experiment, what happened to queries like `of` once the minimum length was 2, and why?",
+  "paraphrase": "During the trial that let very short terms through to lookups, how did extremely frequent tiny terms behave, and what explained it?",
+  "answer": "They were no longer rejected. The stopword list has no two-letter words, so `of` ran and just came back with \"no matches\" on the test archive; filtering such words would mean adding them to is_stopword.",
+  "must_include": [
+   "the stopword list contains no two-letter words",
+   "so a query like `of` is no longer rejected: it runs and simply finds nothing"
+  ],
+  "gold_sessions": [
+   "385704d0-2c1d-409a-8147-2a0485c7f719"
+  ],
+  "evidence": "385704d0-2c1d-409a-8147-2a0485c7f719 assistant report for user turn 1 (results table and Stopwords bullet)"
+ },
+ {
+  "id": "r-015",
+  "kind": "failure",
+  "question": "How did the assistant find out that the first mmap_size A/B run had compared two identical binaries?",
+  "paraphrase": "In the memory-mapping speed comparison, what check exposed that the supposedly modified executable was no different from the baseline?",
+  "answer": "It ran `strings` on both saved binaries and counted lines containing mmap_size=; the count was 0 for both, so the \"new\" build had never included the pragma.",
+  "must_include": [
+   "running strings on the binaries and searching for the pragma text found it in neither"
+  ],
+  "gold_sessions": [
+   "3246ac72-56fa-4668-8759-e0c1c0c1b0dc"
+  ],
+  "evidence": "3246ac72-56fa-4668-8759-e0c1c0c1b0dc tool call after the first A/B output, and the message that follows; 3246ac72-56fa-4668-8759-e0c1c0c1b0dc assistant message after the strings check"
+ },
+ {
+  "id": "r-016",
+  "kind": "failure",
+  "question": "When the regression test for the jq 'Invalid string' bug in search --json was run before the fix, what did it fail with?",
+  "paraphrase": "Before the structured lookup results were repaired, the new check was demonstrated breaking. What complaint did it print?",
+  "answer": "Python's json.decoder.JSONDecodeError: \"Expecting ',' delimiter: line 1 column 102 (char 101)\", followed by \"FAIL: --json escapes quotes, backslashes and control characters\".",
+  "must_include": [
+   "a JSONDecodeError: Expecting ',' delimiter"
+  ],
+  "gold_sessions": [
+   "2ffa5cae-2456-4989-aa75-d5203bc2ab0a"
+  ],
+  "evidence": "2ffa5cae-2456-4989-aa75-d5203bc2ab0a closing summary for user turn 1 (Failing test first)"
+ },
+ {
+  "id": "r-017",
+  "kind": "fix",
+  "question": "When parse_count was introduced, which existing checks in search and turn did it make redundant?",
+  "paraphrase": "When the strict number-reading routine arrived, what earlier validation did it replace in the two commands that adopted it?",
+  "answer": "The old `limit < 1` check in search and the inline strtol block that parsed --max-bytes in turn were removed, since the helper covers both.",
+  "must_include": [
+   "the limit < 1 check in search",
+   "the inline strtol block for --max-bytes in turn"
+  ],
+  "gold_sessions": [
+   "fe88766c-97fc-4c82-a138-222f04834a61"
+  ],
+  "evidence": "fe88766c-97fc-4c82-a138-222f04834a61 closing summary for user turn 1 (Callers bullet)"
+ },
+ {
+  "id": "r-018",
+  "kind": "fix",
+  "question": "Why did the getopt_long version of cmd_search have to copy its arguments into a new array?",
+  "paraphrase": "In the trial of the library-based argument reader for the lookup command, what forced an extra step of rebuilding the argument list first?",
+  "answer": "getopt_long treats argv[0] as the program name, and cmd_search is handed only the arguments after the command. So the arguments were copied into a fresh array with \"search\" in slot 0, freed at the end.",
+  "must_include": [
+   "getopt_long treats the first element (argv[0]) as the program name",
+   "so the arguments were copied into a new array with \"search\" in slot 0"
+  ],
+  "gold_sessions": [
+   "9011e458-07d1-4bc3-8593-973db9f72c83"
+  ],
+  "evidence": "9011e458-07d1-4bc3-8593-973db9f72c83 assistant report after make test (What changed)"
+ },
+ {
+  "id": "r-019",
+  "kind": "fix",
+  "question": "In the test that ctx turn --max-bytes N never prints more than N bytes of the turn, why is the comparison against N + 1?",
+  "paraphrase": "The check that a size-capped printout stays within its budget allows one unit more than the budget. What accounts for the extra one?",
+  "answer": "The shell pipeline that isolates the turn text also counts the trailing newline, so the measured size can be N + 1.",
+  "must_include": [
+   "the shell pipeline counts the trailing newline"
+  ],
+  "gold_sessions": [
+   "b91f5497-4145-471d-b441-1f49bfa96795"
+  ],
+  "evidence": "b91f5497-4145-471d-b441-1f49bfa96795 closing summary for user turn 2 (Test bullet)"
+ },
+ {
+  "id": "r-020",
+  "kind": "fix",
+  "question": "Tests were written before the code for both search --since and the ctx turn exit 3 change. What did each fail with before the implementation existed?",
+  "paraphrase": "Two changes, a date floor for lookups and a distinct status for a nonexistent exchange, each began with checks that were run before any code was written. What did the first failing check report in each case?",
+  "answer": "--since: the program printed \"ctx: unknown option --since\", so the run stopped at \"FAIL: --since leaves out earlier days\". Exit 3: \"FAIL: missing turn 999999 exits 3, got 1\".",
+  "must_include": [
+   "--since: failed with unknown option --since",
+   "exit 3: missing turn 999999 exits 3, got 1"
+  ],
+  "gold_sessions": [
+   "842e1bfb-de93-40ff-9cf7-b92b3a9eb421",
+   "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f"
+  ],
+  "evidence": "842e1bfb-de93-40ff-9cf7-b92b3a9eb421 assistant report before user turn 2; 5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f closing summary for user turn 1 (Test first)"
+ },
+ {
+  "id": "r-021",
+  "kind": "fix",
+  "question": "After ctx turn started exiting 3 for a missing turn, what do ids like -3 and 1x exit with, and why was that left as is?",
+  "paraphrase": "Once a nonexistent exchange got its own status number, what status do malformed identifiers such as a negative number or numerals followed by a letter produce, and what was the rationale for not changing it?",
+  "answer": "They now exit 3 rather than 1. Ids that are not plain digits are treated as transcript refs and looked up, so they count as not found; that was left as is. (ctx turn 0 still exits 1.)",
+  "must_include": [
+   "-3 and 1x now exit 3 (not found) rather than 1",
+   "because ids that are not plain digits are looked up as transcript refs"
+  ],
+  "gold_sessions": [
+   "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f"
+  ],
+  "evidence": "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f closing summary for user turn 1 (last paragraph)"
+ },
+ {
+  "id": "r-022",
+  "kind": "fix",
+  "question": "How was it confirmed that --count had been removed from ctx search completely?",
+  "paraphrase": "After the option that printed only a total was taken out of the lookup command, what was done to make sure no trace of it remained?",
+  "answer": "A search for --count outside vendor/ found no source, test or doc references; the only matches were in the built binaries, which make regenerated.",
+  "must_include": [
+   "a search outside vendor/ found no references in source, tests or docs",
+   "the only matches were in built binaries"
+  ],
+  "gold_sessions": [
+   "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9"
+  ],
+  "evidence": "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9 closing summary (last paragraph)"
+ },
+ {
+  "id": "r-023",
+  "kind": "fix",
+  "question": "In the search timing study, how was it shown that the joins and the snippet() call are not where the time goes?",
+  "paraphrase": "In the investigation of sluggish lookups, what experiment ruled out the table lookups and the excerpt building as the expensive part?",
+  "answer": "The ranked query run with no joins and no snippet took the same roughly 106 ms as the full query on the 30k-turn archive.",
+  "must_include": [
+   "the ranked query with no joins and no snippet took the same time as the full query (about 106 ms)"
+  ],
+  "gold_sessions": [
+   "22a2d719-1817-4141-9dca-c607ebd8df80"
+  ],
+  "evidence": "22a2d719-1817-4141-9dca-c607ebd8df80 closing summary for user turn 1 (Not the bottleneck)"
+ },
+ {
+  "id": "r-024",
+  "kind": "user-said",
+  "question": "If -Wconversion had produced more than 20 warnings, what did the user want reported in place of a Makefile change?",
+  "paraphrase": "For the stricter compiler check trial, what summary did the person ask for in the case of too many complaints?",
+  "answer": "Just the count and the three most common kinds of warning, leaving the Makefile alone.",
+  "must_include": [
+   "the count and the three most common kinds of warning"
+  ],
+  "gold_sessions": [
+   "2fb75935-8847-470d-93f4-909680476671"
+  ],
+  "evidence": "2fb75935-8847-470d-93f4-909680476671 user turn 1"
+ },
+ {
+  "id": "r-025",
+  "kind": "user-said",
+  "question": "Before search_options was inlined back into cmd_search, what did the user ask for first, and what did they say about the tests when giving the go-ahead?",
+  "paraphrase": "When the person first raised undoing the argument-parsing extraction in the lookup command, what did they want before any change was made, and what condition did they attach when approving it?",
+  "answer": "First only an estimate of how big the diff would be to inline it while keeping everything added since, without doing it yet. On the go-ahead: keep all the tests.",
+  "must_include": [
+   "first only an estimate of the diff size, keeping everything added since, without doing it yet",
+   "keep all the tests"
+  ],
+  "gold_sessions": [
+   "6a143f79-e640-4326-8b29-c8bdba8bcfd5"
+  ],
+  "evidence": "6a143f79-e640-4326-8b29-c8bdba8bcfd5 user turn 1; 6a143f79-e640-4326-8b29-c8bdba8bcfd5 user turn 2"
+ },
+ {
+  "id": "r-026",
+  "kind": "user-said",
+  "question": "What dependency constraint did the user put on tools/transcript_stats.py, and was it repeated when --json and the tool error count were added?",
+  "paraphrase": "What restriction on outside packages did the person impose on the conversation-log tally program, and was it restated when the program was later extended?",
+  "answer": "Standard library only. The user repeated it (\"still stdlib only\") when asking for the two additions, and the script stayed that way.",
+  "must_include": [
+   "Python standard library only",
+   "the user restated it when asking for the later additions"
+  ],
+  "gold_sessions": [
+   "962209f0-950e-4930-a207-7182b80cf031",
+   "5a0cf297-d83e-4c1c-8cbb-f0326aa9d68a"
+  ],
+  "evidence": "962209f0-950e-4930-a207-7182b80cf031 user turns 1 and 2; 5a0cf297-d83e-4c1c-8cbb-f0326aa9d68a user turn 1"
+ },
+ {
+  "id": "r-027",
+  "kind": "user-said",
+  "question": "How did the user want the minimum-word-length change in the query builder tried out before deciding on it?",
+  "paraphrase": "For the experiment allowing very short terms in lookups, what steps did the person ask for, and what were they to be shown?",
+  "answer": "Drop the minimum from 3 to 2, build, run the tests, then try a few two-letter searches on a small synthetic archive in a temp dir and show what comes back. No commit.",
+  "must_include": [
+   "build and run the tests",
+   "try a few two-letter searches on a small synthetic archive in a temp dir and show what comes back",
+   "do not commit"
+  ],
+  "gold_sessions": [
+   "385704d0-2c1d-409a-8147-2a0485c7f719"
+  ],
+  "evidence": "385704d0-2c1d-409a-8147-2a0485c7f719 user turn 1"
+ },
+ {
+  "id": "r-028",
+  "kind": "user-said",
+  "question": "When asking for the Makefile's awk rules to be swapped for xxd -i, what did the user want to be told afterwards, and what did they say about committing?",
+  "paraphrase": "For the trial of a hex-dump utility in the build recipes, what report did the person request once it built and passed, and was the result to be recorded in history?",
+  "answer": "To be told what had to change in src/ctx.c to make it work, after building and running the tests. Don't commit yet.",
+  "must_include": [
+   "what had to change in src/ctx.c to make it work",
+   "do not commit yet"
+  ],
+  "gold_sessions": [
+   "faa74eda-388b-4d57-a18c-bb508e153ff2"
+  ],
+  "evidence": "faa74eda-388b-4d57-a18c-bb508e153ff2 user turn 1"
+ },
+ {
+  "id": "r-029",
+  "kind": "user-said",
+  "question": "What scope did the user set for the first day of the README rewrite?",
+  "paraphrase": "On the day the front-page overhaul began, how much did the person want done, and what was to happen to the existing text?",
+  "answer": "Only the outline and the first two sections; leave the rest of the old text below a clear marker line; commit as WIP and say what is left.",
+  "must_include": [
+   "only the outline and the first two sections",
+   "the rest of the old text stays below a clear marker line",
+   "commit as WIP and say what is left"
+  ],
+  "gold_sessions": [
+   "f6fd4e65-267b-4ffe-b40f-61c6d1e34852"
+  ],
+  "evidence": "f6fd4e65-267b-4ffe-b40f-61c6d1e34852 user turn 2"
+ },
+ {
+  "id": "r-030",
+  "kind": "user-said",
+  "question": "What did the user tell the assistant to do if the sections of test/run.sh turned out to depend on each other's state when run in parallel?",
+  "paraphrase": "For the attempt to speed up the automated checks by executing their parts at the same time, what fallback did the person specify in advance?",
+  "answer": "Don't fight it: revert, and report which dependencies were hit.",
+  "must_include": [
+   "do not fight it: revert",
+   "say which dependencies were hit"
+  ],
+  "gold_sessions": [
+   "5b2aba9d-437d-4061-af3c-b5a537496104"
+  ],
+  "evidence": "5b2aba9d-437d-4061-af3c-b5a537496104 user turn 1"
+ },
+ {
+  "id": "r-031",
+  "kind": "status",
+  "question": "While search --count existed, what happened when it was combined with --json, and what changed for the stderr notes once --count was removed?",
+  "paraphrase": "Back when the lookup command could print only a total, how did that option interact with the structured results option, and what side effect on informational notices went away when the total option was taken out?",
+  "answer": "--count won: with both flags only the number was printed, and no JSON form of the count was added. --count had also suppressed the \"nothing in project ...; searching everything\" and \"no matches\" notes, so since its removal those always print.",
+  "must_include": [
+   "with both flags, --count won and printed just the number",
+   "since the removal, the 'nothing in project' and 'no matches' notes always print (--count used to suppress them)"
+  ],
+  "gold_sessions": [
+   "8d49244e-5cc6-4fe1-b566-1addf3371e99",
+   "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9"
+  ],
+  "evidence": "8d49244e-5cc6-4fe1-b566-1addf3371e99 closing summary for user turn 2 (--count bullet); 8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9 closing summary (Behavior change)"
+ },
+ {
+  "id": "r-032",
+  "kind": "status",
+  "question": "How was the unfinished part of the README marked off in the WIP commit, and what was deleted along with the marker when the rewrite was finished?",
+  "paraphrase": "Midway through the front-page overhaul, what separated the fresh text from the untouched remainder, and which old parts went away together with that separator at the end?",
+  "answer": "An HTML comment (\"REWRITE IN PROGRESS: everything below this line is the old README...\") under the new sections. The finishing pass removed it together with the duplicate old intro and the old \"What it does\", \"Install\" and \"Start\" sections.",
+  "must_include": [
+   "an HTML comment marker (REWRITE IN PROGRESS ...)",
+   "removed with it: the duplicate old intro and the old What it does, Install and Start sections"
+  ],
+  "gold_sessions": [
+   "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+   "0273f60c-db4d-47e7-9ab0-4c76c00c29bc"
+  ],
+  "evidence": "f6fd4e65-267b-4ffe-b40f-61c6d1e34852 closing summary (Marker bullet); 0273f60c-db4d-47e7-9ab0-4c76c00c29bc closing summary (Marker and old intro)"
+ },
+ {
+  "id": "r-033",
+  "kind": "status",
+  "question": "How big were the synthetic archives used in the search timing study and in the mmap_size test?",
+  "paraphrase": "What were the sizes of the artificial data sets built for the two lookup performance investigations?",
+  "answer": "Timing study: 6,000 turns and then 30,000 turns, the latter a 58 MB database. mmap_size test: 200,000 turns, about 288 MB.",
+  "must_include": [
+   "timing study: 6k and 30k turns (the 30k one about 58 MB)",
+   "mmap_size test: 200,000 turns, about 288 MB"
+  ],
+  "gold_sessions": [
+   "22a2d719-1817-4141-9dca-c607ebd8df80",
+   "3246ac72-56fa-4668-8759-e0c1c0c1b0dc"
+  ],
+  "evidence": "22a2d719-1817-4141-9dca-c607ebd8df80 closing summary for user turn 1 (timings table and the line below it); 3246ac72-56fa-4668-8759-e0c1c0c1b0dc closing summary (Setup)"
+ },
+ {
+  "id": "r-034",
+  "kind": "status",
+  "question": "How were timings taken in the search timing study compared with the mmap_size A/B?",
+  "paraphrase": "In the two lookup performance investigations, how many repetitions were used and which statistic was reported in each?",
+  "answer": "Timing study: wall time per search, the mean of 30 runs. mmap_size A/B: the baseline and modified binaries were alternated over 60 runs per query and the median of each was compared, on four queries with --limit 20.",
+  "must_include": [
+   "timing study: mean of 30 runs",
+   "mmap_size A/B: the two binaries alternated over 60 runs per query, medians compared"
+  ],
+  "gold_sessions": [
+   "22a2d719-1817-4141-9dca-c607ebd8df80",
+   "3246ac72-56fa-4668-8759-e0c1c0c1b0dc"
+  ],
+  "evidence": "22a2d719-1817-4141-9dca-c607ebd8df80 closing summary for user turn 1 (Timings heading); 3246ac72-56fa-4668-8759-e0c1c0c1b0dc closing summary (Setup)"
+ },
+ {
+  "id": "r-035",
+  "kind": "status",
+  "question": "What did the search timing study find about a search without --all that finds nothing in the current project, and how thoroughly was that measured?",
+  "paraphrase": "In the investigation of sluggish lookups, what additional cost was noted when a lookup limited to the working area comes up empty, and how much confidence is there in the figure?",
+  "answer": "It runs a second, unscoped search: `build` from a directory whose project had no hits cost about 48 ms against 21 ms with --all on the 6k archive. That was measured once and not repeated at 30k.",
+  "must_include": [
+   "about 48 ms against 21 ms with --all (6k archive), because a second, unscoped search runs",
+   "measured once, not repeated at 30k"
+  ],
+  "gold_sessions": [
+   "22a2d719-1817-4141-9dca-c607ebd8df80"
+  ],
+  "evidence": "22a2d719-1817-4141-9dca-c607ebd8df80 closing summary for user turn 1 (Caveats, third bullet)"
+ },
+ {
+  "id": "r-036",
+  "kind": "status",
+  "question": "In the search timing write-up, how firm was the claim that page reads account for part of the ranking cost?",
+  "paraphrase": "The investigation of sluggish lookups attributed some of the scoring expense to reading storage blocks. On what was that based, and was it checked directly?",
+  "answer": "It was an inference from system time: 30-40 ms of the roughly 105 ms ranked query was system time. The assistant did not profile inside SQLite.",
+  "must_include": [
+   "inferred from the share of system time (30-40 ms of about 105 ms)",
+   "not profiled inside SQLite"
+  ],
+  "gold_sessions": [
+   "22a2d719-1817-4141-9dca-c607ebd8df80"
+  ],
+  "evidence": "22a2d719-1817-4141-9dca-c607ebd8df80 closing summary for user turn 1 (Ranking bullet; Caveats, first bullet)"
+ },
+ {
+  "id": "r-037",
+  "kind": "status",
+  "question": "How big did the assistant estimate the diff for inlining search_options back into cmd_search, and how big was it in the end?",
+  "paraphrase": "What size of change was predicted for folding the argument-parsing extraction back into the lookup command, and what did the real change come to?",
+  "answer": "The estimate was about 25-30 lines changed, roughly +14/-17, all in one contiguous block of src/ctx.c. The actual diff was +12/-25.",
+  "must_include": [
+   "estimate: about 25-30 lines (roughly +14/-17)",
+   "actual: +12/-25"
+  ],
+  "gold_sessions": [
+   "6a143f79-e640-4326-8b29-c8bdba8bcfd5"
+  ],
+  "evidence": "6a143f79-e640-4326-8b29-c8bdba8bcfd5 assistant reply to user turn 1 (Estimate); 6a143f79-e640-4326-8b29-c8bdba8bcfd5 closing summary"
+ },
+ {
+  "id": "r-038",
+  "kind": "status",
+  "question": "Apart from only reading usage(), what other limitation of tools/check_flags.sh did the assistant point out?",
+  "paraphrase": "The helper that cross-checks command-line switches against the written guide examines only the built-in help text. What second weakness, in how it decides a switch is covered, was called out?",
+  "answer": "Strictness: a flag counts as documented if it appears anywhere in howto.md, not necessarily under the right command.",
+  "must_include": [
+   "a flag counts as documented if it appears anywhere in howto.md, not necessarily under the right command"
+  ],
+  "gold_sessions": [
+   "2d572e15-2620-415c-98b6-27a8d37bc734"
+  ],
+  "evidence": "2d572e15-2620-415c-98b6-27a8d37bc734 report for user turn 1 (Strictness bullet), repeated in the closing summary"
+ },
+ {
+  "id": "r-039",
+  "kind": "status",
+  "question": "After the minimum word length change was reverted, was make test run again?",
+  "paraphrase": "Once the brief experiment in the lookup query builder was undone, what was done to confirm the tree was back to normal, and what was skipped?",
+  "answer": "No. src/ctx.c was restored and the binary rebuilt so that ctx matches the source again, but make test was not re-run, on the grounds that there was nothing new to check.",
+  "must_include": [
+   "the binary was rebuilt to match the restored source",
+   "make test was not re-run"
+  ],
+  "gold_sessions": [
+   "385704d0-2c1d-409a-8147-2a0485c7f719"
+  ],
+  "evidence": "385704d0-2c1d-409a-8147-2a0485c7f719 closing message after the revert"
+ },
+ {
+  "id": "r-040",
+  "kind": "status",
+  "question": "What did the assistant take back about getopt_long's argument reordering after the experiment was reverted?",
+  "paraphrase": "After the library-based argument reader was dropped from the lookup command, which earlier statement about how platforms differ did the assistant correct?",
+  "answer": "It had said that glibc reorders arguments and macOS's libc does too, as something that could be relied on. It called that too loose: reordering behaviour varies between libcs.",
+  "must_include": [
+   "it had said macOS's libc reorders arguments like glibc, as something to rely on",
+   "corrected as too loose: reordering varies between libcs"
+  ],
+  "gold_sessions": [
+   "9011e458-07d1-4bc3-8593-973db9f72c83"
+  ],
+  "evidence": "9011e458-07d1-4bc3-8593-973db9f72c83 assistant report after make test (Regressions or risks, second bullet); 9011e458-07d1-4bc3-8593-973db9f72c83 closing message after the revert"
+ }
+]
