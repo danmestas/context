@@ -1,6 +1,6 @@
 {
  "name": "speed",
- "title": "Hooks and commands on a real archive",
+ "title": "Hooks and commands on a real archive, machine heavily loaded",
  "section": "Speed",
  "order": 10,
  "date": "2026-11-11",
@@ -68,5 +68,5 @@
  "bar": "every hook's slowest run under 1,000 ms",
  "verdict": "fail",
  "baseline": "the 3-second limit Claude Code gives a hook, and the 1-second bar set here",
- "meaning": "At the median every hook takes under 50 ms, far inside its limit. The run failed its bar because one compaction brief took 1.2 s on a machine running at three times its capacity; the slowest runs are the ones to watch."
+ "meaning": "At the median every hook takes under 50 ms even with the machine running at three times its capacity. The run failed its bar because the first compaction brief took 1.2 s. A second run on a quiet machine gave the same first-run figure, so that cost belongs to the brief and not to the load."
 }

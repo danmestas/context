@@ -1,0 +1,183 @@
+src/ctx.c:31:#define CTX_VERSION "0.0.1"
+src/ctx.c:32:#define CTX_USER_VERSION 6    /* PRAGMA user_version once initialized */
+src/ctx.c:33:#define CTX_DERIVED_VERSION 6 /* raise when schema/index.sql changes; ctx then rebuilds */
+src/ctx.c:107:static int cmd_version(void) {
+src/ctx.c:114:  printf("ctx %s\nsqlite %s\n", CTX_VERSION, sqlite3_libversion());
+src/ctx.c:124:  if (db_int(db, "PRAGMA user_version") == 0) {
+src/ctx.c:129:    snprintf(v, sizeof v, "INSERT OR REPLACE INTO ctx_meta(key, value) VALUES ('derived_version', '%d'); PRAGMA user_version = %d;",
+src/ctx.c:130:             CTX_DERIVED_VERSION, CTX_USER_VERSION);
+src/ctx.c:679: * are rebuilt rather than migrated when their version changed. */
+src/ctx.c:681:  int user = db_int(db, "PRAGMA user_version");
+src/ctx.c:682:  if (user == CTX_USER_VERSION &&
+src/ctx.c:684:      db_int(db, "SELECT coalesce((SELECT CAST(value AS INTEGER) FROM ctx_meta WHERE key = 'derived_version'), 0)") == CTX_DERIVED_VERSION)
+src/ctx.c:686:  if (user > CTX_USER_VERSION) die("this database is from a newer ctx (version %d)", user);
+src/ctx.c:689:  int derived = db_int(db, "SELECT coalesce((SELECT CAST(value AS INTEGER) FROM ctx_meta WHERE key = 'derived_version'), 0)");
+src/ctx.c:690:  /* a file from before versioning has compatible derived tables, only fewer of them */
+src/ctx.c:691:  if (derived == 0) derived = CTX_DERIVED_VERSION;
+src/ctx.c:694:  snprintf(v, sizeof v, "PRAGMA user_version = %d;", CTX_USER_VERSION);
+src/ctx.c:696:  if (derived == CTX_DERIVED_VERSION) {
+src/ctx.c:697:    snprintf(v, sizeof v, "INSERT OR REPLACE INTO ctx_meta(key, value) VALUES ('derived_version', '%d')", CTX_DERIVED_VERSION);
+src/ctx.c:701:  if (derived != CTX_DERIVED_VERSION) {
+src/ctx.c:702:    fprintf(stderr, "ctx: the index changed with this version of ctx; rebuilding it once\n");
+src/ctx.c:713:  if (db_int(db, "PRAGMA user_version") == 0) die("no ctx database here; run: ctx init");
+src/ctx.c:1780:#define SPEAKERS_VERSION "1"
+src/ctx.c:1797:  if (db_int(db, "SELECT count(*) FROM ctx_meta WHERE key = 'speakers' AND value = '" SPEAKERS_VERSION "'")) return;
+src/ctx.c:1917:              "INSERT OR REPLACE INTO ctx_meta(key, value) VALUES ('speakers', '" SPEAKERS_VERSION "');" /* last: done means done */
+src/ctx.c:1923:#define REDACTION_VERSION "2" /* raise when a rule is added, so what is already stored is redacted again */
+src/ctx.c:1926: * its session technotes, then the indexed turns. Once per version. A technote changed here
+src/ctx.c:1927: * gets a new version; Fossil keeps the old one in its history, so a secret that mattered
+src/ctx.c:1931:  if (db_int(db, "SELECT count(*) FROM ctx_meta WHERE key = 'redaction' AND value = '" REDACTION_VERSION "'")) return;
+src/ctx.c:1933:    db_exec(db, "INSERT OR REPLACE INTO ctx_meta(key, value) VALUES ('redaction', '" REDACTION_VERSION "')");
+src/ctx.c:2037:              "INSERT OR REPLACE INTO ctx_meta(key, value) VALUES ('redaction', '" REDACTION_VERSION "');" /* last: done means done */
+src/ctx.c:2837:  return c && (!strcmp(c, "evergreen") || !strcmp(c, "versioned") || !strcmp(c, "perishable"));
+src/ctx.c:2864:  if (!file) die("usage: ctx source add FILE --origin WHERE --class evergreen|versioned|perishable [--as PATH]");
+src/ctx.c:2866:  if (!source_class_ok(klass)) die("--class must be evergreen, versioned or perishable");
+src/ctx.c:3728:  char *version = dup_text(sqlite3_column_text(q, 0));
+src/ctx.c:3731:  q = db_prepare(db, "INSERT INTO ctx_wiki_log(project, page, version, model, ticket, session, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))");
+src/ctx.c:3734:  sqlite3_bind_text(q, 3, version, -1, SQLITE_STATIC);
+src/ctx.c:3740:  printf("saved %s %.12s, %ld sources\n", name, version, sources);
+src/ctx.c:3741:  free(version);
+src/ctx.c:4576:      " CASE WHEN c.file_hash = (SELECT s.hash FROM ctx_doc s WHERE s.project = d.project AND s.kind = 'source' AND s.name = c.target) THEN 'current' ELSE 'older version' END"
+src/ctx.c:4670:  typedef struct { char *id, *version, *project; } note;
+src/ctx.c:4685:    notes[n].version = dup_text(sqlite3_column_text(q, 1));
+src/ctx.c:4692:    q = db_prepare(db, "SELECT (NOT ?3 AND (SELECT count(*) FROM ctx_capture_day WHERE technote = ?1)) + (SELECT count(*) FROM ctx_remote_note WHERE technote = ?1 AND version = ?2)");
+src/ctx.c:4694:    sqlite3_bind_text(q, 2, notes[i].version, -1, SQLITE_STATIC);
+src/ctx.c:4727:      sqlite3_bind_text(q, 4, notes[i].version, -1, SQLITE_STATIC);
+src/ctx.c:4736:      q = db_prepare(db, "INSERT OR REPLACE INTO ctx_remote_note(technote, version) VALUES (?1, ?2)");
+src/ctx.c:4738:      sqlite3_bind_text(q, 2, notes[i].version, -1, SQLITE_STATIC);
+src/ctx.c:4746:    free(notes[i].version);
+src/ctx.c:5085: * ("Published FILE at URL (Version N, version id X)"), with a title from the call when
+src/ctx.c:5086: * it gave one. Only turns newer than the last run are read. A version is approved when
+src/ctx.c:5104:      "   AND d.kind = 'session' AND c.heading = 'tool' AND c.body LIKE '%Published %https://claude.ai/%(Version %'"
+src/ctx.c:5108:      " v AS (SELECT p.*, substr(r2, 1, instr(r2, ' ') - 1) AS url, CAST(substr(r2, instr(r2, '(Version ') + 9, 12) AS INTEGER) AS version,"
+src/ctx.c:5109:      "   CASE WHEN instr(r2, 'version id ') > 0"
+src/ctx.c:5110:      "    THEN substr(r2, instr(r2, 'version id ') + 11, instr(substr(r2, instr(r2, 'version id ') + 11, 60), ')') - 1) END AS version_id"
+src/ctx.c:5111:      "  FROM p WHERE instr(r2, '(Version ') > 0 AND instr(r2, ' ') > 0),"
+src/ctx.c:5117:      " INSERT OR IGNORE INTO ctx_artifact(url, version, version_id, project, session, turn, at, path, title)"
+src/ctx.c:5118:      " SELECT url, version, version_id, project, session, turn, at, path,"
+src/ctx.c:5121:      " FROM l WHERE url <> '' AND version > 0");
+src/ctx.c:5128:   * Versions are numbered in the order they were published. */
+src/ctx.c:5148:      " INSERT OR IGNORE INTO ctx_artifact(url, version, version_id, project, session, turn, at, path, title)"
+src/ctx.c:5154:  /* approvals: for each version not yet approved, the person's next turn in its session */
+src/ctx.c:5175: * folder or name), how many publishes, and the newest approved version. ?1 project or NULL. */
+src/ctx.c:5184:  "SELECT substr(a.at, 1, 10) AS day, coalesce(a.project, '') AS project, " ARTIFACT_NAME " AS name, a.url AS url, a.version AS version," \
+src/ctx.c:5186:  " (SELECT p.version || ' on ' || substr(p.approved_at, 1, 10) || ' (turn:' || p.approved_turn || ')' FROM ctx_artifact p" \
+src/ctx.c:5188:  " (SELECT f.version FROM ctx_artifact_file f WHERE f.url = a.url) AS kept" \
+src/ctx.c:5205: * scratch space that a reboot clears, so each published version is copied beside the
+src/ctx.c:5207: * files the versions worth keeping. */
+src/ctx.c:5215:  /* Claude Code hands the hook the result as fields: the address, the file and the version's
+src/ctx.c:5216:   * number. A result given as text ("Published FILE at URL (Version N, ...)") is read too. */
+src/ctx.c:5218:  int version = 0;
+src/ctx.c:5229:        version = sqlite3_column_int(q, 2);
+src/ctx.c:5235:  if (!*url || version <= 0) {
+src/ctx.c:5236:    const char *pub = strstr(in.p, "Published "), *ver = pub ? strstr(pub, "(Version ") : NULL;
+src/ctx.c:5237:    version = ver ? atoi(ver + 9) : 0;
+src/ctx.c:5240:  if (version <= 0 || !artifact_id(url, id, sizeof id)) { free(in.p); return 0; }
+src/ctx.c:5251:  snprintf(dst, sizeof dst, "%s/%s/v%d.html", root, id, version);
+src/ctx.c:5264:/* Files copied pages into the private repository, redacted: every approved version, and
+src/ctx.c:5265: * a page's newest version once a day has passed without another. One technote per page,
+src/ctx.c:5266: * so its history is the kept versions. Copies no longer needed are removed. */
+src/ctx.c:5288:    sqlite3_stmt *q = db_prepare(db, "SELECT coalesce((SELECT max(version) FROM ctx_artifact WHERE url = ?1), 0),"
+src/ctx.c:5289:                                     " coalesce((SELECT version FROM ctx_artifact_file WHERE url = ?1), 0)");
+src/ctx.c:5300:      q = db_prepare(db, "SELECT max(approved_turn), max(substr(approved_at, 1, 10)), max(project), max(path) FROM ctx_artifact WHERE url = ?1 AND version = ?2");
+src/ctx.c:5320:        snprintf(hdr, sizeof hdr, "url: %s\nversion: %d\ntitle: %s\nproject: %s\nfile: %.4000s\n", url, have[i], title,
+src/ctx.c:5345:        s = db_prepare(db, "INSERT OR REPLACE INTO ctx_artifact_file(url, technote, version, title, kept) VALUES (?1, ?2, ?3, ?4, datetime('now'))");
+src/ctx.c:5413:    printf("%s %s  %s\n  %s  version %d of %d publishes\n", sqlite3_column_text(q, 0), sqlite3_column_text(q, 1), sqlite3_column_text(q, 2),
+src/ctx.c:5415:    if (sqlite3_column_text(q, 6)) printf("  approved: version %s\n", sqlite3_column_text(q, 6));
+src/ctx.c:5416:    if (sqlite3_column_int(q, 9)) printf("  kept: version %d; read it with `ctx artifacts show %s`\n", sqlite3_column_int(q, 9), sqlite3_column_text(q, 3));
+src/ctx.c:5930:  /* pages this session published in the last three days, and which version the person approved */
+src/ctx.c:5931:  if (sqlite3_prepare_v2(db, "SELECT name, url, version, approved FROM (" ARTIFACTS_SELECT ") x"
+src/ctx.c:5938:      snprintf(line, sizeof line, "\n- Artifact \"%.80s\" at %s is at version %d%s%.60s", sqlite3_column_text(q, 0), sqlite3_column_text(q, 1),
+src/ctx.c:5939:               sqlite3_column_int(q, 2), ok ? "; the user approved version " : "", ok ? ok : "");
+src/ctx.c:6837:  snprintf(v, sizeof v, "INSERT OR REPLACE INTO ctx_meta(key, value) VALUES ('derived_version', '%d')", CTX_DERIVED_VERSION);
+src/ctx.c:6872:  fputs("usage: ctx version\n"
+src/ctx.c:6912:  if (argc == 2 && !strcmp(argv[1], "version")) return cmd_version();
+README.md:6:already failed. Per project it keeps tickets, version-pinned sources and a wiki
+README.md:7:whose every claim quotes an exact source version. Repositories sync between
+README.md:29:  pages it published. `ctx artifacts` lists every published page and the version
+README.md:36:  in a pinned source version, and retires pages whose sources are gone.
+plugin/.claude-plugin/plugin.json:4:  "version": "@VERSION@",
+plugin/INSTALL.md:5:tickets, and per project a wiki whose every claim cites an exact source version.
+Makefile:118:VERSION := $(shell sed -n 's/^\#define CTX_VERSION "\(.*\)"/\1/p' src/ctx.c)
+Makefile:121:DIST     = ctx-$(VERSION)-$(OS)-$(ARCH)
+Makefile:132:	sed -i.bak 's/@VERSION@/$(VERSION)/' build/dist/$(DIST)/.claude-plugin/plugin.json && rm build/dist/$(DIST)/.claude-plugin/plugin.json.bak
+Makefile:137:	build/dist/$(DIST)/bin/ctx version
+schema/check.sql:55:-- A page compiled from the current source version is not stale.
+schema/check.sql:61:-- A new source version makes it stale.
+schema/state.sql:70:-- Which session compiled which page version. Private: a shared page never names it.
+schema/state.sql:75:  version TEXT NOT NULL,
+schema/state.sql:82:-- Settings ctx keeps for itself, such as the version of the derived tables.
+schema/state.sql:125:-- whose history holds each kept version.
+schema/state.sql:129:  version  INTEGER NOT NULL,  -- the newest version kept
+schema/index.sql:3:-- cannot follow, raise CTX_DERIVED_VERSION in src/ctx.c and ctx rebuilds on next open
+schema/index.sql:12:-- One row per indexed thing, at the version last indexed.
+schema/index.sql:76:--   compiled_from  a wiki page's source, pinned to the source version in dst_hash
+schema/index.sql:161:-- Technotes indexed as sessions, at the version indexed.
+schema/index.sql:164:  version  TEXT NOT NULL
+schema/index.sql:185:-- turn in which the person approved that version, when one followed.
+schema/index.sql:189:  version       INTEGER NOT NULL,
+schema/index.sql:190:  version_id    TEXT,
+schema/index.sql:199:  UNIQUE (url, version, turn)
+schema/index.sql:201:CREATE INDEX IF NOT EXISTS ctx_artifact_url ON ctx_artifact(url, version);
+docs/howto.md:4:arguments lists them all, and `ctx version` prints its version and SQLite's.
+docs/howto.md:97:`api-request-blob` copies older versions archived as extra turns. The corrected
+docs/howto.md:98:technotes sync; upgrade ctx on every machine before syncing, since older versions
+docs/howto.md:172:turn that an older ctx stored twice. A technote changed this way gets a new version,
+docs/howto.md:184:ctx remember "Bump versions by x.x.1 until we leave beta" --until 2027-03-01
+docs/howto.md:196:When a file changes, its rule gets a new version; when it is deleted, its rule is
+docs/howto.md:257:Each rule is a technote in your private repository, so every version is kept and
+docs/howto.md:278:Every page an agent published is an artifact record: its address, each version, the
+docs/howto.md:279:file it came from, and the turn in which you approved a version.
+docs/howto.md:288:link, with one version for each check-in. Their files stay on the publisher, which
+docs/howto.md:289:already keeps every version; an edit link is never recorded.
+docs/howto.md:291:A version counts as approved only when your very next turn was a short yes ("yes",
+docs/howto.md:292:"go", "do it", "approved") and no newer version came first; the record names that
+docs/howto.md:299:the Artifact tool, `ctx artifacts keep`, copies each published version beside the
+docs/howto.md:301:supporting files). The next scan files the versions worth keeping in your private
+docs/howto.md:302:repository, with secrets redacted: every approved version, and a page's newest version
+docs/howto.md:304:the kept versions, and it syncs with the rest of the archive. Other copies are deleted.
+docs/howto.md:380:  --class versioned --valid-from 2026-01-15 [--as vendor/spec.pdf]
+docs/howto.md:398:| `versioned` | true for one version of something | best with `--valid-from`, and `--valid-until` once replaced |
+docs/howto.md:416:  --class versioned --valid-from 2026-09-01
+docs/howto.md:459:new version dropped. Get the full trunk hash for citations with:
+docs/howto.md:567:repositories. When a new version of `ctx` changes those tables it rebuilds by
+test/run.sh:13:"$CTX" version | grep -q '^sqlite 3\.' || fail "version"
+test/run.sh:200:K2=$("$CTX" remember "Bump versions by x.x.1 until out of beta" --project rp --until 2020-01-01 | cut -d' ' -f1)
+test/run.sh:216:CLAUDE_CONFIG_DIR="$RC" "$CTX" rules import | grep -q '^1 rules changed' || fail "an edited file makes a new version"
+test/run.sh:217:"$CTX" search --all jeppesen | grep -q rule || fail "the new version is searchable"
+test/run.sh:219:[ "$("$CTX" sql "SELECT count(*) FROM fslrepo_me_tagxref x JOIN fslrepo_me_tag t ON t.tagid = x.tagid WHERE t.tagname = 'event-$N'")" = 2 ] || fail "the old version stays in history"
+test/run.sh:352:# turn approves that version; text that only quotes a publish line is not one.
+test/run.sh:362:pub = "Published %s at https://claude.ai/artifact/%s (Version %d, version id %d-ab)\n\nLive subscription: connected"
+test/run.sh:377:grep -q 'Heron Plan' "$T/art.txt" && grep -A1 'Heron Plan' "$T/art.txt" | grep -q 'artifact/HERON1  version 2 of 2 publishes' || fail "an artifact lists its title, address and versions: $(cat "$T/art.txt")"
+test/run.sh:378:grep -A2 'Heron Plan' "$T/art.txt" | grep -q 'approved: version 1 on .* (turn:y-1)' || fail "a short yes approves the version before it, citing the turn: $(cat "$T/art.txt")"
+test/run.sh:379:grep -A2 'egret.html' "$T/art.txt" | grep -q 'approved: version 2 on' || fail "the approval belongs to the latest version before it: $(cat "$T/art.txt")"
+test/run.sh:380:[ "$("$CTX" sql "SELECT count(*) FROM ctx_artifact WHERE approved_turn IS NOT NULL")" = 2 ] || fail "a superseded version and one followed by a comment are not approved"
+test/run.sh:385:# A published page's file is copied at once; approved versions, and the newest once a day
+test/run.sh:388:kp() { printf '{"tool_name":"Artifact","tool_input":{"file_path":"%s"},"tool_response":"Published %s at https://claude.ai/artifact/%s (Version %s, version id 1-ab)"}' "$1" "$1" "$2" "$3" | "$CTX" artifacts keep; }
+test/run.sh:391:printf '{"tool_name":"Artifact","tool_input":{"file_path":"%s"},"tool_response":{"url":"https://claude.ai/artifact/HERON1","path":"%s","seq":2,"version":"2-ab","title":"Heron Plan"}}' "$T/pg/h.html" "$T/pg/h.html" | "$CTX" artifacts keep  # the result as fields, as Claude Code gives it
+test/run.sh:395:[ -f "$CTX_DB.artifacts/HERON1/v1.html" ] && [ -f "$CTX_DB.artifacts/HERON1/v2.html" ] && [ ! -e "$CTX_DB.artifacts/EGRET2/v2.html" ] || fail "each published version's file is copied, and only those"
+test/run.sh:397:grep -A3 'Heron Plan, first cut' "$T/art2.txt" | grep -q 'kept: version 1' || fail "an approved version is filed, under the page's own title: $(cat "$T/art2.txt")"
+test/run.sh:402:grep -A3 'Heron Plan' "$T/art3.txt" | grep -q 'kept: version 2' || fail "the newest version is filed once a day has passed: $(cat "$T/art3.txt")"
+test/run.sh:405:[ "$("$CTX" sql "SELECT count(*) FROM ctx_artifact_file")" = 1 ] && [ ! -e "$CTX_DB.artifacts/EGRET2/v1.html" ] || fail "a version that was neither approved nor newest is dropped, not filed"
+test/run.sh:411:assert 'Artifact "Heron Plan" at https://claude.ai/artifact/HERON1 is at version 2; the user approved version 1 on' in c, c
+test/run.sh:435:grep -q 'Kite Report' "$T/kite.txt" && grep -q 'pages.example.test/v/kite7#ab12.*  version 2 of 2 publishes' "$T/kite.txt" || fail "a publisher page lists its title, read link and versions: $(cat "$T/kite.txt")"
+test/run.sh:436:grep -q 'approved: version 2 on .* (turn:y-2)' "$T/kite.txt" || fail "a publisher page records an approval: $(cat "$T/kite.txt")"
+test/run.sh:437:[ "$("$CTX" sql "SELECT group_concat(version_id) FROM (SELECT version_id FROM ctx_artifact WHERE url LIKE '%kite7%' ORDER BY version)")" = c0ffee01,c0ffee02 ] || fail "each version keeps its check-in"
+test/run.sh:918:[ "$(q "SELECT status FROM ctx_citation WHERE ref='a'")" = ok ] || fail "a pinned citation still resolves at its version"
+test/run.sh:1035:"$CTX" source uses a.md | grep -q 'older version' || fail "uses shows an older pin"
+test/run.sh:1053:(cd "$T/rt/co" && "$CTX" source add "$T/rt/old.md" --origin u1 --class versioned --valid-from 2026-01-01 >/dev/null; "$CTX" source add "$T/rt/bad.md" --origin u2 --class evergreen --valid-from 2026-01-01 >/dev/null)
+test/run.sh:1070:(cd "$T/rt/co" && "$CTX" source add "$T/rt/new.md" --origin u3 --class versioned --valid-from 2026-06-01 >/dev/null)
+test/run.sh:1276:"$CTX" version >/dev/null
+test/run.sh:1287:[ "$("$CTX" sql "PRAGMA user_version")" = 6 ] || fail "a new file is at the current version"
+test/run.sh:1288:[ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 6 ] || fail "derived version recorded"
+test/run.sh:1299:# An index from an older version is rebuilt on open, once.
+test/run.sh:1300:"$CTX" sql "UPDATE ctx_meta SET value='1' WHERE key='derived_version'" >/dev/null
+test/run.sh:1303:[ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 6 ] || fail "then it is current"
+test/run.sh:1305:# A file from before versioning upgrades in place, without a rebuild.
+test/run.sh:1306:"$CTX" sql "DROP TABLE ctx_meta" >/dev/null; "$CTX" sql "PRAGMA user_version = 1" >/dev/null
+test/run.sh:1307:"$CTX" search --all capybara 2>"$T/rb3.err" | grep -q capybara || fail "an unversioned file still works"
+test/run.sh:1308:[ -s "$T/rb3.err" ] && fail "an unversioned file is upgraded without a rebuild"
+test/run.sh:1309:[ "$("$CTX" sql "PRAGMA user_version")" = 6 ] || fail "and is marked current"
+skill/ctx-wiki/SKILL.md:3:description: Compile or maintain a project's wiki from its version-pinned sources with ctx. Use when asked to compile a source into the wiki, write or update a wiki page, fix wiki citations, or work a ctx ticket titled "Compile" or "Wiki:". Tickets offered at session start, or given as a 10-character id, are ctx tickets: read one with `ctx ticket show ID`. Not for answering questions from past sessions; use the ctx skill for that.
+skill/ctx-wiki/SKILL.md:9:back to a literal quote from an exact source version. `ctx wiki save` checks this
+bench/corpus.json:19:    { "id": "db-06", "text": "Multiversion concurrency control lets readers see a consistent snapshot without blocking writers." },

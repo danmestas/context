@@ -98,4 +98,13 @@ is called the winner on a gap of a few questions.
 
 ## Changes
 
-None yet.
+- 2026-11-12, before any tool was run: the subject repository is ctx itself. It is the
+  only public repository already on the machine that builds and tests in seconds, and
+  running the sessions on another project would have meant downloading and executing
+  its code. The corpus and its weaknesses are described in
+  [shipyard/README.md](shipyard/README.md).
+- 2026-11-12: the corpus has 32 sessions and 67 questions, of which 30 are held out.
+  ctx was measured at check-in 7150d2056fec, before anything in it was changed in
+  response to this corpus.
+- 2026-11-12: third-party tools are run in containers with only the corpus mounted, so
+  their index time includes container overhead and is not compared with ctx's.

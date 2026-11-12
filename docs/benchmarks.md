@@ -17,6 +17,7 @@ This page lists what ctx has been measured to do. Every figure comes from a resu
 | Ranking: full-text search against grep | Passed its bar | The ranking ctx uses finds about 57% of the labelled documents in its top 10, against 37% for grep. It is a clear win over grep and still misses a lot; no target for the absolute score has been set. |
 | LongMemEval-S, retrieval only | No bar | ctx's search is level with another tool's published keyword search (two questions apart in 470, which is noise) and well ahead of grep. Both are weakest where evidence is spread over several sessions or depends on dates. Tools that use embeddings report higher figures on this benchmark, but those are their own reports under other scoring, so they are not shown as a comparison. |
 | A small public set of coding sessions | Passed its bar | ctx clears the check. It says little more than that: the set is 15 invented sessions, and grep does as well. A harder public set of coding sessions does not exist yet. |
+| Coding sessions: finding the session that holds the answer | No bar | ctx's search did not beat ranked grep at finding the right session here. In the session's own terms grep found more (26 against 20 of 30 held out; alone right on 8 questions against ctx's 2, sign test p = 0.11, so by the rule set beforehand the two are level). Paraphrased, both fail most of the time: neither keyword method copes when the question shares no distinctive word with the session. The corpus is small, 32 sessions, which suits scoring whole sessions the way this grep does; ctx ranks single turns. Whether an agent answers better with ctx than with grep is a separate measurement, not yet run. |
 | Answering questions about past work | Passed its bar | Telling the agent at session start that an archive exists is worth about 7 questions in 90 and costs no extra tokens. The difference is borderline by a sign test (p = 0.052), so it is kept as likely but not proven. |
 | Reaching for the archive unprompted | Failed its bar | Rewording the triggers made no real difference (one question in 23), so the wording was not changed. Fresh agents already search about four times in five without being told. |
 | A reminder when a prompt refers to earlier work | Failed its bar | The reminder changed nothing because agents already searched every time. The hook exists but is off by default. This test cannot show what happens deep in a long session, where the reminder might matter more. |
@@ -25,7 +26,8 @@ This page lists what ctx has been measured to do. Every figure comes from a resu
 | Which kinds of rule go stale | No bar | Status notes go stale within weeks and rules in a person's own words rarely do, so ctx fades by kind. Fading by age would have silenced about a quarter of rules that were still true. |
 | Holding back a question the archive may answer | Failed its bar | The idea failed clearly. Three in four firings were irrelevant and one in twelve pointed at a conflicting answer, so the hook was removed before it shipped. |
 | Matching answers to the questions agents asked | Passed its bar | The record of questions and answers is consistent on a real archive. This checks that answers are attached to the right question, not that they were read correctly word for word. |
-| Hooks and commands on a real archive | Failed its bar | At the median every hook takes under 50 ms, far inside its limit. The run failed its bar because one compaction brief took 1.2 s on a machine running at three times its capacity; the slowest runs are the ones to watch. |
+| Hooks and commands on a real archive, machine heavily loaded | Failed its bar | At the median every hook takes under 50 ms even with the machine running at three times its capacity. The run failed its bar because the first compaction brief took 1.2 s. A second run on a quiet machine gave the same first-run figure, so that cost belongs to the brief and not to the load. |
+| Hooks and commands on a real archive, machine not busy | Failed its bar | With the machine quiet every hook takes 5 to 35 ms at the median. The compaction brief still failed the bar, at 1.2 s on its first run and about 35 ms after that. The same first-run figure appeared under heavy load, so it is not caused by load: the first brief after a while reads index pages that are no longer in memory. It is inside the 3-second limit, and it is the real cost after a compaction. |
 | Background work | No bar | Background work costs a few seconds of processor time an hour. The rebuild is a one-off of a few minutes when the index format changes. |
 | Fuzzing and sanitizers | No bar | Fuzzing found a real bug this week, in a rule that could match across a line break. It did not let a secret through. The failing input is now replayed on every check. |
 
@@ -119,6 +121,35 @@ bench/coding_life.py --data DIR
 ```
 
 [Result file](../bench/results/coding-life.json)
+
+### Coding sessions: finding the session that holds the answer
+
+Each question is asked twice: once in the session's own terms, once paraphrased with none of its distinctive words. Exact terms favour keyword search; paraphrase is where it is weakest.
+
+- **Compared with:** ranked grep over the same transcript files: each session scored by how many of the question's words it contains, then by how often
+- **Bar:** a difference counts only if a sign test on the paired held-out questions gives p below 0.05 (set in bench/head-to-head.md before the run). **Not judged.**
+- **What it means:** ctx's search did not beat ranked grep at finding the right session here. In the session's own terms grep found more (26 against 20 of 30 held out; alone right on 8 questions against ctx's 2, sign test p = 0.11, so by the rule set beforehand the two are level). Paraphrased, both fail most of the time: neither keyword method copes when the question shares no distinctive word with the session. The corpus is small, 32 sessions, which suits scoring whole sessions the way this grep does; ctx ranks single turns. Whether an agent answers better with ctx than with grep is a separate measurement, not yet run.
+
+| Measure | Result |
+| --- | --- |
+| ctx, session's own terms | 20 of 30 |
+| grep, session's own terms | 26 of 30 |
+| ctx, paraphrased | 5 of 30 |
+| grep, paraphrased | 7 of 30 |
+| ctx, all questions, own terms and paraphrased | 48 and 18 of 67 |
+| grep, all questions, own terms and paraphrased | 52 and 16 of 67 |
+
+Measured 2026-11-12; check-in 7150d2056fec; good until 2027-05-11.
+
+- corpus: 32 real agent sessions on a public repository over a simulated three weeks, with 67 questions that the repository and its commit messages do not answer
+- held out: 30 questions, chosen by a hash of their ids
+- scoring: every session holding the answer among the first five returned; no model involved
+
+```sh
+bench/shipyard.py --data DIR
+```
+
+[Result file](../bench/results/shipyard-retrieval.json)
 
 ## Agent behaviour
 
@@ -328,13 +359,13 @@ ctx decisions --all
 
 ## Speed
 
-### Hooks and commands on a real archive
+### Hooks and commands on a real archive, machine heavily loaded
 
 How long an agent session waits for ctx. Hooks run on every session start, compaction and subagent start, so they are held to a 3-second limit and should take a small fraction of it.
 
 - **Compared with:** the 3-second limit Claude Code gives a hook, and the 1-second bar set here
 - **Bar:** every hook's slowest run under 1,000 ms. **Failed.**
-- **What it means:** At the median every hook takes under 50 ms, far inside its limit. The run failed its bar because one compaction brief took 1.2 s on a machine running at three times its capacity; the slowest runs are the ones to watch.
+- **What it means:** At the median every hook takes under 50 ms even with the machine running at three times its capacity. The run failed its bar because the first compaction brief took 1.2 s. A second run on a quiet machine gave the same first-run figure, so that cost belongs to the brief and not to the load.
 
 | Measure | Result |
 | --- | --- |
@@ -360,6 +391,39 @@ bench/speed.py --runs 7
 ```
 
 [Result file](../bench/results/speed.json)
+
+### Hooks and commands on a real archive, machine not busy
+
+How long an agent session waits for ctx. Hooks run on every session start, compaction and subagent start, so they are held to a 3-second limit and should take a small fraction of it.
+
+- **Compared with:** the 3-second limit Claude Code gives a hook, and the 1-second bar set here
+- **Bar:** every hook's slowest run under 1,000 ms. **Failed.**
+- **What it means:** With the machine quiet every hook takes 5 to 35 ms at the median. The compaction brief still failed the bar, at 1.2 s on its first run and about 35 ms after that. The same first-run figure appeared under heavy load, so it is not caused by load: the first brief after a while reads index pages that are no longer in memory. It is inside the 3-second limit, and it is the real cost after a compaction.
+
+| Measure | Result |
+| --- | --- |
+| Session start: rules and archive note | 8 ms (slowest 12 ms) |
+| Session start: open tickets | 7 ms (slowest 8 ms) |
+| After a compaction: the brief | 35 ms (slowest 1237 ms) |
+| Subagent start: archive note | 6 ms (slowest 7 ms) |
+| Prompt submitted: recall check | 5 ms (slowest 5 ms) |
+| Status line | 5 ms (slowest 5 ms) |
+| Search, two words | 99 ms (slowest 339 ms) |
+| Read a turn with its neighbours | 7 ms (slowest 8 ms) |
+| List decisions | 531 ms (slowest 3740 ms) |
+| List published pages | 383 ms (slowest 746 ms) |
+
+Measured 2026-11-12; check-in 7150d2056fec; good until 2027-02-10.
+
+- archive: 1.3 GB, about 470,000 turns
+- machine: 14 cores, load average 9 while measuring
+- runs: 7 each; the median is reported
+
+```sh
+bench/speed.py --runs 7
+```
+
+[Result file](../bench/results/speed-quiet.json)
 
 ### Background work
 

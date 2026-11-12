@@ -1,0 +1,198 @@
+tools/bench_page.py:30:session archive give counts only, because the sessions themselves are not published. Results \
+docs/benchmarks.md:3:This page lists what ctx has been measured to do. Every figure comes from a result file in `bench/results/`, and each result shows the date it was measured, the check-in it was measured on and the command that reruns it. Figures measured on the author's own private session archive give counts only, because the sessions themselves are not published. Results that failed the bar set before the run are kept on purpose.
+docs/benchmarks.md:57:- grep: ripgrep counts per term, ranked by terms matched then hits
+docs/benchmarks.md:143:- source: the author's own session archive; only counts leave it
+docs/benchmarks.md:169:- source: the author's own session archive; only counts leave it
+docs/benchmarks.md:194:- source: the author's own session archive; only counts leave it
+docs/benchmarks.md:222:- source: the author's own session archive; only counts leave it
+docs/benchmarks.md:246:- source: the author's own session archive; only counts leave it
+docs/benchmarks.md:247:- evidence rule: a flag counts only with a quote found word for word in one of the person's turns
+docs/benchmarks.md:272:- source: the author's own session archive; only counts leave it
+docs/benchmarks.md:300:- source: the author's own session archive; only counts leave it
+docs/benchmarks.md:321:- source: the author's own session archive; only counts leave it
+fuzz/fuzz_stats.c:1:/* Stats: counting ctx calls in any shell command, and in any turn body through the
+fuzz/fuzz_stats.c:12:  if (count_ctx_runs((const char *)data, n, "search") < 0) __builtin_trap();
+schema/check.sql:14:SELECT CASE WHEN (SELECT count(*) FROM ctx_repo WHERE scope = 'private' AND project IS NULL) = 1
+schema/check.sql:32:SELECT CASE WHEN (SELECT count(*) FROM ctx_capture_day) = 0
+schema/check.sql:44:SELECT CASE WHEN (SELECT count(*) FROM ctx_chunk_fts WHERE ctx_chunk_fts MATCH 'decisions') = 1
+schema/check.sql:46:SELECT CASE WHEN (SELECT count(*) FROM ctx_chunk_fts WHERE ctx_chunk_fts MATCH '"mmap_cache"') = 1
+schema/check.sql:51:SELECT CASE WHEN (SELECT count(*) FROM ctx_chunk_fts WHERE ctx_chunk_fts MATCH 'decisions') = 0
+schema/check.sql:52:            AND (SELECT count(*) FROM ctx_chunk_fts WHERE ctx_chunk_fts MATCH 'rewritten') = 1
+schema/check.sql:58:SELECT CASE WHEN (SELECT count(*) FROM ctx_stale_wiki) = 0
+schema/check.sql:63:SELECT CASE WHEN (SELECT count(*) FROM ctx_stale_wiki WHERE page = 'concepts/Cache') = 1
+schema/check.sql:69:SELECT CASE WHEN (SELECT count(*) FROM ctx_chunk WHERE doc_id = 1) = 0
+schema/check.sql:70:            AND (SELECT count(*) FROM ctx_chunk_fts WHERE ctx_chunk_fts MATCH 'rewritten') = 0
+schema/check.sql:71:            AND (SELECT count(*) FROM ctx_link WHERE src_id = 2) = 1
+schema/check.sql:75:SELECT CASE WHEN (SELECT count(*) FROM ctx_stale_wiki WHERE current_hash IS NULL) = 1
+schema/check.sql:92:SELECT CASE WHEN (SELECT count(*) FROM ctx_ready_ticket) = 0
+schema/check.sql:97:SELECT CASE WHEN (SELECT count(*) FROM ctx_doc) = 0 AND (SELECT count(*) FROM ctx_link) = 0
+schema/index.sql:104:-- Open tickets with nothing in the way. An unknown blocker counts as unfinished.
+tools/transcript_stats.py:12:    turns = collections.Counter()
+tools/transcript_stats.py:13:    tools = collections.Counter()
+tools/doppler-values.py:16:                        r"|DATASET|QUEUE|REGION|SPACE|CHAT_ID|AGENT|REMOTES|ACCOUNT_ID|ACCESS_KEY_ID|CLIENT_ID)$")
+src/ctx.c:57:/* Parse a whole-number count of at least 1 for FLAG; die on junk or out of range. */
+src/ctx.c:58:static long parse_count(const char *flag, const char *text) {
+src/ctx.c:113:  int fossil = db_int(db, "SELECT count(*) FROM pragma_function_list WHERE name='fsl_open'");
+src/ctx.c:138:  if (clone && !db_int(db, "SELECT count(*) FROM sqlite_master WHERE name='fslrepo_me_config'")) {
+src/ctx.c:147:  if (!db_int(db, "SELECT count(*) FROM sqlite_master WHERE name='fslrepo_me_config'")) {
+src/ctx.c:313:/* after_secret: i is where an earlier secret ended, which counts as a word boundary,
+src/ctx.c:392:        if (mark) e = (size_t)(mark - s); /* a value counts only up to an earlier redaction, so a second pass changes nothing */
+src/ctx.c:687:      db_int(db, "SELECT count(*) FROM sqlite_master WHERE name = 'ctx_meta'") &&
+src/ctx.c:733:  sqlite3_stmt *q = db_prepare(db, "SELECT count(*) FROM fsl_repos WHERE name = ?1");
+src/ctx.c:1210:/* ctx search [--all] [--history] [--as-of DATE] [--limit N] [--count] [--json] WORDS... */
+src/ctx.c:1215:  int all = 0, limit = 12, nwords = 0, history = 0, count = 0, json = 0;
+src/ctx.c:1223:    else if (!strcmp(argv[i], "--count")) count = 1;
+src/ctx.c:1225:    else if (!strcmp(argv[i], "--limit") && i + 1 < argc) limit = (int)parse_count("--limit", argv[++i]);
+src/ctx.c:1238:  int hits = search_run(db, q.p, project, limit, history, as_of, count, json);
+src/ctx.c:1240:    if (!count) fprintf(stderr, "ctx: nothing in project %s; searching everything\n", project);
+src/ctx.c:1241:    hits = search_run(db, q.p, NULL, limit, history, as_of, count, json);
+src/ctx.c:1243:  if (count) printf("%d\n", hits);
+src/ctx.c:1262:      turn_show = (size_t)parse_count("--max-bytes", argv[++i]);
+src/ctx.c:1308:/* Stats. A turn records each shell call as a line "Bash {json input}". These count
+src/ctx.c:1312:static int count_ctx_runs(const char *cmd, size_t n, const char *sub) {
+src/ctx.c:1314:  int count = 0;
+src/ctx.c:1356:          if (e - s == sl && !memcmp(cmd + s, sub, sl)) count++;
+src/ctx.c:1364:  return count;
+src/ctx.c:1393:        total += count_ctx_runs(cmd.p ? cmd.p : "", cmd.n, sub);
+src/ctx.c:1471: * in the last minute may still be running, so it is not counted as started. */
+src/ctx.c:1601:             "SELECT %s, count(DISTINCT doc_id), sum(searches), sum(miss), sum(reads), sum(skill) FROM temp.s"
+src/ctx.c:1623:    for (int i = 0; i < sqlite3_column_count(q); i++) {
+src/ctx.c:1823:  if (db_int(db, "SELECT count(*) FROM ctx_meta WHERE key = 'speakers' AND value = '" SPEAKERS_VERSION "'")) return;
+src/ctx.c:1868:  sqlite3_stmt *is_blobby = db_prepare(db, "SELECT count(*) FROM temp.blobby WHERE session = ?1");
+src/ctx.c:1957:  if (db_int(db, "SELECT count(*) FROM ctx_meta WHERE key = 'redaction' AND value = '" REDACTION_VERSION "'")) return;
+src/ctx.c:1958:  if (!db_int(db, "SELECT count(*) FROM ctx_capture_day")) { /* nothing stored yet */
+src/ctx.c:2131:  size_t count[256] = {0};
+src/ctx.c:2132:  for (size_t i = 0; i < n; i++) count[(unsigned char)s[i]]++;
+src/ctx.c:2135:    if (count[c]) bits -= (double)count[c] / n * log2((double)count[c] / n);
+src/ctx.c:2210:  size_t mask, count;
+src/ctx.c:2241:  set.count = have;
+src/ctx.c:2326:    if (known.count && n >= KNOWN_MIN)
+src/ctx.c:2338:  int before = db_int(db, "SELECT count(*) FROM ctx_audit_finding");
+src/ctx.c:2344:  int found = db_int(db, "SELECT count(*) FROM ctx_audit_finding") - before;
+src/ctx.c:2345:  int open = db_int(db, "SELECT count(*) FROM ctx_audit_finding WHERE status = 'open'");
+src/ctx.c:2356:  sqlite3_stmt *t = db_prepare(db, "SELECT rule, sum(status = 'open'), sum(status = 'allowed'), count(DISTINCT fingerprint) FROM ctx_audit_finding GROUP BY 1 ORDER BY 2 DESC");
+src/ctx.c:2375:  " (SELECT count(*) FROM fslrepo_me_ticket b WHERE b.status IN ('Done', 'Dropped')" \
+src/ctx.c:2379:  return db_int(db, "SELECT count(*) FROM pragma_table_info('fslrepo_me_ticket') WHERE name = 'assignee'") > 0;
+src/ctx.c:2435:      "SELECT rule, count(*), count(DISTINCT fingerprint) FROM ctx_audit_finding WHERE status = 'open' GROUP BY 1"
+src/ctx.c:2440:  struct row { char *rule; int count, distinct; } *rows = NULL;
+src/ctx.c:2448:    rows[n].count = sqlite3_column_int(q, 1);
+src/ctx.c:2458:             rows[i].count, rows[i].distinct, rows[i].rule);
+src/ctx.c:2474:  int ok = sqlite3_prepare_v2(db, "SELECT count(*) FROM pragma_table_info('fslrepo_me_ticket') WHERE name = 'assignee'", -1, &chk, NULL) == SQLITE_OK &&
+src/ctx.c:2741:  sqlite3_stmt *q = db_prepare(db, "SELECT count(*) FROM ctx_repo WHERE name = ?1");
+src/ctx.c:3402:static void index_tree(sqlite3 *db, const char *project, sqlite3_int64 repo, const char *base, const char *rel, long *count, long *changed) {
+src/ctx.c:3416:      index_tree(db, project, repo, base, sub, count, changed);
+src/ctx.c:3421:      (*count)++;
+src/ctx.c:3527:  q = db_prepare(db, "SELECT count(*), coalesce(sum(c.status <> 'ok' AND c.status <> 'unchecked'), 0) FROM ctx_citation c JOIN ctx_doc d ON d.id = c.doc_id WHERE d.project = ?1");
+src/ctx.c:3549:  sqlite3_stmt *q = db_prepare(db, "SELECT count(*) FROM temp.cite WHERE ref = ?1");
+src/ctx.c:3965:    sqlite3_stmt *q = db_prepare(db, "SELECT count(*) FROM fslrepo_me_ticket WHERE title = ?1 AND status IN ('Open', 'Claimed')");
+src/ctx.c:4060:  sqlite3_stmt *q = db_prepare(db, "SELECT count(*) FROM ctx_chunk_fts f JOIN ctx_chunk c ON c.id = f.rowid WHERE ctx_chunk_fts MATCH ?1 AND c.turn IS NOT NULL");
+src/ctx.c:4087:      " (SELECT count(*) FROM ctx_citation c JOIN ctx_doc w ON w.id = c.doc_id WHERE w.project = s.project AND w.kind = 'wiki'"
+src/ctx.c:4173:      " (SELECT count(*) FROM ctx_citation c WHERE c.doc_id = d.id), (SELECT count(DISTINCT c.target) FROM ctx_citation c WHERE c.doc_id = d.id),"
+src/ctx.c:4275:      " (SELECT count(*) FROM ctx_link l JOIN ctx_doc s ON s.id = l.src_id WHERE s.project = d.project AND l.kind = 'links_to' AND l.dst_name = d.name"
+src/ctx.c:4718:    q = db_prepare(db, "SELECT (NOT ?3 AND (SELECT count(*) FROM ctx_capture_day WHERE technote = ?1)) + (SELECT count(*) FROM ctx_remote_note WHERE technote = ?1 AND version = ?2)");
+src/ctx.c:4877:  if (sqlite3_prepare_v2(db, "SELECT count(*) FROM ctx_chunk_fts WHERE rowid = ?1 AND ctx_chunk_fts MATCH ?2", -1, &q, NULL) != SQLITE_OK) return 0;
+src/ctx.c:4971:    if (sqlite3_prepare_v2(db, "SELECT count(*) FROM (SELECT 1 FROM ctx_chunk_fts WHERE ctx_chunk_fts MATCH ?1 LIMIT ?2)", -1, &q, NULL) == SQLITE_OK) {
+src/ctx.c:5152:   * link, with its read token, is the address; an edit link is never taken. Such a result counts
+src/ctx.c:5175:      " SELECT url, (SELECT count(*) FROM ctx_artifact x WHERE x.url = t.url) + row_number() OVER (PARTITION BY url ORDER BY at, id),"
+src/ctx.c:5211:  " (SELECT count(*) FROM ctx_artifact n WHERE n.url = a.url) AS publishes," \
+src/ctx.c:5732:      "SELECT project FROM (SELECT project, count(*) n FROM ctx_capture WHERE path GLOB ?1 || '/*' GROUP BY 1"
+src/ctx.c:5929:#define REVIEW_DUE_COUNT "SELECT count(*)" REVIEW_DUE
+src/ctx.c:6074:                               " 'Past sessions of ' || ?1 || ' are archived (' || count(*) || ' session days), tool output included. Before guessing at"
+src/ctx.c:6076:                               " around a hit.')) FROM ctx_doc WHERE kind = 'session' AND project = ?1 HAVING count(*) > 0", -1, &q, NULL) == SQLITE_OK) {
+src/ctx.c:6106:  if (sqlite3_prepare_v2(db, "SELECT count(*) FROM ctx_doc WHERE kind = 'session' AND project = ?1", -1, &q, NULL) == SQLITE_OK) {
+src/ctx.c:6112:  if (sqlite3_prepare_v2(db, "SELECT count(*) FROM ctx_rule_proposal WHERE status = 'open' AND project = ?1", -1, &q, NULL) == SQLITE_OK) {
+src/ctx.c:6135:  if (sqlite3_prepare_v2(db, "SELECT (" REVIEW_DUE_COUNT "), coalesce((SELECT value FROM ctx_meta WHERE key = 'review_offered'), '')"
+src/ctx.c:6226: * holds. Its verdict counts only with a quote found word for word in those turns, so it
+src/ctx.c:6580:    sqlite3_stmt *f = db_prepare(db, "SELECT name, count(*) OVER () FROM ctx_doc WHERE kind = 'rule'"
+src/ctx.c:6612:    int count = 0;
+src/ctx.c:6618:        keys = realloc(keys, (size_t)(count + 1) * sizeof *keys);
+src/ctx.c:6620:        keys[count] = dup_text((const unsigned char *)k);
+src/ctx.c:6624:      count++;
+src/ctx.c:6629:      for (int i = 0; i < count; i++) {
+src/ctx.c:6637:      printf("%d rules marked reviewed\n", count);
+src/ctx.c:6638:    } else if (!count) puts("no rules are due a check");
+src/ctx.c:6765:    printf("%ld rules changed, %d active\n", n, db_int(db, "SELECT count(*) FROM ctx_doc WHERE kind = 'rule' AND status IS NULL"));
+src/ctx.c:6778:    sqlite3_stmt *f = db_prepare(db, "SELECT name, count(*) OVER () FROM ctx_doc WHERE kind = 'rule'"
+src/ctx.c:6789:      sqlite3_stmt *q = db_prepare(db, "SELECT name, count(*) OVER () FROM ctx_doc WHERE kind = 'rule'"
+src/ctx.c:6892:  printf("%d turns, %d documents\n", db_int(db, "SELECT count(*) FROM ctx_chunk"), db_int(db, "SELECT count(*) FROM ctx_doc"));
+src/ctx.c:6902:        "       ctx search [--all] [--history] [--as-of DATE] [--limit N] [--count] WORDS...\n"
+fuzz/fuzz_notes.c:6:static void count(void *ctx, const char *role, const char *at, const char *uuid, const char *body, size_t n) {
+fuzz/fuzz_notes.c:18:  note_turns(t, count, &total);
+test/run.sh:93:    "sk-short", "a task-AKIA1", "token_count: 123456789", "see the bearer of bad news here",
+test/run.sh:133:[ "$("$CTX" sql "SELECT count(*) FROM ctx_capture_day")" = 2 ] || fail "one technote per day"
+test/run.sh:135:[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk_fts WHERE ctx_chunk_fts MATCH 'zebras'")" = 1 ] || fail "search finds a turn"
+test/run.sh:142:[ "$("$CTX" sql "SELECT count(*) FROM ctx_capture_day")" = 2 ] || fail "append made a new technote"
+test/run.sh:156:[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk")" = 6 ] || fail "duplicate turns after replacement"
+test/run.sh:171:[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE heading='user'")" = 7 ] || fail "the old labels are set up: $("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE heading='user'")"
+test/run.sh:179:[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE heading='user'")" = 2 ] || fail "a rebuild keeps the correction"
+test/run.sh:208:[ "$("$CTX" search --all --history --count beta 2>&1)" = "$("$CTX" search --all --history beta | grep -c '^#')" ] || fail "--count prints only the number of hits"
+test/run.sh:209:[ "$("$CTX" search --all --count qqqnomatch 2>&1)" = 0 ] || fail "--count prints 0 for no hits"
+test/run.sh:229:[ "$("$CTX" sql "SELECT count(*) FROM fslrepo_me_tagxref x JOIN fslrepo_me_tag t ON t.tagid = x.tagid WHERE t.tagname = 'event-$N'")" = 2 ] || fail "the old version stays in history"
+test/run.sh:233:[ "$("$CTX" sql "SELECT count(*) FROM ctx_doc WHERE kind='session' AND id IN (SELECT doc_id FROM ctx_chunk WHERE body LIKE '%changelog%')")" = 0 ] || fail "a rule is not a session"
+test/run.sh:234:B=$("$CTX" sql "SELECT count(*) FROM ctx_doc WHERE kind='rule'")
+test/run.sh:236:[ "$("$CTX" sql "SELECT count(*) FROM ctx_doc WHERE kind='rule'")" = "$B" ] || fail "a rebuild keeps the rules"
+test/run.sh:237:"$CTX" sql "SELECT count(*) FROM ctx_doc WHERE kind='session' AND name IN (SELECT technote FROM ctx_rule)" | grep -qx 0 || fail "a rebuild does not read rules as sessions"
+test/run.sh:294:[ "$("$CTX" sql "SELECT count(*) FROM ctx_rule_check WHERE key GLOB '*/CLAUDE.md'")" = 0 ] || fail "a project's CLAUDE.md is never judged"
+test/run.sh:390:[ "$("$CTX" sql "SELECT count(*) FROM ctx_artifact WHERE approved_turn IS NOT NULL")" = 2 ] || fail "a superseded version and one followed by a comment are not approved"
+test/run.sh:394:[ "$("$CTX" sql "SELECT count(*) FROM ctx_artifact")" = 4 ] || fail "reading again adds nothing"
+test/run.sh:415:[ "$("$CTX" sql "SELECT count(*) FROM ctx_artifact_file")" = 1 ] && [ ! -e "$CTX_DB.artifacts/EGRET2/v1.html" ] || fail "a version that was neither approved nor newest is dropped, not filed"
+test/run.sh:416:[ "$("$CTX" sql "SELECT count(*) FROM ctx_doc WHERE kind = 'session' AND title LIKE '%Heron%'")" = 0 ] || fail "a kept page is not a session"
+test/run.sh:448:[ "$("$CTX" sql "SELECT count(*) FROM ctx_artifact WHERE url LIKE '%abc123%'")" = 0 ] || fail "an example link in a document is not a publish"
+test/run.sh:506:# Stats count what agents really ran: searches, misses, reads and skill loads, not mentions.
+test/run.sh:550:[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE body LIKE '%aB3aB3aB3%'")" = 0 ] || fail "secret in the index"
+test/run.sh:644:[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE project='repo'")" = 2 ] || fail "a turn's project comes from its own directory"
+test/run.sh:673:    n = int(subprocess.run([ctx, "sql", "SELECT count(*) FROM ctx_chunk"], capture_output=True, text=True).stdout or 0)
+test/run.sh:692:[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE turn='sc-1'")" = 1 ] || fail "scan stored the turn"
+test/run.sh:736:[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE body LIKE '%[REDACTED] end'")" = 30 ] || fail "every prefixed rule redacts"
+test/run.sh:744:[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE turn='gl-1' AND body LIKE '%xxxxxxxxxxxx%'")" = 0 ] || fail "a token glued to another is still redacted"
+test/run.sh:745:[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE body LIKE '%aB3dE6gH9%' OR body LIKE '%AB3DE6GH9%' OR body LIKE '%abc123abc123%'")" = 0 ] || fail "a value was stored"
+test/run.sh:757:[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE body LIKE '%plainvalue%'")" = 0 ] || fail "secret manager output is redacted"
+test/run.sh:758:[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE turn='dj-1' AND body LIKE '%keep this text%'")" = 1 ] || fail "ordinary raw fields stay"
+test/run.sh:799:[ "$("$CTX" sql "SELECT count(*) FROM ctx_audit_run")" -ge 4 ] || fail "runs are counted over time"
+test/run.sh:924:out=$(cd "$T/ix/root" && "$CTX" index); echo "$out" | grep -q '^1 sources, 2 wiki pages, 3 changed, 3 citations, 2 failing' || fail "index counts: $out"
+test/run.sh:925:"$CTX" sql "SELECT count(*) FROM ctx_doc WHERE name LIKE '%origin.json'" | grep -q '^0' || fail "origin files are not indexed as sources"
+test/run.sh:932:[ "$(q "SELECT count(*) FROM ctx_link WHERE kind='links_to'")" = 2 ] || fail "page links, ignoring code"
+test/run.sh:933:[ "$(q "SELECT count(*) FROM ctx_link WHERE kind='compiled_from' AND dst_name='sources/sub/design.md'")" = 1 ] || fail "compiled_from link"
+test/run.sh:934:[ "$(q "SELECT count(*) FROM ctx_stale_wiki")" = 0 ] || fail "nothing is stale yet"
+test/run.sh:942:[ "$(q "SELECT count(*) FROM ctx_stale_wiki")" = 1 ] || fail "a changed source makes the page stale"
+test/run.sh:946:[ "$(q "SELECT count(*) FROM ctx_doc WHERE kind='source'")" = 0 ] || fail "a removed source leaves the index"
+test/run.sh:947:[ "$(q "SELECT count(*) FROM ctx_chunk c JOIN ctx_doc d ON d.id=c.doc_id WHERE d.kind='source'")" = 0 ] || fail "its chunks go too"
+test/run.sh:948:[ "$(q "SELECT count(*) FROM ctx_stale_wiki")" = 1 ] || fail "a page citing a removed source is stale"
+test/run.sh:1022:[ "$("$CTX" sql "SELECT count(*) FROM fslrepo_kb_backlink WHERE srctype = 2 AND target = '$CI'")" = 1 ] || fail "a saved page records a backlink to the check-in it cites: $("$CTX" sql "SELECT target, srctype FROM fslrepo_kb_backlink")"
+test/run.sh:1053:"$CTX" source uses a.md | grep -q '^2 claims depend on sources/a.md' || fail "source uses counts claims"
+test/run.sh:1147:[ "$(q "SELECT count(*) FROM fslrepo_kb_event WHERE type='w'")" -ge 2 ] || fail "history is kept"
+test/run.sh:1160:[ "$(q "SELECT count(*) FROM ctx_doc WHERE kind='wiki' AND name LIKE 'Wiki %'")" = 0 ] || fail "generated pages are not indexed"
+test/run.sh:1176:[ "$(q "SELECT count(*) FROM ctx_doc WHERE kind='wiki' AND status='retired'")" = 0 ] || fail "a dry run changes nothing"
+test/run.sh:1211:NOTES=$("$CTX" sql "SELECT count(*) FROM ctx_capture_day")
+test/run.sh:1215:[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE body LIKE '%platypus%' AND body NOT LIKE '%wombat%'")" = 1 ] || fail "a turn with no timestamp stays its own turn"
+test/run.sh:1217:[ "$("$CTX" sql "SELECT count(*) FROM ctx_doc WHERE kind='session'")" = "$NOTES" ] || fail "one session per technote, not duplicated"
+test/run.sh:1275:assert text.count("## ") == 3, text
+test/run.sh:1282:[ "$("$CTX" sql "SELECT count(*), sum(turn GLOB 'note:*') FROM ctx_chunk" | tr '\t' ' ')" = "6 3" ] || fail "the fixture holds each turn twice: $("$CTX" sql "SELECT count(*), sum(turn GLOB 'note:*') FROM ctx_chunk")"
+test/run.sh:1286:[ "$("$CTX" sql "SELECT count(*), sum(turn GLOB 'note:*') FROM ctx_chunk" | tr '\t' ' ')" = "3 0" ] || fail "each turn is indexed once, under its own id"
+test/run.sh:1287:[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE body LIKE '%0123456789abcdef%'")" = 0 ] && [ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE body LIKE '%/v/k#[REDACTED]%'")" = 1 ] || fail "an indexed turn is redacted again"
+test/run.sh:1295:[ "$("$CTX" sql "SELECT count(*), group_concat(turn) FROM (SELECT turn FROM ctx_chunk ORDER BY seq)" | tr '\t' ' ')" = "3 u-1,a-1,u-2" ] || fail "a turn known by a placeholder id is adopted, not stored twice: $("$CTX" sql "SELECT count(*), group_concat(turn) FROM ctx_chunk")"
+test/run.sh:1320:[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE turn IN ('rb-1','rb-2')")" = 2 ] || fail "turn ids survive a rebuild"
+test/run.sh:1323:[ "$("$CTX" sql "SELECT count(*) FROM ctx_capture")" = 1 ] || fail "capture state is kept"
+skill/ctx/SKILL.md:56:reversed a few turns later, and the final word is what counts.
+skill/ctx/SKILL.md:58:BEFORE and AFTER are counts of neighboring turns, and those are the only `ctx`
+docs/howto.md:114:ctx search --count WORDS...      # print only the number of hits (up to --limit)
+docs/howto.md:292:A version counts as approved only when your very next turn was a short yes ("yes",
+docs/howto.md:581:and loads of the `ctx` skill. It counts commands agents really ran, not mentions
+docs/howto.md:610:ctx sql "SELECT project, count(*) FROM ctx_capture GROUP BY 1"
+tools/test_bench_page.py:129:        assert page(d).count(bench_page.PAST) == 1
+tools/test_bench_page.py:131:        assert rc == 0 and out.count("warning") == 1 and "old" in out
+bench/speed.py:31:        t = time.perf_counter()
+bench/speed.py:33:        out.append((time.perf_counter() - t) * 1000)
+bench/speed.py:72:    print(f"archive {size / 1e9:.1f} GB, about {turns:,} turns; load average {load:.0f} on {os.cpu_count()} cores")
+bench/speed.py:81:                        "machine": f"{os.cpu_count()} cores, load average {load:.0f} while measuring",
+bench/grep_rank.sql:3:-- Only files in the indexed set count.
+bench/grep_rank.sql:12:                    count(DISTINCT t.term) DESC,
+bench/report.sql:7:  n AS (SELECT corpus, qid, count(*) AS n FROM expected GROUP BY corpus, qid),
+bench/report.sql:20:           count(*) AS hits50,
+bench/report.sql:39:SELECT 'documents' AS item, corpus, count(*) AS n FROM doc GROUP BY corpus
+bench/report.sql:41:SELECT 'expected files not indexed', e.corpus, count(*)
+bench/report.sql:47:SELECT method, count(*) AS queries,
+bench/report.sql:54:SELECT kind, method, count(*) AS queries,
+bench/longmemeval.py:14:sessions among the ranked turns are what count. Strict recall needs every evidence session
+bench/corpus.json:116:    { "id": "mus-04", "text": "Counterpoint weaves two or more independent melodic lines that sound good together." },
+bench/corpus.json:118:    { "id": "mus-06", "text": "A time signature tells how many beats fill each measure and which note value counts as one beat." },

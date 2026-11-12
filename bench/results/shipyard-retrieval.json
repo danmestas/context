@@ -1,0 +1,46 @@
+{
+ "name": "shipyard-retrieval",
+ "title": "Coding sessions: finding the session that holds the answer",
+ "section": "Search",
+ "order": 40,
+ "date": "2026-11-12",
+ "good_until": "2027-05-11",
+ "commit": "7150d2056fec",
+ "command": "bench/shipyard.py --data DIR",
+ "conditions": {
+  "corpus": "32 real agent sessions on a public repository over a simulated three weeks, with 67 questions that the repository and its commit messages do not answer",
+  "held out": "30 questions, chosen by a hash of their ids",
+  "scoring": "every session holding the answer among the first five returned; no model involved"
+ },
+ "summary": "Each question is asked twice: once in the session's own terms, once paraphrased with none of its distinctive words. Exact terms favour keyword search; paraphrase is where it is weakest.",
+ "metrics": [
+  {
+   "label": "ctx, session's own terms",
+   "value": "20 of 30"
+  },
+  {
+   "label": "grep, session's own terms",
+   "value": "26 of 30"
+  },
+  {
+   "label": "ctx, paraphrased",
+   "value": "5 of 30"
+  },
+  {
+   "label": "grep, paraphrased",
+   "value": "7 of 30"
+  },
+  {
+   "label": "ctx, all questions, own terms and paraphrased",
+   "value": "48 and 18 of 67"
+  },
+  {
+   "label": "grep, all questions, own terms and paraphrased",
+   "value": "52 and 16 of 67"
+  }
+ ],
+ "baseline": "ranked grep over the same transcript files: each session scored by how many of the question's words it contains, then by how often",
+ "bar": "a difference counts only if a sign test on the paired held-out questions gives p below 0.05 (set in bench/head-to-head.md before the run)",
+ "verdict": "none",
+ "meaning": "ctx's search did not beat ranked grep at finding the right session here. In the session's own terms grep found more (26 against 20 of 30 held out; alone right on 8 questions against ctx's 2, sign test p = 0.11, so by the rule set beforehand the two are level). Paraphrased, both fail most of the time: neither keyword method copes when the question shares no distinctive word with the session. The corpus is small, 32 sessions, which suits scoring whole sessions the way this grep does; ctx ranks single turns. Whether an agent answers better with ctx than with grep is a separate measurement, not yet run."
+}

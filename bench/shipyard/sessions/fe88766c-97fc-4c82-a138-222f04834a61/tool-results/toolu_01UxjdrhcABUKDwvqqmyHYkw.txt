@@ -1,0 +1,252 @@
+skill/ctx/SKILL.md:19:ctx search --limit 30 WORDS...    # more than the default 12 results
+skill/ctx/SKILL.md:41:- If the results look wrong, change the words or raise `--limit`. Before
+bench/coding_life.py:62:            out = subprocess.run([CTX, "search", "--all", "--limit", "50", *words], env=env, capture_output=True, text=True).stdout
+src/ctx.c:46:static void die(const char *fmt, ...) {
+src/ctx.c:58:  if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK) die("%s", err);
+src/ctx.c:63:  if (sqlite3_open(path, &db) != SQLITE_OK) die("cannot open %s: %s", path, sqlite3_errmsg(db));
+src/ctx.c:70:  if (sqlite3_prepare_v2(db, sql, -1, &q, NULL) != SQLITE_OK) die("%s", sqlite3_errmsg(db));
+src/ctx.c:86:  if (!home || !*home) die("HOME is not set; set CTX_DB");
+src/ctx.c:89:  if (!p) die("out of memory");
+src/ctx.c:91:  if (mkdir(p, 0700) != 0 && errno != EEXIST) die("cannot create %s: %s", p, strerror(errno));
+src/ctx.c:101:  if (!fossil) die("libfossil is not registered");
+src/ctx.c:102:  if (!fts5) die("this SQLite has no FTS5");
+src/ctx.c:127:    if (sqlite3_step(q) != SQLITE_ROW) die("cannot clone the private repository: %s", sqlite3_errmsg(db));
+src/ctx.c:130:    die("this machine already has a private repository");
+src/ctx.c:135:    if (sqlite3_step(q) != SQLITE_ROW) die("cannot create the private repository: %s", sqlite3_errmsg(db));
+src/ctx.c:164:    if (!np) die("out of memory");
+src/ctx.c:551:  if (!p) die("out of memory");
+src/ctx.c:604:        if (!t->body) die("out of memory");
+src/ctx.c:619:  if (!f) die("cannot open %s: %s", path, strerror(errno));
+src/ctx.c:652:  if (!f) die("cannot open %s: %s", path, strerror(errno));
+src/ctx.c:675:  if (user > CTX_USER_VERSION) die("this database is from a newer ctx (version %d)", user);
+src/ctx.c:702:  if (db_int(db, "PRAGMA user_version") == 0) die("no ctx database here; run: ctx init");
+src/ctx.c:731:  if (!open_repo(db, "me")) die("cannot open the private repository: %s", sqlite3_errmsg(db));
+src/ctx.c:801:  if (sqlite3_step(up) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+src/ctx.c:806:  if (!done) die("out of memory");
+src/ctx.c:911:    if (sqlite3_step(save) != SQLITE_ROW) die("cannot save the technote: %s", sqlite3_errmsg(db));
+src/ctx.c:918:    if (sqlite3_step(day_in) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+src/ctx.c:926:    if (sqlite3_step(doc) != SQLITE_ROW) die("%s", sqlite3_errmsg(db));
+src/ctx.c:950:      if (sqlite3_step(chunk) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+src/ctx.c:975:  if (sqlite3_step(pos) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+src/ctx.c:984:  if (stat(path, &st) != 0) die("cannot read %s: %s", path, strerror(errno));
+src/ctx.c:999:  if (!repo_id) die("no private repository; run: ctx init");
+src/ctx.c:1018:  if (!f) die("cannot open %s: %s", path, strerror(errno));
+src/ctx.c:1019:  if (fseeko(f, (off_t)offset, SEEK_SET) != 0) die("cannot seek %s", path);
+src/ctx.c:1047:          if (!turns) die("out of memory");
+src/ctx.c:1165:  if (rc != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+src/ctx.c:1170:/* ctx search [--all] [--history] [--as-of DATE] [--limit N] [--count] WORDS... */
+src/ctx.c:1178:  if (!words) die("out of memory");
+src/ctx.c:1184:    else if (!strcmp(argv[i], "--limit") && i + 1 < argc) limit = atoi(argv[++i]);
+src/ctx.c:1185:    else if (!strncmp(argv[i], "--", 2)) die("unknown option %s", argv[i]);
+src/ctx.c:1188:  if (limit < 1) die("--limit must be at least 1");
+src/ctx.c:1190:  if (!fts_query(nwords, words, &q)) die("no search words");
+src/ctx.c:1211:/* How much of one turn is printed unless --full or --max-bytes is given. */
+src/ctx.c:1214:/* ctx turn ID [BEFORE [AFTER]] [--full] [--max-bytes N] */
+src/ctx.c:1221:    else if (!strcmp(argv[i], "--max-bytes") && i + 1 < argc) {
+src/ctx.c:1224:      if (*end || end == argv[i] || v < 1) die("--max-bytes must be at least 1");
+src/ctx.c:1228:    else if (have < 3) nums[have++] = atoi(argv[i]);
+src/ctx.c:1240:  if (have < 1 || nums[0] <= 0) die("usage: ctx turn ID [BEFORE [AFTER]] [--full] [--max-bytes N]");
+src/ctx.c:1261:  if (rc != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+src/ctx.c:1264:  if (!found) die("no turn #%d", nums[0]);
+src/ctx.c:1464:          if (!out[k].ms) die("out of memory");
+src/ctx.c:1534:    if (!strcmp(argv[i], "--weeks") && i + 1 < argc) weeks = atoi(argv[++i]);
+src/ctx.c:1536:    else if (!strcmp(argv[i], "--days") && i + 1 < argc) days = atoi(argv[++i]);
+src/ctx.c:1537:    else die("usage: ctx stats [--weeks N] | --hooks [--days N]");
+src/ctx.c:1540:  if (weeks <= 0) die("--weeks must be a positive number");
+src/ctx.c:1553:  if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+src/ctx.c:1589:  if (rc != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+src/ctx.c:1606:  if (!p) die("out of memory");
+src/ctx.c:1648:      if (!seen) die("out of memory");
+src/ctx.c:1651:    if (!seen[n]) die("out of memory");
+src/ctx.c:1881:    if (sqlite3_step(save) != SQLITE_ROW) die("cannot save technote %s: %s", id, sqlite3_errmsg(db));
+src/ctx.c:1952:        if (!seg) die("out of memory");
+src/ctx.c:1984:    if (sqlite3_step(save) != SQLITE_ROW) die("cannot save technote %s: %s", id, sqlite3_errmsg(db));
+src/ctx.c:2039:    else die("HOME is not set");
+src/ctx.c:2044:  if (!top) die("cannot read %s: %s", root, strerror(errno));
+src/ctx.c:2190:    if (!all) die("out of memory");
+src/ctx.c:2199:  if (!set.slots) die("out of memory");
+src/ctx.c:2230:/* ctx audit [--all] [--known] [--tickets] [--limit N] | ctx audit --allow ID [NOTE]. Exits 1 if any finding is open. */
+src/ctx.c:2239:    else if (!strcmp(argv[i], "--limit") && i + 1 < argc) limit = atoi(argv[++i]);
+src/ctx.c:2243:    } else die("usage: ctx audit [--all] [--known] [--tickets] [--limit N] | --allow ID [NOTE]");
+src/ctx.c:2256:    if (!changed) die("no finding #%lld", (long long)allow);
+src/ctx.c:2347:  if (sqlite3_step(q) != SQLITE_ROW) die("cannot set the ticket schema: %s", sqlite3_errmsg(db));
+src/ctx.c:2350:  if (sqlite3_step(q) != SQLITE_ROW) die("cannot apply the ticket schema: %s", sqlite3_errmsg(db));
+src/ctx.c:2358:  if (sqlite3_step(q) != SQLITE_ROW) die("cannot save the ticket: %s", sqlite3_errmsg(db));
+src/ctx.c:2366:  if (sqlite3_step(q) != SQLITE_ROW) die("no ticket %s", prefix);
+src/ctx.c:2368:  if (sqlite3_step(q) == SQLITE_ROW) die("ticket %s is ambiguous", prefix);
+src/ctx.c:2384:  if (sqlite3_step(q) != SQLITE_ROW) die("cannot create the ticket: %s", sqlite3_errmsg(db));
+src/ctx.c:2405:      if (!rows) die("out of memory");
+src/ctx.c:2416:             "%d open findings, %d distinct values, under rule %s. See them with ctx audit --limit 100. "
+src/ctx.c:2522:      die("--type must be Task, Bug, Feature or Question");
+src/ctx.c:2563:    if (sqlite3_step(q) != SQLITE_ROW) die("no ticket %s", id);
+src/ctx.c:2598:      if (sqlite3_step(j) != SQLITE_ROW) die("%s", sqlite3_errmsg(db));
+src/ctx.c:2637:    die("a project cannot use the repository name '%s'", out);
+src/ctx.c:2642:  if (!open_repo(db, repo)) die("cannot open repo:%s: %s", repo, sqlite3_errmsg(db));
+src/ctx.c:2649:    else die("usage: ctx project pull NAME [--from URL]");
+src/ctx.c:2658:  if (sqlite3_step(q) != SQLITE_ROW) die("no project %s", name);
+src/ctx.c:2661:  if (!remote) die("project %s has no remote; use --from URL", name);
+src/ctx.c:2665:  if (sqlite3_step(q) != SQLITE_ROW) die("cannot pull: %s", sqlite3_errmsg(db));
+src/ctx.c:2686:  if (argc < 2 || strcmp(argv[0], "add")) die("usage: ctx project add NAME [--root DIR] [--import FILE | --clone URL] [--remote URL] | list | pull NAME [--from URL]");
+src/ctx.c:2689:    if (i + 1 >= argc) die("%s needs a value", argv[i]);
+src/ctx.c:2694:    else die("unknown option %s", argv[i]);
+src/ctx.c:2697:  if (!realpath(root_opt, root)) die("cannot find %s: %s", root_opt, strerror(errno));
+src/ctx.c:2704:  if (sqlite3_column_int(q, 0)) die("project %s already exists", name);
+src/ctx.c:2706:  if (import && clone) die("use --import or --clone, not both");
+src/ctx.c:2721:  if (sqlite3_step(q) != SQLITE_ROW) die("cannot create the repository: %s", sqlite3_errmsg(db));
+src/ctx.c:2728:  if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+src/ctx.c:2733:  if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+src/ctx.c:2755:  if (bad) die("cannot read %s", path);
+src/ctx.c:2759:    if (!b.p) die("out of memory");
+src/ctx.c:2769:  if (!f) die("cannot write %s: %s", path, strerror(errno));
+src/ctx.c:2770:  if (fwrite(p, 1, n, f) != n || fclose(f)) die("cannot write %s", path);
+src/ctx.c:2771:  if (rename(tmp, path)) die("cannot write %s: %s", path, strerror(errno));
+src/ctx.c:2780:      if (mkdir(d, 0755) && errno != EEXIST) die("cannot create %s: %s", d, strerror(errno));
+src/ctx.c:2787:  if (!h) die("cannot hash");
+src/ctx.c:2790:  if (!out) die("out of memory");
+src/ctx.c:2802:  if (!getcwd(cwd, sizeof cwd)) die("cannot read the current directory");
+src/ctx.c:2808:  if (sqlite3_step(q) != SQLITE_ROW) die("no registered project here; run: ctx project add NAME");
+src/ctx.c:2818:  if (!sqlite3_column_int(q, 0)) die("%s must be a date like 2026-03-31", flag);
+src/ctx.c:2831:      if (file) die("only one file at a time");
+src/ctx.c:2835:    if (i + 1 >= argc) die("%s needs a value", argv[i]);
+src/ctx.c:2847:    else die("unknown option %s", o);
+src/ctx.c:2849:  if (risk && strcmp(risk, "security") && strcmp(risk, "money") && strcmp(risk, "legal") && strcmp(risk, "api")) die("--risk must be security, money, legal or api");
+src/ctx.c:2850:  if (!file) die("usage: ctx source add FILE --origin WHERE --class evergreen|versioned|perishable [--as PATH]");
+src/ctx.c:2851:  if (!origin || !*origin) die("--origin is required: say where this source came from");
+src/ctx.c:2852:  if (!source_class_ok(klass)) die("--class must be evergreen, versioned or perishable");
+src/ctx.c:2853:  if (!strcmp(klass, "perishable") && !review) die("a perishable source needs --review-after DATE");
+src/ctx.c:2859:    die("--as must be a plain path inside sources/");
+src/ctx.c:2871:  if (!data) die("cannot read %s: %s", file, strerror(errno));
+src/ctx.c:2876:    if (strcmp(oldh, hash)) die("sources/%s already exists with different content; a source is never edited in place", as);
+src/ctx.c:2901:  if (sqlite3_step(q) != SQLITE_ROW) die("%s", sqlite3_errmsg(db));
+src/ctx.c:2989:    if (argc != 1 && !project) die("usage: ctx source check [--project P]");
+src/ctx.c:2999:  die("usage: ctx source add FILE --origin WHERE --class CLASS [options] | ctx source check [--project P]");
+src/ctx.c:3056:  if (!out) die("out of memory");
+src/ctx.c:3077:    if (!out) die("out of memory");
+src/ctx.c:3193:    if (!line) die("out of memory");
+src/ctx.c:3259:  if (sqlite3_step(q) != SQLITE_ROW) die("%s", sqlite3_errmsg(db));
+src/ctx.c:3338:    if (!text) die("out of memory");
+src/ctx.c:3416:  if (argc && !project_opt) die("usage: ctx index [--project P]");
+src/ctx.c:3423:  if (sqlite3_step(q) != SQLITE_ROW) die("no project %s; run: ctx project add", project);
+src/ctx.c:3432:  if (!mkdtemp(tmp)) die("cannot make a temporary directory: %s", strerror(errno));
+src/ctx.c:3449:      if (!names) die("out of memory");
+src/ctx.c:3616:  if (sqlite3_step(q) != SQLITE_ROW) die("no project %s; run: ctx project add", *project);
+src/ctx.c:3658:    if (!links) die("out of memory");
+src/ctx.c:3713:  if (sqlite3_step(q) != SQLITE_ROW) die("cannot save the page: %s", sqlite3_errmsg(db));
+src/ctx.c:3742:      if (i + 1 >= argc) die("%s needs a value", argv[i]);
+src/ctx.c:3748:      else die("unknown option %s", o);
+src/ctx.c:3751:    else die("usage: ctx wiki save NAME FILE --model M [--ticket ID]");
+src/ctx.c:3753:  if (!name || !file) die("usage: ctx wiki save NAME FILE --model M [--ticket ID]");
+src/ctx.c:3754:  if (!model || !*model) die("--model is required: say what compiled this page");
+src/ctx.c:3755:  if (is_generated(name)) die("%s is generated by ctx wiki publish", name);
+src/ctx.c:3758:  if (!raw) die("cannot read %s: %s", file, strerror(errno));
+src/ctx.c:3760:  if (!raw) die("out of memory");
+src/ctx.c:3775:  if (argc && !project_opt) die("usage: ctx wiki check [--project P]");
+src/ctx.c:3866:  if (argc < 1) die("usage: ctx wiki why PAGE [--project P]");
+src/ctx.c:3877:  if (sqlite3_step(q) != SQLITE_ROW || !sqlite3_column_text(q, 0)) die("no page %s", name);
+src/ctx.c:3955:      if (i + 1 >= argc) die("%s needs a value", argv[i]);
+src/ctx.c:3960:      else die("unknown option %s", o);
+src/ctx.c:3962:    else die("too many arguments");
+src/ctx.c:3964:  if (!name || (retire && (!reason || !*reason))) die("usage: ctx wiki retire PAGE --reason WHY [--by PAGE] | ctx wiki restore PAGE");
+src/ctx.c:3972:  if (!text) die("no page %s", name);
+src/ctx.c:3976:    if (is_retired) die("%s is already retired", name);
+src/ctx.c:3979:      if (!target) die("no page %s", by);
+src/ctx.c:3992:    if (!is_retired) die("%s is not retired", name);
+src/ctx.c:4000:  if (sqlite3_step(q) != SQLITE_ROW) die("cannot save the page: %s", sqlite3_errmsg(db));
+src/ctx.c:4056:    if (!items) die("out of memory");
+src/ctx.c:4075:  if (argc && !project_opt) die("usage: ctx wiki queue [--project P]");
+src/ctx.c:4103:  if (sqlite3_step(q) != SQLITE_ROW) die("cannot save %s: %s", name, sqlite3_errmsg(db));
+src/ctx.c:4119:  if (argc && !project_opt) die("usage: ctx wiki publish [--project P]");
+src/ctx.c:4222:    else die("usage: ctx wiki retire --auto [--apply] [--project P]");
+src/ctx.c:4253:    if (!names || !blocked) die("out of memory");
+src/ctx.c:4269:      if (!tickets) die("out of memory");
+src/ctx.c:4348:  if (argc && !project_opt) die("usage: ctx wiki repin [--project P]");
+src/ctx.c:4358:  if (sqlite3_step(q) != SQLITE_ROW) die("the project has no check-ins");
+src/ctx.c:4368:    if (!pages) die("out of memory");
+src/ctx.c:4433:        if (!tickets) die("out of memory");
+src/ctx.c:4473:  die("usage: ctx wiki save NAME FILE --model M [--ticket ID] | check | why PAGE | repin | retire PAGE --reason WHY [--by PAGE] | restore PAGE");
+src/ctx.c:4484:      if (i + 1 >= argc) die("%s needs a value", argv[i]);
+src/ctx.c:4490:      else die("unknown option %s", o);
+src/ctx.c:4492:    else die("too many arguments");
+src/ctx.c:4494:  if (!old || !relation || !reason || !*reason) die("usage: ctx source supersede OLD --relation replaces|amends|retracts [--by NEW] --reason WHY");
+src/ctx.c:4496:  if (!retract && strcmp(relation, "replaces") && strcmp(relation, "amends")) die("--relation must be replaces, amends or retracts");
+src/ctx.c:4497:  if (!retract && !by) die("--by is required: say which source takes over");
+src/ctx.c:4498:  if (retract && by) die("a retraction has no successor");
+src/ctx.c:4505:  if (!exists(path)) die("no source %s", oldn);
+src/ctx.c:4507:    if (!strcmp(oldn, newn)) die("a source cannot supersede itself");
+src/ctx.c:4509:    if (!exists(path)) die("%s has no recorded origin; run ctx source add first", newn);
+src/ctx.c:4516:    if (!text) die("out of memory");
+src/ctx.c:4524:        if (!strcmp(was, oldn)) die("%s is already superseded", oldn);
+src/ctx.c:4525:        if (by && !strcmp(was, newn)) die("%s is itself superseded; a successor must be current", newn);
+src/ctx.c:4553:  if (argc < 1) die("usage: ctx source uses PATH [--project P]");
+src/ctx.c:4669:    if (!notes) die("out of memory");
+src/ctx.c:4692:        if (!text) die("out of memory");
+src/ctx.c:4715:      if (sqlite3_step(q) != SQLITE_ROW) die("%s", sqlite3_errmsg(db));
+src/ctx.c:4740:  if (argc != 2) die("usage: ctx remote NAME URL   (NAME is me, or a project)");
+src/ctx.c:4750:  if (!sqlite3_changes(db)) die("no repository for %s", argv[0]);
+src/ctx.c:4754:    if (!open_repo(db, repo)) die("cannot open repo:%s: %s", repo, sqlite3_errmsg(db));
+src/ctx.c:4761:    if (sqlite3_step(q) != SQLITE_ROW) die("cannot write %s: %s", argv[1], sqlite3_errmsg(db));
+src/ctx.c:4763:    if (chmod(argv[1], 0600)) die("cannot make %s private: %s", argv[1], strerror(errno)); /* it holds every session */
+src/ctx.c:4803:    if (!t) die("out of memory");
+src/ctx.c:4809:  if (only && !n) die("%s has no remote; run: ctx remote %s URL", only, only);
+src/ctx.c:5065:  if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+src/ctx.c:5108:  if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+src/ctx.c:5137:  if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+src/ctx.c:5155:  if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+src/ctx.c:5223:    version = ver ? atoi(ver + 9) : 0;
+src/ctx.c:5269:      if (f->d_name[0] == 'v' && atoi(f->d_name + 1) > 0 && strstr(f->d_name, ".html") && !strstr(f->d_name, ".part") && nh < 256)
+src/ctx.c:5270:        have[nh++] = atoi(f->d_name + 1);
+src/ctx.c:5328:        if (sqlite3_step(s) != SQLITE_ROW) die("cannot keep %s: %s", url, sqlite3_errmsg(db));
+src/ctx.c:5361:  if (sqlite3_step(q) != SQLITE_ROW || !sqlite3_column_text(q, 0)) die("no copy of %s is kept; `ctx artifacts` lists those that are", url);
+src/ctx.c:5369:/* ctx artifacts [--all] [--limit N] [WORDS...]: pages agents published, newest first. */
+src/ctx.c:5378:    else if (!strcmp(argv[i], "--limit") && i + 1 < argc) limit = atol(argv[++i]);
+src/ctx.c:5379:    else if (argv[i][0] == '-') die("usage: ctx artifacts [--all] [--limit N] [WORDS...] | show URL | keep");
+src/ctx.c:5413:/* ctx decisions [--open] [--all] [--limit N]: questions agents asked the person, and their answers. */
+src/ctx.c:5420:    else if (!strcmp(argv[i], "--limit") && i + 1 < argc) limit = atol(argv[++i]);
+src/ctx.c:5421:    else die("usage: ctx decisions [--open] [--all] [--limit N]");
+src/ctx.c:5542:  if (sqlite3_step(q) != SQLITE_ROW) die("cannot save rule %s: %s", r->key, sqlite3_errmsg(db));
+src/ctx.c:5624:    if (sqlite3_step(doc) != SQLITE_ROW) die("%s", sqlite3_errmsg(db));
+src/ctx.c:5839:    else die("usage: ctx remember TEXT [--project P] [--until DATE] [--from TURN]");
+src/ctx.c:5841:  if (!text || !*text) die("usage: ctx remember TEXT [--project P] [--until DATE] [--from TURN]");
+src/ctx.c:5849:    if (sqlite3_step(f) != SQLITE_ROW) die("no turn %s with a transcript id", from);
+src/ctx.c:6235:  int secs = dl && atoi(dl) > 0 ? atoi(dl) : MODEL_DEADLINE_SECS;
+src/ctx.c:6302:    if (!todo) die("out of memory");
+src/ctx.c:6442:    if (fd < 0) die("cannot make a temporary file: %s", strerror(errno));
+src/ctx.c:6520:  if (!strcmp(sub, "judge")) return rules_judge(db, argc >= 3 && !strcmp(argv[1], "--limit") ? atol(argv[2]) : 20, 0);
+src/ctx.c:6539:    if (argc < 2) die("usage: ctx rules keep KEY");
+src/ctx.c:6543:    if (sqlite3_step(f) != SQLITE_ROW) die("no rule %s", argv[1]);
+src/ctx.c:6544:    if (sqlite3_column_int(f, 1) > 1) die("%s names more than one rule; use its full key", argv[1]);
+src/ctx.c:6561:      else if (!strcmp(argv[i], "--limit") && i + 1 < argc) limit = atol(argv[++i]);
+src/ctx.c:6562:      else die("usage: ctx rules review [--limit N] [--done]");
+src/ctx.c:6579:        if (!keys) die("out of memory");
+src/ctx.c:6605:    long limit = argc >= 3 && !strcmp(argv[1], "--limit") ? atol(argv[2]) : 200;
+src/ctx.c:6615:    long limit = argc >= 3 && !strcmp(argv[1], "--limit") ? atol(argv[2]) : 500;
+src/ctx.c:6619:    if (argc < 3) die("usage: ctx rules suggest TURN TEXT");
+src/ctx.c:6632:    if (!n) die("no turn %s typed by the person, or it is already proposed", argv[1]);
+src/ctx.c:6666:  if (argc < 2) die("usage: ctx rules accept N [--text TEXT] [--until DATE] | reject N");
+src/ctx.c:6672:    else die("usage: ctx rules accept N [--text TEXT] [--until DATE] | reject N");
+src/ctx.c:6676:  if (sqlite3_step(q) != SQLITE_ROW) die("no open proposal %lld", (long long)id);
+src/ctx.c:6734:      else die("usage: ctx rules retire KEY --reason WHY [--by KEY]");
+src/ctx.c:6736:    if (!reason || !*reason) die("a retirement needs --reason");
+src/ctx.c:6742:      if (sqlite3_column_int(f, 1) > 1) die("%s names more than one rule; use its full key", k);
+src/ctx.c:6746:    if (!*full) die("no rule %s", k);
+src/ctx.c:6752:      if (sqlite3_step(q) != SQLITE_ROW) die("no rule %s", by);
+src/ctx.c:6753:      if (sqlite3_column_int(q, 1) > 1) die("%s names more than one rule; use its full key", by);
+src/ctx.c:6762:    if (sqlite3_step(q) != SQLITE_ROW || !sqlite3_column_text(q, 1)) die("no rule %s", k);
+src/ctx.c:6787:    else die("usage: ctx rules [--all] [--project P] | import | retire KEY --reason WHY [--by KEY]");
+src/ctx.c:6835:    if (!projects) die("out of memory");
+src/ctx.c:6862:        "       ctx search [--all] [--history] [--as-of DATE] [--limit N] [--count] WORDS...\n"
+src/ctx.c:6863:        "       ctx turn ID [BEFORE [AFTER]] [--full] [--max-bytes N]\n"
+src/ctx.c:6864:        "       ctx audit [--all] [--known] [--tickets] [--limit N] | --allow ID [NOTE]\n"
+src/ctx.c:6880:        "       ctx decisions [--open] [--all] [--limit N]\n"
+src/ctx.c:6881:        "       ctx artifacts [--all] [--limit N] [WORDS...] | show URL | keep\n"
+src/ctx.c:6884:        "       ctx rules classifier [CMD | --off] | propose [--limit N] | candidates [--limit N] | prompt | suggest TURN TEXT\n"
+src/ctx.c:6885:        "       ctx rules judge-with [CMD | --off] | judge [--limit N] | keep KEY | review [--limit N] [--done]\n"
+src/ctx.c:6897:    die("cannot register libfossil");
+bench/speed.py:61:        ("List decisions", ["decisions", "--limit", "5"], ""),
+bench/speed.py:62:        ("List published pages", ["artifacts", "--limit", "5"], ""),
+docs/howto.md:112:ctx search --limit 30 WORDS...   # more than the default 12
+docs/howto.md:113:ctx search --count WORDS...      # print only the number of hits (up to --limit)
+docs/howto.md:117:ctx turn ID --max-bytes 2000     # trim a long turn at 2000 bytes instead of 8000
+docs/howto.md:145:ctx audit --limit 100     # list more than 30 open findings
+
+[Showing results with pagination = limit: 250]
