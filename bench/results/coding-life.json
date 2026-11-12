@@ -1,0 +1,34 @@
+{
+ "name": "coding-life",
+ "title": "A small public set of coding sessions",
+ "section": "Search",
+ "order": 30,
+ "date": "2026-11-12",
+ "good_until": "2027-05-11",
+ "commit": "9ca411f83487",
+ "command": "bench/coding_life.py --data DIR",
+ "conditions": {
+  "data": "coding-agent-life-v1 from the agentmemory project: 15 invented sessions on a Rust command-line tool, 15 questions with the sessions that answer them; public, checksums pinned in the script",
+  "pipeline": "the sessions archived into a fresh ctx database, then ctx search with each question as typed",
+  "scoring": "the first five distinct sessions among the ranked turns; no model involved"
+ },
+ "summary": "The only public set of coding-session questions found. It is tiny and invented, and plain grep nearly ties on it, so it is a check that nothing is broken and not a measure of how good a tool is.",
+ "metrics": [
+  {
+   "label": "Questions with every evidence session in the first 5",
+   "value": "15 of 15"
+  },
+  {
+   "label": "Recall at 5",
+   "value": "1.000"
+  },
+  {
+   "label": "Questions with at least one evidence session in the first 5",
+   "value": "15 of 15"
+  }
+ ],
+ "baseline": "the scores its authors publish on the same files: their keyword component found every evidence session for 14 of 15 questions, and their grep baseline for 15 of 15 (measured 2026-10-28)",
+ "meaning": "ctx clears the check. It says little more than that: the set is 15 invented sessions, and grep does as well. A harder public set of coding sessions does not exist yet.",
+ "bar": "every evidence session found for at least 14 of 15 questions",
+ "verdict": "pass"
+}

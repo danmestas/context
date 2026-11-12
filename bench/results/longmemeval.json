@@ -1,0 +1,58 @@
+{
+ "name": "longmemeval",
+ "title": "LongMemEval-S, retrieval only",
+ "section": "Search",
+ "order": 20,
+ "date": "2026-11-12",
+ "good_until": "2027-05-11",
+ "commit": "9ca411f83487",
+ "command": "bench/longmemeval.py --data longmemeval_s_cleaned.json",
+ "conditions": {
+  "data": "LongMemEval-S cleaned, 500 questions of which 470 are answerable, about 50 chat sessions each; public, checksum pinned in the script",
+  "pipeline": "each question's sessions archived into a fresh ctx database, then ctx search with the question as typed",
+  "scoring": "the first five distinct sessions among the ranked turns; no model involved"
+ },
+ "summary": "A public benchmark of long-term memory in chat assistants. Run retrieval-only, it asks whether a search returns the sessions that hold the evidence for each question. It is chat, not coding work, but it is data anyone can rerun and others publish scores on.",
+ "metrics": [
+  {
+   "label": "Strict recall at 5 (every evidence session found)",
+   "value": "85.1%",
+   "note": "400 of 470"
+  },
+  {
+   "label": "Fractional recall at 5",
+   "value": "92.1%"
+  },
+  {
+   "label": "Any hit at 5",
+   "value": "96.6%",
+   "note": "454 of 470"
+  },
+  {
+   "label": "Strict, knowledge-update",
+   "value": "71 of 72"
+  },
+  {
+   "label": "Strict, multi-session",
+   "value": "88 of 121"
+  },
+  {
+   "label": "Strict, single-session-assistant",
+   "value": "56 of 56"
+  },
+  {
+   "label": "Strict, single-session-preference",
+   "value": "25 of 30"
+  },
+  {
+   "label": "Strict, single-session-user",
+   "value": "63 of 64"
+  },
+  {
+   "label": "Strict, temporal-reasoning",
+   "value": "97 of 127"
+  }
+ ],
+ "baseline": "the keyword search of the agentmemory project on the same file under the same scoring (84.7% strict, 96.2% any hit, measured 2026-10-28), and its grep baseline (72.1% strict)",
+ "meaning": "ctx's search is level with another tool's published keyword search (two questions apart in 470, which is noise) and well ahead of grep. Both are weakest where evidence is spread over several sessions or depends on dates. Tools that use embeddings report higher figures on this benchmark, but those are their own reports under other scoring, so they are not shown as a comparison."
+}
