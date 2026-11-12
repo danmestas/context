@@ -964,6 +964,8 @@ refused() { page "$1"; if "$CTX" wiki save Cache "$T/wk/p.md" --model m > "$T/wk
 page good
 if "$CTX" wiki save Cache "$T/wk/p.md" 2>/dev/null; then fail "--model is required"; fi
 "$CTX" wiki save Cache "$T/wk/p.md" --model test-model --ticket abc --session sess1 | grep -q '^saved Cache' || fail "a good page saves"
+# Saving a page records which check-in it cites, so the check-in's own page can list it.
+[ "$("$CTX" sql "SELECT count(*) FROM fslrepo_kb_backlink WHERE srctype = 2 AND target = '$CI'")" = 1 ] || fail "a saved page records a backlink to the check-in it cites: $("$CTX" sql "SELECT target, srctype FROM fslrepo_kb_backlink")"
 refused uncited 'no citation: This paragraph'
 refused quote 'quote-missing'
 refused short 'full check-in hash'

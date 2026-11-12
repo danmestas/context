@@ -16,9 +16,9 @@
 #define FSL_AMALGAMATION_BUILD 1
 #define FSL_PACKAGE_NAME "libfossil"
 #define FSL_LIBRARY_VERSION "0.6.1"
-#define FSL_LIB_VERSION_HASH "e84af25d7914297f0a86b73e947fc8ccc02e33b0df66f1de910debbab2e3e64c"
-#define FSL_LIB_VERSION_TIMESTAMP "2026-11-10 15:55:59.881 UTC"
-#define FSL_LIB_CONFIG_TIMESTAMP "2026-11-10 15:56 GMT"
+#define FSL_LIB_VERSION_HASH "7d9634ac5c980131e24dce37ca62b592e4077b820850fbceeb43bb928643e31c"
+#define FSL_LIB_VERSION_TIMESTAMP "2026-11-12 15:35:09.917 UTC"
+#define FSL_LIB_CONFIG_TIMESTAMP "2026-11-12 15:36 GMT"
 #define FSL_AUX_SCHEMA "2015-01-24"
 #define FSL_CONTENT_SCHEMA "2"
 #define FOSSIL_RELEASE_VERSION_NUMBER 22700
@@ -29788,6 +29788,119 @@ int fsl__ticket_rebuild(fsl_cx * f, char const * zTktId);
 
 /** @internal
 
+    Values for the srctype column of the repo.backlink table, which
+    say what kind of artifact a link was found in. Their numeric values
+    are shared with fossil(1) and must not change.
+*/
+enum fsl__bklnk_e {
+/** A check-in comment. srcid is the check-in's rid. */
+FSL_BKLNK_COMMENT = 0,
+/** A ticket change. srcid is the rid of the ticket artifact. */
+FSL_BKLNK_TICKET = 1,
+/** A wiki page. srcid is the id of its "wiki-NAME" tag. */
+FSL_BKLNK_WIKI = 2,
+/** A technote. fossil(1) defines this but does not use it. */
+FSL_BKLNK_EVENT = 3,
+/** A forum post. srcid is the post's rid. */
+FSL_BKLNK_FORUM = 4
+};
+
+/** @internal
+
+    Markup languages which links can be extracted from, as parsed by
+    fsl__backlink_mimetype().
+*/
+enum fsl__bklnk_mt_e {
+/** No mimetype was specified. Treated like FSL_BKLNK_MT_WIKI. */
+FSL_BKLNK_MT_NONE = 0,
+/** Fossil wiki. */
+FSL_BKLNK_MT_WIKI = 1,
+/** Markdown. */
+FSL_BKLNK_MT_MARKDOWN = 2,
+/** Anything else. Nothing is extracted from it. */
+FSL_BKLNK_MT_UNKNOWN = 3
+};
+
+/** @internal
+
+    Transforms a mimetype string into one of the FSL_BKLNK_MT_xxx
+    values. A NULL mimetype is FSL_BKLNK_MT_NONE. Port of fossil(1)'s
+    parse_mimetype().
+*/
+int fsl__backlink_mimetype(char const * zMimetype);
+
+/** @internal
+
+    Callback type for fsl__backlink_scan(). It is called once for each
+    hyperlink which targets an artifact, in the order the links appear
+    in the text, with the link's target in canonical form: 4 to 64
+    lower-case hex digits. If it returns non-0 then scanning stops and
+    that code is returned from fsl__backlink_scan().
+*/
+typedef int (*fsl__backlink_f)(void * state, char const * zTarget);
+
+/** @internal
+
+    Scans zSrc, which must be NUL-terminated, for hyperlinks which look
+    like references to artifacts and passes each to cb. The text is
+    interpreted per the given FSL_BKLNK_MT_xxx value. If wikiHtml is
+    true then, for the wiki mimetype, the text is taken to be HTML
+    in which only [target] and [target|label] are interpreted, as for
+    fossil(1)'s wiki-use-html setting. This does not touch the
+    database. zSrc is not modified.
+
+    Returns 0 on success, FSL_RC_OOM if allocation fails, or the first
+    non-0 result of cb.
+
+    Port of the scanning done by fossil(1)'s backlink_extract().
+*/
+int fsl__backlink_scan(char const * zSrc, int mimetype, bool wikiHtml,
+                       fsl__backlink_f cb, void * cbState);
+
+/** @internal
+
+    Scans zSrc as per fsl__backlink_scan() and records each link in
+    f's repository's backlink table as coming from the artifact of type
+    srcType (one of FSL_BKLNK_xxx) with id srcId, with the time mtime
+    (a Julian day). If replace is true then any links already recorded
+    for that artifact are removed first, even if zSrc is NULL. Does
+    nothing if the repository has no backlink table.
+
+    Returns 0 on success, else a FSL_RC_xxx code with f's error state
+    updated.
+
+    Port of fossil(1)'s backlink_extract().
+*/
+int fsl__backlink_extract(fsl_cx * f, char const * zSrc, int mimetype,
+                          fsl_id_t srcId, int srcType, double mtime,
+                          bool replace);
+
+/** @internal
+
+    Replaces the links recorded for the wiki page named zWikiTitle with
+    those in its latest version. Does nothing if there is no such page.
+
+    Returns 0 on success, else a FSL_RC_xxx code with f's error state
+    updated.
+
+    Port of fossil(1)'s backlink_wiki_refresh().
+*/
+int fsl__backlink_wiki_refresh(fsl_cx * f, char const * zWikiTitle);
+
+/** @internal
+
+    Removes the links recorded for all of the artifacts of the ticket
+    whose "tkt-UUID" tag has the id tagId, as the first step of
+    recording them anew when the ticket is rebuilt. Does nothing if the
+    repository has no backlink table.
+
+    Returns 0 on success, else a FSL_RC_xxx code with f's error state
+    updated.
+*/
+int fsl__backlink_ticket_reset(fsl_cx * f, fsl_id_t tagId);
+
+/** @internal
+
    Calls all registered crosslink link listeners, passing each the
    given deck. Returns 0 if there are no listeners or if all return 0,
    else it propagates an error from a failed listener.
@@ -35968,6 +36081,3557 @@ int fsl_pw_f_getpass(fsl_cx * f, char const * zUrl,
 }
 #endif
 /* end of file src/auth.c */
+/* start of file src/backlink.c */
+/* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=2 et sw=2 tw=80: */
+/*
+  Copyright 2026 The Libfossil Authors, see LICENSES/BSD-2-Clause.txt
+
+  SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+  SPDX-FileCopyrightText: 2026 The Libfossil Authors
+  SPDX-FileType: Code
+
+  Heavily indebted to the Fossil SCM project (https://fossil-scm.org).
+*/
+/*************************************************************************
+  This file implements the backlink table: the scanning of check-in
+  comments, wiki pages, ticket changes and forum posts for hyperlinks
+  to other artifacts, and the recording of those links in the repo's
+  backlink table. It is a port of fossil(1)'s backlink.c plus the
+  parts of its wikiformat.c and markdown.c which find hyperlinks.
+
+  The scanners do not render anything, but they must parse the text
+  exactly as fossil(1) does, because what is or is not a link depends
+  on the full context. That is why the Markdown and wiki parsers below
+  keep the structure of the originals (including their quirks) and
+  differ from them only by dropping the HTML output.
+*/
+#include <assert.h>
+#include <stdlib.h> /* qsort(), bsearch() */
+#include <string.h> /* memchr(), memcmp(), strcspn() */
+
+/**
+   State shared by the wiki and Markdown scanners: the callback which
+   receives each canonicalized link target, and the first error that
+   callback (or an allocation) reported. Scanners stop as soon as rc
+   is non-zero.
+*/
+typedef struct {
+  fsl__backlink_f cb;
+  void * cbState;
+  int rc;
+} bl_sink;
+
+/**
+   zTarget is a hyperlink target in some markup format. If it looks
+   like a reference to another artifact, i.e. a 4 to 64 character hex
+   string optionally prefixed by "/info/", pass the lower-cased hash
+   to the sink. Port of fossil(1)'s backlink_create().
+*/
+static void bl_create(bl_sink * const p, const char *zTarget, int nTarget){
+  char zLink[FSL_STRLEN_K256+4];
+  int i;
+  if( p->rc || zTarget==0 ) return;
+  if( nTarget<4 ) return;
+  if( nTarget>=10 && 0==memcmp(zTarget,"/info/",6) ){
+    zTarget += 6;
+    nTarget -= 6;
+  }
+  if( nTarget>FSL_STRLEN_K256 ) return;
+  for(i=0; i<nTarget; i++){
+    char const c = zTarget[i];
+    if( !((c>='0' && c<='9') || (c>='a' && c<='f') || (c>='A' && c<='F')) ){
+      return;
+    }
+    zLink[i] = (char)fsl_tolower(c);
+  }
+  zLink[nTarget] = 0;
+  p->rc = p->cb(p->cbState, zLink);
+}
+
+/*
+** Fossil wiki scanner. Port of the parts of fossil(1)'s wikiformat.c
+** needed by wiki_extract_links().
+**
+** What follows is the allowed markup and attributes. These must stay in
+** alphabetical order, in numerical sequence with their enums, because
+** they are binary searched. Only the names matter here: which element
+** is allowed where, and with which attributes, is a rendering concern.
+*/
+enum bl_attr_e {
+  BLA_ALIGN = 1,
+  BLA_ALT,
+  BLA_BGCOLOR,
+  BLA_BORDER,
+  BLA_CELLPADDING,
+  BLA_CELLSPACING,
+  BLA_CITE,
+  BLA_CLASS,
+  BLA_CLEAR,
+  BLA_COLOR,
+  BLA_COLSPAN,
+  BLA_COMPACT,
+  BLA_DATETIME,
+  BLA_FACE,
+  BLA_FOR,
+  BLA_HEIGHT,
+  BLA_HIGH,
+  BLA_HREF,
+  BLA_HSPACE,
+  BLA_ID,
+  BLA_LINKS,
+  BLA_LOW,
+  BLA_MAX,
+  BLA_MEDIA,
+  BLA_MIN,
+  BLA_NAME,
+  BLA_OPEN,
+  BLA_OPTIMUM,
+  BLA_ROWSPAN,
+  BLA_SIZE,
+  BLA_SIZES,
+  BLA_SRC,
+  BLA_SRCSET,
+  BLA_START,
+  BLA_STYLE,
+  BLA_TARGET,
+  BLA_TITLE,
+  BLA_TYPE,
+  BLA_VALIGN,
+  BLA_VALUE,
+  BLA_VSPACE,
+  BLA_WIDTH
+};
+
+static const char * const aAttribute[] = {
+  0,
+  "align",
+  "alt",
+  "bgcolor",
+  "border",
+  "cellpadding",
+  "cellspacing",
+  "cite",
+  "class",
+  "clear",
+  "color",
+  "colspan",
+  "compact",
+  "datetime",
+  "face",
+  "for",
+  "height",
+  "high",
+  "href",
+  "hspace",
+  "id",
+  "links",
+  "low",
+  "max",
+  "media",
+  "min",
+  "name",
+  "open",
+  "optimum",
+  "rowspan",
+  "size",
+  "sizes",
+  "src",
+  "srcset",
+  "start",
+  "style",
+  "target",
+  "title",
+  "type",
+  "valign",
+  "value",
+  "vspace",
+  "width"
+};
+
+enum bl_markup_e {
+  BLM_INVALID = 0,
+  BLM_A,
+  BLM_ABBR,
+  BLM_ADDRESS,
+  BLM_HTML5_ARTICLE,
+  BLM_HTML5_ASIDE,
+  BLM_B,
+  BLM_BIG,
+  BLM_BLOCKQUOTE,
+  BLM_BR,
+  BLM_CAPTION,
+  BLM_CENTER,
+  BLM_CITE,
+  BLM_CODE,
+  BLM_COL,
+  BLM_COLGROUP,
+  BLM_DD,
+  BLM_DEL,
+  BLM_DETAILS,
+  BLM_DFN,
+  BLM_DIV,
+  BLM_DL,
+  BLM_DT,
+  BLM_EM,
+  BLM_FIGCAPTION,
+  BLM_FIGURE,
+  BLM_FONT,
+  BLM_HTML5_FOOTER,
+  BLM_H1,
+  BLM_H2,
+  BLM_H3,
+  BLM_H4,
+  BLM_H5,
+  BLM_H6,
+  BLM_HTML5_HEADER,
+  BLM_HR,
+  BLM_I,
+  BLM_IMG,
+  BLM_INS,
+  BLM_KBD,
+  BLM_LABEL,
+  BLM_LI,
+  BLM_MARK,
+  BLM_METER,
+  BLM_HTML5_NAV,
+  BLM_NOBR,
+  BLM_NOWIKI,
+  BLM_OL,
+  BLM_P,
+  BLM_PICTURE,
+  BLM_PRE,
+  BLM_PROGRESS,
+  BLM_Q,
+  BLM_S,
+  BLM_SAMP,
+  BLM_HTML5_SECTION,
+  BLM_SMALL,
+  BLM_SOURCE,
+  BLM_SPAN,
+  BLM_STRIKE,
+  BLM_STRONG,
+  BLM_SUB,
+  BLM_SUMMARY,
+  BLM_SUP,
+  BLM_TABLE,
+  BLM_TBODY,
+  BLM_TD,
+  BLM_TFOOT,
+  BLM_TH,
+  BLM_THEAD,
+  BLM_TIME,
+  BLM_TITLE,
+  BLM_TR,
+  BLM_TT,
+  BLM_U,
+  BLM_UL,
+  BLM_VAR,
+  BLM_VERBATIM,
+  BLM_WBR
+};
+
+static const char * const aMarkup[] = {
+  0,
+  "a",
+  "abbr",
+  "address",
+  "article",
+  "aside",
+  "b",
+  "big",
+  "blockquote",
+  "br",
+  "caption",
+  "center",
+  "cite",
+  "code",
+  "col",
+  "colgroup",
+  "dd",
+  "del",
+  "details",
+  "dfn",
+  "div",
+  "dl",
+  "dt",
+  "em",
+  "figcaption",
+  "figure",
+  "font",
+  "footer",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "header",
+  "hr",
+  "i",
+  "img",
+  "ins",
+  "kbd",
+  "label",
+  "li",
+  "mark",
+  "meter",
+  "nav",
+  "nobr",
+  "nowiki",
+  "ol",
+  "p",
+  "picture",
+  "pre",
+  "progress",
+  "q",
+  "s",
+  "samp",
+  "section",
+  "small",
+  "source",
+  "span",
+  "strike",
+  "strong",
+  "sub",
+  "summary",
+  "sup",
+  "table",
+  "tbody",
+  "td",
+  "tfoot",
+  "th",
+  "thead",
+  "time",
+  "title",
+  "tr",
+  "tt",
+  "u",
+  "ul",
+  "var",
+  "verbatim",
+  "wbr"
+};
+
+/*
+** Use binary search to locate a tag in the aAttribute[] table.
+*/
+static int bl_find_attr(const char *z){
+  int i, c, first, last;
+  first = 1;
+  last = (int)(sizeof(aAttribute)/sizeof(aAttribute[0])) - 1;
+  while( first<=last ){
+    i = (first+last)/2;
+    c = fsl_strcmp(aAttribute[i], z);
+    if( c==0 ){
+      return i;
+    }else if( c<0 ){
+      first = i+1;
+    }else{
+      last = i-1;
+    }
+  }
+  return 0;
+}
+
+/*
+** Use binary search to locate a tag in the aMarkup[] table.
+*/
+static int bl_find_tag(const char *z){
+  int i, c, first, last;
+  first = 1;
+  last = (int)(sizeof(aMarkup)/sizeof(aMarkup[0])) - 1;
+  while( first<=last ){
+    i = (first+last)/2;
+    c = fsl_strcmp(aMarkup[i], z);
+    if( c==0 ){
+      return i;
+    }else if( c<0 ){
+      first = i+1;
+    }else{
+      last = i-1;
+    }
+  }
+  return BLM_INVALID;
+}
+
+/*
+** Token types
+*/
+#define BLT_MARKUP        1  /* <...> */
+#define BLT_CHARACTER     2  /* "&" or "<" not part of markup */
+#define BLT_LINK          3  /* [...] */
+#define BLT_PARAGRAPH     4  /* blank lines */
+#define BLT_NEWLINE       5  /* A single "\n" */
+#define BLT_BUL_LI        6  /*  "  *  " */
+#define BLT_NUM_LI        7  /*  "  #  " */
+#define BLT_ENUM          8  /*  "  \(?\d+[.)]?  " */
+#define BLT_INDENT        9  /*  "   " */
+#define BLT_RAW           10 /* Output exactly (used when wiki-use-html==1) */
+#define BLT_TEXT          11 /* None of the above */
+
+/*
+** State flags.
+*/
+#define BLS_AT_NEWLINE    0x0010000  /* At start of a line */
+#define BLS_AT_PARAGRAPH  0x0020000  /* At start of a paragraph */
+#define BLS_ALLOW_WIKI    0x0040000  /* Allow wiki markup */
+
+/*
+** Current state of the scanner. This is fossil(1)'s Renderer, minus
+** everything which only exists to produce output.
+*/
+typedef struct bl_wiki bl_wiki;
+struct bl_wiki {
+  int state;                  /* Flags that govern scanning */
+  int inVerbatim;             /* True in <verbatim> mode */
+  int preVerbState;           /* Value of state prior to verbatim */
+  const char *zVerbatimId;    /* The id= attribute of <verbatim> */
+  int nStack;                 /* Number of elements on the stack */
+  int nAlloc;                 /* Space allocated for aStack */
+  struct bl_stack {
+    short iCode;                 /* Markup code */
+    short allowWiki;             /* BLS_ALLOW_WIKI if wiki allowed before tag */
+    const char *zId;             /* ID attribute or NULL */
+  } *aStack;
+};
+
+/*
+** z points to a "<" character.  Check to see if this is the start of
+** a valid markup.  If it is, return the total number of characters in
+** the markup including the initial "<" and the terminating ">".  If
+** it is not well-formed markup, return 0.
+*/
+static int bl_html_tag_length(const char *z){
+  int n = 1;
+  int inparen = 0;
+  int c;
+  if( z[n]=='/' ){ n++; }
+  if( !fsl_isalpha(z[n]) ) return 0;
+  while( fsl_isalnum(z[n]) || z[n]=='-' ){ n++; }
+  c = z[n];
+  if( c=='/' && z[n+1]=='>' ){ return n+2; }
+  if( c!='>' && !fsl_isspace(c) ) return 0;
+  while( (c = z[n])!=0 && (c!='>' || inparen) ){
+    if( c==inparen ){
+      inparen = 0;
+    }else if( inparen==0 && (c=='"' || c=='\'') ){
+      inparen = c;
+    }
+    n++;
+  }
+  if( z[n]!='>' ) return 0;
+  return n+1;
+}
+
+/*
+** z points to a "\n" character.  Check to see if this newline is
+** followed by one or more blank lines.  If it is, return the number
+** of characters through the closing "\n".  If not, return 0.
+*/
+static int bl_paragraph_break_length(const char *z){
+  int i, n;
+  int nNewline = 1;
+  for(i=1, n=0; fsl_isspace(z[i]); i++){
+    if( z[i]=='\n' ){
+      nNewline++;
+      n = i;
+    }
+  }
+  if( nNewline>=2 ){
+    return n+1;
+  }else{
+    return 0;
+  }
+}
+
+/*
+** Return the number of characters until the next "interesting"
+** characters.
+**
+** Interesting characters are:
+**
+**      <
+**      &
+**      \n
+**      [
+**
+** The "[" is only considered if flags contain BLS_ALLOW_WIKI. The "\n"
+** is only considered interesting if the flags contains BLS_ALLOW_WIKI.
+*/
+static int bl_text_length(const char *z, int flags){
+  const char *zReject;
+  if( flags & BLS_ALLOW_WIKI ){
+    zReject = "<&[\n";
+  }else{
+    zReject = "<&";
+  }
+  return (int)strcspn(z, zReject);
+}
+
+/*
+** Return true if z[] begins with an HTML character element.
+*/
+static int bl_is_element(const char *z){
+  int i;
+  assert( z[0]=='&' );
+  if( z[1]=='#' ){
+    for(i=2; fsl_isdigit(z[i]); i++){}
+    return i>2 && z[i]==';';
+  }else{
+    for(i=1; fsl_isalpha(z[i]); i++){}
+    return i>1 && z[i]==';';
+  }
+}
+
+/*
+** Check to see if the z[] string is the beginning of a wiki list item.
+** If it is, return the length of the bullet text.  Otherwise return 0.
+*/
+static int bl_list_item_length(const char *z, const char listChar){
+  int i, n;
+  n = 0;
+  i = 0;
+  while( z[n]==' ' || z[n]=='\t' ){
+    if( z[n]=='\t' ) i++;
+    i++;
+    n++;
+  }
+  if( i<2 || z[n]!=listChar ) return 0;
+  n++;
+  i = 0;
+  while( z[n]==' ' || z[n]=='\t' ){
+    if( z[n]=='\t' ) i++;
+    i++;
+    n++;
+  }
+  if( i<2 || fsl_isspace(z[n]) ) return 0;
+  return n;
+}
+
+/*
+** Check to see if the z[] string is the beginning of an enumeration value.
+** If it is, return the length of the bullet text.  Otherwise return 0.
+**
+** Syntax:
+**    *  a tab or two or more spaces
+**    *  one or more digits
+**    *  optional "."
+**    *  another tab or two ore more spaces.
+*/
+static int bl_enum_length(const char *z){
+  int i, n;
+  n = 0;
+  i = 0;
+  while( z[n]==' ' || z[n]=='\t' ){
+    if( z[n]=='\t' ) i++;
+    i++;
+    n++;
+  }
+  if( i<2 ) return 0;
+  for(i=0; fsl_isdigit(z[n]); i++, n++){}
+  if( i==0 ) return 0;
+  if( z[n]=='.' ){
+    n++;
+  }
+  i = 0;
+  while( z[n]==' ' || z[n]=='\t' ){
+    if( z[n]=='\t' ) i++;
+    i++;
+    n++;
+  }
+  if( i<2 || fsl_isspace(z[n]) ) return 0;
+  return n;
+}
+
+/*
+** Check to see if the z[] string is the beginning of an indented
+** paragraph.  If it is, return the length of the indent.  Otherwise
+** return 0.
+*/
+static int bl_indent_length(const char *z){
+  int i, n;
+  n = 0;
+  i = 0;
+  while( z[n]==' ' || z[n]=='\t' ){
+    if( z[n]=='\t' ) i++;
+    i++;
+    n++;
+  }
+  if( i<2 || fsl_isspace(z[n]) ) return 0;
+  return n;
+}
+
+/*
+** Check to see if the z[] string is a wiki hyperlink.  If it is,
+** return the length of the hyperlink.  Otherwise return 0.
+*/
+static int bl_link_length(const char *z){
+  int n;
+  assert( z[0]=='[' );
+  for(n=0; z[n] && z[n]!=']'; n++){}
+  if( z[n]==']' ){
+    return n+1;
+  }else{
+    return 0;
+  }
+}
+
+/*
+** Get the next wiki token.
+**
+** z points to the start of a token.  Return the number of
+** characters in that token.  Write the token type into *pTokenType.
+*/
+static int bl_next_wiki_token(const char *z, bl_wiki *p, int *pTokenType){
+  int n;
+  if( z[0]=='<' ){
+    n = bl_html_tag_length(z);
+    if( n>0 ){
+      *pTokenType = BLT_MARKUP;
+      return n;
+    }else{
+      *pTokenType = BLT_CHARACTER;
+      return 1;
+    }
+  }
+  if( z[0]=='&' ){
+    if( (p->inVerbatim || !bl_is_element(z)) ){
+      *pTokenType = BLT_CHARACTER;
+      return 1;
+    }
+  }
+  if( (p->state & BLS_ALLOW_WIKI)!=0 ){
+    if( z[0]=='\n' ){
+      n = bl_paragraph_break_length(z);
+      if( n>0 ){
+        *pTokenType = BLT_PARAGRAPH;
+        return n;
+      }else{
+        *pTokenType = BLT_NEWLINE;
+        return 1;
+      }
+    }
+    if( (p->state & BLS_AT_NEWLINE)!=0 && fsl_isspace(z[0]) ){
+      n = bl_list_item_length(z, '*');
+      if( n>0 ){
+        *pTokenType = BLT_BUL_LI;
+        return n;
+      }
+      n = bl_list_item_length(z, '#');
+      if( n>0 ){
+        *pTokenType = BLT_NUM_LI;
+        return n;
+      }
+      n = bl_enum_length(z);
+      if( n>0 ){
+        *pTokenType = BLT_ENUM;
+        return n;
+      }
+    }
+    if( (p->state & BLS_AT_PARAGRAPH)!=0 && fsl_isspace(z[0]) ){
+      n = bl_indent_length(z);
+      if( n>0 ){
+        *pTokenType = BLT_INDENT;
+        return n;
+      }
+    }
+    if( z[0]=='[' ){
+      if( (n = bl_link_length(z))>0 ){
+        *pTokenType = BLT_LINK;
+        return n;
+      }
+    }
+  }
+  *pTokenType = BLT_TEXT;
+  return 1 + bl_text_length(z+1, p->state);
+}
+
+/*
+** Parse only Wiki links, return everything else as BLT_RAW. This is
+** used when the wiki-use-html setting is on.
+**
+** z points to the start of a token.  Return the number of
+** characters in that token. Write the token type into *pTokenType.
+*/
+static int bl_next_raw_token(const char *z, bl_wiki *p, int *pTokenType){
+  int n;
+  if( z[0]=='[' ){
+    if( (n = bl_link_length(z))>0 ){
+      *pTokenType = BLT_LINK;
+      return n;
+    }
+  }
+  *pTokenType = BLT_RAW;
+  return 1 + bl_text_length(z+1, p->state);
+}
+
+/*
+** A single markup is parsed into an instance of the following
+** structure.
+*/
+typedef struct bl_markup bl_markup;
+struct bl_markup {
+  unsigned char endTag;   /* True if </...> instead of <...> */
+  unsigned char iCode;    /* BLM_* */
+  unsigned char nAttr;    /* Number of attributes */
+  struct {
+    unsigned char iACode;    /* BLA_* */
+    char *zValue;            /* Argument to this attribute.  Might be NULL */
+    char cTerm;              /* Original argument termination character */
+  } aAttr[10];
+};
+
+/*
+** Return true if attribute iACode has already been parsed into p.
+*/
+static int bl_markup_has_attr(const bl_markup *p, int iACode){
+  int i;
+  for(i=0; i<p->nAttr; i++){
+    if( p->aAttr[i].iACode==iACode ) return 1;
+  }
+  return 0;
+}
+
+/*
+** z[] is an HTML markup element - something that begins with '<'.
+** Parse this element into the p structure.
+**
+** The content of z[] might be modified by converting characters
+** to lowercase and by inserting some "\000" characters.
+*/
+static void bl_parse_markup(bl_markup *p, char *z){
+  int i, j, c;
+  int iACode;
+  char *zValue;
+  char zTag[100];
+
+  if( z[1]=='/' ){
+    p->endTag = 1;
+    i = 2;
+  }else{
+    p->endTag = 0;
+    i = 1;
+  }
+  j = 0;
+  while( fsl_isalnum(z[i]) ){
+    if( j<(int)sizeof(zTag)-1 ) zTag[j++] = (char)fsl_tolower(z[i]);
+    i++;
+  }
+  zTag[j] = 0;
+  p->iCode = (unsigned char)bl_find_tag(zTag);
+  p->nAttr = 0;
+  c = 0;
+  if( z[i]=='-' ){
+    p->aAttr[0].iACode = BLA_ID;
+    i++;
+    p->aAttr[0].zValue = &z[i];
+    while( fsl_isalnum(z[i]) ){ i++; }
+    p->aAttr[0].cTerm = c = z[i];
+    z[i++] = 0;
+    p->nAttr = 1;
+    if( c=='>' ) return;
+  }
+  while( fsl_isspace(z[i]) ){ i++; }
+  while( c!='>' && p->nAttr<8 && fsl_isalpha(z[i]) ){
+    int attrOk;    /* True to preserve attribute.  False to ignore it */
+    j = 0;
+    while( fsl_isalnum(z[i]) ){
+      if( j<(int)sizeof(zTag)-1 ) zTag[j++] = (char)fsl_tolower(z[i]);
+      i++;
+    }
+    zTag[j] = 0;
+    p->aAttr[p->nAttr].iACode = (unsigned char)(iACode = bl_find_attr(zTag));
+    attrOk = iACode!=0 && !bl_markup_has_attr(p, iACode);
+    while( fsl_isspace(z[i]) ){ z++; }
+    if( z[i]!='=' ){
+      p->aAttr[p->nAttr].zValue = 0;
+      p->aAttr[p->nAttr].cTerm = 0;
+      c = 0;
+    }else{
+      i++;
+      while( fsl_isspace(z[i]) ){ z++; }
+      if( z[i]=='"' ){
+        i++;
+        zValue = &z[i];
+        while( z[i] && z[i]!='"' ){ i++; }
+      }else if( z[i]=='\'' ){
+        i++;
+        zValue = &z[i];
+        while( z[i] && z[i]!='\'' ){ i++; }
+      }else{
+        zValue = &z[i];
+        while( !fsl_isspace(z[i]) && z[i]!='>' ){
+          if( z[i]=='\'' || z[i]=='"' ) attrOk = 0;
+          i++;
+        }
+      }
+      if( attrOk ){
+        p->aAttr[p->nAttr].zValue = zValue;
+        p->aAttr[p->nAttr].cTerm = c = z[i];
+        if( z[i]==0 ){
+          i--;
+        }else{
+          z[i] = 0;
+        }
+      }
+      i++;
+    }
+    if( attrOk ){
+      p->nAttr++;
+    }
+    while( fsl_isspace(z[i]) ){ i++; }
+    if( z[i]==0 || z[i]=='>' || (z[i]=='/' && z[i+1]=='>') ) break;
+  }
+}
+
+/*
+** When the markup was parsed, some "\000" may have been inserted.
+** This routine restores to those "\000" values back to their
+** original content.
+*/
+static void bl_unparse_markup(bl_markup *p){
+  int i, n;
+  for(i=0; i<p->nAttr; i++){
+    char *z = p->aAttr[i].zValue;
+    if( z==0 ) continue;
+    if( p->aAttr[i].cTerm ){
+      n = (int)fsl_strlen(z);
+      z[n] = p->aAttr[i].cTerm;
+    }
+  }
+}
+
+/*
+** Return the ID attribute for markup.  Return NULL if there is no
+** ID attribute.
+*/
+static const char *bl_markup_id(bl_markup *p){
+  int i;
+  for(i=0; i<p->nAttr; i++){
+    if( p->aAttr[i].iACode==BLA_ID ){
+      return p->aAttr[i].zValue;
+    }
+  }
+  return 0;
+}
+
+/*
+** Pop a single element off of the stack.
+*/
+static void bl_pop_stack(bl_wiki *p){
+  if( p->nStack ){
+    p->nStack--;
+  }
+}
+
+/*
+** Push a new markup value onto the stack.  Enlarge the stack
+** if necessary. Returns 0 on success or FSL_RC_OOM.
+*/
+static int bl_push_stack_with_id(bl_wiki *p, int elem, const char *zId, int w){
+  if( p->nStack>=p->nAlloc ){
+    int const nAlloc = p->nAlloc*2 + 100;
+    struct bl_stack * const a =
+      (struct bl_stack*)fsl_realloc(p->aStack, nAlloc*sizeof(p->aStack[0]));
+    if( !a ) return FSL_RC_OOM;
+    p->nAlloc = nAlloc;
+    p->aStack = a;
+  }
+  p->aStack[p->nStack].iCode = (short)elem;
+  p->aStack[p->nStack].zId = zId;
+  p->aStack[p->nStack].allowWiki = (short)w;
+  p->nStack++;
+  return 0;
+}
+
+/*
+** Pop the stack until the top-most iTag element is removed.
+** If there is no iTag element on the stack, this routine
+** is a no-op.
+*/
+static void bl_pop_stack_to_tag(bl_wiki *p, int iTag){
+  int i;
+  for(i=p->nStack-1; i>=0; i--){
+    if( p->aStack[i].iCode!=iTag ) continue;
+    if( p->aStack[i].zId ) continue;
+    break;
+  }
+  if( i<0 ) return;
+  while( p->nStack>i ){
+    bl_pop_stack(p);
+  }
+}
+
+/*
+** Attempt to find a find a tag of type iTag with id zId.  Return -1
+** if not found.  If found, return its stack level.
+*/
+static int bl_find_tag_with_id(bl_wiki *p, int iTag, const char *zId){
+  int i;
+  assert( zId!=0 );
+  for(i=p->nStack-1; i>=0; i--){
+    if( p->aStack[i].iCode!=iTag ) continue;
+    if( p->aStack[i].zId==0 ) continue;
+    if( fsl_strcmp(zId, p->aStack[i].zId)!=0 ) continue;
+    break;
+  }
+  return i;
+}
+
+/*
+** Check to see if the given parsed markup is the correct
+** </verbatim> tag.
+*/
+static int bl_end_verbatim(bl_wiki *p, bl_markup *pMarkup){
+  char *z;
+  assert( p->inVerbatim );
+  if( pMarkup->iCode!=BLM_VERBATIM ) return 0;
+  if( !pMarkup->endTag ) return 0;
+  if( p->zVerbatimId==0 ) return 1;
+  if( pMarkup->nAttr!=1 ) return 0;
+  z = pMarkup->aAttr[0].zValue;
+  return fsl_strcmp(z, p->zVerbatimId)==0;
+}
+
+/*
+** Parse text looking for wiki hyperlinks in one of the formats:
+**
+**       [target]
+**       [target|...]
+**
+** Where "target" can be either an artifact ID prefix or a wiki page
+** name. Each target is passed to bl_create(). The scanner may modify
+** z while it runs, so it must be writable and NUL-terminated. If
+** wikiHtmlOnly is true then the text is HTML in which only these
+** hyperlinks are interpreted, as for fossil(1)'s wiki-use-html setting.
+**
+** Port of fossil(1)'s wiki_extract_links().
+*/
+static void bl_wiki_extract(bl_sink * const sink, char *z, int wikiHtmlOnly){
+  bl_wiki renderer;
+  int tokenType;
+  bl_markup markup;
+  int n;
+
+  memset(&renderer, 0, sizeof(renderer));
+  renderer.state = BLS_ALLOW_WIKI|BLS_AT_NEWLINE|BLS_AT_PARAGRAPH;
+
+  while( z[0] && 0==sink->rc ){
+    if( wikiHtmlOnly ){
+      n = bl_next_raw_token(z, &renderer, &tokenType);
+    }else{
+      n = bl_next_wiki_token(z, &renderer, &tokenType);
+    }
+    switch( tokenType ){
+      case BLT_LINK: {
+        char *zTarget;
+        int i;
+
+        zTarget = &z[1];
+        for(i=0; zTarget[i] && zTarget[i]!='|' && zTarget[i]!=']'; i++){}
+        while(i>1 && zTarget[i-1]==' '){ i--; }
+        bl_create(sink, zTarget, i);
+        break;
+      }
+      case BLT_MARKUP: {
+        const char *zId;
+        int iDiv;
+        bl_parse_markup(&markup, z);
+
+        /* Markup of the form </div id=ID> where there is a matching
+        ** ID somewhere on the stack.  Exit the verbatim if were are in
+        ** it.  Pop the stack up to the matching <div>.  Discard the
+        ** </div>
+        */
+        if( markup.iCode==BLM_DIV && markup.endTag &&
+             (zId = bl_markup_id(&markup))!=0 &&
+             (iDiv = bl_find_tag_with_id(&renderer, BLM_DIV, zId))>=0
+        ){
+          if( renderer.inVerbatim ){
+            renderer.inVerbatim = 0;
+            renderer.state = renderer.preVerbState;
+          }
+          while( renderer.nStack>iDiv+1 ) bl_pop_stack(&renderer);
+          if( renderer.aStack[iDiv].allowWiki ){
+            renderer.state |= BLS_ALLOW_WIKI;
+          }else{
+            renderer.state &= ~BLS_ALLOW_WIKI;
+          }
+          renderer.nStack--;
+        }else
+
+        /* If within <verbatim id=ID> ignore everything other than
+        ** </verbatim id=ID> and the </dev id=ID2> above.
+        */
+        if( renderer.inVerbatim ){
+          if( bl_end_verbatim(&renderer, &markup) ){
+            renderer.inVerbatim = 0;
+            renderer.state = renderer.preVerbState;
+          }else{
+            n = 1;
+          }
+        }else
+
+        /* Render invalid markup literally.  The markup appears in the
+        ** final output as plain text.
+        */
+        if( markup.iCode==BLM_INVALID ){
+          n = 1;
+        }else
+
+        if( markup.iCode==BLM_NOWIKI ){
+          if( markup.endTag ){
+            renderer.state |= BLS_ALLOW_WIKI;
+          }else{
+            renderer.state &= ~BLS_ALLOW_WIKI;
+          }
+        }else
+
+        /* Generate end-tags */
+        if( markup.endTag ){
+          bl_pop_stack_to_tag(&renderer, markup.iCode);
+        }else
+
+        /* Push <div> markup onto the stack together with the id=ID attribute.
+        */
+        if( markup.iCode==BLM_DIV ){
+          sink->rc = bl_push_stack_with_id(&renderer, markup.iCode,
+                                           bl_markup_id(&markup),
+                                           (renderer.state
+                                            & BLS_ALLOW_WIKI)!=0);
+        }else
+
+        /* Enter <verbatim> processing.  With verbatim enabled, all other
+        ** markup other than the corresponding end-tag with the same ID is
+        ** ignored.
+        */
+        if( markup.iCode==BLM_VERBATIM ){
+          int vAttrIdx;
+          renderer.zVerbatimId = 0;
+          renderer.inVerbatim = 1;
+          renderer.preVerbState = renderer.state;
+          renderer.state &= ~BLS_ALLOW_WIKI;
+          for (vAttrIdx = 0; vAttrIdx < markup.nAttr; vAttrIdx++){
+            if( markup.aAttr[vAttrIdx].iACode == BLA_ID ){
+              renderer.zVerbatimId = markup.aAttr[0].zValue;
+            }
+          }
+        }
+
+        /* Restore the input text to its original configuration
+        */
+        bl_unparse_markup(&markup);
+        break;
+      }
+      default: {
+        break;
+      }
+    }
+    z += n;
+  }
+  fsl_free(renderer.aStack);
+}
+
+/*
+** Markdown scanner. Port of fossil(1)'s markdown.c, driven by the
+** renderer which backlink.c's markdown_extract_links() installs: one
+** in which every callback succeeds, only the one for hyperlinks does
+** anything, and no output is produced.
+**
+** Dropping the output means the callbacks and the output buffers are
+** gone, along with the code which only computes table alignment, code
+** span trimming and the like. What is kept is everything which decides
+** how far each construct extends, what gets parsed recursively, and in
+** what order, because that determines which hyperlinks are seen. In
+** particular the iDepth bookkeeping stays where fossil(1) allocates and
+** releases its work buffers, as it limits how deeply constructs nest
+** and so decides whether the innermost ones are looked at at all.
+*/
+
+#define BL_LI_END 8  /* internal list flag */
+
+/* list/listitem flags */
+#define BL_LIST_ORDERED  1
+#define BL_LI_BLOCK      2  /* <li> containing block data */
+
+/*
+** A link reference definition: "[id]: target".
+*/
+typedef struct bl_ref bl_ref;
+struct bl_ref {
+  fsl_b id;           /* must be the first field, see bl_cmp_ref() */
+  fsl_b link;
+};
+
+/*
+** A footnote's data. The id, text, and upc fields hold what fossil(1)'s
+** struct footnote does, and are used the same way.
+*/
+typedef struct bl_note bl_note;
+struct bl_note {
+  fsl_b id;      /* must be the first field, see bl_cmp_ref() */
+  fsl_b text;    /* footnote's content */
+  fsl_b upc;     /* user-provided classes  .ASCII-alnum.or-hypen: */
+  int bRndred;   /* true if `text` has been scanned for links */
+  int defno;     /* serial number of definition, set during the first pass */
+  int index;     /* index within the array of notes */
+  int iMark;     /* user-visible numeric marker, assigned upon first use */
+  int nUsed;     /* counts references to this note */
+};
+
+typedef struct bl_md bl_md;
+
+/* Function pointer type for the active chars. Returns the number of
+** chars taken care of. data is the pointer of the beginning of the
+** span, offset is the number of valid chars before data. */
+typedef size_t (*bl_trigger)(bl_md *md, char *data, size_t offset,
+                             size_t size);
+
+/*
+** State of one scan, fossil(1)'s struct render.
+*/
+struct bl_md {
+  bl_sink * sink;                 /* Where links go. sink->rc is the
+                                  ** scan's error state. */
+  bl_ref * aRef;                  /* Link reference definitions, sorted */
+  int nRef;
+  int nRefAlloc;
+  bl_trigger active_char[256];
+  int iDepth;                     /* Number of "work buffers" in use */
+  struct {
+    bl_note * a;                  /* Footnotes. The first nLbled are the
+                                  ** labeled ones, sorted by id */
+    int n;
+    int nAlloc;
+    int nLbled;                   /* number of labeled footnotes found
+                                  ** during the first pass */
+    int nMarks;                   /* counts distinct indices found during
+                                  ** the second pass */
+  } notes;
+};
+
+/* html_tag -- structure for quick HTML tag search */
+struct bl_tag {
+  const char *text;
+  int size;
+};
+
+/*
+** When these HTML tags are separated from other text by newlines
+** then they are rendered verbatim.  Their content is not interpreted
+** in any way.
+*/
+static const struct bl_tag bl_block_tags[] = {
+  { "html",         4 },
+  { "pre",          3 },
+  { "script",       6 },
+};
+
+#define BL_OK(MD) (0==(MD)->sink->rc)
+
+/* Records the first error of a scan. */
+static void bl_err(bl_md * const md, int rc){
+  if( rc && 0==md->sink->rc ) md->sink->rc = rc;
+}
+
+/* Appends n bytes of z to b, recording an allocation failure. */
+static void bl_append(bl_md * const md, fsl_b * const b,
+                      const char *z, size_t n){
+  if( BL_OK(md) ) bl_err(md, fsl_b_append(b, z, (fsl_int_t)n));
+}
+
+/* Returns the contents of b as a string, which is empty if b is. */
+static char *bl_bstr(fsl_b const * const b){
+  return b->mem ? (char*)b->mem : (char*)"";
+}
+
+/*
+** Compare two buffers, as fossil(1)'s blob_compare() does: first by
+** content up to the shorter length, then by length.
+*/
+static int bl_blob_compare(fsl_b const * const pA, fsl_b const * const pB){
+  int const szA = (int)pA->used;
+  int const szB = (int)pB->used;
+  int const sz = szA<szB ? szA : szB;
+  int rc = sz ? memcmp(pA->mem, pB->mem, sz) : 0;
+  if( rc==0 ) rc = szA - szB;
+  return rc;
+}
+
+/*
+** The "work buffer" accounting: fossil(1) keeps a count of the work
+** buffers in use which doubles as the depth of recursion.
+*/
+static void bl_enter(bl_md * const md){ md->iDepth++; }
+static void bl_leave(bl_md * const md){ md->iDepth--; }
+
+/* return true if recursion has gone too deep */
+static int bl_too_deep(bl_md const * const md){
+  return md->iDepth>200;
+}
+
+/*
+** collapse whitespace from input text to make it a ref id.
+** Potential TODO: maybe also handle CR+LF line endings?
+*/
+static int bl_build_ref_id(bl_md * const md, fsl_b * const id,
+                           const char *data, size_t size){
+  size_t beg, i;
+  char *id_data;
+
+  /* skip leading whitespace */
+  while( size>0 && (data[0]==' ' || data[0]=='\t' || data[0]=='\n') ){
+    data++;
+    size--;
+  }
+
+  /* skip trailing whitespace */
+  while( size>0 && (data[size-1]==' '
+   || data[size-1]=='\t'
+   || data[size-1]=='\n')
+  ){
+    size--;
+  }
+  if( size==0 ) return -1;
+
+  /* making the ref id */
+  i = 0;
+  fsl_b_reuse(id);
+  while( i<size ){
+    /* copy non-whitespace into the output buffer */
+    beg = i;
+    while( i<size && !(data[i]==' ' || data[i]=='\t' || data[i]=='\n') ){
+      i++;
+    }
+    bl_append(md, id, data+beg, i-beg);
+
+    /* add a single space and skip all consecutive whitespace */
+    if( i<size ) bl_append(md, id, " ", 1);
+    while( i<size && (data[i]==' ' || data[i]=='\t' || data[i]=='\n') ){ i++; }
+  }
+
+  /* turn upper-case ASCII into their lower-case counterparts */
+  id_data = bl_bstr(id);
+  for(i=0; i<id->used; i++){
+    if( id_data[i]>='A' && id_data[i]<='Z' ) id_data[i] += 'a' - 'A';
+  }
+  return 0;
+}
+
+/* comparison function for bsearch() of bl_ref and bl_note arrays */
+static int bl_cmp_ref(const void *key, const void *array_entry){
+  bl_ref const * const lr = (bl_ref const *)array_entry;
+  return bl_blob_compare((fsl_b const *)key, &lr->id);
+}
+
+/* comparison function for qsort() of bl_ref arrays */
+static int bl_cmp_ref_sort(const void *a, const void *b){
+  bl_ref const * const lra = (bl_ref const *)a;
+  bl_ref const * const lrb = (bl_ref const *)b;
+  return bl_blob_compare(&lra->id, &lrb->id);
+}
+
+/*
+** comparison function for footnotes qsort.
+** Empty IDs sort last (in undetermined order).
+** Equal IDs are sorted in the order of definition in the source.
+*/
+static int bl_cmp_note_id(const void *fna, const void *fnb){
+  const bl_note *a = (bl_note const *)fna, *b = (bl_note const *)fnb;
+  const int szA = (int)a->id.used, szB = (int)b->id.used;
+  if( szA ){
+    if( szB ){
+      int cmp = bl_blob_compare(&a->id, &b->id);
+      if( cmp ) return cmp;
+    }else return -1;
+  }else return szB ? 1 : 0;
+  /* IDs are equal and non-empty */
+  if( a->defno < b->defno ) return -1;
+  if( a->defno > b->defno ) return  1;
+  assert(!"reachable");
+  return 0; /* should never reach here */
+}
+
+/*
+** comparison function for footnotes qsort.
+** Unreferenced footnotes (when nUsed == 0) sort last and
+** are sorted in the order of definition in the source.
+*/
+static int bl_cmp_note_sort(const void *fna, const void *fnb){
+  const bl_note *a = (bl_note const *)fna, *b = (bl_note const *)fnb;
+  int i, j;
+  assert( a->nUsed >= 0 );
+  assert( b->nUsed >= 0 );
+  assert( a->defno >= 0 );
+  assert( b->defno >= 0 );
+  if( a->nUsed ){
+    assert( a->iMark >  0 );
+    if( !b->nUsed ) return -1;
+    assert( b->iMark >  0 );
+    i = a->iMark;
+    j = b->iMark;
+  }else{
+    if( b->nUsed )  return  1;
+    i = a->defno;
+    j = b->defno;
+  }
+  if( i < j ) return -1;
+  if( i > j ) return  1;
+  return 0;
+}
+
+/* returns the current block tag, if any */
+static const struct bl_tag *bl_find_block_tag(const char *data, size_t size){
+  size_t i = 0;
+  size_t k;
+
+  /* looking for the word end */
+  while( i<size
+   && ((data[i]>='0' && data[i]<='9')
+       || (data[i]>='A' && data[i]<='Z')
+       || (data[i]>='a' && data[i]<='z'))
+  ){
+    i++;
+  }
+  if( i>=size ) return 0;
+
+  /* The tag must be the whole word, regardless of case. */
+  for(k=0; k<sizeof(bl_block_tags)/sizeof(bl_block_tags[0]); k++){
+    struct bl_tag const * const t = &bl_block_tags[k];
+    if( (int)i==t->size && 0==fsl_strnicmp(data, t->text, t->size) ){
+      return t;
+    }
+  }
+  return 0;
+}
+
+
+/****************************
+ * INLINE PARSING FUNCTIONS *
+ ****************************/
+
+/* looks for the address part of a mail autolink and '>' */
+/* this is less strict than the original markdown e-mail address matching */
+static size_t bl_is_mail_autolink(char *data, size_t size){
+  size_t i = 0, nb = 0;
+  /* address is assumed to be: [-@._a-zA-Z0-9]+ with exactly one '@' */
+  while( i<size && (data[i]=='-'
+   || data[i]=='.'
+   || data[i]=='_'
+   || data[i]=='@'
+   || (data[i]>='a' && data[i]<='z')
+   || (data[i]>='A' && data[i]<='Z')
+   || (data[i]>='0' && data[i]<='9'))
+  ){
+    if( data[i]=='@' ) nb++;
+    i++;
+  }
+  if( i>=size || data[i]!='>' || nb!=1 ) return 0;
+  return i+1;
+}
+
+/* autolink types, as fossil(1)'s mkd_autolink */
+#define BL_NOT_AUTOLINK    0   /* used internally when it is not an autolink*/
+#define BL_NORMAL          1   /* normal http/http/ftp link */
+#define BL_EXPLICIT_EMAIL  2   /* e-mail link with explicit mailto: */
+#define BL_IMPLICIT_EMAIL  3   /* e-mail link without mailto: */
+
+/* returns the length of the given tag, or 0 if it's not valid */
+static size_t bl_tag_length(char *data, size_t size, int *autolink){
+  size_t i, j;
+
+  /* a valid tag can't be shorter than 3 chars */
+  if( size<3 ) return 0;
+
+  /* begins with a '<' optionally followed by '/', followed by letter */
+  if( data[0]!='<' ) return 0;
+  i = (data[1]=='/') ? 2 : 1;
+  if( (data[i]<'a' || data[i]>'z') &&  (data[i]<'A' || data[i]>'Z') ){
+    if( data[1]=='!' && size>=7 && data[2]=='-' && data[3]=='-' ){
+      for(i=6; i<size && (data[i]!='>'||data[i-1]!='-'|| data[i-2]!='-');i++){}
+      if( i<size ) return i;
+    }
+    return 0;
+  }
+
+  /* scheme test */
+  *autolink = BL_NOT_AUTOLINK;
+  if( size>6
+   && fsl_strnicmp(data+1, "http", 4)==0
+   && (data[5]==':'
+       || ((data[5]=='s' || data[5]=='S') && data[6]==':'))
+  ){
+    i = (data[5]==':') ? 6 : 7;
+    *autolink = BL_NORMAL;
+  }else if( size>5 && fsl_strnicmp(data+1, "ftp:", 4)==0 ){
+    i = 5;
+    *autolink = BL_NORMAL;
+  }else if( size>7 && fsl_strnicmp(data+1, "mailto:", 7)==0 ){
+    i = 8;
+    /* not changing *autolink to go to the address test */
+   }
+
+  /* completing autolink test: no whitespace or ' or " */
+  if( i>=size || i=='>' ){
+    *autolink = BL_NOT_AUTOLINK;
+  }else if( *autolink ){
+    j = i;
+    while( i<size
+     && data[i]!='>'
+     && data[i]!='\''
+     && data[i]!='"'
+     && data[i]!=' '
+     && data[i]!='\t'
+     && data[i]!='\n'
+    ){
+      i++;
+    }
+    if( i>=size ) return 0;
+    if( i>j && data[i]=='>' ) return i+1;
+    /* one of the forbidden chars has been found */
+    *autolink = BL_NOT_AUTOLINK;
+  }else if( (j = bl_is_mail_autolink(data+i, size-i))!=0 ){
+    *autolink = (i==8) ? BL_EXPLICIT_EMAIL : BL_IMPLICIT_EMAIL;
+    return i+j;
+  }
+
+  /* looking for something looking like a tag end */
+  while( i<size && data[i]!='>' ){ i++; }
+  if( i>=size ) return 0;
+  return i+1;
+}
+
+/* parses inline markdown elements */
+static void bl_parse_inline(bl_md *md, char *data, size_t size){
+  size_t i = 0, end = 0;
+  bl_trigger action = 0;
+
+  if( bl_too_deep(md) ) return;
+  while( i<size && BL_OK(md) ){
+    /* skipping inactive chars */
+    while( end<size
+     && (action = md->active_char[(unsigned char)data[end]])==0
+    ){
+      end++;
+    }
+    if( end>=size ) break;
+    i = end;
+
+    /* calling the trigger */
+    end = action(md, data+i, i, size-i);
+    if( !end ){
+      /* no action from the callback */
+      end = i+1;
+    }else{
+      i += end;
+      end = i;
+    }
+  }
+}
+
+/*
+** data[*pI] should be a "`" character that introduces a code-span.
+** The code-span boundary mark can be any number of one or more "`"
+** characters.  We do not know the size of the boundary marker, only
+** that there is at least one "`" at data[*pI].
+**
+** This routine increases *pI to move it past the code-span, including
+** the closing boundary mark.  Or, if the code-span is unterminated,
+** this routine moves *pI past the opening boundary mark only.
+*/
+static void bl_skip_codespan(const char *data, size_t size, size_t *pI){
+  size_t i = *pI;
+  size_t span_nb;   /* Number of "`" characters in the boundary mark */
+  size_t bt;
+
+  assert( i<size );
+  assert( data[i]=='`' );
+  data += i;
+  size -= i;
+
+  /* counting the number of opening backticks */
+  i = 0;
+  span_nb = 0;
+  while( i<size && data[i]=='`' ){
+    i++;
+    span_nb++;
+  }
+  if( i>=size ){
+    *pI += span_nb;
+    return;
+  }
+
+  /* finding the matching closing sequence */
+  bt = 0;
+  while( i<size && bt<span_nb ){
+    if( data[i]=='`' ) bt += 1; else bt = 0;
+    i++;
+  }
+  *pI += (bt == span_nb) ? i : span_nb;
+}
+
+/* looks for the next emph char, skipping other constructs */
+static size_t bl_find_emph_char(char *data, size_t size, char c){
+  size_t i = data[0]!='`';
+
+  while( i<size ){
+    while( i<size && data[i]!=c && data[i]!='`' && data[i]!='[' ){ i++; }
+    if( i>=size ) return 0;
+
+    /* not counting escaped chars */
+    if( i && data[i-1]=='\\' ){
+      i++;
+      continue;
+    }
+
+    if( data[i]==c ) return i;
+
+    if( data[i]=='`' ){            /* skip a code span */
+      bl_skip_codespan(data, size, &i);
+    }else if( data[i]=='[' ){      /* skip a link */
+      size_t tmp_i = 0;
+      char cc;
+      i++;
+      while( i<size && data[i]!=']' ){
+        if( !tmp_i && data[i]==c ) tmp_i = i;
+        i++;
+      }
+      i++;
+      while( i<size && (data[i]==' ' || data[i]=='\t' || data[i]=='\n') ){
+        i++;
+      }
+      if( i>=size ) return tmp_i;
+      if( data[i]!='[' && data[i]!='(' ){ /* not a link*/
+        if( tmp_i ) return tmp_i; else continue;
+      }
+      cc = data[i];
+      i++;
+      while( i<size && data[i]!=cc ){
+        if( !tmp_i && data[i]==c ) tmp_i = i;
+        i++;
+      }
+      if( i>=size ) return tmp_i;
+      i++;
+    }
+  }
+  return 0;
+}
+
+/* CommonMark defines separate "right-flanking" and "left-flanking"
+** deliminators for emphasis.  Whether a deliminator is left- or
+** right-flanking, or both, or neither depends on the characters
+** immediately before and after.
+**
+**   before   after   example    left-flanking   right-flanking
+**   ------   -----   -------    -------------   --------------
+**    space   space      *            no              no
+**    space   punct      *)          yes              no
+**    space   alnum      *x          yes              no
+**    punct   space     (*            no             yes
+**    punct   punct     (*)          yes             yes
+**    punct   alnum     (*x          yes              no
+**    alnum   space     a*            no             yes
+**    alnum   punct     a*(           no             yes
+**    alnum   alnum     a*x          yes             yes
+**
+** The following routines determine whether a delimiter is left
+** or right flanking.
+*/
+static int bl_left_flanking(char before, char after){
+  if( fsl_isspace(after) ) return 0;
+  if( fsl_isalnum(after) ) return 1;
+  if( fsl_isalnum(before) ) return 0;
+  return 1;
+}
+static int bl_right_flanking(char before, char after){
+  if( fsl_isspace(before) ) return 0;
+  if( fsl_isalnum(before) ) return 1;
+  if( fsl_isalnum(after) ) return 0;
+  return 1;
+}
+
+/*
+** parsing single emphasis.
+** closed by a symbol not preceded by whitespace and not followed by symbol.
+*/
+static size_t bl_parse_emph1(bl_md *md, char *data, size_t size, char c){
+  size_t i = 0, len;
+  char after;
+
+  /* skipping one symbol if coming from emph3 */
+  if( size>1 && data[0]==c && data[1]==c ) i = 1;
+
+  while( i<size ){
+    len = bl_find_emph_char(data+i, size-i, c);
+    if( !len ) return 0;
+    i += len;
+    if( i>=size ) return 0;
+
+    if( i+1<size && data[i+1]==c ){
+      i++;
+      continue;
+    }
+    after = i+1<size ? data[i+1] : ' ';
+    if( data[i]==c
+     && bl_right_flanking(data[i-1],after)
+     && (c!='_' || !fsl_isalnum(after))
+     && !bl_too_deep(md)
+    ){
+      bl_enter(md);
+      bl_parse_inline(md, data, i);
+      bl_leave(md);
+      return i+1;
+    }
+  }
+  return 0;
+}
+
+/*
+** parsing double emphasis.
+*/
+static size_t bl_parse_emph2(bl_md *md, char *data, size_t size, char c){
+  size_t i = 0, len;
+  char after;
+
+  while( i<size ){
+    len = bl_find_emph_char(data+i, size-i, c);
+    if( !len ) return 0;
+    i += len;
+    after = i+2<size ? data[i+2] : ' ';
+    if( i+1<size
+     && data[i]==c
+     && data[i+1]==c
+     && bl_right_flanking(data[i-1],after)
+     && (c!='_' || !fsl_isalnum(after))
+     && !bl_too_deep(md)
+    ){
+      bl_enter(md);
+      bl_parse_inline(md, data, i);
+      bl_leave(md);
+      return i+2;
+    }
+    i++;
+  }
+  return 0;
+}
+
+/*
+** parsing triple emphasis.
+** finds the first closing tag, and delegates to the other emph.
+*/
+static size_t bl_parse_emph3(bl_md *md, char *data, size_t size, char c){
+  size_t i = 0, len;
+
+  while( i<size ){
+    len = bl_find_emph_char(data+i, size-i, c);
+    if( !len ) return 0;
+    i += len;
+
+    /* skip whitespace preceded symbols */
+    if( data[i]!=c || data[i-1]==' ' || data[i-1]=='\t' || data[i-1]=='\n' ){
+      continue;
+    }
+
+    if( i+2<size
+     && data[i+1]==c
+     && data[i+2] == c
+     && !bl_too_deep(md)
+    ){
+      /* triple symbol found */
+      bl_enter(md);
+      bl_parse_inline(md, data, i);
+      bl_leave(md);
+      return i+3;
+    }else if( i+1<size && data[i+1]==c ){
+      /* double symbol found, handing over to emph1 */
+      len = bl_parse_emph1(md, data-2, size+2, c);
+      return len ? len-2 : 0;
+    }else{
+      /* single symbol found, handing over to emph2 */
+      len = bl_parse_emph2(md, data-1, size+1, c);
+      return len ? len-1 : 0;
+    }
+  }
+  return 0;
+}
+
+/*
+** single and double emphasis parsing.
+*/
+static size_t bl_char_emphasis(bl_md *md, char *data, size_t offset,
+                               size_t size){
+  char c = data[0];
+  char before = offset>0 ? data[-1] : ' ';
+  size_t ret;
+
+  if( size>2 && data[1]!=c ){
+    if( !bl_left_flanking(before, data[1])
+     || (c=='_' && fsl_isalnum(before))
+     || (ret = bl_parse_emph1(md, data+1, size-1, c))==0
+    ){
+      return 0;
+    }
+    return ret+1;
+  }
+
+  if( size>3 && data[1]==c && data[2]!=c ){
+    if( !bl_left_flanking(before, data[2])
+     || (c=='_' && fsl_isalnum(before))
+     || (ret = bl_parse_emph2(md, data+2, size-2, c))==0
+    ){
+      return 0;
+    }
+    return ret+2;
+  }
+
+  if( size>4 && data[1]==c && data[2]==c && data[3]!=c ){
+    if( !bl_left_flanking(before, data[3])
+     || (c=='_' && fsl_isalnum(before))
+     || (ret = bl_parse_emph3(md, data+3, size-3, c))==0
+    ){
+      return 0;
+    }
+    return ret+3;
+  }
+  return 0;
+}
+
+/*
+** '\n' preceded by two spaces.
+*/
+static size_t bl_char_linebreak(bl_md *md, char *data, size_t offset,
+                                size_t size){
+  (void)md;
+  (void)size;
+  if( offset<2 || data[-1]!=' ' || data[-2]!=' ' ) return 0;
+  return 1;
+}
+
+/*
+** '`' parsing a code span. Also used for fenced code blocks, in which
+** case the "span" delimiter may be '~'.
+*/
+static size_t bl_char_codespan(bl_md *md, char *data, size_t offset,
+                               size_t size){
+  size_t end, nb = 0, i;
+  char delim = data[0];
+  (void)md;
+  (void)offset;
+
+  /* counting the number of backticks in the delimiter */
+  while( nb<size && data[nb]==delim ){ nb++; }
+
+  /* finding the next delimiter */
+  i = 0;
+  for(end=nb; end<size && i<nb; end++){
+    if( data[end]==delim ) i++; else i = 0;
+  }
+  if( i<nb && end>=size ) return 0; /* no matching delimiter */
+  return end;
+}
+
+/*
+** '\\' backslash escape.
+*/
+static size_t bl_char_escape(bl_md *md, char *data, size_t offset,
+                             size_t size){
+  (void)md;
+  (void)data;
+  (void)offset;
+  (void)size;
+  return 2;
+}
+
+/*
+** '&' escaped when it doesn't belong to an entity.
+** valid entities are assumed to be anything matching &#?[A-Za-z0-9]+;
+*/
+static size_t bl_char_entity(bl_md *md, char *data, size_t offset,
+                             size_t size){
+  size_t end = 1;
+  (void)md;
+  (void)offset;
+  if( end<size && data[end]=='#' ) end++;
+  while( end<size
+   && ((data[end]>='0' && data[end]<='9')
+       || (data[end]>='a' && data[end]<='z')
+       || (data[end]>='A' && data[end]<='Z'))
+  ){
+    end++;
+  }
+  if( end<size && data[end]==';' ){
+    /* real entity */
+    end++;
+  }else{
+    /* lone '&' */
+    return 0;
+  }
+  return end;
+}
+
+/*
+** '<' when tags or autolinks are allowed. Autolinks and raw HTML tags
+** are both accepted without being looked at any further: links are
+** only extracted from the [text](target) forms.
+*/
+static size_t bl_char_langle_tag(bl_md *md, char *data, size_t offset,
+                                 size_t size){
+  int altype = BL_NOT_AUTOLINK;
+  (void)md;
+  (void)offset;
+  return bl_tag_length(data, size, &altype);
+}
+
+/*
+** extract inline-style link from parenthesed data. The link's title,
+** which fossil(1) also extracts, is not needed here, but finding it
+** can change where the link ends.
+*/
+static void bl_get_link_inline(bl_md * const md, fsl_b *link,
+                               char *data, size_t size){
+  size_t i = 0, mark;
+  size_t link_b, link_e;
+  size_t title_b = 0, title_e = 0;
+
+  /* skipping initial whitespace */
+  while( i<size && (data[i]==' ' || data[i]=='\t' || data[i]=='\n') ){ i++; }
+  link_b = i;
+
+  /* looking for link end: ' " */
+  while( i<size && data[i]!='\'' && data[i]!='"' ){ i++; }
+  link_e = i;
+
+  /* looking for title end if present */
+  if( data[i]=='\'' || data[i]=='"' ){
+    i++;
+    title_b = i;
+
+    /* skipping whitespaces after title */
+    title_e = size-1;
+    while( title_e>title_b
+     && (data[title_e]==' '
+         || data[title_e]=='\t'
+         || data[title_e]=='\n')
+    ){
+      title_e--;
+    }
+
+    /* checking for closing quote presence */
+    if (data[title_e] != '\'' &&  data[title_e] != '"') {
+      title_b = title_e = 0;
+      link_e = i;
+    }
+  }
+
+  /* remove whitespace at the end of the link */
+  while( link_e>link_b
+   && (data[link_e-1]==' '
+       || data[link_e-1]=='\t'
+       || data[link_e-1]=='\n')
+  ){
+    link_e--;
+  }
+
+  /* remove optional angle brackets around the link */
+  if( data[link_b]=='<' ) link_b += 1;
+  if( link_e && data[link_e-1]=='>' ) link_e -= 1;
+
+  /* escape backslashed character from link */
+  fsl_b_reuse(link);
+  i = link_b;
+  while( i<link_e ){
+    mark = i;
+    while( i<link_e && data[i]!='\\' ){ i++; }
+    bl_append(md, link, data+mark, i-mark);
+    while( i<link_e && data[i]=='\\' ){ i++; }
+  }
+}
+
+/*
+** extract referenced link from id. Returns 0 on success, else -1.
+*/
+static int bl_get_link_ref(bl_md * const md, fsl_b *link,
+                           char *data, size_t size){
+  bl_ref *lr;
+
+  /* find the link from its id (stored temporarily in link) */
+  fsl_b_reuse(link);
+  if( !md->nRef || bl_build_ref_id(md, link, data, size)<0 ) return -1;
+  lr = (bl_ref*)bsearch(link, md->aRef, md->nRef, sizeof(bl_ref),
+                        bl_cmp_ref);
+  if( !lr ) return -1;
+
+  /* fill the output buffer */
+  fsl_b_reuse(link);
+  bl_append(md, link, bl_bstr(&lr->link), lr->link.used);
+  return 0;
+}
+
+/*
+** find a footnote by label, invoked during the 2nd pass. If found
+** then it is marked as used. A reference to a footnote which does not
+** exist is just as much a footnote reference as one which does, so
+** there is nothing to return.
+*/
+static void bl_get_footnote(bl_md * const md, const char *data, size_t size){
+  bl_note *fn = 0;
+  if( md->notes.nLbled ){
+    fsl_b id = fsl_b_empty;
+    if( bl_build_ref_id(md, &id, data, size)>=0 ){
+      fn = (bl_note*)bsearch(&id, md->notes.a, md->notes.nLbled,
+                             sizeof(bl_note), bl_cmp_ref);
+    }
+    fsl_b_clear(&id);
+  }
+  if( fn ){
+    if( fn->nUsed == 0 ){  /* the first reference to the footnote */
+      assert( fn->iMark == 0 );
+      fn->iMark = ++(md->notes.nMarks);
+    }
+    assert( fn->iMark > 0 );
+    fn->nUsed++;
+  }
+}
+
+/*
+** Counts characters in the blank prefix within at most nHalfLines.
+** A sequence of spaces and tabs counts as odd halfline,
+** a newline counts as even halfline.
+** If nHalfLines < 0 then proceed without constraints.
+*/
+static size_t bl_sizeof_blank_prefix(
+  const char *data, size_t size, int nHalfLines
+){
+  const char *p = data;
+  const char * const end = data+size;
+  if( nHalfLines < 0 ){
+    while( p!=end && fsl_isspace(*p) ){
+      p++;
+    }
+  }else while( nHalfLines > 0 ){
+    while( p!=end && (*p==' ' || *p=='\t' ) ){ p++; }
+    if( p==end || --nHalfLines == 0 ) break;
+    if( *p=='\n' || *p=='\r' ){
+      p++;
+      if( p==end ) break;
+      if( *p=='\n' && p[-1]=='\r' ){
+        p++;
+      }
+    }
+    nHalfLines--;
+  }
+  return p-data;
+}
+
+/*
+** Check if the data starts with a classlist token of the special form.
+** If so then return the length of that token, otherwise return 0.
+**
+** The token must start with a dot and must end with a colon;
+** in between of these it must be a dot-separated list of words;
+** each word may contain only alphanumeric characters and hyphens.
+**
+** If `bBlank` is non-zero then a blank character must follow
+** the token's ending colon: otherwise function returns 0
+** despite the well-formed token.
+*/
+static size_t bl_is_footnote_classlist(const char * const data, size_t size,
+                                       int bBlank){
+  const char *p;
+  const char * const end = data+size;
+  if( data==end || *data != '.' ) return 0;
+  for(p=data+1; p!=end; p++){
+    if( fsl_isalnum(*p) || *p=='-' ) continue;
+    if( p[-1]=='.' ) break;
+    if( *p==':' ){
+      p++;
+      if( bBlank ){
+        if( p==end || !fsl_isspace(*p) ) break;
+      }
+      return p-data;
+    }
+    if( *p!='.' ) break;
+  }
+  return 0;
+}
+
+/*
+** Appends fn to the array of footnotes, which then owns its buffers.
+** On allocation failure the buffers are released and the error is
+** recorded.
+*/
+static void bl_note_push(bl_md * const md, bl_note * const fn){
+  if( md->notes.n>=md->notes.nAlloc ){
+    int const nAlloc = md->notes.nAlloc*2 + 8;
+    bl_note * const a =
+      (bl_note*)fsl_realloc(md->notes.a, nAlloc*sizeof(bl_note));
+    if( !a ){
+      bl_err(md, FSL_RC_OOM);
+      fsl_b_clear(&fn->id);
+      fsl_b_clear(&fn->text);
+      fsl_b_clear(&fn->upc);
+      return;
+    }
+    md->notes.a = a;
+    md->notes.nAlloc = nAlloc;
+  }
+  md->notes.a[md->notes.n++] = *fn;
+}
+
+/*
+** Adds unlabeled footnote to the notes. Returns 1 on success,
+** otherwise 0.
+*/
+static int bl_add_inline_footnote(bl_md * const md, const char *text,
+                                  size_t size){
+  bl_note fn;
+  const char *zUPC = 0;
+  size_t nUPC = 0, n = bl_sizeof_blank_prefix(text, size, 3);
+  if( n >= size ) return 0;
+  text += n;
+  size -= n;
+  nUPC = bl_is_footnote_classlist(text, size, 1);
+  if( nUPC ){
+    assert( nUPC<size );
+    zUPC = text;
+    text += nUPC;
+    size -= nUPC;
+  }
+  if( bl_sizeof_blank_prefix(text,size,-1)==size ){
+    if( !nUPC ) return 0; /* empty inline footnote */
+    text = zUPC;
+    size = nUPC;          /* bare classlist is treated */
+    nUPC = 0;             /* as plain text */
+  }
+  memset(&fn, 0, sizeof(fn));
+  fn.text = fn.id = fn.upc = fsl_b_empty;
+  fn.iMark = ++(md->notes.nMarks);
+  fn.nUsed  = 1;
+  fn.index  = md->notes.n;
+  assert( fn.iMark > 0 );
+  bl_append(md, &fn.text, text, size);
+  if(nUPC) bl_append(md, &fn.upc, zUPC, nUPC);
+  bl_note_push(md, &fn);
+  return BL_OK(md);
+}
+
+/*
+** Return the byte offset of the matching closing bracket or 0 if not
+** found.  begin[0] must be either '[' or '('.
+**
+** TODO: It seems that things like "\\(" are not handled correctly.
+**       That is historical behavior for a corner-case,
+**       so it's left as it is until somebody complains.
+*/
+static size_t bl_matching_bracket_offset(
+  const char* begin,
+  const char* end
+){
+  const char *i;
+  int level;
+  const char bra = *begin;
+  const char ket = bra=='[' ? ']' : ')';
+  assert( bra=='[' || bra=='(' );
+  for(i=begin+1,level=1; i!=end; i++){
+    if( *i=='\n' )        /* do nothing */;
+    else if( i[-1]=='\\' ) continue;
+    else if( *i==bra )     level++;
+    else if( *i==ket ){
+      if( --level<=0 ) return i-begin;
+    }
+  }
+  return 0;
+}
+
+/*
+** '(': parsing a standalone inline footnote.
+*/
+static size_t bl_char_footnote(bl_md *md, char *data, size_t offset,
+                               size_t size){
+  size_t end;
+  (void)offset;
+
+  if( size<4 || data[1]!='^' ) return 0;
+  end = bl_matching_bracket_offset(data, data+size);
+  if( !end ) return 0;
+  if( !bl_add_inline_footnote(md, data+2, end-2) ) return 0;
+  return end+1;
+}
+
+/*
+** '[': parsing a link or an image. Only links are of interest, but
+** the content of an image is still skipped over as fossil(1) does.
+*/
+static size_t bl_char_link(
+  bl_md *md,
+  char *data,
+  size_t offset,
+  size_t size     /* bl_parse_inline() ensures that size > 0 */
+){
+  const int bFsfn = (size>3 && data[1]=='^'); /*free-standing footnote ref*/
+  const int bImg = !bFsfn && (offset && data[-1] == '!');
+  size_t i, txt_e;
+  fsl_b link = fsl_b_empty;
+  int isNote = 0;
+  int ret;
+
+  /* looking for the matching closing bracket */
+  txt_e = bl_matching_bracket_offset(data, data+size);
+  if( !txt_e ) return 0;
+  i = txt_e + 1;
+  ret = 0; /* error if we don't get to the callback */
+
+  /* free-standing footnote reference */
+  if( bFsfn ){
+    bl_get_footnote(md, data+2, txt_e-2);
+    isNote = 1;
+  }else{
+    /* allocate temporary buffers to store content, link and title */
+    bl_enter(md);
+    bl_enter(md);
+    bl_enter(md);
+
+    if( i<size && data[i]=='(' ){
+
+      if( i+2<size && data[i+1]=='^' ){  /* span-bounded inline footnote */
+
+        const size_t k = bl_matching_bracket_offset(data+i, data+size);
+        if( !k ) goto char_link_cleanup;
+        isNote = bl_add_inline_footnote(md, data+(i+2), k-2);
+        i += k+1;
+      }else{                             /* inline style link  */
+        size_t span_end = i;
+        while( span_end<size
+               && !(data[span_end]==')'
+                    && (span_end==i || data[span_end-1]!='\\')) ){
+          span_end++;
+        }
+        if( span_end>=size ) goto char_link_cleanup;
+        bl_get_link_inline(md, &link, data+i+1, span_end-(i+1));
+        i = span_end+1;
+      }
+    /* reference style link or span-bounded footnote reference */
+    }else if( i<size && data[i]=='[' ){
+      char *id_data;
+      size_t id_size, id_end = i;
+      int bFootnote;
+
+      while( id_end<size && data[id_end]!=']' ){ id_end++; }
+      if( id_end>=size ) goto char_link_cleanup;
+      bFootnote = data[i+1]=='^';
+      if( i+1==id_end || (bFootnote && i+2==id_end) ){
+        /* implicit id - use the contents */
+        id_data = data+1;
+        id_size = txt_e-1;
+      }else{
+        /* explicit id - between brackets */
+        id_data = data+i+1;
+        id_size = id_end-(i+1);
+        if( bFootnote ){
+          id_data++;
+          id_size--;
+        }
+      }
+      if( bFootnote ){
+        bl_get_footnote(md, id_data, id_size);
+        isNote = 1;
+      }else if( bl_get_link_ref(md, &link, id_data, id_size)<0 ){
+        goto char_link_cleanup;
+      }
+      i = id_end+1;
+    /* shortcut reference style link */
+    }else{
+      if( bl_get_link_ref(md, &link, data+1, txt_e-1)<0 ){
+        goto char_link_cleanup;
+      }
+      /* rewinding an "inter-bracket-whitespace" */
+      i = txt_e+1;
+    }
+  }
+  /* The text of a link is parsed, that of an image is not. */
+  if( txt_e>1 && !bFsfn && !bImg ){
+    bl_parse_inline(md, data+1, txt_e-1);
+  }
+
+  /* An image or a footnote reference needs no further attention. */
+  ret = 1;
+  if( !bImg && !isNote ){
+    bl_create(md->sink, bl_bstr(&link), (int)link.used);
+  }
+
+  /* cleanup */
+char_link_cleanup:
+  if( !bFsfn ){
+    bl_leave(md);
+    bl_leave(md);
+    bl_leave(md);
+  }
+  fsl_b_clear(&link);
+  return ret ? i : 0;
+}
+
+
+/*********************************
+ * BLOCK-LEVEL PARSING FUNCTIONS *
+ *********************************/
+
+/* returns the line length when it is empty, 0 otherwise */
+static size_t bl_is_empty(const char *data, size_t size){
+  size_t i;
+  for(i=0; i<size && data[i]!='\n'; i++){
+    if( data[i]!=' ' && data[i]!='\t' ) return 0;
+  }
+  return i+1;
+}
+
+/* returns whether a line is a horizontal rule */
+static int bl_is_hrule(char *data, size_t size){
+  size_t i = 0, n = 0;
+  char c;
+
+  /* skipping initial spaces */
+  if( size<3 ) return 0;
+  if( data[0]==' ' ){
+    i++;
+    if( data[1]==' ' ){
+      i++;
+       if( data[2]==' ' ){
+         i++;
+       }
+     }
+   }
+
+  /* looking at the hrule char */
+  if( i+2>=size || (data[i]!='*' && data[i]!='-' && data[i]!='_') ) return 0;
+  c = data[i];
+
+  /* the whole line must be the char or whitespace */
+  while (i < size && data[i] != '\n') {
+    if( data[i]==c ){
+      n += 1;
+    }else if( data[i]!=' ' && data[i]!='\t' ){
+      return 0;
+    }
+    i++;
+  }
+
+  return n>=3;
+}
+
+/* returns whether the line is a setext-style hdr underline */
+static int bl_is_headerline(char *data, size_t size){
+  size_t i = 0;
+
+  /* test of level 1 header */
+  if( data[i]=='=' ){
+    for(i=1; i<size && data[i]=='='; i++);
+    while( i<size && (data[i]==' ' || data[i]=='\t') ){ i++; }
+    return (i>=size || data[i]=='\n') ? 1 : 0;
+  }
+
+  /* test of level 2 header */
+  if( data[i]=='-' ){
+    for(i=1; i<size && data[i]=='-'; i++);
+    while( i<size && (data[i]==' ' || data[i]=='\t') ){ i++; }
+    return (i>=size || data[i]=='\n') ? 2 : 0;
+  }
+
+  return 0;
+}
+
+/* returns whether there is a table separator at pos */
+static int bl_is_table_sep(char *data, size_t pos){
+  return data[pos]=='|' && (pos==0 || data[pos-1]!='\\');
+}
+
+/* returns the number of column tables in the given line */
+static int bl_is_tableline(char *data, size_t size){
+  size_t i = 0;
+  int n_sep = 0, outer_sep = 0;
+
+  /* skip initial blanks */
+  while( i<size && (data[i]==' ' || data[i]=='\t') ){ i++; }
+
+  /* check for initial '|' */
+  if( i<size && data[i]=='|') outer_sep++;
+
+  /* count the number of pipes in the line */
+  for(n_sep=0; i<size && data[i]!='\n'; i++){
+    if( bl_is_table_sep(data, i) ) n_sep++;
+    if( data[i]=='`' ){
+      bl_skip_codespan(data, size, &i);
+      i--;
+    }
+  }
+
+  /* march back to check for optional last '|' before blanks and EOL */
+  while( i && (data[i-1]==' ' || data[i-1]=='\t' || data[i-1]=='\n') ){ i--; }
+  if( i && bl_is_table_sep(data, i-1) ) outer_sep += 1;
+
+  /* return the number of column or 0 if it's not a table line */
+  return (n_sep>0) ? (n_sep-outer_sep+1) : 0;
+}
+
+/* returns blockquote prefix length */
+static size_t bl_prefix_quote(char *data, size_t size){
+  size_t i = 0;
+  if( i<size && data[i]==' ' ) i++;
+  if( i<size && data[i]==' ' ) i++;
+  if( i<size && data[i]==' ' ) i++;
+  if( i<size && data[i]=='>' ){
+    if( i+1<size && (data[i+1]==' ' || data[i+1]=='\t') ){
+      return i + 2;
+    }else{
+      return i + 1;
+    }
+  }else{
+    return 0;
+  }
+}
+
+/* returns prefix length for block code */
+static size_t bl_prefix_code(char *data, size_t size){
+  if( size>0 && data[0]=='\t' ) return 1;
+  if( size>3 && data[0]==' ' && data[1]==' ' && data[2]==' ' && data[3]==' ' ){
+    return 4;
+  }
+  return 0;
+}
+
+/* Return the number of characters in the delimiter of a fenced code
+** block. */
+static size_t bl_prefix_fencedcode(char *data, size_t size){
+  char c = data[0];
+  int nb;
+  if( c!='`' && c!='~' ) return 0;
+  for(nb=1; nb<(int)size-3 && data[nb]==c; nb++){}
+  if( nb<3 ) return 0;
+  if( nb>=(int)size-nb ) return 0;
+  return nb;
+}
+
+/* returns ordered list item prefix */
+static size_t bl_prefix_oli(char *data, size_t size){
+  size_t i = 0;
+  if( i<size && data[i]==' ') i++;
+  if( i<size && data[i]==' ') i++;
+  if( i<size && data[i]==' ') i++;
+
+  if( i>=size || data[i]<'0' || data[i]>'9' ) return 0;
+  while( i<size && data[i]>='0' && data[i]<='9' ){ i++; }
+
+  if( i+1>=size
+   || (data[i]!='.' && data[i]!=')')
+   || (data[i+1]!=' ' && data[i+1]!='\t')
+  ){
+   return 0;
+  }
+  i = i+2;
+  while( i<size && (data[i]==' ' || data[i]=='\t') ){ i++; }
+  return i;
+}
+
+/* returns unordered list item prefix */
+static size_t bl_prefix_uli(char *data, size_t size){
+  size_t i = 0;
+  if( i<size && data[i]==' ') i++;
+  if( i<size && data[i]==' ') i++;
+  if( i<size && data[i]==' ') i++;
+  if( i+1>=size
+   || (data[i]!='*' && data[i]!='+' && data[i]!='-')
+   || (data[i+1]!=' ' && data[i+1]!='\t')
+  ){
+    return 0;
+  }
+  i = i+2;
+  while( i<size && (data[i]==' ' || data[i]=='\t') ){ i++; }
+  return i;
+}
+
+
+/* parse_block predeclaration */
+static void bl_parse_block(bl_md *md, char *data, size_t size);
+
+
+/* handles parsing of a blockquote fragment */
+static size_t bl_parse_blockquote(bl_md *md, char *data, size_t size){
+  size_t beg, end = 0, pre, work_size = 0, nb, endFence = 0;
+  char *work_data = 0;
+
+  bl_enter(md);
+
+  /* Check to see if this is a quote of a fenced code block, because
+  ** if it is, then blank lines do not terminated the quoted text.  Ex:
+  **
+  **    > ~~~~
+  **    First line
+  **
+  **    Line after blank
+  **    ~~~~
+  **
+  **  If this is a quoted fenced block, then set endFence to be the
+  **  offset of the end of the fenced block.
+  */
+  pre = bl_prefix_quote(data,size);
+  pre += bl_is_empty(data+pre,size-pre);
+  /* If the quote ends the input then pre is past its end, where
+  ** fossil(1) looks anyway and, since the length is then negative, finds
+  ** no fence. */
+  nb = pre<size ? bl_prefix_fencedcode(data+pre,size-pre) : 0;
+  if( nb ){
+    size_t i = 0;
+    char delim = data[pre];
+    for(end=pre+nb; end<size && i<nb; end++){
+      if( data[end]==delim ) i++; else i = 0;
+    }
+    if( i>=nb ) endFence = end;
+  }
+
+  beg = 0;
+  while( beg<size ){
+    for(end=beg+1; end<size && data[end-1]!='\n'; end++);
+    pre = bl_prefix_quote(data+beg, end-beg);
+    if( pre ){
+      beg += pre; /* skipping prefix */
+    }else if( bl_is_empty(data+beg, end-beg)
+     && (end>=size
+         || (end>endFence
+             && bl_prefix_quote(data+end, size-end)==0
+             && !bl_is_empty(data+end, size-end)))
+    ){
+      /* empty line followed by non-quote line */
+      break;
+    }
+    if( beg<end ){ /* copy into the in-place working buffer */
+      if( !work_data ){
+        work_data = data+beg;
+      }else if( (data+beg)!=(work_data+work_size) ){
+        memmove(work_data+work_size, data+beg, end-beg);
+      }
+      work_size += end-beg;
+    }
+    beg = end;
+  }
+
+  if( !bl_too_deep(md) ){
+    bl_parse_block(md, work_data, work_size);
+  }
+  bl_leave(md);
+  return end;
+}
+
+
+/* handles parsing of a regular paragraph */
+static size_t bl_parse_paragraph(bl_md *md, char *data, size_t size){
+  size_t i = 0, end = 0;
+  int level = 0;
+  char *work_data = data;
+  size_t work_size = 0;
+
+  while( i<size ){
+    char *zEnd = (char*)memchr(data+i, '\n', size-i-1);
+    end = zEnd==0 ? size : (size_t)(zEnd - (data-1));
+    /* The above is the same as:
+    **    for(end=i+1; end<size && data[end-1]!='\n'; end++);
+    ** "end" is left with a value such that data[end] is one byte
+    ** past the first '\n' or one byte past the end of the string */
+    if( bl_is_empty(data+i, size-i)
+     || (level = bl_is_headerline(data+i, size-i))!= 0
+    ){
+      break;
+    }
+    if( (i && data[i]=='#')
+     || bl_is_hrule(data+i, size-i)
+     || bl_prefix_uli(data+i, size-i)
+     || bl_prefix_oli(data+i, size-i)
+    ){
+      end = i;
+      break;
+    }
+    i = end;
+  }
+
+  work_size = i;
+  while( work_size && data[work_size-1]=='\n' ){ work_size--; }
+
+  if( !level ){
+    bl_enter(md);
+    bl_parse_inline(md, work_data, work_size);
+    bl_leave(md);
+  }else{
+    if( work_size ){
+      size_t beg;
+      i = work_size;
+      work_size -= 1;
+      while( work_size && data[work_size]!='\n' ){ work_size--; }
+      beg = work_size+1;
+      while( work_size && data[work_size-1]=='\n'){ work_size--; }
+      if( work_size ){
+        bl_enter(md);
+        bl_parse_inline(md, work_data, work_size);
+        bl_leave(md);
+        work_data += beg;
+        work_size = i - beg;
+      }else{
+        work_size = i;
+      }
+    }
+
+    bl_enter(md);
+    bl_parse_inline(md, work_data, work_size);
+    bl_leave(md);
+  }
+  return end;
+}
+
+
+/* handles parsing of a block-level code fragment, which is not
+** looked at beyond finding where it ends */
+static size_t bl_parse_blockcode(char *data, size_t size){
+  size_t beg, end, pre;
+
+  beg = 0;
+  while( beg<size ){
+    char *zEnd = (char*)memchr(data+beg, '\n', size-beg-1);
+    end = zEnd==0 ? size : (size_t)(zEnd - (data-1));
+    /* The above is the same as:
+    **   for(end=beg+1; end<size && data[end-1]!='\n'; end++);
+    ** "end" is left with a value such that data[end] is one byte
+    ** past the first \n or past then end of the string. */
+    pre = bl_prefix_code(data+beg, end-beg);
+    if( pre ){
+      beg += pre; /* skipping prefix */
+    }else if( !bl_is_empty(data+beg, end-beg) ){
+      /* non-empty non-prefixed line breaks the pre */
+      break;
+    }
+    beg = end;
+  }
+  return beg;
+}
+
+
+/* parsing of a single list item */
+/*  assuming initial prefix is already removed */
+static size_t bl_parse_listitem(bl_md *md, char *data, size_t size,
+                                int *flags){
+  fsl_b work = fsl_b_empty;
+  size_t beg = 0, end, pre, sublist = 0, orgpre = 0, i;
+  int in_empty = 0, has_inside_empty = 0;
+
+  /* keeping track of the first indentation prefix */
+  if( size>1 && data[0]==' ' ){
+    orgpre = 1;
+    if( size>2 && data[1]==' ' ){
+      orgpre = 2;
+      if( size>3 && data[2]==' ' ){
+        orgpre = 3;
+      }
+    }
+   }
+  beg = bl_prefix_uli(data, size);
+  if( !beg ) beg = bl_prefix_oli(data, size);
+  if( !beg ) return 0;
+  /* skipping to the beginning of the following line */
+  end = beg;
+  while( end<size && data[end-1]!='\n' ){ end++; }
+
+  /* getting working buffers: the item's text, and what it renders to */
+  bl_enter(md);
+  bl_enter(md);
+
+  /* putting the first line into the working buffer */
+  bl_append(md, &work, data+beg, end-beg);
+  beg = end;
+
+  /* process the following lines */
+  while( beg<size && BL_OK(md) ){
+    end++;
+    while( end<size && data[end-1]!='\n' ){ end++; }
+
+    /* process an empty line */
+    if( bl_is_empty(data+beg, end-beg) ){
+      in_empty = 1;
+      beg = end;
+      continue;
+    }
+
+    /* computing the indentation */
+    i = 0;
+    if( end-beg>1 && data[beg]==' ' ){
+      i = 1;
+      if( end-beg>2 && data[beg+1]==' ' ){
+        i = 2;
+        if( end-beg>3 && data[beg+2]==' ' ){
+          i = 3;
+          if( end-beg>3 && data[beg+3]==' ' ){
+            i = 4;
+          }
+        }
+      }
+    }
+    pre = i;
+    if( data[beg]=='\t' ){ i = 1; pre = 8; }
+
+    /* checking for a new item */
+    if( (bl_prefix_uli(data+beg+i, end-beg-i)
+         && !bl_is_hrule(data+beg+i, end-beg-i))
+     || bl_prefix_oli(data+beg+i, end-beg-i)
+    ){
+      if( in_empty ) has_inside_empty = 1;
+      if( pre == orgpre ){ /* the following item must have */
+        break;             /* the same indentation */
+      }
+      if( !sublist ) sublist = work.used;
+
+    /* joining only indented stuff after empty lines */
+    }else if( in_empty && i<4 && data[beg]!='\t' ){
+        *flags |= BL_LI_END;
+        break;
+    }else if( in_empty ){
+      bl_append(md, &work, "\n", 1);
+      has_inside_empty = 1;
+    }
+    in_empty = 0;
+
+    /* adding the line without prefix into the working buffer */
+    bl_append(md, &work, data+beg+i, end-beg-i);
+    beg = end;
+  }
+
+  /* render of li contents */
+  if( BL_OK(md) ){
+    if( has_inside_empty ) *flags |= BL_LI_BLOCK;
+    if( *flags & BL_LI_BLOCK ){
+      /* intermediate render of block li */
+      if( sublist && sublist<work.used ){
+        bl_parse_block(md, bl_bstr(&work), sublist);
+        bl_parse_block(md, bl_bstr(&work)+sublist, work.used-sublist);
+      }else{
+        bl_parse_block(md, bl_bstr(&work), work.used);
+      }
+    }else{
+      /* intermediate render of inline li */
+      if( sublist && sublist<work.used ){
+        bl_parse_inline(md, bl_bstr(&work), sublist);
+        bl_parse_block(md, bl_bstr(&work)+sublist, work.used-sublist);
+      }else{
+        bl_parse_inline(md, bl_bstr(&work), work.used);
+      }
+    }
+  }
+
+  bl_leave(md);
+  bl_leave(md);
+  fsl_b_clear(&work);
+  return beg;
+}
+
+
+/* parsing ordered or unordered list block */
+static size_t bl_parse_list(bl_md *md, char *data, size_t size, int flags){
+  size_t i = 0, j;
+
+  bl_enter(md);
+  while( i<size && BL_OK(md) ){
+    j = bl_parse_listitem(md, data+i, size-i, &flags);
+    i += j;
+    if( !j || (flags & BL_LI_END) ) break;
+  }
+  bl_leave(md);
+  return i;
+}
+
+
+/* parsing of atx-style headers */
+static size_t bl_parse_atxheader(bl_md *md, char *data, size_t size){
+  int level = 0;
+  size_t i, end, skip, span_beg, span_size;
+
+  if( !size || data[0]!='#' ) return 0;
+
+  while( level<(int)size && level<6 && data[level]=='#' ){ level++; }
+  for(i=level; i<size && (data[i]==' ' || data[i]=='\t'); i++);
+  if ( (int)i == level ) return bl_parse_paragraph(md, data, size);
+  span_beg = i;
+
+  for(end=i; end<size && data[end]!='\n'; end++);
+  skip = end;
+  if( end<=i ) return bl_parse_paragraph(md, data, size);
+  while( end && data[end-1]=='#' ){ end--; }
+  while( end && (data[end-1]==' ' || data[end-1]=='\t') ){ end--; }
+  if( end<=i ) return bl_parse_paragraph(md, data, size);
+
+  span_size = end-span_beg;
+  bl_enter(md);
+  bl_parse_inline(md, data+span_beg, span_size);
+  bl_leave(md);
+  return skip;
+}
+
+
+/* checking end of HTML block : </tag>[ \t]*\n[ \t*]\n */
+/*  returns the length on match, 0 otherwise */
+static size_t bl_htmlblock_end(
+  const struct bl_tag *tag,
+  const char *data,
+  size_t size
+){
+  size_t i, w;
+
+  /* assuming data[0]=='<' && data[1]=='/' already tested */
+
+  /* checking tag is a match */
+  if( (tag->size+3)>(int)size
+    || fsl_strnicmp(data+2, tag->text, tag->size)
+    || data[tag->size+2]!='>'
+  ){
+    return 0;
+  }
+
+  /* checking white lines */
+  i = tag->size + 3;
+  w = 0;
+  if( i<size && (w = bl_is_empty(data+i, size-i))==0 ){
+    return 0; /* non-blank after tag */
+  }
+  i += w;
+  w = 0;
+
+  if( i<size && (w = bl_is_empty(data + i, size - i))==0 ){
+    return 0; /* non-blank line after tag line */
+  }
+  return i+w;
+}
+
+
+/* parsing of inline HTML block, of which only the length is needed */
+static size_t bl_parse_htmlblock(char *data, size_t size){
+  size_t i, j = 0;
+  const struct bl_tag *curtag;
+  int found;
+
+  /* identification of the opening tag */
+  if( size<2 || data[0]!='<' ) return 0;
+  curtag = bl_find_block_tag(data+1, size-1);
+
+  /* handling of special cases */
+  if( !curtag ){
+
+    /* HTML comment, laxist form */
+    if( size>5 && data[1]=='!' && data[2]=='-' && data[3]=='-' ){
+      i = 5;
+      while( i<size && !(data[i-2]=='-' && data[i-1]=='-' && data[i]=='>') ){
+        i++;
+      }
+      i++;
+      if( i<size ){
+        j = bl_is_empty(data+i, size-i);
+        if( j ){
+          return i+j;
+        }
+      }
+    }
+
+    /* HR, which is the only self-closing block tag considered */
+    if( size>4
+      && (data[1]=='h' || data[1]=='H')
+      && (data[2]=='r' || data[2]=='R')
+    ){
+      i = 3;
+      while( i<size && data[i]!='>' ){ i++; }
+      if( i+1<size ){
+        i += 1;
+        j = bl_is_empty(data+i, size-i);
+        if( j ){
+          return i+j;
+        }
+      }
+    }
+
+    /* no special case recognised */
+    return 0;
+  }
+
+  /* looking for an matching closing tag */
+  /* followed by a blank line */
+  i = 1;
+  found = 0;
+  while( i<size ){
+    i++;
+    while( i<size && !(data[i-1]=='<' && data[i]=='/') ){ i++; }
+    if( (i+2+curtag->size)>size ) break;
+    j = bl_htmlblock_end(curtag, data+i-1, size-i+1);
+    if (j) {
+      i += j-1;
+      found = 1;
+      break;
+    }
+  }
+  if( !found ) return 0;
+
+  /* the end of the block has been found */
+  return i;
+}
+
+
+/* parse a cell inside a table */
+static void bl_parse_table_cell(bl_md *md, char *data, size_t size){
+  bl_enter(md);
+  bl_parse_inline(md, data, size);
+  bl_leave(md);
+}
+
+
+/* parse an input line into a table row. The alignment of the cells is
+** a matter of rendering, so only their content is looked at. */
+static size_t bl_parse_table_row(bl_md *md, char *data, size_t size){
+  size_t i = 0;
+  size_t beg, end, total = 0;
+
+  bl_enter(md);  /* the row's cells */
+
+  /* skip leading blanks and separator */
+  while( i<size && (data[i]==' ' || data[i]=='\t') ){ i++; }
+  if( i<size && data[i]=='|' ) i++;
+
+  /* go over all the cells */
+  while( i<size && total==0 && BL_OK(md) ){
+    /* skip optional left/center align marker */
+    if( data[i]==':' ){
+      i++;
+    }
+
+    /* skip blanks */
+    while( i<size && (data[i]==' ' || data[i]=='\t') ){ i++; }
+    beg = i;
+
+    /* forward to the next separator or EOL */
+    while( i<size && !bl_is_table_sep(data, i) && data[i]!='\n' ){
+      if( data[i]=='`' ){
+        bl_skip_codespan(data, size, &i);
+      }else{
+        i++;
+      }
+    }
+    end = i;
+    if( i<size ){
+      i++;
+      if( data[i-1]=='\n' ) total = i;
+    }
+
+    /* check optional right/center align marker */
+    if( i>beg && data[end-1]==':' ){
+      end--;
+    }
+
+    /* remove trailing blanks */
+    while( end>beg && (data[end-1]==' ' || data[end-1]=='\t') ){ end--; }
+
+    /* skip the last cell if it was only blanks */
+    /* (because it is only the optional end separator) */
+    if( total && end<=beg ) continue;
+
+    /* render cells */
+    if( end>=beg ){
+      bl_parse_table_cell(md, data+beg, end-beg);
+    }
+  }
+
+  bl_leave(md);
+  return total ? total : size;
+}
+
+
+/* parsing of a whole table */
+static size_t bl_parse_table(bl_md *md, char *data, size_t size){
+  size_t i = 0, head_end;
+  int hasHead = 0;
+
+  bl_enter(md);  /* the rows */
+
+  /* skip the first (presumably header) line */
+  while( i<size && data[i]!='\n' ){ i++; }
+  head_end = i;
+
+  /* fallback on end of input */
+  if( i>=size ){
+    bl_parse_table_row(md, data, size);
+    bl_leave(md);
+    return i;
+  }
+
+  /* attempt to parse a table rule, i.e. blanks, dash, colons and sep */
+  i++;
+  while( i<size
+    && (data[i]==' '
+      || data[i]=='\t'
+      || data[i]=='-'
+      || data[i] == ':'
+      || data[i] =='|')
+  ){
+    i += 1;
+  }
+
+  if( i<size && data[i]=='\n' ){
+    /* render the header row */
+    bl_enter(md);
+    hasHead = 1;
+    bl_parse_table_row(md, data, head_end);
+
+    /* point i to the beginning of next line/row */
+    i++;
+
+  }else{
+    /* there is no valid ruler, continuing without header */
+    i = 0;
+  }
+
+  /* render the table body lines */
+  while( i<size && bl_is_tableline(data + i, size - i) && BL_OK(md) ){
+    i += bl_parse_table_row(md, data+i, size-i);
+  }
+
+  /* cleanup */
+  if( hasHead ) bl_leave(md);
+  bl_leave(md);
+  return i;
+}
+
+
+/* parsing of one block, returning next char to parse */
+static void bl_parse_block(bl_md *md, char *data, size_t size){
+  size_t beg, end, i;
+  char *txt_data;
+  int has_table;
+  if( !size ) return;
+  has_table = memchr(data, '|', size)!=0;
+
+  beg = 0;
+  while( beg<size && BL_OK(md) ){
+    txt_data = data+beg;
+    end = size-beg;
+    if( data[beg]=='#' ){
+      beg += bl_parse_atxheader(md, txt_data, end);
+    }else if( data[beg]=='<'
+      && (i = bl_parse_htmlblock(txt_data, end))!=0
+    ){
+      beg += i;
+    }else if( (i=bl_is_empty(txt_data, end))!=0 ){
+      beg += i;
+    }else if( bl_is_hrule(txt_data, end) ){
+      while( beg<size && data[beg]!='\n' ){ beg++; }
+      beg++;
+    }else if( bl_prefix_quote(txt_data, end) ){
+      beg += bl_parse_blockquote(md, txt_data, end);
+    }else if( bl_prefix_code(txt_data, end) ){
+      beg += bl_parse_blockcode(txt_data, end);
+    }else if( bl_prefix_uli(txt_data, end) ){
+      beg += bl_parse_list(md, txt_data, end, 0);
+    }else if( bl_prefix_oli(txt_data, end) ){
+      beg += bl_parse_list(md, txt_data, end, BL_LIST_ORDERED);
+    }else if( has_table && bl_is_tableline(txt_data, end) ){
+      beg += bl_parse_table(md, txt_data, end);
+    }else if( bl_prefix_fencedcode(txt_data, end)
+             && (i = bl_char_codespan(md, txt_data, 0, end))!=0
+    ){
+      beg += i;
+    }else{
+      beg += bl_parse_paragraph(md, txt_data, end);
+    }
+  }
+}
+
+
+/*********************
+ * REFERENCE PARSING *
+ *********************/
+
+/*
+** Returns whether a line is a link reference definition, and if so
+** records it. *last is set to the last character of the definition.
+*/
+static int bl_is_ref(
+  bl_md * const md,
+  const char *data,   /* input text */
+  size_t beg,         /* offset of the beginning of the line */
+  size_t end,         /* offset of the end of the text */
+  size_t *last        /* last character of the link */
+){
+  size_t i = 0;
+  size_t id_offset, id_end;
+  size_t link_offset, link_end;
+  size_t title_offset, title_end;
+  size_t line_end;
+  bl_ref lr;
+
+  /* up to 3 optional leading spaces */
+  if( beg+3>=end ) return 0;
+  if( data[beg]==' ' ){
+    i = 1;
+    if( data[beg+1]==' ' ){
+      i = 2;
+      if( data[beg+2]==' ' ){
+        i = 3;
+        if( data[beg+3]==' ' ) return 0;
+      }
+    }
+  }
+  i += beg;
+
+  /* id part: anything but a newline between brackets */
+  if( data[i]!='[' ) return 0;
+  i++;
+  if( i>=end || data[i]=='^' ) return 0;  /* see bl_is_footnote() */
+
+  id_offset = i;
+  while( i<end && data[i]!='\n' && data[i]!='\r' && data[i]!=']' ){ i++; }
+  if( i>=end || data[i]!=']' ) return 0;
+  id_end = i;
+
+  /* spacer: colon (space | tab)* newline? (space | tab)* */
+  i++;
+  if( i>=end || data[i]!=':' ) return 0;
+  i++;
+  while( i<end && (data[i]==' ' || data[i]=='\t') ){ i++; }
+  if( i<end && (data[i]=='\n' || data[i]=='\r') ){
+    i++;
+    if( i<end && data[i]=='\r' && data[i-1] == '\n' ) i++;
+  }
+  while( i<end && (data[i]==' ' || data[i]=='\t') ){ i++; }
+  if( i>=end ) return 0;
+
+  /* link: whitespace-free sequence, optionally between angle brackets */
+  if( data[i]=='<' ) i++;
+  link_offset = i;
+  while( i<end
+   && data[i]!=' '
+   && data[i]!='\t'
+   && data[i]!='\n'
+   && data[i]!='\r'
+  ){
+    i += 1;
+  }
+  /* TODO: maybe require both data[i-1]=='>' && data[link_offset-1]=='<' ? */
+  if( data[i-1]=='>' ) link_end = i-1; else link_end = i;
+
+  /* optional spacer: (space | tab)* (newline | '\'' | '"' | '(' ) */
+  while( i<end && (data[i]==' ' || data[i]=='\t') ){ i++; }
+  if( i<end
+   && data[i]!='\n'
+   && data[i]!='\r'
+   && data[i]!='\''
+   && data[i]!='"'
+   && data[i]!='('
+  ){
+    return 0;
+  }
+  line_end = 0;
+  /* computing end-of-line */
+  if( i>=end || data[i]=='\r' || data[i]=='\n' ) line_end = i;
+  if( i+1<end && data[i]=='\n' && data[i+1]=='\r' ) line_end = i+1;
+
+  /* optional (space|tab)* spacer after a newline */
+  if( line_end ){
+    i = line_end+1;
+    while( i<end && (data[i]==' ' || data[i]=='\t') ){ i++; }
+  }
+
+  /* optional title: any non-newline sequence enclosed in '"()
+          alone on its line. The title itself is not needed, but whether
+          there is one decides where the definition ends. */
+  title_offset = title_end = 0;
+  if( i+1<end && (data[i]=='\'' || data[i]=='"' || data[i]=='(') ){
+    i += 1;
+    title_offset = i;
+    /* looking for EOL */
+    while( i<end && data[i]!='\n' && data[i]!='\r' ){ i++; }
+    if( i+1<end && data[i]=='\n' && data[i+1]=='\r' ){
+      title_end = i + 1;
+    }else{
+      title_end = i;
+    }
+    /* stepping back */
+    i--;
+    while( i>title_offset && (data[i]==' ' || data[i]=='\t') ){ i--; }
+    if( i>title_offset && (data[i]=='\'' || data[i]=='"' || data[i]==')') ){
+      line_end = title_end;
+      title_end = i;
+    }
+  }
+  if( !line_end ) return 0; /* garbage after the link */
+
+  /* a valid ref has been found, filling-in return structures */
+  if( last ) *last = line_end;
+  lr.id = fsl_b_empty;
+  lr.link = fsl_b_empty;
+  if( bl_build_ref_id(md, &lr.id, data+id_offset, id_end-id_offset)<0 ){
+    fsl_b_clear(&lr.id);
+    return 0;
+  }
+  bl_append(md, &lr.link, data+link_offset, link_end-link_offset);
+  if( md->nRef>=md->nRefAlloc ){
+    int const nAlloc = md->nRefAlloc*2 + 8;
+    bl_ref * const a = (bl_ref*)fsl_realloc(md->aRef, nAlloc*sizeof(bl_ref));
+    if( !a ){
+      bl_err(md, FSL_RC_OOM);
+      fsl_b_clear(&lr.id);
+      fsl_b_clear(&lr.link);
+      return 1;
+    }
+    md->aRef = a;
+    md->nRefAlloc = nAlloc;
+  }
+  md->aRef[md->nRef++] = lr;
+  return 1;
+}
+
+/*********************
+ * FOOTNOTE PARSING  *
+ *********************/
+
+/*
+** Check if data holds a definition of a labeled footnote. If so then
+** append the corresponding element to the notes.
+*/
+static int bl_is_footnote(
+  bl_md * const md,
+  const char *data,   /* input text */
+  size_t beg,         /* offset of the beginning of the line */
+  size_t end,         /* offset of the end of the text */
+  size_t *last        /* last character of the link */
+){
+  size_t i, id_offset, id_end, upc_offset, upc_size;
+  bl_note fn;
+
+  /* failfast if data is too short */
+  if( beg+5>=end ) return 0;
+  i = beg;
+
+  /* footnote definition must start at the beginning of a line */
+  if( data[i]!='[' ) return 0;
+  i++;
+  if( data[i]!='^' ) return 0;
+  id_offset = ++i;
+
+  /* id part: anything but a newline between brackets */
+  while( i<end && data[i]!=']' && data[i]!='\n' && data[i]!='\r' ){ i++; }
+  if( i>=end || data[i]!=']' ) return 0;
+  id_end = i++;
+
+  /* spacer: colon (space | tab)* */
+  if( i>=end || data[i]!=':' ) return 0;
+  i++;
+  while( i<end && (data[i]==' ' || data[i]=='\t') ){ i++; }
+
+  /* passthrough truncated footnote definition */
+  if( i>=end ) return 0;
+
+  memset(&fn, 0, sizeof(fn));
+  fn.id = fn.text = fn.upc = fsl_b_empty;
+  if( bl_build_ref_id(md, &fn.id, data+id_offset, id_end-id_offset)<0 ){
+    fsl_b_clear(&fn.id);
+    return 0;
+  }
+
+  /* footnote's text may start on the same line after [^id]: */
+  upc_offset = upc_size = 0;
+  if( data[i]!='\n' && data[i]!='\r' ){
+    size_t j;
+    upc_size = bl_is_footnote_classlist(data+i, end-i, 1);
+    upc_offset = i; /* prevent further checks for a classlist */
+    i += upc_size;
+    j = i;
+    while( i<end && data[i]!='\n' && data[i]!='\r' ){ i++; };
+    if( i!=j ) bl_append(md, &fn.text, data+j, i-j);
+    if( i<end ){
+      bl_append(md, &fn.text, data+i, 1);
+      i++;
+      if( i<end && data[i]=='\n' && data[i-1]=='\r' ){
+        bl_append(md, &fn.text, data+i, 1);
+        i++;
+      }
+    }
+  }else{
+    i++;
+    if( i<end && data[i]=='\n' && data[i-1]=='\r' ) i++;
+  }
+  if( i<end ){
+
+    /* compute the indentation from the 2nd line  */
+    size_t indent = i;
+    const char *spaces = data+i;
+    while( indent<end && data[indent]==' ' ){ indent++; }
+    if( indent>=end ) goto footnote_finish;
+    indent -= i;
+    if( indent<2 ) goto footnote_finish;
+
+    /* process the 2nd and subsequent lines */
+    while( i+indent<end && memcmp(data+i,spaces,indent)==0 ){
+      size_t j;
+      i += indent;
+      if( !upc_offset ){
+        /* a classlist must be provided no later than at the 2nd line */
+        upc_offset = i + bl_sizeof_blank_prefix(data+i, end-i, 1);
+        upc_size = bl_is_footnote_classlist(data+upc_offset,
+                                            end-upc_offset, 1);
+        if( upc_size ){
+          i = upc_offset + upc_size;
+        }
+      }
+      j = i;
+      while( i<end && data[i]!='\n' && data[i]!='\r' ){ i++; }
+      if( i!=j ) bl_append(md, &fn.text, data+j, i-j);
+      if( i>=end ) break;
+      bl_append(md, &fn.text, data+i, 1);
+      i++;
+      if( i<end && data[i]=='\n' && data[i-1]=='\r' ){
+        bl_append(md, &fn.text, data+i, 1);
+        i++;
+      }
+    }
+  }
+footnote_finish:
+  if( !fn.text.used ){
+    fsl_b_clear(&fn.id);
+    fsl_b_clear(&fn.text);
+    return 0;
+  }
+  /* trim whitespace off the end of the text */
+  while( fn.text.used>0 && fsl_isspace(fn.text.mem[fn.text.used-1]) ){
+    fn.text.mem[--fn.text.used] = 0;
+  }
+  if( !fn.text.used ){      /* if the content is all-blank */
+    if( upc_size ){         /* interpret UPC as plain text */
+      bl_append(md, &fn.text, data+upc_offset, upc_size);
+      upc_size = 0;
+    }else{
+      fsl_b_clear(&fn.id);  /* or clean up and fail */
+      fsl_b_clear(&fn.text);
+      return 0;
+    }
+  }
+  /* a valid note has been found */
+  if( last ) *last = i;
+  fn.defno = md->notes.n;
+  if( upc_size ){
+    assert( upc_offset && upc_offset+upc_size<end );
+    bl_append(md, &fn.upc, data+upc_offset, upc_size);
+  }
+  bl_note_push(md, &fn);
+  return 1;
+}
+
+
+/**********************
+ * EXPORTED FUNCTIONS *
+ **********************/
+
+/*
+** Scan markdown text for hyperlinks, passing their targets to the
+** sink. Port of fossil(1)'s markdown() combined with
+** markdown_extract_links(). zSrc is not modified.
+*/
+static void bl_markdown_extract(bl_sink * const sink, const char *zSrc){
+  bl_md md;
+  int i;
+  size_t beg, end = 0;
+  size_t const size = fsl_strlen(zSrc);
+  fsl_b text = fsl_b_empty;       /* input after the first pass  */
+
+  memset(&md, 0, sizeof(md));
+  md.sink = sink;
+  md.active_char[(unsigned char)'*'] = bl_char_emphasis;
+  md.active_char[(unsigned char)'_'] = bl_char_emphasis;
+  md.active_char[(unsigned char)'`'] = bl_char_codespan;
+  md.active_char[(unsigned char)'\n'] = bl_char_linebreak;
+  md.active_char[(unsigned char)'['] = bl_char_link;
+  md.active_char[(unsigned char)'('] = bl_char_footnote;
+  md.active_char[(unsigned char)'<'] = bl_char_langle_tag;
+  md.active_char[(unsigned char)'\\'] = bl_char_escape;
+  md.active_char[(unsigned char)'&'] = bl_char_entity;
+
+  /* first pass: iterate over lines looking for references,
+   * copying everything else into "text" */
+  beg = 0;
+  while( beg<size && BL_OK(&md) ){
+    if( bl_is_ref(&md, zSrc, beg, size, &end) ){
+      beg = end;
+    }else if( bl_is_footnote(&md, zSrc, beg, size, &end) ){
+      beg = end;
+    }else{ /* skipping to the next line */
+      end = beg;
+      while( end<size && zSrc[end]!='\n' && zSrc[end]!='\r' ){
+        end += 1;
+      }
+      /* adding the line body if present */
+      if( end>beg ) bl_append(&md, &text, zSrc + beg, end - beg);
+      while( end<size && (zSrc[end]=='\n' || zSrc[end]=='\r') ){
+        /* add one \n per newline */
+        if( zSrc[end]=='\n' || (end+1<size && zSrc[end+1]!='\n') ){
+          bl_append(&md, &text, "\n", 1);
+        }
+        end += 1;
+      }
+      beg = end;
+    }
+  }
+  if( !BL_OK(&md) ) goto done;
+
+  /* sorting the reference array */
+  if( md.nRef ){
+    qsort(md.aRef, md.nRef, sizeof(bl_ref), bl_cmp_ref_sort);
+  }
+  md.notes.nLbled = md.notes.n;
+
+  /* sort footnotes by ID and join duplicates */
+  if( md.notes.nLbled > 1 ){
+    int nDups = 0;
+    bl_note * const fn = md.notes.a;
+    qsort(fn, md.notes.nLbled, sizeof(bl_note), bl_cmp_note_id);
+
+    /* concatenate footnotes with equal labels */
+    for(i=0; i<md.notes.nLbled ;){
+      bl_note * const x = fn + i;
+      int j = i+1;
+      while( j<md.notes.nLbled && !bl_blob_compare(&x->id, &fn[j].id) ){
+        j++;
+        nDups++;
+      }
+      if( i+1<j ){
+        fsl_b list = fsl_b_empty;
+        int k;
+        /* must match _joined_footnote_indicator in html_footnote_item() */
+        bl_append(&md, &list, "<ul class='fn-joined'>\n", 23);
+        for(k=i; k<j; k++){
+          bl_note * const y = fn + k;
+          bl_append(&md, &list, "<li>", 4);
+          if( y->upc.used ){
+            bl_append(&md, &list, bl_bstr(&y->upc), y->upc.used);
+            fsl_b_clear(&y->upc);
+          }
+          bl_append(&md, &list, bl_bstr(&y->text), y->text.used);
+          bl_append(&md, &list, "</li>\n", 6);
+
+          /* free memory buffer */
+          fsl_b_clear(&y->text);
+          if( k!=i ) fsl_b_clear(&y->id);
+        }
+        bl_append(&md, &list, "</ul>\n", 6);
+        x->text = list;
+      }
+      i = j;
+    }
+    if( nDups ){  /* clean the notes of invalidated footnotes */
+      int const n = md.notes.nLbled - nDups;
+      int nKept = 0;
+      for(i=0; i<md.notes.nLbled; i++){
+        if( fn[i].id.used ){
+          fn[nKept++] = fn[i];
+        }
+      }
+      assert( nKept==n );
+      md.notes.n = md.notes.nLbled = n;
+    }
+  }
+  for(i=0; i<md.notes.nLbled; i++){
+    md.notes.a[i].index = i;
+  }
+  assert( md.notes.nMarks==0 );
+  if( !BL_OK(&md) ) goto done;
+
+  /* second pass: the actual parsing */
+  bl_parse_block(&md, bl_bstr(&text), text.used);
+
+  if( md.notes.n && BL_OK(&md) ){
+    /* Footnotes must be parsed for the correct discovery of links */
+    bl_note *aSorted = 0;
+    int nMarks = -1, maxDepth = 5;
+    bl_enter(&md);
+    bl_enter(&md);
+
+    /* inline notes may get appended to the notes while parsing */
+    while( BL_OK(&md) ){
+      int const N = md.notes.n;
+      bl_note * const a = (bl_note*)fsl_realloc(aSorted, N*sizeof(bl_note));
+      if( !a ){
+        bl_err(&md, FSL_RC_OOM);
+        break;
+      }
+      aSorted = a;
+
+      /* make a shallow copy of the notes, in order of use */
+      memcpy(aSorted, md.notes.a, N*sizeof(bl_note));
+      qsort(aSorted, N, sizeof(bl_note), bl_cmp_note_sort);
+
+      if( --maxDepth < 0 || nMarks == md.notes.nMarks ) break;
+      nMarks = md.notes.nMarks;
+
+      for(i=0; i<N && BL_OK(&md); i++){
+        int const j = aSorted[i].index;
+        bl_note * x = md.notes.a + j;
+        assert( 0<=j && j<N );
+        if( x->bRndred || !x->nUsed ) continue;
+        assert( x->iMark > 0 );
+        assert( x->text.used );
+
+        /* The notes may be extended through this call, which may
+        ** move them but not their text. */
+        bl_parse_inline(&md, bl_bstr(&x->text), x->text.used);
+
+        x = md.notes.a + j;
+        x->bRndred = 1;
+      }
+    }
+    fsl_free(aSorted);
+    bl_leave(&md);
+    bl_leave(&md);
+  }
+
+  /* clean-up */
+  assert( !BL_OK(&md) || md.iDepth==0 );
+  done:
+  fsl_b_clear(&text);
+  for(i=0; i<md.nRef; i++){
+    fsl_b_clear(&md.aRef[i].id);
+    fsl_b_clear(&md.aRef[i].link);
+  }
+  fsl_free(md.aRef);
+  for(i=0; i<md.notes.n; i++){
+    fsl_b_clear(&md.notes.a[i].id);
+    fsl_b_clear(&md.notes.a[i].upc);
+    fsl_b_clear(&md.notes.a[i].text);
+  }
+  fsl_free(md.notes.a);
+}
+
+int fsl__backlink_mimetype(char const * zMimetype){
+  if( zMimetype==0 ) return FSL_BKLNK_MT_NONE;
+  if( strstr(zMimetype,"wiki")!=0 )     return FSL_BKLNK_MT_WIKI;
+  if( strstr(zMimetype,"markdown")!=0 ) return FSL_BKLNK_MT_MARKDOWN;
+  return FSL_BKLNK_MT_UNKNOWN;
+}
+
+int fsl__backlink_scan(char const * zSrc, int mimetype, bool wikiHtml,
+                       fsl__backlink_f cb, void * cbState){
+  bl_sink sink;
+  sink.cb = cb;
+  sink.cbState = cbState;
+  sink.rc = 0;
+  assert( FSL_BKLNK_MT_NONE<=mimetype && mimetype<=FSL_BKLNK_MT_UNKNOWN );
+  if( mimetype==FSL_BKLNK_MT_NONE || mimetype==FSL_BKLNK_MT_WIKI ){
+    /* The scanner modifies its input temporarily. */
+    char * const zCopy = fsl_strdup(zSrc);
+    if( !zCopy ) return FSL_RC_OOM;
+    bl_wiki_extract(&sink, zCopy, wikiHtml);
+    fsl_free(zCopy);
+  }else if( mimetype==FSL_BKLNK_MT_MARKDOWN ){
+    bl_markdown_extract(&sink, zSrc);
+  }
+  return sink.rc;
+}
+
+/*
+** State for recording links in the backlink table.
+*/
+typedef struct {
+  fsl_cx * f;
+  int srcType;       /* One of FSL_BKLNK_xxx */
+  fsl_id_t srcId;
+  double mtime;
+} bl_ins;
+
+/* fsl__backlink_f() which records a link in the backlink table. */
+static int bl_insert_f(void * state, char const * zTarget){
+  bl_ins * const p = (bl_ins*)state;
+  fsl_stmt * st = 0;
+  int rc = fsl_cx_prepare_cached(p->f, &st,
+                                 "REPLACE INTO {{dbname.repo}}.backlink"
+                                 "(target,srctype,srcid,mtime) "
+                                 "VALUES(?1,?2,?3,?4)");
+  if( 0==rc ){
+    rc = fsl_stmt_bind_step(st, "s^iRf", zTarget, (int32_t)p->srcType,
+                            p->srcId, p->mtime);
+    if( rc ) rc = fsl_cx_uplift_db_error2(p->f, st->db, rc);
+    fsl_stmt_cached_yield(st);
+  }
+  return rc;
+}
+
+int fsl__backlink_extract(fsl_cx * const f, char const * zSrc, int mimetype,
+                          fsl_id_t srcId, int srcType, double mtime,
+                          bool replace){
+  fsl_db * const db = fsl_needs_repo(f);
+  bl_ins ins;
+  bool wikiHtml = false;
+  int rc;
+  assert( FSL_BKLNK_COMMENT<=srcType && srcType<=FSL_BKLNK_FORUM );
+  if( !db ) return FSL_RC_NOT_A_REPO;
+  else if( !fsl_db_table_exists(db, FSL_DBROLE_REPO, "backlink") ){
+    /* A repository from before the table existed. */
+    return 0;
+  }
+  if( replace ){
+    rc = fsl_cx_exec(f, "DELETE FROM {{dbname.repo}}.backlink "
+                     "WHERE srctype=%d AND srcid=%" FSL_ID_T_PFMT,
+                     srcType, srcId);
+    if( rc ) return rc;
+  }
+  if( !zSrc ) return 0;
+  if( mimetype==FSL_BKLNK_MT_NONE || mimetype==FSL_BKLNK_MT_WIKI ){
+    wikiHtml = fsl_config_get_bool(f, FSL_CONFDB_REPO, false, "wiki-use-html");
+  }
+  ins.f = f;
+  ins.srcType = srcType;
+  ins.srcId = srcId;
+  ins.mtime = mtime;
+  return fsl__backlink_scan(zSrc, mimetype, wikiHtml, bl_insert_f, &ins);
+}
+
+int fsl__backlink_ticket_reset(fsl_cx * const f, fsl_id_t tagId){
+  fsl_db * const db = fsl_needs_repo(f);
+  if( !db ) return FSL_RC_NOT_A_REPO;
+  else if( !fsl_db_table_exists(db, FSL_DBROLE_REPO, "backlink") ) return 0;
+  return fsl_cx_exec(f, "DELETE FROM {{dbname.repo}}.backlink "
+                     "WHERE srctype=%d AND srcid IN "
+                     "(SELECT rid FROM {{dbname.repo}}.tagxref "
+                     "WHERE tagid=%" FSL_ID_T_PFMT ")",
+                     FSL_BKLNK_TICKET, tagId);
+}
+
+int fsl__backlink_wiki_refresh(fsl_cx * const f, char const * zWikiTitle){
+  fsl_db * const db = fsl_needs_repo(f);
+  fsl_deck d = fsl_deck_empty;
+  fsl_id_t tagid, rid;
+  char * zTag;
+  int rc;
+  if( !db ) return FSL_RC_NOT_A_REPO;
+  zTag = fsl_mprintf("wiki-%s", zWikiTitle);
+  if( !zTag ) return FSL_RC_OOM;
+  tagid = fsl_tag_id(f, zTag, false);
+  fsl_free(zTag);
+  if( tagid<0 ) return f->error.code;
+  else if( 0==tagid ) return 0;
+  rid = fsl_db_g_id(db, 0, "SELECT rid FROM {{dbname.repo}}.tagxref "
+                    "WHERE tagid=%" FSL_ID_T_PFMT
+                    " ORDER BY mtime DESC LIMIT 1", tagid);
+  if( rid<0 ) return fsl_cx_uplift_db_error(f, db);
+  else if( 0==rid ) return 0;
+  rc = fsl_deck_load_rid(f, &d, rid, FSL_SATYPE_WIKI);
+  if( FSL_RC_TYPE==rc ){
+    /* Not a wiki page: not ours to index. */
+    fsl_cx_err_reset(f);
+    rc = 0;
+  }else if( 0==rc ){
+    rc = fsl__backlink_extract(f, d.W.used ? fsl_b_cstr(&d.W) : "",
+                               fsl__backlink_mimetype(d.N), tagid,
+                               FSL_BKLNK_WIKI, d.D, true);
+  }
+  fsl_deck_finalize(&d);
+  return rc;
+}
+/* end of file src/backlink.c */
 /* start of file src/bag.c */
 /* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* vim: set ts=2 et sw=2 tw=80: */
@@ -62990,6 +66654,18 @@ static int fsl_deck_xlink_f_checkin(fsl_deck * const d,
        (int)FSL_TAGID_USER, d->rid,
        (int)FSL_TAGID_COMMENT, d->rid, d->D
   );
+  if(0==rc){
+    /* The comment as it now is, which a tag may have changed. */
+    char * const zCom =
+      fsl_db_g_text(db, NULL, "SELECT coalesce(ecomment,comment) "
+                    "FROM {{dbname.repo}}.event WHERE objid=%"FSL_ID_T_PFMT, d->rid);
+    if(zCom){
+      rc = fsl__backlink_extract(d->f, zCom, FSL_BKLNK_MT_NONE, d->rid,
+                                 FSL_BKLNK_COMMENT, d->D, true);
+      fsl_free(zCom);
+      return rc;
+    }
+  }
   return fsl_cx_uplift_db_error2(d->f, db, rc);
 }
 
@@ -63225,10 +66901,12 @@ static int fsl_deck_xlink_f_forum(fsl_deck * const d,
         d->D, d->rid, d->U, zFType, zTitle);
     fsl_free(zTitle);
     if(rc) goto dberr;
-    if( d->W.used ){
-      /* FSL-MISSING:
-         backlink_extract(&d->W, d->N, d->rid, BKLNK_FORUM, d->D, 1); */
-    }
+  }
+  if( d->W.used ){
+    rc = fsl__backlink_extract(f, fsl_b_cstr(&d->W),
+                               fsl__backlink_mimetype(d->N), d->rid,
+                               FSL_BKLNK_FORUM, d->D, true);
+    if(rc) goto end;
   }
   end:
   return rc;
@@ -63475,8 +67153,8 @@ static int fsl__deck_crosslink_wiki(fsl_deck *d){
     rc = fsl__deck_crosslink_add_pending(f, 'w',d->L);
     if(rc) goto end;
   }else{
-    /* FSL-MISSING:
-       backlink_wiki_refresh(d->L); */
+    rc = fsl__backlink_wiki_refresh(f, d->L);
+    if(rc) goto end;
   }
   assert(0==rc);
   rc = fsl__deck_crosslink_fwt_plink(d);
@@ -65874,8 +69552,7 @@ int fsl__crosslink_end(fsl_cx * const f, int resultCode){
       rc = fsl__ticket_rebuild(f, zId);
       continue;
     }else if('w'==cType){
-      /* FSL-MISSING:
-         backlink_wiki_refresh(zId) */
+      rc = fsl__backlink_wiki_refresh(f, zId);
       continue;
     }
   }
@@ -84177,7 +87854,14 @@ void fsl_sha1_update( fsl_sha1_cx *ctx, void const * data_,
   while (len >= 64)
   {
     ctx->total += 64;
-    sha1_process(ctx, (uint32_t*)(buf));
+    if( (uintptr_t)buf & 3 ){
+      /* A uint32_t load from a misaligned buf is undefined behaviour,
+         as upstream sha1dc's SHA1DC_ALLOW_UNALIGNED_ACCESS notes. */
+      memcpy(ctx->buffer, buf, 64);
+      sha1_process(ctx, (uint32_t*)(ctx->buffer));
+    }else{
+      sha1_process(ctx, (uint32_t*)(buf));
+    }
     buf += 64;
     len -= 64;
   }
@@ -86068,21 +89752,11 @@ int fsl__tag_insert( fsl_cx * const f, fsl_tagtype_e tagtype,
                      "WHERE objid=%"FSL_ID_T_PFMT,
                      zCol, zValue, (fsl_id_t)rid);
     if(rc) goto end;
-#if 0
-    /*
-      Legacy: i don't want this behaviour in the lib right now
-      (possibly never). And don't want to port it yet, either :/.
-
-      2026-09: OTOH, the lib's lack of wiki parsing means we cannot
-      update the links of related artifacts like fossil does, and that
-      feature is often helpful in fossil's UI.
-    */
-    if( tagid==FSL_TAGID_COMMENT ){
-      char *zCopy = fsl_strdup(zValue);
-      wiki_extract_links(zCopy, rid, 0, mtime, 1, WIKI_INLINE);
-      fsl_free(zCopy);
+    if( tagid==FSL_TAGID_COMMENT && zValue ){
+      rc = fsl__backlink_extract(f, zValue, FSL_BKLNK_MT_NONE, rid,
+                                 FSL_BKLNK_COMMENT, mtime, true);
+      if(rc) goto end;
     }
-#endif
   }
 
   if( FSL_TAGID_DATE == tagid ){
@@ -86969,6 +90643,64 @@ static int fsl__tkt_field_id(fsl_list const * jli, const char *zFieldName){
   return -1;
 }
 
+/*
+  The values of a ticket's fields which are not in the ticketchng
+  table and so, unlike those which are, are only linked from in their
+  most recent state. fossil(1) calls these "cards". The ones to
+  extract the backlinks of, once all of a ticket's artifacts are
+  applied, are those of an assignment and the appends after it.
+*/
+typedef struct {
+  char * zValue;
+  int mimetype;
+  fsl_id_t rid;
+  double mtime;
+} fsl__tkt_card;
+
+typedef struct {
+  fsl__tkt_card * a;
+  fsl_size_t n;
+  fsl_size_t nAlloc;
+} fsl__tkt_cards;
+
+static void fsl__tkt_cards_clear(fsl__tkt_cards * const c){
+  for(fsl_size_t i = 0; i < c->n; ++i) fsl_free(c->a[i].zValue);
+  c->n = 0;
+}
+
+static void fsl__tkt_cards_free(fsl__tkt_cards * const c, fsl_size_t n){
+  for(fsl_size_t i = 0; i < n; ++i){
+    fsl__tkt_cards_clear(c+i);
+    fsl_free(c[i].a);
+  }
+  fsl_free(c);
+}
+
+/*
+  Records a value of a field, replacing the earlier ones unless it is
+  appended to them.
+*/
+static int fsl__tkt_cards_add(fsl__tkt_cards * const c, bool append,
+                              char const * zValue, int mimetype,
+                              fsl_id_t rid, double mtime){
+  if( !append ) fsl__tkt_cards_clear(c);
+  if( c->n>=c->nAlloc ){
+    fsl_size_t const nAlloc = c->nAlloc ? c->nAlloc * 2 : 4;
+    fsl__tkt_card * const a =
+      (fsl__tkt_card*)fsl_realloc(c->a, nAlloc * sizeof(fsl__tkt_card));
+    if( !a ) return FSL_RC_OOM;
+    c->a = a;
+    c->nAlloc = nAlloc;
+  }
+  c->a[c->n].zValue = fsl_strdup(zValue ? zValue : "");
+  if( !c->a[c->n].zValue ) return FSL_RC_OOM;
+  c->a[c->n].mimetype = mimetype;
+  c->a[c->n].rid = rid;
+  c->a[c->n].mtime = mtime;
+  ++c->n;
+  return 0;
+}
+
 int fsl__cx_ticket_load_fields(fsl_cx * const f, bool forceReload){
   fsl_list * const li = &f->ticket.customFields;
   if(li->used){
@@ -87061,8 +90793,39 @@ int fsl__cx_ticket_load_fields(fsl_cx * const f, bool forceReload){
   return rc;
 }
 
+/*
+  Extracts the backlinks of the fields of ticket artifact d, for which
+  the mimetype of its fields is mimetype. Those of fields which are in
+  the ticketchng table are recorded now. The others are added to
+  cards, which has an entry for each of the custom fields, for the
+  caller to record once it has seen all of the ticket's artifacts.
+
+  Derived from the end of fossil(1) tkt.c:ticket_insert().
+*/
+static int fsl__ticket_backlinks(fsl_deck * const d, int const mimetype,
+                                 fsl__tkt_cards * const cards){
+  fsl_cx * const f = d->f;
+  fsl_list const * const cf = &f->ticket.customFields;
+  int rc = 0;
+  for(fsl_size_t i = 0; 0==rc && i < d->J.used; ++i){
+    fsl_card_J const * const dJC = (fsl_card_J*)d->J.list[i];
+    int const j = fsl__tkt_field_id(cf, dJC->field);
+    if(j<0) continue;
+    if( ((fsl_card_J const *)cf->list[j])->flags & FSL_CARD_J_CHNG ){
+      /* Any old backlinks have been deleted by fsl__ticket_rebuild(). */
+      rc = fsl__backlink_extract(f, dJC->value, mimetype, d->rid,
+                                 FSL_BKLNK_TICKET, d->D, false);
+    }else{
+      rc = fsl__tkt_cards_add(cards + j, dJC->append, dJC->value,
+                              mimetype, d->rid, d->D);
+    }
+  }
+  return rc;
+}
+
 static int fsl__ticket_insert(fsl_deck * const d, fsl_id_t tktId,
-                              fsl_id_t * const tgtId){
+                              fsl_id_t * const tgtId,
+                              fsl__tkt_cards * const cards){
   /* Derived from fossil(1) tkt.c:ticket_insert() */;
   fsl_cx * const f = d->f;
   fsl_id_t const rid = d->rid;
@@ -87073,7 +90836,7 @@ static int fsl__ticket_insert(fsl_deck * const d, fsl_id_t tktId,
   fsl_db * const db = fsl_cx_db_repo(f);
   fsl_list const * const cf = &f->ticket.customFields;
   fsl_size_t i;
-  //char const * zMimetype = NULL;
+  int mimetype = FSL_BKLNK_MT_NONE;
   fsl_stmt q = fsl_stmt_empty;
   char * aUsed = 0;
   assert(rid>0 && f!=NULL && db);
@@ -87121,28 +90884,11 @@ static int fsl__ticket_insert(fsl_deck * const d, fsl_id_t tktId,
       if(0==rc) rc = fsl_b_appendf(sql3, ",%Q", dJC->value);
       if(rc) break;
     }
-#if 0
     if(0==fsl_strcmp(dJC->field, "mimetype")){
-      zMimetype = dJC->value;
+      mimetype = fsl__backlink_mimetype(dJC->value);
     }
-#endif
   }
   if(rc) goto end;
-  /* MISSING: a block from fossil(1) tkt.c which extracts backlinks:
-
-  if( rid>0 ){
-    for(i=0; i<p->nField; i++){
-      const char *zName = p->aField[i].zName;
-      const char *zBaseName = zName[0]=='+' ? zName+1 : zName;
-      j = fieldId(zBaseName);
-      if( j<0 ) continue;
-      backlink_extract(p->aField[i].zValue, zMimetype, rid, BKLNK_TICKET,
-                       p->rDate, i==0);
-    }
-  }
-
-  That's not critical for core ticket functionality.
-  */
   rc = fsl_b_appendf(sql1, " WHERE tkt_id=%" FSL_ID_T_PFMT, tktId);
   if(rc) goto end;
   rc = fsl_cx_prepare(f, &q, "%b", sql1);
@@ -87178,6 +90924,10 @@ static int fsl__ticket_insert(fsl_deck * const d, fsl_id_t tktId,
                           sql2, tktId, sql3);
     }
     if(0==rc) rc = fsl_stmt_bind_step(&q, "f", d->D);
+  }
+  if(0==rc){
+    fsl_stmt_finalize(&q);
+    rc = fsl__ticket_backlinks(d, mimetype, cards);
   }
   end:
   fsl_stmt_finalize(&q);
@@ -87298,9 +91048,11 @@ int fsl__ticket_rebuild(fsl_cx * const f, char const * zTktKCard){
   fsl_id_t tagId;
   fsl_db * const db = fsl_needs_repo(f);
   fsl_stmt q = fsl_stmt_empty;
+  fsl__tkt_cards * cards = NULL;
   if(!db) return FSL_RC_NOT_A_REPO;
   assert(!f->cache.isCrosslinking);
   rc = fsl__cx_ticket_load_fields(f, false);
+  fsl_size_t const nCards = f->ticket.customFields.used;
   if(rc) goto end;
   else if(!f->ticket.hasTicket) return 0;
   char * const zTag = fsl_mprintf("tkt-%s", zTktKCard);
@@ -87329,6 +91081,15 @@ int fsl__ticket_rebuild(fsl_cx * const f, char const * zTktKCard){
     if(rc) goto end;
   }
   tktId = 0;
+  rc = fsl__backlink_ticket_reset(f, tagId);
+  if(rc) goto end;
+  cards = (fsl__tkt_cards*)fsl_malloc((nCards ? nCards : 1)
+                                      * sizeof(fsl__tkt_cards));
+  if(!cards){
+    rc = FSL_RC_OOM;
+    goto end;
+  }
+  memset(cards, 0, (nCards ? nCards : 1) * sizeof(fsl__tkt_cards));
   rc = fsl_cx_prepare(f, &q, "SELECT rid FROM {{dbname.repo}}.tagxref "
                       "WHERE tagid=%" FSL_ID_T_PFMT
                       " ORDER BY mtime", tagId);
@@ -87341,7 +91102,7 @@ int fsl__ticket_rebuild(fsl_cx * const f, char const * zTktKCard){
     rc = fsl_deck_load_rid(f, &deck, rid, FSL_SATYPE_TICKET);
     if(rc) goto outro;
     assert(deck.rid==rid);
-    rc = fsl__ticket_insert(&deck, tktId, &tktId);
+    rc = fsl__ticket_insert(&deck, tktId, &tktId, cards);
     if(0==rc){
       rc = fsl__ticket_timeline_entry(&deck, 0==counter++, tagId);
       if(0==rc) rc = fsl__call_xlink_listeners(&deck);
@@ -87349,7 +91110,17 @@ int fsl__ticket_rebuild(fsl_cx * const f, char const * zTktKCard){
     outro:
     fsl_deck_finalize(&deck);
   }
+  /* Now that the latest values of the fields which are not in the
+     ticketchng table are known, link from those. */
+  for(fsl_size_t i = 0; 0==rc && cards && i < nCards; ++i){
+    for(fsl_size_t k = 0; 0==rc && k < cards[i].n; ++k){
+      fsl__tkt_card const * const c = &cards[i].a[k];
+      rc = fsl__backlink_extract(f, c->zValue, c->mimetype, c->rid,
+                                 FSL_BKLNK_TICKET, c->mtime, false);
+    }
+  }
   end:
+  if(cards) fsl__tkt_cards_free(cards, nCards);
   fsl_stmt_finalize(&q);
   if(rc){
     rc = fsl_cx_uplift_db_error2(f, db, rc);

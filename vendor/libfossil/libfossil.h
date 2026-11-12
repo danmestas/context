@@ -6,9 +6,9 @@
 #define FSL_AMALGAMATION_BUILD 1
 #define FSL_PACKAGE_NAME "libfossil"
 #define FSL_LIBRARY_VERSION "0.6.1"
-#define FSL_LIB_VERSION_HASH "e84af25d7914297f0a86b73e947fc8ccc02e33b0df66f1de910debbab2e3e64c"
-#define FSL_LIB_VERSION_TIMESTAMP "2026-11-10 15:55:59.881 UTC"
-#define FSL_LIB_CONFIG_TIMESTAMP "2026-11-10 15:56 GMT"
+#define FSL_LIB_VERSION_HASH "7d9634ac5c980131e24dce37ca62b592e4077b820850fbceeb43bb928643e31c"
+#define FSL_LIB_VERSION_TIMESTAMP "2026-11-12 15:35:09.917 UTC"
+#define FSL_LIB_CONFIG_TIMESTAMP "2026-11-12 15:36 GMT"
 #define FSL_AUX_SCHEMA "2015-01-24"
 #define FSL_CONTENT_SCHEMA "2"
 #define FOSSIL_RELEASE_VERSION_NUMBER 22700
@@ -29775,6 +29775,119 @@ int fsl__db_cached_clear_role(fsl_db * db, fsl_flag32_t role);
     with the given K-card value.
 */
 int fsl__ticket_rebuild(fsl_cx * f, char const * zTktId);
+
+/** @internal
+
+    Values for the srctype column of the repo.backlink table, which
+    say what kind of artifact a link was found in. Their numeric values
+    are shared with fossil(1) and must not change.
+*/
+enum fsl__bklnk_e {
+/** A check-in comment. srcid is the check-in's rid. */
+FSL_BKLNK_COMMENT = 0,
+/** A ticket change. srcid is the rid of the ticket artifact. */
+FSL_BKLNK_TICKET = 1,
+/** A wiki page. srcid is the id of its "wiki-NAME" tag. */
+FSL_BKLNK_WIKI = 2,
+/** A technote. fossil(1) defines this but does not use it. */
+FSL_BKLNK_EVENT = 3,
+/** A forum post. srcid is the post's rid. */
+FSL_BKLNK_FORUM = 4
+};
+
+/** @internal
+
+    Markup languages which links can be extracted from, as parsed by
+    fsl__backlink_mimetype().
+*/
+enum fsl__bklnk_mt_e {
+/** No mimetype was specified. Treated like FSL_BKLNK_MT_WIKI. */
+FSL_BKLNK_MT_NONE = 0,
+/** Fossil wiki. */
+FSL_BKLNK_MT_WIKI = 1,
+/** Markdown. */
+FSL_BKLNK_MT_MARKDOWN = 2,
+/** Anything else. Nothing is extracted from it. */
+FSL_BKLNK_MT_UNKNOWN = 3
+};
+
+/** @internal
+
+    Transforms a mimetype string into one of the FSL_BKLNK_MT_xxx
+    values. A NULL mimetype is FSL_BKLNK_MT_NONE. Port of fossil(1)'s
+    parse_mimetype().
+*/
+int fsl__backlink_mimetype(char const * zMimetype);
+
+/** @internal
+
+    Callback type for fsl__backlink_scan(). It is called once for each
+    hyperlink which targets an artifact, in the order the links appear
+    in the text, with the link's target in canonical form: 4 to 64
+    lower-case hex digits. If it returns non-0 then scanning stops and
+    that code is returned from fsl__backlink_scan().
+*/
+typedef int (*fsl__backlink_f)(void * state, char const * zTarget);
+
+/** @internal
+
+    Scans zSrc, which must be NUL-terminated, for hyperlinks which look
+    like references to artifacts and passes each to cb. The text is
+    interpreted per the given FSL_BKLNK_MT_xxx value. If wikiHtml is
+    true then, for the wiki mimetype, the text is taken to be HTML
+    in which only [target] and [target|label] are interpreted, as for
+    fossil(1)'s wiki-use-html setting. This does not touch the
+    database. zSrc is not modified.
+
+    Returns 0 on success, FSL_RC_OOM if allocation fails, or the first
+    non-0 result of cb.
+
+    Port of the scanning done by fossil(1)'s backlink_extract().
+*/
+int fsl__backlink_scan(char const * zSrc, int mimetype, bool wikiHtml,
+                       fsl__backlink_f cb, void * cbState);
+
+/** @internal
+
+    Scans zSrc as per fsl__backlink_scan() and records each link in
+    f's repository's backlink table as coming from the artifact of type
+    srcType (one of FSL_BKLNK_xxx) with id srcId, with the time mtime
+    (a Julian day). If replace is true then any links already recorded
+    for that artifact are removed first, even if zSrc is NULL. Does
+    nothing if the repository has no backlink table.
+
+    Returns 0 on success, else a FSL_RC_xxx code with f's error state
+    updated.
+
+    Port of fossil(1)'s backlink_extract().
+*/
+int fsl__backlink_extract(fsl_cx * f, char const * zSrc, int mimetype,
+                          fsl_id_t srcId, int srcType, double mtime,
+                          bool replace);
+
+/** @internal
+
+    Replaces the links recorded for the wiki page named zWikiTitle with
+    those in its latest version. Does nothing if there is no such page.
+
+    Returns 0 on success, else a FSL_RC_xxx code with f's error state
+    updated.
+
+    Port of fossil(1)'s backlink_wiki_refresh().
+*/
+int fsl__backlink_wiki_refresh(fsl_cx * f, char const * zWikiTitle);
+
+/** @internal
+
+    Removes the links recorded for all of the artifacts of the ticket
+    whose "tkt-UUID" tag has the id tagId, as the first step of
+    recording them anew when the ticket is rebuilt. Does nothing if the
+    repository has no backlink table.
+
+    Returns 0 on success, else a FSL_RC_xxx code with f's error state
+    updated.
+*/
+int fsl__backlink_ticket_reset(fsl_cx * f, fsl_id_t tagId);
 
 /** @internal
 

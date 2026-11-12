@@ -54,11 +54,9 @@ build/san/ctx.o: src/ctx.c build/schema.h build/state_schema.h build/ticket_sche
 build/san/sqlite3.o: $(VENDOR)/sqlite3.c
 	mkdir -p build/san
 	$(CC) $(SANFLAGS) $(SQLITE) -w -c -o $@ $<
-# libfossil's SHA-1 reads uint32 words from unaligned buffers during sync. Reported
-# to libfossil on 2026-11-10; until a build fixes it, only that check is off, only here.
 build/san/libfossil.o: $(VENDOR)/libfossil.c
 	mkdir -p build/san
-	$(CC) $(SANFLAGS) -fno-sanitize=alignment $(SQLITE) -DHAVE_LIBFOSSIL_CONFIG_H -w -I$(VENDOR) -c -o $@ $<
+	$(CC) $(SANFLAGS) $(SQLITE) -DHAVE_LIBFOSSIL_CONFIG_H -w -I$(VENDOR) -c -o $@ $<
 ctx-san: build/san/ctx.o build/san/libfossil.o build/san/sqlite3.o
 	$(CC) $(SANFLAGS) -o $@ $^ $(LDLIBS)
 sanitize: ctx-san
@@ -72,7 +70,7 @@ FUZZERS = redact extract wiki notes stats
 build/fuzz/libfossil.o: $(VENDOR)/libfossil.c
 	@test -n "$(FUZZCC)" || { echo "no clang with libFuzzer; set FUZZCC" >&2; exit 1; }
 	mkdir -p build/fuzz
-	$(FUZZCC) $(SANFLAGS) -fno-sanitize=alignment $(SQLITE) -DHAVE_LIBFOSSIL_CONFIG_H -w -I$(VENDOR) -c -o $@ $<
+	$(FUZZCC) $(SANFLAGS) $(SQLITE) -DHAVE_LIBFOSSIL_CONFIG_H -w -I$(VENDOR) -c -o $@ $<
 build/fuzz/sqlite3.o: $(VENDOR)/sqlite3.c
 	@test -n "$(FUZZCC)" || { echo "no clang with libFuzzer; set FUZZCC" >&2; exit 1; }
 	mkdir -p build/fuzz
