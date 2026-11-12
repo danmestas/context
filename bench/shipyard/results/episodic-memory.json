@@ -1,0 +1,2041 @@
+{
+ "arm": "episodic-memory",
+ "tool": "episodic-memory",
+ "version": "commit 7e06519357777badd7a115d2014a7ef845904310 (package version 1.6.0)",
+ "image_base": "node:22-bookworm",
+ "index_seconds": 584.31,
+ "index_bytes": 8287594,
+ "model_calls_at_index": 0,
+ "network_during_queries": false,
+ "notes": "git clone --depth 1 in the image build, npm install, npm link. EPISODIC_MEMORY_SKIP_SUMMARIES=1, so no model provider was called; embeddings are local (Xenova/bge-small-en-v1.5, downloaded on first sync). 'episodic-memory sync' copied and indexed 32 conversations as 55 exchanges (one exchange per user prompt with the assistant work that followed). index_seconds includes the model download and ran on a heavily loaded host. Queries: 'episodic-memory search QUERY' via the documented CLI, default mode (vector + text) and limit 10; each call loads the embedding model, which dominates the per-query time. Network was on for sync, then the container was disconnected before the queries. index_bytes is ~/.config/superpowers: 2.0 MB index plus a 6.3 MB archive copy of the transcripts; the embedding model cache is not counted.",
+ "results": [
+  {
+   "id": "q-001",
+   "wording": "question",
+   "sessions": [
+    "f7b81066-40c4-485f-a754-759334e7c765",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "b91f5497-4145-471d-b441-1f49bfa96795",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "f650517b-09a4-4cf2-85f3-da87bf283a52",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "71a05cfe-ae8b-4729-8f76-39757965521c"
+   ],
+   "seconds": 1.266
+  },
+  {
+   "id": "q-002",
+   "wording": "question",
+   "sessions": [
+    "f7b81066-40c4-485f-a754-759334e7c765",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b"
+   ],
+   "seconds": 1.276
+  },
+  {
+   "id": "q-003",
+   "wording": "question",
+   "sessions": [
+    "f7b81066-40c4-485f-a754-759334e7c765",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b",
+    "71a05cfe-ae8b-4729-8f76-39757965521c"
+   ],
+   "seconds": 1.723
+  },
+  {
+   "id": "q-004",
+   "wording": "question",
+   "sessions": [
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "b91f5497-4145-471d-b441-1f49bfa96795",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f"
+   ],
+   "seconds": 1.934
+  },
+  {
+   "id": "q-005",
+   "wording": "question",
+   "sessions": [
+    "8d49244e-5cc6-4fe1-b566-1addf3371e99",
+    "2ffa5cae-2456-4989-aa75-d5203bc2ab0a",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "71a05cfe-ae8b-4729-8f76-39757965521c",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "b91f5497-4145-471d-b441-1f49bfa96795",
+    "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72",
+    "f650517b-09a4-4cf2-85f3-da87bf283a52"
+   ],
+   "seconds": 1.663
+  },
+  {
+   "id": "q-006",
+   "wording": "question",
+   "sessions": [
+    "8d49244e-5cc6-4fe1-b566-1addf3371e99",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "5a0cf297-d83e-4c1c-8cbb-f0326aa9d68a",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "2ffa5cae-2456-4989-aa75-d5203bc2ab0a",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5"
+   ],
+   "seconds": 1.307
+  },
+  {
+   "id": "q-007",
+   "wording": "question",
+   "sessions": [
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "5a0cf297-d83e-4c1c-8cbb-f0326aa9d68a",
+    "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72",
+    "842e1bfb-de93-40ff-9cf7-b92b3a9eb421",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "f650517b-09a4-4cf2-85f3-da87bf283a52"
+   ],
+   "seconds": 2.278
+  },
+  {
+   "id": "q-008",
+   "wording": "question",
+   "sessions": [
+    "71a05cfe-ae8b-4729-8f76-39757965521c",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "842e1bfb-de93-40ff-9cf7-b92b3a9eb421",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "f650517b-09a4-4cf2-85f3-da87bf283a52",
+    "2fb75935-8847-470d-93f4-909680476671",
+    "222e174e-7f11-45df-bfef-45c56a1a734e",
+    "22a2d719-1817-4141-9dca-c607ebd8df80",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f"
+   ],
+   "seconds": 1.86
+  },
+  {
+   "id": "q-009",
+   "wording": "question",
+   "sessions": [
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "5b2aba9d-437d-4061-af3c-b5a537496104",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "8cdb8506-646b-4867-b5e8-db8587b14d0d"
+   ],
+   "seconds": 2.42
+  },
+  {
+   "id": "q-010",
+   "wording": "question",
+   "sessions": [
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "5b2aba9d-437d-4061-af3c-b5a537496104",
+    "842e1bfb-de93-40ff-9cf7-b92b3a9eb421",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "8cdb8506-646b-4867-b5e8-db8587b14d0d",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f"
+   ],
+   "seconds": 2.075
+  },
+  {
+   "id": "q-011",
+   "wording": "question",
+   "sessions": [
+    "8cdb8506-646b-4867-b5e8-db8587b14d0d",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "2ffa5cae-2456-4989-aa75-d5203bc2ab0a",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9"
+   ],
+   "seconds": 1.849
+  },
+  {
+   "id": "q-012",
+   "wording": "question",
+   "sessions": [
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "222e174e-7f11-45df-bfef-45c56a1a734e",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "5a0cf297-d83e-4c1c-8cbb-f0326aa9d68a",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "71a05cfe-ae8b-4729-8f76-39757965521c"
+   ],
+   "seconds": 1.959
+  },
+  {
+   "id": "q-013",
+   "wording": "question",
+   "sessions": [
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8"
+   ],
+   "seconds": 1.831
+  },
+  {
+   "id": "q-014",
+   "wording": "question",
+   "sessions": [
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "8cdb8506-646b-4867-b5e8-db8587b14d0d",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc"
+   ],
+   "seconds": 3.512
+  },
+  {
+   "id": "q-015",
+   "wording": "question",
+   "sessions": [
+    "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "b91f5497-4145-471d-b441-1f49bfa96795",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38"
+   ],
+   "seconds": 2.846
+  },
+  {
+   "id": "q-016",
+   "wording": "question",
+   "sessions": [
+    "f650517b-09a4-4cf2-85f3-da87bf283a52",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "8cdb8506-646b-4867-b5e8-db8587b14d0d",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "9011e458-07d1-4bc3-8593-973db9f72c83"
+   ],
+   "seconds": 3.658
+  },
+  {
+   "id": "q-017",
+   "wording": "question",
+   "sessions": [
+    "3246ac72-56fa-4668-8759-e0c1c0c1b0dc",
+    "22a2d719-1817-4141-9dca-c607ebd8df80",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "f650517b-09a4-4cf2-85f3-da87bf283a52",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "71a05cfe-ae8b-4729-8f76-39757965521c",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "b91f5497-4145-471d-b441-1f49bfa96795",
+    "fe88766c-97fc-4c82-a138-222f04834a61"
+   ],
+   "seconds": 3.472
+  },
+  {
+   "id": "q-018",
+   "wording": "question",
+   "sessions": [
+    "3246ac72-56fa-4668-8759-e0c1c0c1b0dc",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "b91f5497-4145-471d-b441-1f49bfa96795",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "22a2d719-1817-4141-9dca-c607ebd8df80",
+    "f7b81066-40c4-485f-a754-759334e7c765",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852"
+   ],
+   "seconds": 4.562
+  },
+  {
+   "id": "q-019",
+   "wording": "question",
+   "sessions": [
+    "faa74eda-388b-4d57-a18c-bb508e153ff2",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "b91f5497-4145-471d-b441-1f49bfa96795",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "2fb75935-8847-470d-93f4-909680476671"
+   ],
+   "seconds": 3.709
+  },
+  {
+   "id": "q-020",
+   "wording": "question",
+   "sessions": [
+    "5b2aba9d-437d-4061-af3c-b5a537496104",
+    "842e1bfb-de93-40ff-9cf7-b92b3a9eb421",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f"
+   ],
+   "seconds": 4.511
+  },
+  {
+   "id": "q-021",
+   "wording": "question",
+   "sessions": [
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "8cdb8506-646b-4867-b5e8-db8587b14d0d",
+    "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "faa74eda-388b-4d57-a18c-bb508e153ff2"
+   ],
+   "seconds": 4.511
+  },
+  {
+   "id": "q-022",
+   "wording": "question",
+   "sessions": [
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "22a2d719-1817-4141-9dca-c607ebd8df80",
+    "b91f5497-4145-471d-b441-1f49bfa96795",
+    "8cdb8506-646b-4867-b5e8-db8587b14d0d"
+   ],
+   "seconds": 6.859
+  },
+  {
+   "id": "q-023",
+   "wording": "question",
+   "sessions": [
+    "22a2d719-1817-4141-9dca-c607ebd8df80",
+    "3246ac72-56fa-4668-8759-e0c1c0c1b0dc",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "9011e458-07d1-4bc3-8593-973db9f72c83"
+   ],
+   "seconds": 4.049
+  },
+  {
+   "id": "q-024",
+   "wording": "question",
+   "sessions": [
+    "2fb75935-8847-470d-93f4-909680476671",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "222e174e-7f11-45df-bfef-45c56a1a734e",
+    "8d49244e-5cc6-4fe1-b566-1addf3371e99",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "faa74eda-388b-4d57-a18c-bb508e153ff2",
+    "5a0cf297-d83e-4c1c-8cbb-f0326aa9d68a",
+    "962209f0-950e-4930-a207-7182b80cf031"
+   ],
+   "seconds": 2.437
+  },
+  {
+   "id": "q-025",
+   "wording": "question",
+   "sessions": [
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b",
+    "71a05cfe-ae8b-4729-8f76-39757965521c",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "79ae457a-27a6-42ee-a40a-850cada7a271"
+   ],
+   "seconds": 2.064
+  },
+  {
+   "id": "q-026",
+   "wording": "question",
+   "sessions": [
+    "222e174e-7f11-45df-bfef-45c56a1a734e",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "5a0cf297-d83e-4c1c-8cbb-f0326aa9d68a",
+    "71a05cfe-ae8b-4729-8f76-39757965521c"
+   ],
+   "seconds": 3.158
+  },
+  {
+   "id": "q-027",
+   "wording": "question",
+   "sessions": [
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "8cdb8506-646b-4867-b5e8-db8587b14d0d",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9"
+   ],
+   "seconds": 6.963
+  },
+  {
+   "id": "q-028",
+   "wording": "question",
+   "sessions": [
+    "2ffa5cae-2456-4989-aa75-d5203bc2ab0a",
+    "8d49244e-5cc6-4fe1-b566-1addf3371e99",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "5a0cf297-d83e-4c1c-8cbb-f0326aa9d68a",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "385704d0-2c1d-409a-8147-2a0485c7f719"
+   ],
+   "seconds": 1.74
+  },
+  {
+   "id": "q-029",
+   "wording": "question",
+   "sessions": [
+    "b91f5497-4145-471d-b441-1f49bfa96795",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "2ffa5cae-2456-4989-aa75-d5203bc2ab0a",
+    "faa74eda-388b-4d57-a18c-bb508e153ff2"
+   ],
+   "seconds": 1.495
+  },
+  {
+   "id": "q-030",
+   "wording": "question",
+   "sessions": [
+    "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7",
+    "842e1bfb-de93-40ff-9cf7-b92b3a9eb421",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "2ffa5cae-2456-4989-aa75-d5203bc2ab0a"
+   ],
+   "seconds": 1.501
+  },
+  {
+   "id": "q-031",
+   "wording": "question",
+   "sessions": [
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "b91f5497-4145-471d-b441-1f49bfa96795",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "79ae457a-27a6-42ee-a40a-850cada7a271"
+   ],
+   "seconds": 1.496
+  },
+  {
+   "id": "q-032",
+   "wording": "question",
+   "sessions": [
+    "22a2d719-1817-4141-9dca-c607ebd8df80",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "842e1bfb-de93-40ff-9cf7-b92b3a9eb421",
+    "71a05cfe-ae8b-4729-8f76-39757965521c",
+    "f650517b-09a4-4cf2-85f3-da87bf283a52",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "b91f5497-4145-471d-b441-1f49bfa96795",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38"
+   ],
+   "seconds": 1.019
+  },
+  {
+   "id": "q-033",
+   "wording": "question",
+   "sessions": [
+    "faa74eda-388b-4d57-a18c-bb508e153ff2",
+    "2fb75935-8847-470d-93f4-909680476671",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "f650517b-09a4-4cf2-85f3-da87bf283a52",
+    "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "8d49244e-5cc6-4fe1-b566-1addf3371e99"
+   ],
+   "seconds": 1.082
+  },
+  {
+   "id": "q-034",
+   "wording": "question",
+   "sessions": [
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "222e174e-7f11-45df-bfef-45c56a1a734e",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "71a05cfe-ae8b-4729-8f76-39757965521c",
+    "842e1bfb-de93-40ff-9cf7-b92b3a9eb421",
+    "22a2d719-1817-4141-9dca-c607ebd8df80",
+    "962209f0-950e-4930-a207-7182b80cf031"
+   ],
+   "seconds": 1.635
+  },
+  {
+   "id": "q-035",
+   "wording": "question",
+   "sessions": [
+    "8d49244e-5cc6-4fe1-b566-1addf3371e99",
+    "2ffa5cae-2456-4989-aa75-d5203bc2ab0a",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "5a0cf297-d83e-4c1c-8cbb-f0326aa9d68a",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f"
+   ],
+   "seconds": 1.977
+  },
+  {
+   "id": "q-036",
+   "wording": "question",
+   "sessions": [
+    "faa74eda-388b-4d57-a18c-bb508e153ff2",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "2fb75935-8847-470d-93f4-909680476671",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "f7b81066-40c4-485f-a754-759334e7c765",
+    "3246ac72-56fa-4668-8759-e0c1c0c1b0dc",
+    "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "9011e458-07d1-4bc3-8593-973db9f72c83"
+   ],
+   "seconds": 8.53
+  },
+  {
+   "id": "q-037",
+   "wording": "question",
+   "sessions": [
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "b91f5497-4145-471d-b441-1f49bfa96795",
+    "71a05cfe-ae8b-4729-8f76-39757965521c",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38"
+   ],
+   "seconds": 1.811
+  },
+  {
+   "id": "q-038",
+   "wording": "question",
+   "sessions": [
+    "2fb75935-8847-470d-93f4-909680476671",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "f650517b-09a4-4cf2-85f3-da87bf283a52",
+    "faa74eda-388b-4d57-a18c-bb508e153ff2",
+    "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "b91f5497-4145-471d-b441-1f49bfa96795"
+   ],
+   "seconds": 1.258
+  },
+  {
+   "id": "q-039",
+   "wording": "question",
+   "sessions": [
+    "22a2d719-1817-4141-9dca-c607ebd8df80",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "f650517b-09a4-4cf2-85f3-da87bf283a52",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "842e1bfb-de93-40ff-9cf7-b92b3a9eb421",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "962209f0-950e-4930-a207-7182b80cf031"
+   ],
+   "seconds": 1.158
+  },
+  {
+   "id": "q-040",
+   "wording": "question",
+   "sessions": [
+    "b91f5497-4145-471d-b441-1f49bfa96795",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "2ffa5cae-2456-4989-aa75-d5203bc2ab0a",
+    "faa74eda-388b-4d57-a18c-bb508e153ff2",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "fe88766c-97fc-4c82-a138-222f04834a61"
+   ],
+   "seconds": 1.191
+  },
+  {
+   "id": "q-041",
+   "wording": "question",
+   "sessions": [
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "222e174e-7f11-45df-bfef-45c56a1a734e",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "71a05cfe-ae8b-4729-8f76-39757965521c",
+    "22a2d719-1817-4141-9dca-c607ebd8df80",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "30cca397-401e-4773-bde6-34be220c2111"
+   ],
+   "seconds": 5.925
+  },
+  {
+   "id": "q-042",
+   "wording": "question",
+   "sessions": [
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "f7b81066-40c4-485f-a754-759334e7c765",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "842e1bfb-de93-40ff-9cf7-b92b3a9eb421",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "71a05cfe-ae8b-4729-8f76-39757965521c"
+   ],
+   "seconds": 1.604
+  },
+  {
+   "id": "q-043",
+   "wording": "question",
+   "sessions": [
+    "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "8cdb8506-646b-4867-b5e8-db8587b14d0d",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "79ae457a-27a6-42ee-a40a-850cada7a271"
+   ],
+   "seconds": 1.491
+  },
+  {
+   "id": "q-044",
+   "wording": "question",
+   "sessions": [
+    "22a2d719-1817-4141-9dca-c607ebd8df80",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "3246ac72-56fa-4668-8759-e0c1c0c1b0dc",
+    "222e174e-7f11-45df-bfef-45c56a1a734e",
+    "f7b81066-40c4-485f-a754-759334e7c765",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "79ae457a-27a6-42ee-a40a-850cada7a271"
+   ],
+   "seconds": 2.253
+  },
+  {
+   "id": "q-045",
+   "wording": "question",
+   "sessions": [
+    "2ffa5cae-2456-4989-aa75-d5203bc2ab0a",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "5a0cf297-d83e-4c1c-8cbb-f0326aa9d68a",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "8d49244e-5cc6-4fe1-b566-1addf3371e99",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8"
+   ],
+   "seconds": 2.287
+  },
+  {
+   "id": "q-046",
+   "wording": "question",
+   "sessions": [
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "5a0cf297-d83e-4c1c-8cbb-f0326aa9d68a",
+    "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+    "f7b81066-40c4-485f-a754-759334e7c765",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852"
+   ],
+   "seconds": 2.433
+  },
+  {
+   "id": "q-047",
+   "wording": "question",
+   "sessions": [
+    "222e174e-7f11-45df-bfef-45c56a1a734e",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "b91f5497-4145-471d-b441-1f49bfa96795",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "f650517b-09a4-4cf2-85f3-da87bf283a52"
+   ],
+   "seconds": 2.563
+  },
+  {
+   "id": "q-048",
+   "wording": "question",
+   "sessions": [
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "f7b81066-40c4-485f-a754-759334e7c765",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "8cdb8506-646b-4867-b5e8-db8587b14d0d",
+    "22a2d719-1817-4141-9dca-c607ebd8df80"
+   ],
+   "seconds": 1.985
+  },
+  {
+   "id": "q-049",
+   "wording": "question",
+   "sessions": [
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "71a05cfe-ae8b-4729-8f76-39757965521c",
+    "f7b81066-40c4-485f-a754-759334e7c765",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7",
+    "2ffa5cae-2456-4989-aa75-d5203bc2ab0a",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc"
+   ],
+   "seconds": 2.504
+  },
+  {
+   "id": "q-050",
+   "wording": "question",
+   "sessions": [
+    "f650517b-09a4-4cf2-85f3-da87bf283a52",
+    "2fb75935-8847-470d-93f4-909680476671",
+    "3246ac72-56fa-4668-8759-e0c1c0c1b0dc",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "b91f5497-4145-471d-b441-1f49bfa96795",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "faa74eda-388b-4d57-a18c-bb508e153ff2",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "8d49244e-5cc6-4fe1-b566-1addf3371e99"
+   ],
+   "seconds": 2.736
+  },
+  {
+   "id": "q-051",
+   "wording": "question",
+   "sessions": [
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+    "71a05cfe-ae8b-4729-8f76-39757965521c",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8"
+   ],
+   "seconds": 2.257
+  },
+  {
+   "id": "q-052",
+   "wording": "question",
+   "sessions": [
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "842e1bfb-de93-40ff-9cf7-b92b3a9eb421",
+    "22a2d719-1817-4141-9dca-c607ebd8df80",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5"
+   ],
+   "seconds": 2.994
+  },
+  {
+   "id": "q-053",
+   "wording": "question",
+   "sessions": [
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "5b2aba9d-437d-4061-af3c-b5a537496104"
+   ],
+   "seconds": 2.988
+  },
+  {
+   "id": "q-054",
+   "wording": "question",
+   "sessions": [
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "b91f5497-4145-471d-b441-1f49bfa96795",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "842e1bfb-de93-40ff-9cf7-b92b3a9eb421",
+    "5b2aba9d-437d-4061-af3c-b5a537496104",
+    "79ae457a-27a6-42ee-a40a-850cada7a271"
+   ],
+   "seconds": 2.204
+  },
+  {
+   "id": "q-055",
+   "wording": "question",
+   "sessions": [
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "5b2aba9d-437d-4061-af3c-b5a537496104"
+   ],
+   "seconds": 2.377
+  },
+  {
+   "id": "q-056",
+   "wording": "question",
+   "sessions": [
+    "5b2aba9d-437d-4061-af3c-b5a537496104",
+    "842e1bfb-de93-40ff-9cf7-b92b3a9eb421",
+    "f650517b-09a4-4cf2-85f3-da87bf283a52",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38"
+   ],
+   "seconds": 3.193
+  },
+  {
+   "id": "q-057",
+   "wording": "question",
+   "sessions": [
+    "222e174e-7f11-45df-bfef-45c56a1a734e",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7",
+    "71a05cfe-ae8b-4729-8f76-39757965521c"
+   ],
+   "seconds": 2.212
+  },
+  {
+   "id": "q-058",
+   "wording": "question",
+   "sessions": [
+    "222e174e-7f11-45df-bfef-45c56a1a734e",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "71a05cfe-ae8b-4729-8f76-39757965521c",
+    "b91f5497-4145-471d-b441-1f49bfa96795",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "8cdb8506-646b-4867-b5e8-db8587b14d0d",
+    "8d49244e-5cc6-4fe1-b566-1addf3371e99"
+   ],
+   "seconds": 2.318
+  },
+  {
+   "id": "q-059",
+   "wording": "question",
+   "sessions": [
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "faa74eda-388b-4d57-a18c-bb508e153ff2",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7"
+   ],
+   "seconds": 2.614
+  },
+  {
+   "id": "q-060",
+   "wording": "question",
+   "sessions": [
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7",
+    "71a05cfe-ae8b-4729-8f76-39757965521c",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "fe88766c-97fc-4c82-a138-222f04834a61"
+   ],
+   "seconds": 20.622
+  },
+  {
+   "id": "q-061",
+   "wording": "question",
+   "sessions": [
+    "2fb75935-8847-470d-93f4-909680476671",
+    "faa74eda-388b-4d57-a18c-bb508e153ff2",
+    "f7b81066-40c4-485f-a754-759334e7c765",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "b91f5497-4145-471d-b441-1f49bfa96795",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f"
+   ],
+   "seconds": 1.987
+  },
+  {
+   "id": "q-062",
+   "wording": "question",
+   "sessions": [
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "5a0cf297-d83e-4c1c-8cbb-f0326aa9d68a",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "222e174e-7f11-45df-bfef-45c56a1a734e",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "fe88766c-97fc-4c82-a138-222f04834a61"
+   ],
+   "seconds": 1.651
+  },
+  {
+   "id": "q-063",
+   "wording": "question",
+   "sessions": [
+    "2ffa5cae-2456-4989-aa75-d5203bc2ab0a",
+    "8d49244e-5cc6-4fe1-b566-1addf3371e99",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "8cdb8506-646b-4867-b5e8-db8587b14d0d",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "5a0cf297-d83e-4c1c-8cbb-f0326aa9d68a"
+   ],
+   "seconds": 1.596
+  },
+  {
+   "id": "q-064",
+   "wording": "question",
+   "sessions": [
+    "22a2d719-1817-4141-9dca-c607ebd8df80",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "842e1bfb-de93-40ff-9cf7-b92b3a9eb421",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "2ffa5cae-2456-4989-aa75-d5203bc2ab0a",
+    "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f"
+   ],
+   "seconds": 2.01
+  },
+  {
+   "id": "q-065",
+   "wording": "question",
+   "sessions": [
+    "5a0cf297-d83e-4c1c-8cbb-f0326aa9d68a",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "71a05cfe-ae8b-4729-8f76-39757965521c",
+    "f7b81066-40c4-485f-a754-759334e7c765",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f"
+   ],
+   "seconds": 2.406
+  },
+  {
+   "id": "q-066",
+   "wording": "question",
+   "sessions": [
+    "faa74eda-388b-4d57-a18c-bb508e153ff2",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "f7b81066-40c4-485f-a754-759334e7c765",
+    "842e1bfb-de93-40ff-9cf7-b92b3a9eb421",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f"
+   ],
+   "seconds": 1.85
+  },
+  {
+   "id": "q-067",
+   "wording": "question",
+   "sessions": [
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "30cca397-401e-4773-bde6-34be220c2111"
+   ],
+   "seconds": 2.241
+  },
+  {
+   "id": "q-001",
+   "wording": "paraphrase",
+   "sessions": [
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7",
+    "5a0cf297-d83e-4c1c-8cbb-f0326aa9d68a",
+    "f7b81066-40c4-485f-a754-759334e7c765",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8"
+   ],
+   "seconds": 2.526
+  },
+  {
+   "id": "q-002",
+   "wording": "paraphrase",
+   "sessions": [
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+    "5a0cf297-d83e-4c1c-8cbb-f0326aa9d68a",
+    "f7b81066-40c4-485f-a754-759334e7c765",
+    "2ffa5cae-2456-4989-aa75-d5203bc2ab0a"
+   ],
+   "seconds": 1.721
+  },
+  {
+   "id": "q-003",
+   "wording": "paraphrase",
+   "sessions": [
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "f7b81066-40c4-485f-a754-759334e7c765",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7",
+    "71a05cfe-ae8b-4729-8f76-39757965521c"
+   ],
+   "seconds": 2.146
+  },
+  {
+   "id": "q-004",
+   "wording": "paraphrase",
+   "sessions": [
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "b91f5497-4145-471d-b441-1f49bfa96795",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5"
+   ],
+   "seconds": 3.635
+  },
+  {
+   "id": "q-005",
+   "wording": "paraphrase",
+   "sessions": [
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "8d49244e-5cc6-4fe1-b566-1addf3371e99",
+    "222e174e-7f11-45df-bfef-45c56a1a734e",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b"
+   ],
+   "seconds": 2.99
+  },
+  {
+   "id": "q-006",
+   "wording": "paraphrase",
+   "sessions": [
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72",
+    "222e174e-7f11-45df-bfef-45c56a1a734e",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852"
+   ],
+   "seconds": 1.849
+  },
+  {
+   "id": "q-007",
+   "wording": "paraphrase",
+   "sessions": [
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "f7b81066-40c4-485f-a754-759334e7c765",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "842e1bfb-de93-40ff-9cf7-b92b3a9eb421"
+   ],
+   "seconds": 1.847
+  },
+  {
+   "id": "q-008",
+   "wording": "paraphrase",
+   "sessions": [
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "71a05cfe-ae8b-4729-8f76-39757965521c",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "8d49244e-5cc6-4fe1-b566-1addf3371e99",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "30cca397-401e-4773-bde6-34be220c2111"
+   ],
+   "seconds": 230.899
+  },
+  {
+   "id": "q-009",
+   "wording": "paraphrase",
+   "sessions": [
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "2ffa5cae-2456-4989-aa75-d5203bc2ab0a",
+    "5a0cf297-d83e-4c1c-8cbb-f0326aa9d68a",
+    "f7b81066-40c4-485f-a754-759334e7c765",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+    "f650517b-09a4-4cf2-85f3-da87bf283a52"
+   ],
+   "seconds": 1.468
+  },
+  {
+   "id": "q-010",
+   "wording": "paraphrase",
+   "sessions": [
+    "842e1bfb-de93-40ff-9cf7-b92b3a9eb421",
+    "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8"
+   ],
+   "seconds": 0.916
+  },
+  {
+   "id": "q-011",
+   "wording": "paraphrase",
+   "sessions": [
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72"
+   ],
+   "seconds": 1.11
+  },
+  {
+   "id": "q-012",
+   "wording": "paraphrase",
+   "sessions": [
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9"
+   ],
+   "seconds": 0.956
+  },
+  {
+   "id": "q-013",
+   "wording": "paraphrase",
+   "sessions": [
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "22a2d719-1817-4141-9dca-c607ebd8df80",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "f650517b-09a4-4cf2-85f3-da87bf283a52",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f"
+   ],
+   "seconds": 0.933
+  },
+  {
+   "id": "q-014",
+   "wording": "paraphrase",
+   "sessions": [
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "faa74eda-388b-4d57-a18c-bb508e153ff2"
+   ],
+   "seconds": 1.67
+  },
+  {
+   "id": "q-015",
+   "wording": "paraphrase",
+   "sessions": [
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "f7b81066-40c4-485f-a754-759334e7c765",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "22a2d719-1817-4141-9dca-c607ebd8df80"
+   ],
+   "seconds": 1.21
+  },
+  {
+   "id": "q-016",
+   "wording": "paraphrase",
+   "sessions": [
+    "b91f5497-4145-471d-b441-1f49bfa96795",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "f650517b-09a4-4cf2-85f3-da87bf283a52",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852"
+   ],
+   "seconds": 1.264
+  },
+  {
+   "id": "q-017",
+   "wording": "paraphrase",
+   "sessions": [
+    "22a2d719-1817-4141-9dca-c607ebd8df80",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "3246ac72-56fa-4668-8759-e0c1c0c1b0dc",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+    "f650517b-09a4-4cf2-85f3-da87bf283a52",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8"
+   ],
+   "seconds": 1.436
+  },
+  {
+   "id": "q-018",
+   "wording": "paraphrase",
+   "sessions": [
+    "22a2d719-1817-4141-9dca-c607ebd8df80",
+    "3246ac72-56fa-4668-8759-e0c1c0c1b0dc",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f"
+   ],
+   "seconds": 1.293
+  },
+  {
+   "id": "q-019",
+   "wording": "paraphrase",
+   "sessions": [
+    "faa74eda-388b-4d57-a18c-bb508e153ff2",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "2fb75935-8847-470d-93f4-909680476671",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "8d49244e-5cc6-4fe1-b566-1addf3371e99",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "22a2d719-1817-4141-9dca-c607ebd8df80",
+    "5b2aba9d-437d-4061-af3c-b5a537496104",
+    "f7b81066-40c4-485f-a754-759334e7c765"
+   ],
+   "seconds": 1.591
+  },
+  {
+   "id": "q-020",
+   "wording": "paraphrase",
+   "sessions": [
+    "5b2aba9d-437d-4061-af3c-b5a537496104",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "842e1bfb-de93-40ff-9cf7-b92b3a9eb421",
+    "b91f5497-4145-471d-b441-1f49bfa96795",
+    "30cca397-401e-4773-bde6-34be220c2111"
+   ],
+   "seconds": 1.344
+  },
+  {
+   "id": "q-021",
+   "wording": "paraphrase",
+   "sessions": [
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "8cdb8506-646b-4867-b5e8-db8587b14d0d",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8"
+   ],
+   "seconds": 1.926
+  },
+  {
+   "id": "q-022",
+   "wording": "paraphrase",
+   "sessions": [
+    "22a2d719-1817-4141-9dca-c607ebd8df80",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8"
+   ],
+   "seconds": 1.481
+  },
+  {
+   "id": "q-023",
+   "wording": "paraphrase",
+   "sessions": [
+    "22a2d719-1817-4141-9dca-c607ebd8df80",
+    "3246ac72-56fa-4668-8759-e0c1c0c1b0dc",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38"
+   ],
+   "seconds": 1.094
+  },
+  {
+   "id": "q-024",
+   "wording": "paraphrase",
+   "sessions": [
+    "3246ac72-56fa-4668-8759-e0c1c0c1b0dc",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7",
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b",
+    "2fb75935-8847-470d-93f4-909680476671",
+    "f7b81066-40c4-485f-a754-759334e7c765",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f"
+   ],
+   "seconds": 1.204
+  },
+  {
+   "id": "q-025",
+   "wording": "paraphrase",
+   "sessions": [
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+    "f7b81066-40c4-485f-a754-759334e7c765",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "30cca397-401e-4773-bde6-34be220c2111"
+   ],
+   "seconds": 1.412
+  },
+  {
+   "id": "q-026",
+   "wording": "paraphrase",
+   "sessions": [
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "8d49244e-5cc6-4fe1-b566-1addf3371e99",
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b",
+    "962209f0-950e-4930-a207-7182b80cf031"
+   ],
+   "seconds": 2.463
+  },
+  {
+   "id": "q-027",
+   "wording": "paraphrase",
+   "sessions": [
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8"
+   ],
+   "seconds": 1.791
+  },
+  {
+   "id": "q-028",
+   "wording": "paraphrase",
+   "sessions": [
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "8cdb8506-646b-4867-b5e8-db8587b14d0d",
+    "222e174e-7f11-45df-bfef-45c56a1a734e",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "f650517b-09a4-4cf2-85f3-da87bf283a52"
+   ],
+   "seconds": 1.604
+  },
+  {
+   "id": "q-029",
+   "wording": "paraphrase",
+   "sessions": [
+    "b91f5497-4145-471d-b441-1f49bfa96795",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "8d49244e-5cc6-4fe1-b566-1addf3371e99",
+    "222e174e-7f11-45df-bfef-45c56a1a734e",
+    "f650517b-09a4-4cf2-85f3-da87bf283a52"
+   ],
+   "seconds": 1.488
+  },
+  {
+   "id": "q-030",
+   "wording": "paraphrase",
+   "sessions": [
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7",
+    "842e1bfb-de93-40ff-9cf7-b92b3a9eb421",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "222e174e-7f11-45df-bfef-45c56a1a734e",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "3246ac72-56fa-4668-8759-e0c1c0c1b0dc"
+   ],
+   "seconds": 1.205
+  },
+  {
+   "id": "q-031",
+   "wording": "paraphrase",
+   "sessions": [
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "71a05cfe-ae8b-4729-8f76-39757965521c",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38"
+   ],
+   "seconds": 1.55
+  },
+  {
+   "id": "q-032",
+   "wording": "paraphrase",
+   "sessions": [
+    "22a2d719-1817-4141-9dca-c607ebd8df80",
+    "3246ac72-56fa-4668-8759-e0c1c0c1b0dc",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "f650517b-09a4-4cf2-85f3-da87bf283a52",
+    "222e174e-7f11-45df-bfef-45c56a1a734e"
+   ],
+   "seconds": 1.675
+  },
+  {
+   "id": "q-033",
+   "wording": "paraphrase",
+   "sessions": [
+    "3246ac72-56fa-4668-8759-e0c1c0c1b0dc",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "22a2d719-1817-4141-9dca-c607ebd8df80",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "faa74eda-388b-4d57-a18c-bb508e153ff2",
+    "5b2aba9d-437d-4061-af3c-b5a537496104",
+    "f7b81066-40c4-485f-a754-759334e7c765"
+   ],
+   "seconds": 1.082
+  },
+  {
+   "id": "q-034",
+   "wording": "paraphrase",
+   "sessions": [
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "5a0cf297-d83e-4c1c-8cbb-f0326aa9d68a",
+    "fe88766c-97fc-4c82-a138-222f04834a61"
+   ],
+   "seconds": 4.762
+  },
+  {
+   "id": "q-035",
+   "wording": "paraphrase",
+   "sessions": [
+    "8d49244e-5cc6-4fe1-b566-1addf3371e99",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "5b2aba9d-437d-4061-af3c-b5a537496104",
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "222e174e-7f11-45df-bfef-45c56a1a734e"
+   ],
+   "seconds": 1.411
+  },
+  {
+   "id": "q-036",
+   "wording": "paraphrase",
+   "sessions": [
+    "3246ac72-56fa-4668-8759-e0c1c0c1b0dc",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "f7b81066-40c4-485f-a754-759334e7c765",
+    "22a2d719-1817-4141-9dca-c607ebd8df80",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "faa74eda-388b-4d57-a18c-bb508e153ff2"
+   ],
+   "seconds": 1.156
+  },
+  {
+   "id": "q-037",
+   "wording": "paraphrase",
+   "sessions": [
+    "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72",
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "b91f5497-4145-471d-b441-1f49bfa96795"
+   ],
+   "seconds": 0.855
+  },
+  {
+   "id": "q-038",
+   "wording": "paraphrase",
+   "sessions": [
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "f7b81066-40c4-485f-a754-759334e7c765",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "faa74eda-388b-4d57-a18c-bb508e153ff2",
+    "2d572e15-2620-415c-98b6-27a8d37bc734"
+   ],
+   "seconds": 1.002
+  },
+  {
+   "id": "q-039",
+   "wording": "paraphrase",
+   "sessions": [
+    "22a2d719-1817-4141-9dca-c607ebd8df80",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "8d49244e-5cc6-4fe1-b566-1addf3371e99",
+    "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "3246ac72-56fa-4668-8759-e0c1c0c1b0dc",
+    "385704d0-2c1d-409a-8147-2a0485c7f719"
+   ],
+   "seconds": 1.211
+  },
+  {
+   "id": "q-040",
+   "wording": "paraphrase",
+   "sessions": [
+    "faa74eda-388b-4d57-a18c-bb508e153ff2",
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "b91f5497-4145-471d-b441-1f49bfa96795",
+    "2ffa5cae-2456-4989-aa75-d5203bc2ab0a",
+    "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38"
+   ],
+   "seconds": 1.274
+  },
+  {
+   "id": "q-041",
+   "wording": "paraphrase",
+   "sessions": [
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7",
+    "9011e458-07d1-4bc3-8593-973db9f72c83"
+   ],
+   "seconds": 2.566
+  },
+  {
+   "id": "q-042",
+   "wording": "paraphrase",
+   "sessions": [
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+    "f7b81066-40c4-485f-a754-759334e7c765",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "5a0cf297-d83e-4c1c-8cbb-f0326aa9d68a",
+    "842e1bfb-de93-40ff-9cf7-b92b3a9eb421",
+    "962209f0-950e-4930-a207-7182b80cf031"
+   ],
+   "seconds": 2.376
+  },
+  {
+   "id": "q-043",
+   "wording": "paraphrase",
+   "sessions": [
+    "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "71a05cfe-ae8b-4729-8f76-39757965521c",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "79ae457a-27a6-42ee-a40a-850cada7a271"
+   ],
+   "seconds": 49.098
+  },
+  {
+   "id": "q-044",
+   "wording": "paraphrase",
+   "sessions": [
+    "22a2d719-1817-4141-9dca-c607ebd8df80",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "b91f5497-4145-471d-b441-1f49bfa96795",
+    "5a0cf297-d83e-4c1c-8cbb-f0326aa9d68a",
+    "3246ac72-56fa-4668-8759-e0c1c0c1b0dc"
+   ],
+   "seconds": 1.336
+  },
+  {
+   "id": "q-045",
+   "wording": "paraphrase",
+   "sessions": [
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "222e174e-7f11-45df-bfef-45c56a1a734e",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "5b2aba9d-437d-4061-af3c-b5a537496104",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "f650517b-09a4-4cf2-85f3-da87bf283a52",
+    "2ffa5cae-2456-4989-aa75-d5203bc2ab0a",
+    "962209f0-950e-4930-a207-7182b80cf031"
+   ],
+   "seconds": 0.987
+  },
+  {
+   "id": "q-046",
+   "wording": "paraphrase",
+   "sessions": [
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "962209f0-950e-4930-a207-7182b80cf031"
+   ],
+   "seconds": 1.168
+  },
+  {
+   "id": "q-047",
+   "wording": "paraphrase",
+   "sessions": [
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "222e174e-7f11-45df-bfef-45c56a1a734e"
+   ],
+   "seconds": 2.022
+  },
+  {
+   "id": "q-048",
+   "wording": "paraphrase",
+   "sessions": [
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "222e174e-7f11-45df-bfef-45c56a1a734e",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "f650517b-09a4-4cf2-85f3-da87bf283a52",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "30cca397-401e-4773-bde6-34be220c2111"
+   ],
+   "seconds": 1.455
+  },
+  {
+   "id": "q-049",
+   "wording": "paraphrase",
+   "sessions": [
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "71a05cfe-ae8b-4729-8f76-39757965521c",
+    "2ffa5cae-2456-4989-aa75-d5203bc2ab0a",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "f7b81066-40c4-485f-a754-759334e7c765",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc"
+   ],
+   "seconds": 1.722
+  },
+  {
+   "id": "q-050",
+   "wording": "paraphrase",
+   "sessions": [
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72",
+    "222e174e-7f11-45df-bfef-45c56a1a734e",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5"
+   ],
+   "seconds": 1.294
+  },
+  {
+   "id": "q-051",
+   "wording": "paraphrase",
+   "sessions": [
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5"
+   ],
+   "seconds": 1.204
+  },
+  {
+   "id": "q-052",
+   "wording": "paraphrase",
+   "sessions": [
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "22a2d719-1817-4141-9dca-c607ebd8df80",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5"
+   ],
+   "seconds": 4.958
+  },
+  {
+   "id": "q-053",
+   "wording": "paraphrase",
+   "sessions": [
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b",
+    "4e880d4e-4b72-4ad3-a8a1-55b9ef0d6d72",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "71a05cfe-ae8b-4729-8f76-39757965521c",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8"
+   ],
+   "seconds": 2.588
+  },
+  {
+   "id": "q-054",
+   "wording": "paraphrase",
+   "sessions": [
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f"
+   ],
+   "seconds": 1.997
+  },
+  {
+   "id": "q-055",
+   "wording": "paraphrase",
+   "sessions": [
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "faa74eda-388b-4d57-a18c-bb508e153ff2",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "2ffa5cae-2456-4989-aa75-d5203bc2ab0a",
+    "f7b81066-40c4-485f-a754-759334e7c765",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7"
+   ],
+   "seconds": 1.259
+  },
+  {
+   "id": "q-056",
+   "wording": "paraphrase",
+   "sessions": [
+    "842e1bfb-de93-40ff-9cf7-b92b3a9eb421",
+    "f7b81066-40c4-485f-a754-759334e7c765",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "5b2aba9d-437d-4061-af3c-b5a537496104",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "22a2d719-1817-4141-9dca-c607ebd8df80",
+    "962209f0-950e-4930-a207-7182b80cf031"
+   ],
+   "seconds": 1.221
+  },
+  {
+   "id": "q-057",
+   "wording": "paraphrase",
+   "sessions": [
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "fe88766c-97fc-4c82-a138-222f04834a61"
+   ],
+   "seconds": 1.692
+  },
+  {
+   "id": "q-058",
+   "wording": "paraphrase",
+   "sessions": [
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7",
+    "222e174e-7f11-45df-bfef-45c56a1a734e",
+    "b91f5497-4145-471d-b441-1f49bfa96795",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "f7b81066-40c4-485f-a754-759334e7c765"
+   ],
+   "seconds": 1.586
+  },
+  {
+   "id": "q-059",
+   "wording": "paraphrase",
+   "sessions": [
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b",
+    "faa74eda-388b-4d57-a18c-bb508e153ff2",
+    "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7"
+   ],
+   "seconds": 2.071
+  },
+  {
+   "id": "q-060",
+   "wording": "paraphrase",
+   "sessions": [
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5"
+   ],
+   "seconds": 2.908
+  },
+  {
+   "id": "q-061",
+   "wording": "paraphrase",
+   "sessions": [
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "faa74eda-388b-4d57-a18c-bb508e153ff2",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8"
+   ],
+   "seconds": 1.403
+  },
+  {
+   "id": "q-062",
+   "wording": "paraphrase",
+   "sessions": [
+    "5a0cf297-d83e-4c1c-8cbb-f0326aa9d68a",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "71a05cfe-ae8b-4729-8f76-39757965521c",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+    "3246ac72-56fa-4668-8759-e0c1c0c1b0dc",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38"
+   ],
+   "seconds": 1.487
+  },
+  {
+   "id": "q-063",
+   "wording": "paraphrase",
+   "sessions": [
+    "222e174e-7f11-45df-bfef-45c56a1a734e",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "2ffa5cae-2456-4989-aa75-d5203bc2ab0a",
+    "fe88766c-97fc-4c82-a138-222f04834a61",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "b91f5497-4145-471d-b441-1f49bfa96795",
+    "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7"
+   ],
+   "seconds": 3.099
+  },
+  {
+   "id": "q-064",
+   "wording": "paraphrase",
+   "sessions": [
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "22a2d719-1817-4141-9dca-c607ebd8df80",
+    "9011e458-07d1-4bc3-8593-973db9f72c83",
+    "6a143f79-e640-4326-8b29-c8bdba8bcfd5",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "2d572e15-2620-415c-98b6-27a8d37bc734"
+   ],
+   "seconds": 1.995
+  },
+  {
+   "id": "q-065",
+   "wording": "paraphrase",
+   "sessions": [
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "8cf594d8-0c8e-4ca8-8a32-9e6e8df13ac9",
+    "f6fd4e65-267b-4ffe-b40f-61c6d1e34852",
+    "5a0cf297-d83e-4c1c-8cbb-f0326aa9d68a",
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc"
+   ],
+   "seconds": 1.802
+  },
+  {
+   "id": "q-066",
+   "wording": "paraphrase",
+   "sessions": [
+    "30cca397-401e-4773-bde6-34be220c2111",
+    "5cb1bc0c-7bf9-4ffd-a5d0-ab17cd500e6f",
+    "79ae457a-27a6-42ee-a40a-850cada7a271",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+    "882d8a69-68bb-4f1c-bae9-e9a8753812d8",
+    "f7b81066-40c4-485f-a754-759334e7c765"
+   ],
+   "seconds": 1.183
+  },
+  {
+   "id": "q-067",
+   "wording": "paraphrase",
+   "sessions": [
+    "0273f60c-db4d-47e7-9ab0-4c76c00c29bc",
+    "222e174e-7f11-45df-bfef-45c56a1a734e",
+    "3246ac72-56fa-4668-8759-e0c1c0c1b0dc",
+    "5a0cf297-d83e-4c1c-8cbb-f0326aa9d68a",
+    "2d572e15-2620-415c-98b6-27a8d37bc734",
+    "962209f0-950e-4930-a207-7182b80cf031",
+    "385704d0-2c1d-409a-8147-2a0485c7f719",
+    "51b2903a-67ab-43a4-b11d-9f20a95b107b",
+    "7e94da45-6129-4dc8-bd6a-02c4fccc3ed7",
+    "376aadaa-35c4-4ac5-b158-dc3a57e48c38"
+   ],
+   "seconds": 1.124
+  }
+ ]
+}
