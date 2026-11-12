@@ -20,6 +20,7 @@ This page lists what ctx has been measured to do. Every figure comes from a resu
 | Coding sessions: finding the session that holds the answer, first run | No bar | ctx did worse than ranked grep here, 20 against 26 of 30 held-out questions in the session's own terms, and the cause was a fault, not ranking. Questions that name a flag, such as --json, made ctx search stop with an error and return nothing; an agent searching its history for a flag would have hit the same error. The result is kept as it was measured. The next result shows the same questions after the fault was fixed. Paraphrased, both methods fail most of the time. |
 | Coding sessions: finding the session, after search accepted flag names | No bar | With the fault fixed, ctx finds the right session for 28 of 30 held-out questions in the session's own terms, against grep's 26. ctx alone was right on 3 and grep alone on 1, which is not a difference by the rule set beforehand, so the two are level on this small corpus. Over all 67 questions it is 64 against 52. The change was chosen using only the questions that are not held out, and the held-out ones were run once. Paraphrased questions did not improve: 5 of 30 for ctx and 7 for grep. That is the limit of keyword search, and it is what tools using embeddings should be tested on. |
 | Coding sessions: other tools on the same questions | No bar | In the session's own terms every tool that ran properly is level with ctx; only TraceDecay was worse (p = 0.008). Paraphrased, the three tools using embeddings are clearly better than ctx: cass found 23 of 30, episodic-memory 20 and agentmemory 17, against ctx's 5 (each p below 0.001). That is the real gap in ctx's search. It costs them indexing time: one to nineteen minutes for 32 sessions, against seconds for keyword indexes. cass with keywords alone scored 1 of 30 because its default search needs every word of the question to match; that is its default, not its ceiling. This measures finding the session only. In the separate answer test, paraphrasing barely changed what agents got right, because agents rewrite their searches. |
+| Would small embeddings close the paraphrase gap? | Failed its bar | A real gain, but short of the bar. Fusing the 30 MB model with keyword search finds 13 of 30 paraphrased questions instead of 5 (better on 9, worse on 1, p = 0.02) and loses nothing in the session's own terms. That is about half of what the neural tools gain, for almost no indexing cost. The smaller model does less and the larger one no better. ctx does not use embeddings as a result: the bar was not met, and in the answer test paraphrasing did not make agents answer worse, so the gain here may not reach the answers. |
 | Coding sessions: do agents answer better with ctx? | No bar | Plain transcript files with a hint where they are scored highest. ctx as installed is level with them by the test set beforehand (better on 2 questions, worse on 6, p = 0.29) but three points lower, and ctx without its note is significantly worse (p = 0.04). The whole gap is use: the agent searched with ctx on 24 of 30 questions with the note and 19 without, and where it did search, its answers were as good as the transcript arm's. What ctx buys is cost: about a third fewer tokens, less than half the time, and two or three tool calls where grep needs seven to nine. Paraphrasing the question made almost no difference to any arm, because agents rewrite their own searches. With only the repository the agent could answer 6 of 30, so the questions do need session history. |
 | Coding sessions: adding snippets or a reminder to the prompt | Failed its bar | Neither helps, and both arms scored below ctx as installed, significantly so on paraphrased questions. The reason is that they almost never act: snippets were added for 4 and 3 of 30 questions and the reminder for 1 and 0, so these arms are in effect the skill alone. On the few questions where snippets were added, the answers were right. The session-start note remains the one thing shown to make agents search, and both hooks stay off by default. |
 | Answering questions about past work | Passed its bar | Telling the agent at session start that an archive exists is worth about 7 questions in 90 and costs no extra tokens. The difference is borderline by a sign test (p = 0.052), so it is kept as likely but not proven. |
@@ -216,6 +217,36 @@ bench/shipyard/results/score.py
 ```
 
 [Result file](../bench/results/shipyard-tools.json)
+
+### Would small embeddings close the paraphrase gap?
+
+ctx finds 5 of 30 paraphrased questions; tools that run a small neural network over every chunk find 17 to 23 and take minutes to index 32 sessions. This asks whether embeddings with no network at all, which index the same corpus in a tenth of a second, get most of that.
+
+- **Compared with:** ctx's keyword search (5 of 30 paraphrased, 28 of 30 in the session's own terms) and the neural tools on the same questions (17 to 23 paraphrased)
+- **Bar:** at least 15 of 30 paraphrased questions on tuning-B, with no loss in the session's own terms (set before the run). **Failed.**
+- **What it means:** A real gain, but short of the bar. Fusing the 30 MB model with keyword search finds 13 of 30 paraphrased questions instead of 5 (better on 9, worse on 1, p = 0.02) and loses nothing in the session's own terms. That is about half of what the neural tools gain, for almost no indexing cost. The smaller model does less and the larger one no better. ctx does not use embeddings as a result: the bar was not met, and in the answer test paraphrasing did not make agents answer worse, so the gain here may not reach the answers.
+
+| Measure | Result |
+| --- | --- |
+| ctx keywords | 28 and 5 of 30 (own terms and paraphrased) |
+| 30 MB static model fused with keywords | 28 and 13 of 30 (index 0.1 s, 2 MB of vectors) |
+| 30 MB static model alone | 27 and 11 of 30 |
+| 8 MB static model fused with keywords | 28 and 10 of 30 |
+| 129 MB retrieval-tuned static model fused with keywords | 27 and 9 of 30 (alone: 28 and 12) |
+| Neural tools, for comparison | 28 to 30 and 17 to 23 of 30 (index 67 to 1,120 s) |
+
+Measured 2026-11-12; check-in 4095a7b2dab0; good until 2027-05-11.
+
+- corpus: the shipyard corpus, first question set; tuning-B is the 30 questions that were held out for the earlier runs
+- models: static embedding models from the Model2Vec family: potion-base-2M (8 MB), potion-base-8M (30 MB), potion-retrieval-32M (129 MB). A static model has no network to run; a text's vector is the average of its word pieces' vectors.
+- method: vectors for overlapping windows of 64 word pieces of what people and agents wrote, tool output left out; sessions ranked by their best window; fused with ctx's keyword ranking by reciprocal rank
+- selection: window size and what to embed were chosen on the 37 tuning-A questions among four variants; tuning-B was looked at twice, so its figures are not a blind test
+
+```sh
+bench/vectors.py --models DIR --model potion-base-8M
+```
+
+[Result file](../bench/results/vectors-static.json)
 
 ## Agent behaviour
 

@@ -1,0 +1,51 @@
+{
+ "name": "vectors-static",
+ "title": "Would small embeddings close the paraphrase gap?",
+ "section": "Search",
+ "order": 43,
+ "date": "2026-11-12",
+ "good_until": "2027-05-11",
+ "commit": "4095a7b2dab0",
+ "command": "bench/vectors.py --models DIR --model potion-base-8M",
+ "conditions": {
+  "corpus": "the shipyard corpus, first question set; tuning-B is the 30 questions that were held out for the earlier runs",
+  "models": "static embedding models from the Model2Vec family: potion-base-2M (8 MB), potion-base-8M (30 MB), potion-retrieval-32M (129 MB). A static model has no network to run; a text's vector is the average of its word pieces' vectors.",
+  "method": "vectors for overlapping windows of 64 word pieces of what people and agents wrote, tool output left out; sessions ranked by their best window; fused with ctx's keyword ranking by reciprocal rank",
+  "selection": "window size and what to embed were chosen on the 37 tuning-A questions among four variants; tuning-B was looked at twice, so its figures are not a blind test"
+ },
+ "summary": "ctx finds 5 of 30 paraphrased questions; tools that run a small neural network over every chunk find 17 to 23 and take minutes to index 32 sessions. This asks whether embeddings with no network at all, which index the same corpus in a tenth of a second, get most of that.",
+ "baseline": "ctx's keyword search (5 of 30 paraphrased, 28 of 30 in the session's own terms) and the neural tools on the same questions (17 to 23 paraphrased)",
+ "bar": "at least 15 of 30 paraphrased questions on tuning-B, with no loss in the session's own terms (set before the run)",
+ "verdict": "fail",
+ "meaning": "A real gain, but short of the bar. Fusing the 30 MB model with keyword search finds 13 of 30 paraphrased questions instead of 5 (better on 9, worse on 1, p = 0.02) and loses nothing in the session's own terms. That is about half of what the neural tools gain, for almost no indexing cost. The smaller model does less and the larger one no better. ctx does not use embeddings as a result: the bar was not met, and in the answer test paraphrasing did not make agents answer worse, so the gain here may not reach the answers.",
+ "metrics": [
+  {
+   "label": "ctx keywords",
+   "value": "28 and 5 of 30",
+   "note": "own terms and paraphrased"
+  },
+  {
+   "label": "30 MB static model fused with keywords",
+   "value": "28 and 13 of 30",
+   "note": "index 0.1 s, 2 MB of vectors"
+  },
+  {
+   "label": "30 MB static model alone",
+   "value": "27 and 11 of 30"
+  },
+  {
+   "label": "8 MB static model fused with keywords",
+   "value": "28 and 10 of 30"
+  },
+  {
+   "label": "129 MB retrieval-tuned static model fused with keywords",
+   "value": "27 and 9 of 30",
+   "note": "alone: 28 and 12"
+  },
+  {
+   "label": "Neural tools, for comparison",
+   "value": "28 to 30 and 17 to 23 of 30",
+   "note": "index 67 to 1,120 s"
+  }
+ ]
+}
