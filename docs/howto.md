@@ -110,6 +110,7 @@ session ran in, or the project it belongs to after `ctx project add`.
 ctx search WORDS...              # this project first; everything if nothing matches
 ctx search --all WORDS...        # every project
 ctx search --limit 30 WORDS...   # more than the default 12
+ctx search -- --json --since    # after --, every word is searched for, option names included
 ctx turn ID                      # one turn
 ctx turn ID 2 5                  # with 2 turns before and 5 after
 ctx turn ID 0 0 --full           # without trimming a long turn

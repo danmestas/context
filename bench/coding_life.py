@@ -59,7 +59,7 @@ def main():
         rows = []
         for q in queries:
             words = re.findall(r"[A-Za-z0-9_'-]+", q["question"])
-            out = subprocess.run([CTX, "search", "--all", "--limit", "50", *words], env=env, capture_output=True, text=True).stdout
+            out = subprocess.run([CTX, "search", "--all", "--limit", "50", "--", *words], env=env, capture_output=True, text=True).stdout
             ids = re.findall(r"^#(\d+) ", out, re.M)
             got = []
             if ids:

@@ -1240,6 +1240,10 @@ NOTE=$("$CTX" sql "SELECT technote FROM ctx_capture_day")
 "$CTX" archive "$T/tidy/proj/7ee70000-0000-0000-0000-000000000001.jsonl" >/dev/null
 [ "$("$CTX" sql "SELECT count(*), group_concat(turn) FROM (SELECT turn FROM ctx_chunk ORDER BY seq)" | tr '\t' ' ')" = "3 u-1,a-1,u-2" ] || fail "a turn known by a placeholder id is adopted, not stored twice: $("$CTX" sql "SELECT count(*), group_concat(turn) FROM ctx_chunk")"
 # Each hook and search logs when it starts and ends; a start with no end was cut off.
+# A flag's name is a fair thing to search for, and -- ends the options.
+[ "$("$CTX" search --all --jsonish 2>&1 | grep -c 'unknown option')" = 0 ] || fail "an unrecognised --word is a search word, not an error"
+"$CTX" search --all -- --limit --all capybara 2>&1 | grep -q 'unknown option\|must be' && fail "after --, option names are search words"
+
 export CTX_DB="$T/calls.sqlite"
 "$CTX" init >/dev/null
 "$CTX" search heron >/dev/null 2>&1 || true
