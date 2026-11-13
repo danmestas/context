@@ -620,7 +620,7 @@ ctx status                 # one line for a status bar: ctx 14 searches · hooks
 ```
 
 `ctx status` reads only the log, in about 10 ms. It adds a warning when hooks were cut
-off today, when the slowest took over a second, or when the hourly scan is late. To
+off in the last day, when the slowest took over a second, or when the hourly scan is late. To
 show it in Claude Code's status line, have your status line script print its output.
 
 ## Query the database directly

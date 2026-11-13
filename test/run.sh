@@ -1257,6 +1257,11 @@ printf 'B %s 11 rules-offer\nB %s 12 rules-offer\nE %s 12 rules-offer 4200\n' "$
 "$CTX" stats --hooks > "$T/hooks.txt"
 awk '$1 == "rules-offer" && $2 == 3 && $5 == 4200 && $6 == 1 && $7 == 1 { ok = 1 } END { exit !ok }' "$T/hooks.txt" || fail "a start with no end is cut off, and a slow end is over its limit: $(cat "$T/hooks.txt")"
 "$CTX" status | grep -q '2 cut off' || fail "status warns when hooks were cut off: $("$CTX" status)"
+# The status line covers the last day, not the time since midnight: a hook cut off two
+# minutes before midnight still shows after it.
+EVE=$(python3 -c "import time; n = int(time.time()); t = time.localtime(n); print(n - t.tm_hour * 3600 - t.tm_min * 60 - t.tm_sec - 120)")
+printf 'B %s 13 rules-offer\n' "$EVE" >> "$CTX_DB.calls"
+"$CTX" status | grep -q '3 cut off' || fail "status counts a hook cut off before midnight: $("$CTX" status)"
 CTX_DB="$T/nocalls.sqlite" "$CTX" recall </dev/null; [ ! -e "$T/nocalls.sqlite.calls" ] || fail "nothing is logged without an archive"
 # A working directory can be kept out of the archive, and a session can be forgotten.
 export CTX_DB="$T/excl.sqlite"
