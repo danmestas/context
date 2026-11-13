@@ -6,51 +6,61 @@
  "date": "2026-11-12",
  "good_until": "2027-05-11",
  "commit": "d6c91279f3d9",
- "command": "eval/skill_eval.py --bank BANK run --set all --ask plain --cond B,H && eval/skill_eval.py grade RUNS",
+ "command": "eval/skill_eval.py --bank BANK run --set all --ask plain --cond B,H && eval/skill_eval.py grade RUNS, once per wording",
  "conditions": {
-  "corpus": "the second shipyard corpus: 209 sessions in five streams, 139 questions, none used for tuning, each asked plainly in the session's own terms",
+  "corpus": "the second shipyard corpus: 209 sessions in five streams, 139 questions, none used for tuning, each asked plainly twice: in the session's own terms, and paraphrased with none of its distinctive words",
   "arms": "transcripts and ordinary tools: the agent works in one stream's repository and is told where the 209 transcript files are; ctx as installed: the same repository with one archive holding all 209 sessions, the ctx skill and the session-start note",
-  "models": "Claude Sonnet answers; one blind grading pass over both arms",
-  "paraphrase": "paraphrased questions were not run through this test"
+  "models": "Claude Sonnet answers; each wording graded blind in one pass over both arms"
  },
  "summary": "On 32 sessions an agent with the raw transcript files and ordinary tools answered as well as one with ctx, or slightly better. This repeats the comparison where there are 209 sessions to look through.",
- "baseline": "the same agent with the transcript files and ordinary search tools: 111.5 of 139",
+ "baseline": "the same agent with the transcript files and ordinary search tools: 111.5 of 139 in the session's own terms, 100.5 paraphrased",
  "bar": "a difference counts only if a sign test on the paired questions gives p below 0.05 (set in bench/head-to-head.md)",
  "verdict": "none",
- "meaning": "Level on accuracy, and much cheaper. ctx scored 116.5 against 111.5, better on 24 questions and worse on 15, which is not a significant difference (p = 0.20). It got there with about half the cost, a third of the time and a quarter of the tool calls, and gave 3 wrong answers against 6. Ranked grep finds the right session for only half of these questions, yet agents with the raw files still answered four in five: they read more, which is what the extra cost is. The agent searched ctx on 120 of the 139 questions; where it did not, it did worse than the transcript arm.",
+ "meaning": "Level on accuracy by the bar, and much cheaper. In the session's own terms ctx scored 116.5 against 111.5 (better on 24 questions, worse on 15, p = 0.20); paraphrased, 112.0 against 100.5 (better 26, worse 16, p = 0.16). Neither difference is significant on its own. Both times ctx cost about half as much, took a third of the time and a quarter of the tool calls, and gave fewer wrong answers. Paraphrase hurt the transcript arm more than ctx: its score fell by 11 and ctx's by 4.5, although a single ctx search finds the right session for only 23 of the 139 paraphrased questions. Agents make up for that by searching again with other words, three searches at the median.",
  "metrics": [
   {
-   "label": "Transcripts and ordinary tools",
+   "label": "Own terms: transcripts and ordinary tools",
    "value": "111.5 of 139",
    "note": "99 correct, 25 partial, 6 wrong, 9 did not know"
   },
   {
-   "label": "ctx as installed",
+   "label": "Own terms: ctx as installed",
    "value": "116.5 of 139",
    "note": "108 correct, 17 partial, 3 wrong, 11 did not know"
   },
   {
-   "label": "Questions where one arm scored higher",
+   "label": "Own terms: questions where one arm scored higher",
    "value": "ctx 24, transcripts 15",
    "note": "p = 0.20"
   },
   {
-   "label": "Cost of all 139 answers",
-   "value": "$12.21 against $22.55",
-   "note": "ctx first"
+   "label": "Paraphrased: transcripts and ordinary tools",
+   "value": "100.5 of 139",
+   "note": "91 correct, 19 partial, 6 wrong, 23 did not know"
   },
   {
-   "label": "New tokens",
-   "value": "2.70 M against 4.35 M"
+   "label": "Paraphrased: ctx as installed",
+   "value": "112.0 of 139",
+   "note": "104 correct, 16 partial, 4 wrong, 15 did not know"
+  },
+  {
+   "label": "Paraphrased: questions where one arm scored higher",
+   "value": "ctx 26, transcripts 16",
+   "note": "p = 0.16"
+  },
+  {
+   "label": "Cost of 139 answers, ctx against transcripts",
+   "value": "$12.21 against $22.55; $14.19 against $27.15",
+   "note": "own terms; paraphrased"
   },
   {
    "label": "Median time and tool calls per question",
-   "value": "7 s and 2 against 19 s and 9"
+   "value": "7 s and 2 to 3 against 19 to 24 s and 9 to 11"
   },
   {
    "label": "Questions on which the agent searched ctx",
-   "value": "120 of 139",
-   "note": "on those, 106.0 against 98.5; on the other 19, 10.5 against 13.0; a split made after the fact"
+   "value": "120 and 131 of 139",
+   "note": "own terms and paraphrased"
   }
  ]
 }
