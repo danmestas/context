@@ -47,6 +47,9 @@ questions need no bookkeeping.
 - Condition **M** offers ctx only as a Model Context Protocol server: `ctx mcp`
   with its two tools and a one-sentence note, with no skill and no `ctx` command.
   Its tool calls count as reaching ctx.
+- A project in the bank may list `docs`: folders, relative to its repo, that are
+  indexed with `ctx docs add` for every condition that has ctx. Condition **N** is
+  C plus a one-sentence note that the repository's documents are indexed.
 - Condition **J** is H plus what the UserPromptSubmit injection hook would add,
   joined into one note.
 - Condition **R** is C plus what the UserPromptSubmit recall hook would add: it
