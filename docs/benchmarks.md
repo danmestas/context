@@ -24,6 +24,7 @@ This page lists what ctx has been measured to do. Every figure comes from a resu
 | Would small embeddings close the paraphrase gap? | Failed its bar | A real gain, but short of the bar. Fusing the 30 MB model with keyword search finds 13 of 30 paraphrased questions instead of 5 (better on 9, worse on 1, p = 0.02) and loses nothing in the session's own terms. That is about half of what the neural tools gain, for almost no indexing cost. The smaller model does less and the larger one no better. ctx does not use embeddings as a result: the bar was not met, and in the answer test paraphrasing did not make agents answer worse, so the gain here may not reach the answers. |
 | Small embeddings on 209 sessions | Failed its bar | The gain does not hold. Fused search found 126 and 25 of 139 against 125 and 23 for keywords alone, which is no difference (p = 0.77 on paraphrased questions). The improvement on the small corpus came from its size: with few sessions a rough sense of topic is enough to pick one, and with many sessions on one codebase it is not. ctx does not use embeddings. Tools that run a neural model were not tried at this size. |
 | Coding sessions: do agents answer better with ctx? | No bar | Plain transcript files with a hint where they are scored highest. ctx as installed is level with them by the test set beforehand (better on 2 questions, worse on 6, p = 0.29) but three points lower, and ctx without its note is significantly worse (p = 0.04). The whole gap is use: the agent searched with ctx on 24 of 30 questions with the note and 19 without, and where it did search, its answers were as good as the transcript arm's. What ctx buys is cost: about a third fewer tokens, less than half the time, and two or three tool calls where grep needs seven to nine. Paraphrasing the question made almost no difference to any arm, because agents rewrite their own searches. With only the repository the agent could answer 6 of 30, so the questions do need session history. |
+| 209 coding sessions: do agents answer better with ctx? | No bar | Level on accuracy, and much cheaper. ctx scored 116.5 against 111.5, better on 24 questions and worse on 15, which is not a significant difference (p = 0.20). It got there with about half the cost, a third of the time and a quarter of the tool calls, and gave 3 wrong answers against 6. Ranked grep finds the right session for only half of these questions, yet agents with the raw files still answered four in five: they read more, which is what the extra cost is. The agent searched ctx on 120 of the 139 questions; where it did not, it did worse than the transcript arm. |
 | Coding sessions: adding snippets or a reminder to the prompt | Failed its bar | Neither helps, and both arms scored below ctx as installed, significantly so on paraphrased questions. The reason is that they almost never act: snippets were added for 4 and 3 of 30 questions and the reminder for 1 and 0, so these arms are in effect the skill alone. On the few questions where snippets were added, the answers were right. The session-start note remains the one thing shown to make agents search, and both hooks stay off by default. |
 | Answering questions about past work | Passed its bar | Telling the agent at session start that an archive exists is worth about 7 questions in 90 and costs no extra tokens. The difference is borderline by a sign test (p = 0.052), so it is kept as likely but not proven. |
 | Reaching for the archive unprompted | Failed its bar | Rewording the triggers made no real difference (one question in 23), so the wording was not changed. Fresh agents already search about four times in five without being told. |
@@ -338,6 +339,37 @@ eval/skill_eval.py --bank BANK run --set all --only HELD_OUT --ask plain --cond 
 ```
 
 [Result file](../bench/results/shipyard-answers.json)
+
+### 209 coding sessions: do agents answer better with ctx?
+
+On 32 sessions an agent with the raw transcript files and ordinary tools answered as well as one with ctx, or slightly better. This repeats the comparison where there are 209 sessions to look through.
+
+- **Compared with:** the same agent with the transcript files and ordinary search tools: 111.5 of 139
+- **Bar:** a difference counts only if a sign test on the paired questions gives p below 0.05 (set in bench/head-to-head.md). **Not judged.**
+- **What it means:** Level on accuracy, and much cheaper. ctx scored 116.5 against 111.5, better on 24 questions and worse on 15, which is not a significant difference (p = 0.20). It got there with about half the cost, a third of the time and a quarter of the tool calls, and gave 3 wrong answers against 6. Ranked grep finds the right session for only half of these questions, yet agents with the raw files still answered four in five: they read more, which is what the extra cost is. The agent searched ctx on 120 of the 139 questions; where it did not, it did worse than the transcript arm.
+
+| Measure | Result |
+| --- | --- |
+| Transcripts and ordinary tools | 111.5 of 139 (99 correct, 25 partial, 6 wrong, 9 did not know) |
+| ctx as installed | 116.5 of 139 (108 correct, 17 partial, 3 wrong, 11 did not know) |
+| Questions where one arm scored higher | ctx 24, transcripts 15 (p = 0.20) |
+| Cost of all 139 answers | $12.21 against $22.55 (ctx first) |
+| New tokens | 2.70 M against 4.35 M |
+| Median time and tool calls per question | 7 s and 2 against 19 s and 9 |
+| Questions on which the agent searched ctx | 120 of 139 (on those, 106.0 against 98.5; on the other 19, 10.5 against 13.0; a split made after the fact) |
+
+Measured 2026-11-12; check-in d6c91279f3d9; good until 2027-05-11.
+
+- corpus: the second shipyard corpus: 209 sessions in five streams, 139 questions, none used for tuning, each asked plainly in the session's own terms
+- arms: transcripts and ordinary tools: the agent works in one stream's repository and is told where the 209 transcript files are; ctx as installed: the same repository with one archive holding all 209 sessions, the ctx skill and the session-start note
+- models: Claude Sonnet answers; one blind grading pass over both arms
+- paraphrase: paraphrased questions were not run through this test
+
+```sh
+eval/skill_eval.py --bank BANK run --set all --ask plain --cond B,H && eval/skill_eval.py grade RUNS
+```
+
+[Result file](../bench/results/shipyard2-answers.json)
 
 ### Coding sessions: adding snippets or a reminder to the prompt
 

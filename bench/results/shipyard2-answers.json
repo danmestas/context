@@ -1,0 +1,56 @@
+{
+ "name": "shipyard2-answers",
+ "title": "209 coding sessions: do agents answer better with ctx?",
+ "section": "Agent behaviour",
+ "order": 6,
+ "date": "2026-11-12",
+ "good_until": "2027-05-11",
+ "commit": "d6c91279f3d9",
+ "command": "eval/skill_eval.py --bank BANK run --set all --ask plain --cond B,H && eval/skill_eval.py grade RUNS",
+ "conditions": {
+  "corpus": "the second shipyard corpus: 209 sessions in five streams, 139 questions, none used for tuning, each asked plainly in the session's own terms",
+  "arms": "transcripts and ordinary tools: the agent works in one stream's repository and is told where the 209 transcript files are; ctx as installed: the same repository with one archive holding all 209 sessions, the ctx skill and the session-start note",
+  "models": "Claude Sonnet answers; one blind grading pass over both arms",
+  "paraphrase": "paraphrased questions were not run through this test"
+ },
+ "summary": "On 32 sessions an agent with the raw transcript files and ordinary tools answered as well as one with ctx, or slightly better. This repeats the comparison where there are 209 sessions to look through.",
+ "baseline": "the same agent with the transcript files and ordinary search tools: 111.5 of 139",
+ "bar": "a difference counts only if a sign test on the paired questions gives p below 0.05 (set in bench/head-to-head.md)",
+ "verdict": "none",
+ "meaning": "Level on accuracy, and much cheaper. ctx scored 116.5 against 111.5, better on 24 questions and worse on 15, which is not a significant difference (p = 0.20). It got there with about half the cost, a third of the time and a quarter of the tool calls, and gave 3 wrong answers against 6. Ranked grep finds the right session for only half of these questions, yet agents with the raw files still answered four in five: they read more, which is what the extra cost is. The agent searched ctx on 120 of the 139 questions; where it did not, it did worse than the transcript arm.",
+ "metrics": [
+  {
+   "label": "Transcripts and ordinary tools",
+   "value": "111.5 of 139",
+   "note": "99 correct, 25 partial, 6 wrong, 9 did not know"
+  },
+  {
+   "label": "ctx as installed",
+   "value": "116.5 of 139",
+   "note": "108 correct, 17 partial, 3 wrong, 11 did not know"
+  },
+  {
+   "label": "Questions where one arm scored higher",
+   "value": "ctx 24, transcripts 15",
+   "note": "p = 0.20"
+  },
+  {
+   "label": "Cost of all 139 answers",
+   "value": "$12.21 against $22.55",
+   "note": "ctx first"
+  },
+  {
+   "label": "New tokens",
+   "value": "2.70 M against 4.35 M"
+  },
+  {
+   "label": "Median time and tool calls per question",
+   "value": "7 s and 2 against 19 s and 9"
+  },
+  {
+   "label": "Questions on which the agent searched ctx",
+   "value": "120 of 139",
+   "note": "on those, 106.0 against 98.5; on the other 19, 10.5 against 13.0; a split made after the fact"
+  }
+ ]
+}
