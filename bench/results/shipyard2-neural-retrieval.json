@@ -1,0 +1,68 @@
+{
+ "name": "shipyard2-neural-retrieval",
+ "title": "209 sessions: neural embeddings and other tools at finding the session",
+ "section": "Search",
+ "order": 45,
+ "date": "2026-11-13",
+ "good_until": "2027-05-12",
+ "commit": "6abc4db74538",
+ "command": "bench/shipyard2/results/README.md for the two tools; hosted models: each window of what people and agents wrote embedded through a hosted API, exact scan, first five distinct sessions",
+ "conditions": {
+  "corpus": "the second shipyard corpus, 209 sessions and 139 questions, none used for tuning",
+  "tools": "cass 0.11.0 with its MiniLM model and episodic-memory 1.6.0, each run in a container with no network during queries",
+  "hosted models": "windows of 1,200 characters of what people and agents wrote, tool output left out, embedded through OpenRouter; only this public corpus was sent",
+  "scoring": "every session holding the answer among the first five returned; no model judges anything"
+ },
+ "summary": "A small static embedding model added nothing at this size. This asks the same of real neural models: the two session-search tools that use one, and ten hosted models scanned exactly with no keyword search at all.",
+ "baseline": "ctx's keyword search: 125 of 139 in the session's own terms, 23 paraphrased",
+ "bar": "a difference counts only if a sign test on the paired questions gives p below 0.05 (set in bench/head-to-head.md)",
+ "verdict": "none",
+ "meaning": "For one search on a reworded question, neural embeddings are far better than keywords, and the model is what decides by how much. Small models from 2019 to 2022, which the other tools use, find 37 to 55 of the 139 paraphrased questions; current models find 62 to 87; ctx's keywords find 23. In the session's own terms the best models also edge ahead, 134 against 125. What unit of text is embedded matters little. Blending a strong model's ranking with the keyword ranking at equal weight throws away most of its gain on paraphrased questions. None of this is in ctx: whether it changes what an agent answers is the next result.",
+ "metrics": [
+  {
+   "label": "ctx keywords",
+   "value": "125 and 23 of 139",
+   "note": "own terms and paraphrased"
+  },
+  {
+   "label": "episodic-memory",
+   "value": "125 and 49",
+   "note": "alone right on 34 paraphrased questions against ctx's 8, p = 0.0001"
+  },
+  {
+   "label": "cass, hybrid",
+   "value": "116 and 43",
+   "note": "alone right on 26 paraphrased against 6, p = 0.0005"
+  },
+  {
+   "label": "Voyage-4-lite, vectors alone",
+   "value": "134 and 82",
+   "note": "132 and 87 embedding whole exchanges"
+  },
+  {
+   "label": "Voyage-code-4, vectors alone",
+   "value": "126 and 83"
+  },
+  {
+   "label": "Qwen3-embedding-4B and 8B, vectors alone",
+   "value": "131 and 76; 129 and 80"
+  },
+  {
+   "label": "Perplexity pplx-embed 0.6B, vectors alone",
+   "value": "132 and 72"
+  },
+  {
+   "label": "OpenAI text-embedding-3-small, vectors alone",
+   "value": "132 and 63"
+  },
+  {
+   "label": "MiniLM-L6, GTE-base, E5-base, MPNet, vectors alone",
+   "value": "119 to 124 and 37 to 48"
+  },
+  {
+   "label": "Voyage-code-4 blended with keywords at equal weight",
+   "value": "131 and 48",
+   "note": "against 126 and 83 alone"
+  }
+ ]
+}
