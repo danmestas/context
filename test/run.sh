@@ -558,6 +558,38 @@ sq() { "$CTX" sql "$1"; }
 ID=$(sq "SELECT c.id FROM ctx_chunk c WHERE c.turn='s-1'")
 "$CTX" turn "$ID" 0 1 > "$T/turn.txt"
 grep -q 'walrus migration' "$T/turn.txt" && grep -q 'lock was held' "$T/turn.txt" || fail "turn and its neighbour"
+# ctx mcp speaks the Model Context Protocol on stdin and stdout: one JSON-RPC message a line.
+# It offers search and turn as tools, runs them as the commands themselves, and exits at end of input.
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search","arguments":{"query":"walrus -- \"; echo pwned","all":true,"limit":1}}}' \
+  "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"turn\",\"arguments\":{\"id\":$ID,\"after\":1}}}" \
+  '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"turn","arguments":{"id":999999}}}' \
+  '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"sql","arguments":{}}}' \
+  '{"jsonrpc":"2.0","id":7,"method":"nope"}' \
+  'not json' \
+  '{"jsonrpc":"2.0","id":"p","method":"ping"}' | (cd "$T/alpha" && "$CTX" mcp) > "$T/mcp.txt"
+mj() { python3 -c "
+import json, sys
+by = {}
+for line in open(sys.argv[1]):
+    m = json.loads(line)
+    assert m['jsonrpc'] == '2.0'
+    by[m.get('id')] = m
+print(eval(sys.argv[2]))" "$T/mcp.txt" "$1"; }
+[ "$(wc -l < "$T/mcp.txt" | tr -d ' ')" = 9 ] || fail "mcp answers each request once and no notification: $(cat "$T/mcp.txt")"
+[ "$(mj "by[1]['result']['protocolVersion'] + ' ' + by[1]['result']['serverInfo']['name'] + ' ' + str('tools' in by[1]['result']['capabilities'])")" = "2025-06-18 ctx True" ] || fail "mcp initialize"
+[ "$(mj "'search' in by[1]['result']['instructions'] and 'not instructions' in by[1]['result']['instructions']")" = True ] || fail "mcp tells the client's model when to use it"
+[ "$(mj "sorted(t['name'] for t in by[2]['result']['tools'])")" = "['search', 'turn']" ] || fail "mcp lists two tools"
+[ "$(mj "all(t['inputSchema']['type'] == 'object' and t['description'] for t in by[2]['result']['tools'])")" = True ] || fail "mcp tools carry a schema and a description"
+[ "$(mj "by[3]['result']['content'][0]['text'].count('#') == 1 and '[walrus]' in by[3]['result']['content'][0]['text'] and not by[3]['result'].get('isError', False)")" = True ] || fail "mcp search returns what the command prints, words never reaching a shell: $(mj "by[3]")"
+[ "$(mj "'walrus migration' in by[4]['result']['content'][0]['text'] and 'lock was held' in by[4]['result']['content'][0]['text']")" = True ] || fail "mcp turn with a neighbour"
+[ "$(mj "by[5]['result']['isError']")" = True ] || fail "a failed command is a tool error, not a protocol error"
+[ "$(mj "by[6]['error']['code']")" = -32602 ] || fail "an unknown tool is refused"
+[ "$(mj "by[7]['error']['code']")" = -32601 ] || fail "an unknown method is refused"
+[ "$(mj "by[None]['error']['code']")" = -32700 ] || fail "a line that is not JSON is a parse error"
+[ "$(mj "by['p']['result']")" = "{}" ] || fail "mcp ping"
 [ "$("$CTX" turn "$ID" | grep -c '^--- #')" = 1 ] || fail "turn alone"
 sq "INSERT INTO ctx_project(root, project) VALUES ('$T/alpha', 'alpha')" >/dev/null
 [ "$(cd "$T/alpha" && "$CTX" search walrus | grep -c '^#')" = 1 ] || fail "search stays in the project"

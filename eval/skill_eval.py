@@ -166,6 +166,10 @@ def route():
     return {k: VIA[k] for k in sorted(VIA) if k.startswith("ANTHROPIC_DEFAULT_") or k == "ANTHROPIC_BASE_URL"} or None
 
 
+MCP_NOTE = ("Past sessions of this project are archived, tool output included. Before guessing at history, search them "
+            "with the ctx search tool, using two or three exact names or error words, then read around a hit with the ctx turn tool.")
+
+
 def claude(prompt, model, fmt, tools, allow=(), dirs=()):
     cmd = [CLAUDE, "-p", prompt, "--model", model, "--setting-sources", "project", "--no-session-persistence",
            "--settings", SETTINGS, "--strict-mcp-config", "--permission-mode", "bypassPermissions" if YOLO else "dontAsk",
@@ -276,7 +280,7 @@ def digest(stdout, cond, own):
                     text = json.dumps(c["input"])
                     uses[c["id"]] = (c["name"], text)
                     r["skill"] += c["name"] == "Skill" and "ctx" in text
-                    r["ctx"] += c["name"] == "Bash" and bool(re.search(r"(^|[\s;&|\"])ctx\s", text))
+                    r["ctx"] += (c["name"] == "Bash" and bool(re.search(r"(^|[\s;&|\"])ctx\s", text))) or c["name"].startswith("mcp__ctx__")
         elif d.get("type") == "user" and isinstance(d["message"].get("content"), list):
             for c in d["message"]["content"]:
                 if c.get("type") == "tool_result" and c.get("tool_use_id") in uses:
@@ -326,13 +330,13 @@ def cmd_run(a):
                         else glob.glob(os.path.expanduser(f"~/.claude/projects/{slug(project['sessions'])}*")))
                 prompt += "\n\nTranscripts of past coding sessions on this project are JSONL files in:\n" + "\n".join(dirs)
                 allow += ["Bash(jq*)", "Bash(python3*)"]
-            if cond in "CIHR":
+            if cond in "CIHRJ":
                 allow.append("Bash(ctx *)")
             if cond in "SWF":  # same tools; only the wiki differs: W in the index, F as files, S neither
                 allow += ["Bash(ctx search *)", "Bash(ctx turn *)"]
             db = w.without_wiki() if cond in "SF" else None
             cmd = claude(prompt, a.model, "stream-json", "Bash,Read,Grep,Glob,Skill", allow, dirs)
-            if cond == "I":  # what the UserPromptSubmit hook would add for this prompt
+            if cond in "IJ":  # what the UserPromptSubmit hook would add for this prompt
                 hook = subprocess.run([f"{w.bin}/ctx", "inject"], input=json.dumps({"session_id": "eval", "cwd": cwd, "prompt": prompt}),
                                       env=w.env(True), cwd=cwd, capture_output=True, text=True, timeout=30).stdout
                 extra = json.loads(hook)["hookSpecificOutput"]["additionalContext"] if hook.strip() else ""
@@ -344,15 +348,21 @@ def cmd_run(a):
                 extra = json.loads(hook)["hookSpecificOutput"]["additionalContext"] if hook.strip() else ""
                 if extra:
                     cmd += ["--append-system-prompt", extra]
-            if cond == "H":  # what the SessionStart hook would add for this project
+            if cond == "M":  # ctx as a Model Context Protocol server: its two tools and a note, no skill and no command
+                conf = f"{w.dir}/mcp.json"
+                cmd += ["--mcp-config", conf, "--append-system-prompt", MCP_NOTE]
+                cmd[cmd.index("--allowedTools") + 1:cmd.index("--allowedTools") + 1] = ["mcp__ctx__search", "mcp__ctx__turn"]
+            if cond in "HJ":  # what the SessionStart hook would add for this project
                 hook = subprocess.run([f"{w.bin}/ctx", "rules", "offer"], env=w.env(True), cwd=cwd,
                                       capture_output=True, text=True, timeout=30).stdout
                 extra = json.loads(hook)["hookSpecificOutput"]["additionalContext"] if hook.strip() else ""
-                if extra:
+                if extra and "--append-system-prompt" in cmd:  # J: the note joins what injection added
+                    cmd[cmd.index("--append-system-prompt") + 1] += "\n\n" + extra
+                elif extra:
                     cmd += ["--append-system-prompt", extra]
-            p = spawn(cmd, cwd, w.env(cond in "CSWFIHR", db), a.deadline)
+            p = spawn(cmd, cwd, w.env(cond in "CSWFIHRJ", db), a.deadline)
             r = digest(p.stdout, cond, own)
-            r.update(qid=q["id"], cond=cond, project=q["project"], kind=q["kind"], injected=cond in "IHR" and "--append-system-prompt" in cmd)
+            r.update(qid=q["id"], cond=cond, project=q["project"], kind=q["kind"], injected=cond in "IHRJ" and "--append-system-prompt" in cmd)
             return r
 
         for q in qs:  # copies are made up front so parallel jobs never race
@@ -360,10 +370,13 @@ def cmd_run(a):
                 cwd = w.repo(cond, q["project"], bank["projects"][q["project"]]["repo"])
                 if cond == "F":
                     w.wiki_files(cwd)
-                if cond in "CSWFIHR":
+                if cond in "CSWFIHRJ":
                     os.makedirs(f"{cwd}/.claude/skills/ctx", exist_ok=True)
                     with open(f"{cwd}/.claude/skills/ctx/SKILL.md", "w") as f:
                         f.write(skill)
+        if "M" in conds:
+            with open(f"{w.dir}/mcp.json", "w") as f:
+                json.dump({"mcpServers": {"ctx": {"command": f"{w.bin}/ctx", "args": ["mcp"], "env": {"CTX_DB": w.snap}}}}, f)
         if set(conds) & set("SF"):  # made before the parallel runs, which share it
             w.without_wiki()
         items = [(q, c) for q in qs for c in conds]
@@ -460,7 +473,7 @@ def cmd_report(a):
         print(f"{cond}: score {s['score']:.1f}/{s['n']}  correct {s['correct']} partial {s['partial']} wrong {s['wrong']} "
               f"dont_know {s['dont_know']}  new tokens {s['new']}  tools {s['tools']:g}  secs {s['secs']:g}  "
               f"reached ctx {s['used']}/{s['n']} ({round(100 * s['used'] / s['n'])}%)")
-        if cond in "IHR":
+        if cond in "IHRJ":
             fired = [c for c in t[cond].values() if c.get("injected")]
             print(f"   fired {len(fired)}, reached {sum(c['ctx'] > 0 for c in fired)} of them")
     conds = sorted(t)
@@ -612,7 +625,7 @@ def main():
     p.set_defaults(fn=cmd_author)
     p = sub.add_parser("run", help="answer questions in fresh isolated processes")
     p.add_argument("--set", choices=("dev", "holdout", "all"), default="dev")
-    p.add_argument("--cond", default="C", help="A repo only, B grep over transcripts, C the skill, I the skill plus injection, H the skill plus the SessionStart hook, R the skill plus the recall hook; for documents, S sources only, W wiki in the index, F wiki as files")
+    p.add_argument("--cond", default="C", help="A repo only, B grep over transcripts, C the skill, I the skill plus injection, H the skill plus the SessionStart hook, J the skill, the SessionStart hook and injection, M ctx as an MCP server with a note and no skill, R the skill plus the recall hook; for documents, S sources only, W wiki in the index, F wiki as files")
     p.add_argument("--skill", default=DEFAULT_SKILL)
     p.add_argument("--only", help="comma-separated question ids")
     p.add_argument("--kind", help="comma-separated question kinds; code questions are answerable from the code alone")
