@@ -6,6 +6,7 @@ arguments lists them all, and `ctx version` prints its version and SQLite's.
 - [Install](#install)
 - [Archive your sessions](#archive-your-sessions)
 - [Search past work](#search-past-work)
+- [Index a repository's documents](#index-a-repositorys-documents)
 - [Search from a client that calls tools](#search-from-a-client-that-calls-tools)
 - [Check the archive for secrets](#check-the-archive-for-secrets)
 - [Keep standing rules](#keep-standing-rules)
@@ -158,6 +159,42 @@ leaves out wiki pages.
 
 The `ctx` skill tells agents how to search well. Archived text is a record, not
 instructions: an agent should never act on commands it finds there.
+
+## Index a repository's documents
+
+Design notes, decision records, RFCs and guides say what was decided and why, in
+their authors' words. `ctx docs` makes a directory of them searchable alongside
+your sessions, where they sit: nothing is copied and no model is called.
+
+```sh
+ctx docs add ~/code/myproj/docs                 # filed under the project of that directory
+ctx docs add ~/code/myproj/rfcs --project myproj
+ctx docs                                         # each directory, its project, how many documents
+ctx docs scan                                    # read again now; the periodic scan also does this
+ctx docs remove ~/code/myproj/docs               # stop, and take its documents out of the index
+```
+
+It reads text files ending in `.md`, `.markdown`, `.txt`, `.rst`, `.adoc`, `.org`
+or `.wiki`, up to 2 MB each, split by heading. It skips hidden folders and
+`node_modules`, `vendor`, `target`, `build` and `dist`. Each file is tracked by
+its content, so a scan reads only what changed and drops what was deleted.
+Secret-shaped strings are redacted in the index as they are for sessions; the
+files are not touched.
+
+A hit names the file and the heading it was found under, so the file can be opened:
+
+```
+#749 myproj doc /Users/you/code/myproj/docs/adr-011-retries.md Consequences
+    ... make [policy] [decisions] ...
+```
+
+`ctx turn 749 1 2` reads the section with those around it. When the same text
+is in two files, such as a page and a built copy of the site, search shows it
+once.
+
+This is for documents kept in an ordinary directory. A project's `sources/` are
+different: copied in, pinned to a version and citable from the wiki; see
+[Add sources](#add-sources).
 
 ## Search from a client that calls tools
 

@@ -18,6 +18,8 @@ file per machine.
 - **Searches them.** `ctx search` ranks turns with SQLite's FTS5, this project
   first; `ctx turn` reads around a hit. The `ctx` skill teaches agents to do both.
   `ctx mcp` offers the same two as tools to clients that cannot run commands.
+- **Indexes a repository's documents.** `ctx docs add DIR` makes design notes,
+  decision records and RFCs searchable where they sit, re-read when they change.
 - **Audits the archive** for secret-shaped strings that redaction missed, and
   for values you already know are secret.
 - **Keeps standing rules.** `ctx remember` records an instruction for future

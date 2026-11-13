@@ -28,8 +28,8 @@
 #include "ticket_schema.h"
 
 #define CTX_VERSION "0.0.1"
-#define CTX_USER_VERSION 7    /* PRAGMA user_version once initialized */
-#define CTX_DERIVED_VERSION 6 /* raise when schema/index.sql changes; ctx then rebuilds */
+#define CTX_USER_VERSION 8    /* PRAGMA user_version once initialized */
+#define CTX_DERIVED_VERSION 7 /* raise when schema/index.sql changes; ctx then rebuilds */
 
 /* A tool's output is kept up to this size at each end; the middle is cut. */
 #define TOOL_KEEP (16 * 1024)
@@ -1156,7 +1156,7 @@ static int search_run(sqlite3 *db, const char *match, const char *project, int l
   /* retired material is removed before a model can see it, not just labeled */
   static const char head[] =
       "SELECT c.id, coalesce(c.project, d.project), d.kind, coalesce(c.heading,''), substr(coalesce(c.at,''),1,10),"
-      "       snippet(ctx_chunk_fts, 1, '[', ']', ' ... ', 40)"
+      "       snippet(ctx_chunk_fts, 1, '[', ']', ' ... ', 40), CASE WHEN d.kind = 'doc' THEN d.name END"
       " FROM ctx_chunk_fts"
       " JOIN ctx_chunk c ON c.id = ctx_chunk_fts.rowid"
       " JOIN ctx_doc d ON d.id = c.doc_id"
@@ -1169,19 +1169,33 @@ static int search_run(sqlite3 *db, const char *match, const char *project, int l
       "      AND NOT EXISTS (SELECT 1 FROM ctx_supersession e WHERE e.project = d.project AND e.old = d.name"
       "      AND e.at <= ?5 AND e.relation IN ('replaces', 'retracts'))))";
   static const char tail[] = " ORDER BY ctx_chunk_fts.rank LIMIT ?3";
-  char sql[1600];
+  char sql[2000];
   snprintf(sql, sizeof sql, "%s%s%s", head, as_of ? then : current, tail);
   sqlite3_stmt *q = db_prepare(db, sql);
   sqlite3_bind_text(q, 1, match, -1, SQLITE_STATIC);
   if (project) sqlite3_bind_text(q, 2, project, -1, SQLITE_STATIC);
-  sqlite3_bind_int(q, 3, limit);
+  sqlite3_bind_int(q, 3, limit * 3); /* room to leave out copies */
   sqlite3_bind_int(q, 4, history);
   if (as_of) sqlite3_bind_text(q, 5, as_of, -1, SQLITE_STATIC);
   int hits = 0, rc;
-  while ((rc = sqlite3_step(q)) == SQLITE_ROW) {
+  char **shown = NULL; /* document snippets printed so far */
+  size_t nshown = 0;
+  while (hits < limit && (rc = sqlite3_step(q)) == SQLITE_ROW) {
+    if (sqlite3_column_text(q, 6)) { /* a document's text copied into another file (a built site, a bundle) is shown once */
+      const char *text = (const char *)sqlite3_column_text(q, 5);
+      int copy = 0;
+      for (size_t i = 0; i < nshown && !copy; i++) copy = !strcmp(shown[i], text ? text : "");
+      if (copy) continue;
+      shown = realloc(shown, (nshown + 1) * sizeof *shown);
+      if (!shown) die("out of memory");
+      shown[nshown++] = dup_text((const unsigned char *)(text ? text : ""));
+    }
     hits++;
-    printf("#%lld %s %s %s %s\n", sqlite3_column_int64(q, 0), sqlite3_column_text(q, 1),
-           sqlite3_column_text(q, 2), sqlite3_column_text(q, 3), sqlite3_column_text(q, 4));
+    if (sqlite3_column_text(q, 6)) /* a document on disk: the file to open, then the heading */
+      printf("#%lld %s doc %s %s\n", sqlite3_column_int64(q, 0), sqlite3_column_text(q, 1), sqlite3_column_text(q, 6), sqlite3_column_text(q, 3));
+    else
+      printf("#%lld %s %s %s %s\n", sqlite3_column_int64(q, 0), sqlite3_column_text(q, 1),
+             sqlite3_column_text(q, 2), sqlite3_column_text(q, 3), sqlite3_column_text(q, 4));
     const char *snip = (const char *)sqlite3_column_text(q, 5);
     fputs("    ", stdout);
     int space = 0; /* collapse runs of whitespace so each hit stays on one line */
@@ -1196,7 +1210,9 @@ static int search_run(sqlite3 *db, const char *match, const char *project, int l
     }
     putchar('\n');
   }
-  if (rc != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+  if (hits < limit && rc != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+  for (size_t i = 0; i < nshown; i++) free(shown[i]);
+  free(shown);
   sqlite3_finalize(q);
   return hits;
 }
@@ -1204,6 +1220,7 @@ static int search_run(sqlite3 *db, const char *match, const char *project, int l
 /* ctx search [--all] [--history] [--as-of DATE] [--limit N] WORDS... */
 static void require_date(sqlite3 *db, const char *flag, const char *value);
 static void index_prepare(sqlite3 *db);
+static long docs_scan(sqlite3 *db, const char *only, long *changed);
 
 static int cmd_search(int argc, char **argv) {
   int all = 0, limit = 12, nwords = 0, history = 0;
@@ -2105,9 +2122,11 @@ static int cmd_scan(const char *root_arg) {
   decisions_index(db);
   artifacts_index(db);
   artifacts_file(db);
-  long rules = rules_import(db);
+  long rules = rules_import(db), doc_changes = 0;
+  docs_scan(db, NULL, &doc_changes);
   sqlite3_close(db);
   printf("%ld transcripts read\n", ran);
+  if (doc_changes) printf("%ld documents changed\n", doc_changes);
   if (rules) printf("%ld rules changed\n", rules);
   return 0;
 }
@@ -3282,7 +3301,7 @@ static int doc_store(sqlite3 *db, const char *project, sqlite3_int64 repo_id, co
       "INSERT INTO ctx_doc(project, repo_id, kind, name, title, hash, size, mtime) VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, unixepoch())"
       " ON CONFLICT (project, kind, name) DO UPDATE SET hash = excluded.hash, size = excluded.size, mtime = excluded.mtime RETURNING id");
   sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
-  sqlite3_bind_int64(q, 2, repo_id);
+  if (repo_id) sqlite3_bind_int64(q, 2, repo_id); /* none: a document on disk */
   sqlite3_bind_text(q, 3, kind, -1, SQLITE_STATIC);
   sqlite3_bind_text(q, 4, name, -1, SQLITE_STATIC);
   sqlite3_bind_text(q, 5, hash, -1, SQLITE_STATIC);
@@ -3521,6 +3540,138 @@ static int cmd_index(int argc, char **argv) {
   printf("%ld sources, %ld wiki pages, %ld changed, %d citations, %d failing\n", files, pages, changed, sqlite3_column_int(q, 0), sqlite3_column_int(q, 1));
   sqlite3_finalize(q);
   free(project);
+  sqlite3_close(db);
+  return 0;
+}
+
+/* Documents on disk. A registered directory's text documents are indexed where they sit,
+ * by content hash, so a scan reads only what changed and drops what is gone. */
+#define DOC_MAX (2 << 20)
+static int doc_file(const char *name) {
+  static const char *const ends[] = {".md", ".markdown", ".txt", ".rst", ".adoc", ".org", ".wiki", NULL};
+  for (int i = 0; ends[i]; i++)
+    if (has_suffix(name, ends[i])) return 1;
+  return 0;
+}
+
+static void docs_tree(sqlite3 *db, const char *project, const char *dir, long *count, long *changed) {
+  static const char *const skip[] = {"node_modules", "vendor", "target", "build", "dist", NULL};
+  DIR *d = opendir(dir);
+  if (!d) return;
+  struct dirent *e;
+  while ((e = readdir(d))) {
+    if (e->d_name[0] == '.') continue;
+    char full[4700];
+    snprintf(full, sizeof full, "%s/%s", dir, e->d_name);
+    struct stat st;
+    if (lstat(full, &st)) continue;
+    if (S_ISDIR(st.st_mode)) {
+      int out = 0;
+      for (int i = 0; skip[i]; i++) out |= !strcmp(e->d_name, skip[i]);
+      if (!out) docs_tree(db, project, full, count, changed);
+    } else if (S_ISREG(st.st_mode) && st.st_size <= DOC_MAX && doc_file(e->d_name)) {
+      size_t n = 0;
+      char *p = slurp(full, &n);
+      if (!p) continue;
+      if (!memchr(p, 0, n < 8192 ? n : 8192)) { /* text only */
+        (*count)++;
+        *changed += doc_store(db, project, 0, "doc", full, p, n, 1);
+      }
+      free(p);
+    }
+  }
+  closedir(d);
+}
+
+/* Removes the indexed documents under dir: those not seen in the scan just made, or all of them. */
+static void docs_drop(sqlite3 *db, const char *dir, int all) {
+  static const char *const gone[] = {"DELETE FROM ctx_chunk WHERE doc_id", "DELETE FROM ctx_doc WHERE id"};
+  db_exec(db, "BEGIN IMMEDIATE");
+  for (int i = 0; i < 2; i++) {
+    char sql[400];
+    snprintf(sql, sizeof sql, "%s IN (SELECT id FROM ctx_doc d WHERE d.kind = 'doc' AND substr(d.name, 1, length(?1) + 1) = ?1 || '/'"
+                              " AND (?2 OR NOT EXISTS (SELECT 1 FROM temp.seen s WHERE s.kind = 'doc' AND s.name = d.name)))", gone[i]);
+    sqlite3_stmt *q = db_prepare(db, sql);
+    sqlite3_bind_text(q, 1, dir, -1, SQLITE_STATIC);
+    sqlite3_bind_int(q, 2, all);
+    if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+    sqlite3_finalize(q);
+  }
+  db_exec(db, "COMMIT");
+}
+
+/* Reads every registered directory, or one. Returns the documents found. */
+static long docs_scan(sqlite3 *db, const char *only, long *changed) {
+  index_prepare(db);
+  db_exec(db, "DELETE FROM temp.seen");
+  sqlite3_stmt *q = NULL;
+  if (sqlite3_prepare_v2(db, "SELECT dir, project FROM ctx_docs_dir WHERE ?1 IS NULL OR dir = ?1 ORDER BY 1", -1, &q, NULL) != SQLITE_OK) return 0;
+  if (only) sqlite3_bind_text(q, 1, only, -1, SQLITE_STATIC);
+  char **dirs = NULL, **projects = NULL;
+  size_t n = 0;
+  while (sqlite3_step(q) == SQLITE_ROW) { /* listed first: storing a document writes */
+    dirs = realloc(dirs, (n + 1) * sizeof *dirs);
+    projects = realloc(projects, (n + 1) * sizeof *projects);
+    if (!dirs || !projects) die("out of memory");
+    dirs[n] = dup_text(sqlite3_column_text(q, 0));
+    projects[n++] = dup_text(sqlite3_column_text(q, 1));
+  }
+  sqlite3_finalize(q);
+  long count = 0;
+  for (size_t i = 0; i < n; i++) {
+    struct stat st;
+    if (!stat(dirs[i], &st) && S_ISDIR(st.st_mode)) { /* a directory that is away for now keeps what it had */
+      docs_tree(db, projects[i], dirs[i], &count, changed);
+      docs_drop(db, dirs[i], 0);
+    }
+    free(dirs[i]);
+    free(projects[i]);
+  }
+  free(dirs);
+  free(projects);
+  return count;
+}
+
+/* ctx docs [add DIR [--project P] | remove DIR | scan] */
+static int cmd_docs(int argc, char **argv) {
+  sqlite3 *db = ctx_open();
+  long changed = 0;
+  if (argc == 0) {
+    sqlite3_stmt *q = db_prepare(db, "SELECT r.dir, r.project, (SELECT count(*) FROM ctx_doc d WHERE d.kind = 'doc'"
+                                     " AND substr(d.name, 1, length(r.dir) + 1) = r.dir || '/') FROM ctx_docs_dir r ORDER BY 1");
+    while (sqlite3_step(q) == SQLITE_ROW) printf("%s %s %d\n", sqlite3_column_text(q, 0), sqlite3_column_text(q, 1), sqlite3_column_int(q, 2));
+    sqlite3_finalize(q);
+  } else if (argc == 1 && !strcmp(argv[0], "scan")) {
+    long count = docs_scan(db, NULL, &changed);
+    printf("%ld documents, %ld changed\n", count, changed);
+  } else if ((argc == 2 || (argc == 4 && !strcmp(argv[2], "--project"))) && !strcmp(argv[0], "add")) {
+    char real[4200];
+    struct stat st;
+    if (!realpath(argv[1], real) || stat(real, &st) || !S_ISDIR(st.st_mode)) die("%s is not a directory", argv[1]);
+    char *project = argc == 4 ? dup_text((const unsigned char *)argv[3]) : project_for(db, real);
+    sqlite3_stmt *q = db_prepare(db, "INSERT OR REPLACE INTO ctx_docs_dir(dir, project) VALUES (?1, ?2)");
+    sqlite3_bind_text(q, 1, real, -1, SQLITE_STATIC);
+    sqlite3_bind_text(q, 2, project, -1, SQLITE_STATIC);
+    if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+    sqlite3_finalize(q);
+    long count = docs_scan(db, real, &changed);
+    printf("%ld documents, %ld changed\n", count, changed);
+    free(project);
+  } else if (argc == 2 && !strcmp(argv[0], "remove")) {
+    char real[4200];
+    if (!realpath(argv[1], real)) snprintf(real, sizeof real, "%s", argv[1]);
+    sqlite3_stmt *q = db_prepare(db, "DELETE FROM ctx_docs_dir WHERE dir IN (?1, ?2)");
+    sqlite3_bind_text(q, 1, real, -1, SQLITE_STATIC);
+    sqlite3_bind_text(q, 2, argv[1], -1, SQLITE_STATIC);
+    if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+    sqlite3_finalize(q);
+    if (!sqlite3_changes(db)) die("%s was not indexed", argv[1]);
+    index_prepare(db);
+    docs_drop(db, real, 1);
+    printf("%s is no longer indexed\n", argv[1]);
+  } else {
+    die("usage: ctx docs [add DIR [--project P] | remove DIR | scan]");
+  }
   sqlite3_close(db);
   return 0;
 }
@@ -7133,6 +7284,8 @@ static void rebuild_derived(sqlite3 *db) {
     free(projects[i]);
   }
   free(projects);
+  long doc_changes = 0;
+  docs_scan(db, NULL, &doc_changes);
 }
 
 static int cmd_rebuild(void) {
@@ -7155,6 +7308,7 @@ static int usage(void) {
         "       ctx project add NAME [--root DIR] [--import FILE | --clone URL] [--remote URL] | list | pull NAME [--from URL]\n"
         "       ctx source add FILE --origin WHERE --class CLASS [--as PATH] | supersede OLD | uses PATH | check\n"
         "       ctx index [--project P]\n"
+        "       ctx docs [add DIR [--project P] | remove DIR | scan]\n"
         "       ctx wiki save NAME FILE --model M [--ticket ID] | check | why PAGE | repin | retire PAGE --reason WHY | restore PAGE\n"
         "       ctx remote NAME URL\n"
         "       ctx sync [NAME]\n"
@@ -7212,6 +7366,7 @@ int main(int argc, char **argv) {
   if (argc >= 2 && !strcmp(argv[1], "stats")) return cmd_stats(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "remember")) return cmd_remember(argc - 2, argv + 2);
   if (argc >= 2 && !strcmp(argv[1], "decisions")) return cmd_decisions(argc - 2, argv + 2);
+  if (argc >= 2 && !strcmp(argv[1], "docs")) return cmd_docs(argc - 2, argv + 2);
   if (argc >= 2 && !strcmp(argv[1], "exclude")) return cmd_exclude(argc - 2, argv + 2);
   if (argc >= 2 && !strcmp(argv[1], "forget")) return cmd_forget(argc - 2, argv + 2);
   if (argc >= 2 && !strcmp(argv[1], "artifacts")) return cmd_artifacts(argc - 2, argv + 2);
