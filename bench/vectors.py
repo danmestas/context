@@ -114,12 +114,18 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--models", required=True)
     ap.add_argument("--model", action="append")
+    ap.add_argument("--data", help="a corpus folder with sessions/ and questions.json, if not bench/shipyard")
+    ap.add_argument("--whole", action="store_true", help="score every question as one group: for a corpus nothing was tuned on")
     a = ap.parse_args()
+    global D
+    if a.data:
+        D = os.path.expanduser(a.data)
+        S.TURNS = 200
     MODELS = os.path.expanduser(a.models)
     sessions = {os.path.basename(p)[:-6]: p for p in sorted(glob.glob(D + "/sessions/*.jsonl"))}
     allq = json.load(open(D + "/questions.json"))
-    dev = [q for q in allq if not S.held_out(q["id"])]
-    old = [q for q in allq if S.held_out(q["id"])]
+    dev = allq if a.whole else [q for q in allq if not S.held_out(q["id"])]
+    old = allq if a.whole else [q for q in allq if S.held_out(q["id"])]
     work = tempfile.mkdtemp(prefix="vec-")
     try:
         env = dict(os.environ, CTX_DB=work + "/ctx.sqlite", HOME=work)
@@ -141,7 +147,7 @@ def main():
                     owner.append(c["s"])
             mat = np.array(mat, dtype="f4")
             took = time.time() - t
-            vs = lambda q: first_seen(owner[i] for i in np.argsort(-(mat @ m.vec(m.tokens(q))))[:600])
+            vs = lambda q: first_seen(owner[i] for i in np.argsort(-(mat @ m.vec(m.tokens(q))))[:1500])
             hy = lambda q: rrf(bm25(q), vs(q))
             print(f"{name}: {mat.shape[0]} vectors of {mat.shape[1]} numbers, {mat.nbytes // 1000} KB, embedded in {took:.1f} s")
             for label, fn in (("keywords only (ctx)", bm25), ("vectors only", vs), ("fused", hy)):

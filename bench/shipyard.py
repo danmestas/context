@@ -67,6 +67,9 @@ def grep_arm(sessions):
     return search
 
 
+TURNS = 60  # ranked turns read before the first five distinct sessions are taken
+
+
 def ctx_arm(sessions, work):
     env = dict(os.environ, CTX_DB=f"{work}/ctx.sqlite", HOME=work)
     subprocess.run([CTX, "init"], env=env, capture_output=True, check=True)
@@ -78,7 +81,7 @@ def ctx_arm(sessions, work):
 
     def search(q):
         words = re.findall(r"[A-Za-z0-9_'-]+", q)
-        out = subprocess.run([CTX, "search", "--all", "--limit", "60", "--", *words], env=env, capture_output=True, text=True).stdout
+        out = subprocess.run([CTX, "search", "--all", "--limit", str(TURNS), "--", *words], env=env, capture_output=True, text=True).stdout
         ids = re.findall(r"^#(\d+) ", out, re.M)
         if not ids:
             return []
@@ -109,7 +112,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True)
     ap.add_argument("--record")
+    ap.add_argument("--turns", type=int, default=60, help="ranked turns to read from ctx; a corpus of hundreds of sessions needs more")
     a = ap.parse_args()
+    global TURNS
+    TURNS = a.turns
     sessions = {os.path.basename(p)[:-6]: p for p in sorted(glob.glob(os.path.join(a.data, "sessions", "*.jsonl")))}
     qs = json.load(open(os.path.join(a.data, "questions.json")))
     work = tempfile.mkdtemp(prefix="shipyard-")
@@ -126,6 +132,9 @@ def main():
             strict, anyhit = sum(r[1] for r in sel), sum(r[2] for r in sel)
             cells[(arm, w, name)] = (strict, anyhit, len(sel))
             print(f"  {arm:5} {w:10} {name:8} every session {strict:2}/{len(sel)}  at least one {anyhit:2}/{len(sel)}")
+    for w in ("question", "paraphrase"):  # paired, on every question
+        c, g = dict((r[0], r[1]) for r in res[("ctx", w)]), dict((r[0], r[1]) for r in res[("grep", w)])
+        print(f"  all, {w}: ctx alone right on {sum(c[i] and not g[i] for i in c)}, grep alone right on {sum(g[i] and not c[i] for i in c)}")
     for w in ("question", "paraphrase"):  # paired, on the held-out questions
         c, g = dict((r[0], r[1]) for r in res[("ctx", w)]), dict((r[0], r[1]) for r in res[("grep", w)])
         better, worse = sum(c[i] and not g[i] for i in hold), sum(g[i] and not c[i] for i in hold)

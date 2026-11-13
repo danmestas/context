@@ -17,10 +17,12 @@ This page lists what ctx has been measured to do. Every figure comes from a resu
 | Ranking: full-text search against grep | Passed its bar | The ranking ctx uses finds about 57% of the labelled documents in its top 10, against 37% for grep. It is a clear win over grep and still misses a lot; no target for the absolute score has been set. |
 | LongMemEval-S, retrieval only | No bar | ctx's search is level with another tool's published keyword search (two questions apart in 470, which is noise) and well ahead of grep. Both are weakest where evidence is spread over several sessions or depends on dates. Tools that use embeddings report higher figures on this benchmark, but those are their own reports under other scoring, so they are not shown as a comparison. |
 | A small public set of coding sessions | Passed its bar | ctx clears the check. It says little more than that: the set is 15 invented sessions, and grep does as well. A harder public set of coding sessions does not exist yet. |
+| 209 coding sessions: finding the session that holds the answer | Passed its bar | At this size the index is clearly better than ranked grep. In the session's own terms ctx found the right session for 125 of 139 questions and grep for 71; ctx alone was right on 54 and grep alone on none (p below 0.0001). Where the answer is spread over two or more sessions, ctx found all of them for 27 of 40 questions and grep for 6. On the 32-session corpus the two were level. Paraphrased questions are still poor: 23 of 139, though again well ahead of grep's 5. |
 | Coding sessions: finding the session that holds the answer, first run | No bar | ctx did worse than ranked grep here, 20 against 26 of 30 held-out questions in the session's own terms, and the cause was a fault, not ranking. Questions that name a flag, such as --json, made ctx search stop with an error and return nothing; an agent searching its history for a flag would have hit the same error. The result is kept as it was measured. The next result shows the same questions after the fault was fixed. Paraphrased, both methods fail most of the time. |
 | Coding sessions: finding the session, after search accepted flag names | No bar | With the fault fixed, ctx finds the right session for 28 of 30 held-out questions in the session's own terms, against grep's 26. ctx alone was right on 3 and grep alone on 1, which is not a difference by the rule set beforehand, so the two are level on this small corpus. Over all 67 questions it is 64 against 52. The change was chosen using only the questions that are not held out, and the held-out ones were run once. Paraphrased questions did not improve: 5 of 30 for ctx and 7 for grep. That is the limit of keyword search, and it is what tools using embeddings should be tested on. |
 | Coding sessions: other tools on the same questions | No bar | In the session's own terms every tool that ran properly is level with ctx; only TraceDecay was worse (p = 0.008). Paraphrased, the three tools using embeddings are clearly better than ctx: cass found 23 of 30, episodic-memory 20 and agentmemory 17, against ctx's 5 (each p below 0.001). That is the real gap in ctx's search. It costs them indexing time: one to nineteen minutes for 32 sessions, against seconds for keyword indexes. cass with keywords alone scored 1 of 30 because its default search needs every word of the question to match; that is its default, not its ceiling. This measures finding the session only. In the separate answer test, paraphrasing barely changed what agents got right, because agents rewrite their searches. |
 | Would small embeddings close the paraphrase gap? | Failed its bar | A real gain, but short of the bar. Fusing the 30 MB model with keyword search finds 13 of 30 paraphrased questions instead of 5 (better on 9, worse on 1, p = 0.02) and loses nothing in the session's own terms. That is about half of what the neural tools gain, for almost no indexing cost. The smaller model does less and the larger one no better. ctx does not use embeddings as a result: the bar was not met, and in the answer test paraphrasing did not make agents answer worse, so the gain here may not reach the answers. |
+| Small embeddings on 209 sessions | Failed its bar | The gain does not hold. Fused search found 126 and 25 of 139 against 125 and 23 for keywords alone, which is no difference (p = 0.77 on paraphrased questions). The improvement on the small corpus came from its size: with few sessions a rough sense of topic is enough to pick one, and with many sessions on one codebase it is not. ctx does not use embeddings. Tools that run a neural model were not tried at this size. |
 | Coding sessions: do agents answer better with ctx? | No bar | Plain transcript files with a hint where they are scored highest. ctx as installed is level with them by the test set beforehand (better on 2 questions, worse on 6, p = 0.29) but three points lower, and ctx without its note is significantly worse (p = 0.04). The whole gap is use: the agent searched with ctx on 24 of 30 questions with the note and 19 without, and where it did search, its answers were as good as the transcript arm's. What ctx buys is cost: about a third fewer tokens, less than half the time, and two or three tool calls where grep needs seven to nine. Paraphrasing the question made almost no difference to any arm, because agents rewrite their own searches. With only the repository the agent could answer 6 of 30, so the questions do need session history. |
 | Coding sessions: adding snippets or a reminder to the prompt | Failed its bar | Neither helps, and both arms scored below ctx as installed, significantly so on paraphrased questions. The reason is that they almost never act: snippets were added for 4 and 3 of 30 questions and the reminder for 1 and 0, so these arms are in effect the skill alone. On the few questions where snippets were added, the answers were right. The session-start note remains the one thing shown to make agents search, and both hooks stay off by default. |
 | Answering questions about past work | Passed its bar | Telling the agent at session start that an archive exists is worth about 7 questions in 90 and costs no extra tokens. The difference is borderline by a sign test (p = 0.052), so it is kept as likely but not proven. |
@@ -126,6 +128,35 @@ bench/coding_life.py --data DIR
 ```
 
 [Result file](../bench/results/coding-life.json)
+
+### 209 coding sessions: finding the session that holds the answer
+
+The first corpus had 32 sessions, few enough that counting matching words per session works about as well as an index. This one is six times larger, and its streams reuse each other's vocabulary.
+
+- **Compared with:** ranked grep over the same transcript files: each session scored by how many of the question's words it contains, then by how often
+- **Bar:** a difference counts only if a sign test on the paired questions gives p below 0.05 (set in bench/head-to-head.md). **Passed.**
+- **What it means:** At this size the index is clearly better than ranked grep. In the session's own terms ctx found the right session for 125 of 139 questions and grep for 71; ctx alone was right on 54 and grep alone on none (p below 0.0001). Where the answer is spread over two or more sessions, ctx found all of them for 27 of 40 questions and grep for 6. On the 32-session corpus the two were level. Paraphrased questions are still poor: 23 of 139, though again well ahead of grep's 5.
+
+| Measure | Result |
+| --- | --- |
+| ctx, session's own terms | 125 of 139 (one session needed: 98 of 99; two or more: 27 of 40) |
+| grep, session's own terms | 71 of 139 (one session needed: 65 of 99; two or more: 6 of 40) |
+| ctx, paraphrased | 23 of 139 |
+| grep, paraphrased | 5 of 139 |
+| Questions only one method got right, own terms | ctx 54, grep 0 |
+| Questions only one method got right, paraphrased | ctx 22, grep 4 (p = 0.0005) |
+
+Measured 2026-11-12; check-in 87fb691a8cb2; good until 2027-05-11.
+
+- corpus: the second shipyard corpus: 209 real agent sessions in five streams of work on one codebase over a simulated eight weeks, with vocabulary shared between streams; 139 questions that the repositories, their commit messages and the agents' memory notes do not answer
+- freshness: ctx's search was frozen before this corpus existed, and none of its questions was used to tune anything, so all 139 count
+- scoring: every session holding the answer among the first five returned; no model involved
+
+```sh
+tar -xzf bench/shipyard2/sessions.tar.gz -C DIR && cp bench/shipyard2/questions.json DIR && bench/shipyard.py --data DIR --turns 200
+```
+
+[Result file](../bench/results/shipyard2-retrieval.json)
 
 ### Coding sessions: finding the session that holds the answer, first run
 
@@ -247,6 +278,33 @@ bench/vectors.py --models DIR --model potion-base-8M
 ```
 
 [Result file](../bench/results/vectors-static.json)
+
+### Small embeddings on 209 sessions
+
+On the first corpus, fusing a static embedding model with keyword search found 13 of 30 paraphrased questions instead of 5, and agents answered slightly better with it, though not significantly. This repeats the retrieval test on a corpus six times larger, on questions the method was not chosen with.
+
+- **Compared with:** ctx's keyword search on the same questions (125 of 139 in the session's own terms, 23 paraphrased)
+- **Bar:** a difference counts only if a sign test on the paired questions gives p below 0.05 (set in bench/head-to-head.md). **Failed.**
+- **What it means:** The gain does not hold. Fused search found 126 and 25 of 139 against 125 and 23 for keywords alone, which is no difference (p = 0.77 on paraphrased questions). The improvement on the small corpus came from its size: with few sessions a rough sense of topic is enough to pick one, and with many sessions on one codebase it is not. ctx does not use embeddings. Tools that run a neural model were not tried at this size.
+
+| Measure | Result |
+| --- | --- |
+| ctx keywords | 125 and 23 of 139 (own terms and paraphrased) |
+| Static model fused with keywords | 126 and 25 of 139 |
+| Static model alone | 108 and 22 of 139 |
+| Paraphrased questions only one method got right | fused 7, keywords 5 |
+
+Measured 2026-11-12; check-in 87fb691a8cb2; good until 2027-05-11.
+
+- corpus: the second shipyard corpus, 209 sessions and 139 questions, none used for tuning
+- method: exactly as chosen on the first corpus: the 30 MB static model over windows of 64 word pieces of what people and agents wrote, fused with ctx's keyword ranking
+- cost: 15,206 vectors, 15.6 MB, embedded in one second
+
+```sh
+bench/vectors.py --models DIR --model potion-base-8M --data CORPUS --whole
+```
+
+[Result file](../bench/results/vectors-static-209.json)
 
 ## Agent behaviour
 

@@ -1257,6 +1257,11 @@ printf 'B %s 11 rules-offer\nB %s 12 rules-offer\nE %s 12 rules-offer 4200\n' "$
 "$CTX" stats --hooks > "$T/hooks.txt"
 awk '$1 == "rules-offer" && $2 == 3 && $5 == 4200 && $6 == 1 && $7 == 1 { ok = 1 } END { exit !ok }' "$T/hooks.txt" || fail "a start with no end is cut off, and a slow end is over its limit: $(cat "$T/hooks.txt")"
 "$CTX" status | grep -q '2 cut off' || fail "status warns when hooks were cut off: $("$CTX" status)"
+# The status line covers the last day, not the time since midnight: a hook cut off two
+# minutes before midnight still shows after it.
+EVE=$(python3 -c "import time; n = int(time.time()); t = time.localtime(n); print(n - t.tm_hour * 3600 - t.tm_min * 60 - t.tm_sec - 120)")
+printf 'B %s 13 rules-offer\n' "$EVE" >> "$CTX_DB.calls"
+"$CTX" status | grep -q '3 cut off' || fail "status counts a hook cut off before midnight: $("$CTX" status)"
 CTX_DB="$T/nocalls.sqlite" "$CTX" recall </dev/null; [ ! -e "$T/nocalls.sqlite.calls" ] || fail "nothing is logged without an archive"
 # A working directory can be kept out of the archive, and a session can be forgotten.
 export CTX_DB="$T/excl.sqlite"
@@ -1278,6 +1283,13 @@ CLAUDE_CONFIG_DIR="$XC" "$CTX" scan >/dev/null
 "$CTX" archive "$XC/projects/-w-bench-run1/5e550000-0000-0000-0000-000000000002.jsonl" >/dev/null
 [ "$(xn kestrel)" = 0 ] || fail "the per-turn hook does not archive an excluded session either"
 "$CTX" exclude --remove /w/bench | grep -q 'no longer excluded' || fail "an exclusion can be removed"
+# A directory that is gone is resolved through the part of its path that still exists, as
+# Claude Code saw it when it named the folder (/tmp is /private/tmp on a Mac).
+mkdir -p "$T/excl/link-target" && ln -s "$T/excl/link-target" "$T/excl/link"
+"$CTX" exclude "$T/excl/link/gone/sub" >/dev/null
+WANT=$(python3 -c "import os,re,sys; print(re.sub(r'[^A-Za-z0-9]', '-', os.path.realpath(sys.argv[1]) + '/gone/sub'))" "$T/excl/link")
+[ "$("$CTX" sql "SELECT slug FROM ctx_exclude WHERE dir LIKE '%/gone/sub'")" = "$WANT" ] || fail "a vanished directory is resolved through its existing parent: $("$CTX" sql "SELECT slug FROM ctx_exclude WHERE dir LIKE '%/gone/sub'") against $WANT"
+"$CTX" exclude --remove "$T/excl/link/gone/sub" >/dev/null
 CLAUDE_CONFIG_DIR="$XC" "$CTX" scan >/dev/null
 [ "$(xn kestrel)" = 1 ] || fail "once the exclusion is removed the session is archived"
 if "$CTX" forget nosuchsession 2>/dev/null; then fail "forgetting an unknown session fails"; fi

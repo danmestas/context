@@ -1522,14 +1522,12 @@ static int stats_hooks(int days) {
   return 0;
 }
 
-/* ctx status: one short line for a status bar, from the log alone: searches today, how
+/* ctx status: one short line for a status bar, from the log alone: searches in the last day, how
  * long hooks take, and a warning when hooks were cut off or the hourly scan is late. */
 static int cmd_status(void) {
   time_t now = time(NULL);
-  struct tm day = *localtime(&now);
-  day.tm_hour = day.tm_min = day.tm_sec = 0;
   call_stat st[16];
-  size_t names = calls_read(mktime(&day), st, 16);
+  size_t names = calls_read(now - 86400, st, 16); /* the last day, not since midnight: a hook cut off at 23:58 still matters at 00:01 */
   long searches = 0, cut = 0, over = 0, worst = 0, all[4096];
   size_t na = 0;
   for (size_t k = 0; k < names; k++) {
@@ -1542,7 +1540,7 @@ static int cmd_status(void) {
     free(st[k].ms);
   }
   qsort(all, na, sizeof *all, by_long);
-  char line[200];
+  char line[320];
   int n = snprintf(line, sizeof line, "ctx %ld search%s", searches, searches == 1 ? "" : "es");
   if (na) n += snprintf(line + n, sizeof line - (size_t)n, " \xc2\xb7 hooks %ld ms", all[na / 2]);
   if (cut + over) n += snprintf(line + n, sizeof line - (size_t)n, " \xc2\xb7 %ld cut off", cut + over);
@@ -5459,7 +5457,22 @@ static int cmd_exclude(int argc, char **argv) {
   if (!(argc == 1 && argv[0][0] != '-') && !remove) die("usage: ctx exclude [DIR | --remove DIR]");
   const char *given = argv[argc - 1];
   char real[4200], slug[4200];
-  if (!realpath(given, real)) snprintf(real, sizeof real, "%s", given); /* a directory that is gone can still be excluded */
+  if (!realpath(given, real)) { /* gone: resolve the part that still exists and keep the rest as given */
+    char head[4200], tail[4200] = "";
+    snprintf(head, sizeof head, "%s", given);
+    snprintf(real, sizeof real, "%s", given);
+    for (char *cut; (cut = strrchr(head, '/')) && cut != head;) {
+      char rest[4200];
+      snprintf(rest, sizeof rest, "%s%s", cut, tail);
+      snprintf(tail, sizeof tail, "%s", rest);
+      *cut = 0;
+      char found[4200];
+      if (realpath(head, found)) {
+        snprintf(real, sizeof real, "%s%s", found, tail);
+        break;
+      }
+    }
+  }
   size_t n = strlen(real);
   while (n > 1 && real[n - 1] == '/') real[--n] = 0;
   snprintf(slug, sizeof slug, "%s", real);

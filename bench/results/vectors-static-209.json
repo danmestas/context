@@ -1,0 +1,39 @@
+{
+ "name": "vectors-static-209",
+ "title": "Small embeddings on 209 sessions",
+ "section": "Search",
+ "order": 44,
+ "date": "2026-11-12",
+ "good_until": "2027-05-11",
+ "commit": "87fb691a8cb2",
+ "command": "bench/vectors.py --models DIR --model potion-base-8M --data CORPUS --whole",
+ "conditions": {
+  "corpus": "the second shipyard corpus, 209 sessions and 139 questions, none used for tuning",
+  "method": "exactly as chosen on the first corpus: the 30 MB static model over windows of 64 word pieces of what people and agents wrote, fused with ctx's keyword ranking",
+  "cost": "15,206 vectors, 15.6 MB, embedded in one second"
+ },
+ "summary": "On the first corpus, fusing a static embedding model with keyword search found 13 of 30 paraphrased questions instead of 5, and agents answered slightly better with it, though not significantly. This repeats the retrieval test on a corpus six times larger, on questions the method was not chosen with.",
+ "baseline": "ctx's keyword search on the same questions (125 of 139 in the session's own terms, 23 paraphrased)",
+ "bar": "a difference counts only if a sign test on the paired questions gives p below 0.05 (set in bench/head-to-head.md)",
+ "verdict": "fail",
+ "meaning": "The gain does not hold. Fused search found 126 and 25 of 139 against 125 and 23 for keywords alone, which is no difference (p = 0.77 on paraphrased questions). The improvement on the small corpus came from its size: with few sessions a rough sense of topic is enough to pick one, and with many sessions on one codebase it is not. ctx does not use embeddings. Tools that run a neural model were not tried at this size.",
+ "metrics": [
+  {
+   "label": "ctx keywords",
+   "value": "125 and 23 of 139",
+   "note": "own terms and paraphrased"
+  },
+  {
+   "label": "Static model fused with keywords",
+   "value": "126 and 25 of 139"
+  },
+  {
+   "label": "Static model alone",
+   "value": "108 and 22 of 139"
+  },
+  {
+   "label": "Paraphrased questions only one method got right",
+   "value": "fused 7, keywords 5"
+  }
+ ]
+}
