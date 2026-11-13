@@ -141,3 +141,9 @@ CREATE TABLE IF NOT EXISTS ctx_forgotten(
   session TEXT PRIMARY KEY,
   at      TEXT NOT NULL
 ) STRICT, WITHOUT ROWID;
+
+-- Directories of documents indexed where they sit, each with the project its hits are filed under.
+CREATE TABLE IF NOT EXISTS ctx_docs_dir(
+  dir     TEXT PRIMARY KEY,
+  project TEXT NOT NULL
+) STRICT, WITHOUT ROWID;

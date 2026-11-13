@@ -19,8 +19,8 @@
 CREATE TABLE IF NOT EXISTS ctx_doc(
   id       INTEGER PRIMARY KEY,
   project  TEXT NOT NULL,
-  repo_id  INTEGER REFERENCES ctx_repo(id) ON DELETE CASCADE,  -- NULL for code on disk
-  kind     TEXT NOT NULL CHECK (kind IN ('source', 'wiki', 'session', 'ticket', 'code', 'rule')),
+  repo_id  INTEGER REFERENCES ctx_repo(id) ON DELETE CASCADE,  -- NULL for documents and code on disk
+  kind     TEXT NOT NULL CHECK (kind IN ('source', 'wiki', 'session', 'ticket', 'code', 'rule', 'doc')),
   name     TEXT NOT NULL,
   title    TEXT,
   hash     TEXT NOT NULL,  -- Fossil artifact hash, or content hash for code
@@ -79,7 +79,7 @@ END;
 CREATE TABLE IF NOT EXISTS ctx_link(
   src_id   INTEGER NOT NULL REFERENCES ctx_doc(id) ON DELETE CASCADE,
   kind     TEXT NOT NULL CHECK (kind IN ('links_to', 'compiled_from', 'cites', 'blocked_by')),
-  dst_kind TEXT NOT NULL CHECK (dst_kind IN ('source', 'wiki', 'session', 'ticket', 'code')),
+  dst_kind TEXT NOT NULL CHECK (dst_kind IN ('source', 'wiki', 'session', 'ticket', 'code', 'doc')),
   dst_name TEXT NOT NULL,
   dst_hash TEXT,
   PRIMARY KEY (src_id, kind, dst_kind, dst_name)

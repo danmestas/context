@@ -22,7 +22,9 @@ ctx search --limit 30 WORDS...    # more than the default 12 results
 A turn matches if it has any of the words, and turns with more of the rarer
 words rank higher. Common words and words under three letters are ignored.
 Each result shows `#ID`, project, speaker, date and a snippet with the matched
-words in `[brackets]`. If nothing matches in this project, `ctx` searches every
+words in `[brackets]`. A result marked `doc` is a section of a
+document in a repository (a design note, decision record or RFC); it shows the
+file's path, which you can open, in place of a speaker and date. If nothing matches in this project, `ctx` searches every
 project and says so on stderr.
 
 Search for what the session would have contained, not for the question:

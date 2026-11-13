@@ -1295,6 +1295,37 @@ EVE=$(python3 -c "import time; n = int(time.time()); t = time.localtime(n); prin
 printf 'B %s 13 rules-offer\n' "$EVE" >> "$CTX_DB.calls"
 "$CTX" status | grep -q '3 cut off' || fail "status counts a hook cut off before midnight: $("$CTX" status)"
 CTX_DB="$T/nocalls.sqlite" "$CTX" recall </dev/null; [ ! -e "$T/nocalls.sqlite.calls" ] || fail "nothing is logged without an archive"
+# Documents in a directory on disk are indexed where they sit: no copies, no model.
+export CTX_DB="$T/docs.sqlite"
+"$CTX" init >/dev/null
+mkdir -p "$T/repo/docs/adr" "$T/repo/docs/node_modules/x" "$T/repo/docs/.hidden" "$T/noscan"
+printf '# ADR 7: Use a ledger\n\n## Decision\n\nWe keep a quokka ledger.\n' > "$T/repo/docs/adr/0007-ledger.md"
+printf 'plain notes about the numbat cache\n' > "$T/repo/docs/notes.txt"
+printf 'quokka in a dependency\n' > "$T/repo/docs/node_modules/x/readme.md"
+printf 'quokka in a hidden folder\n' > "$T/repo/docs/.hidden/x.md"
+printf 'package quokka\n' > "$T/repo/docs/main.go"
+printf 'quokka\000binary' > "$T/repo/docs/blob.md"
+dq() { "$CTX" search --all "$1" 2>/dev/null | grep -c '^#' || true; }
+"$CTX" docs add "$T/repo/docs" --project demo > "$T/docs.txt"
+grep -q '^2 documents, 2 changed$' "$T/docs.txt" || fail "docs add indexes the text documents and nothing else: $(cat "$T/docs.txt")"
+"$CTX" search --all quokka > "$T/dhit.txt"
+[ "$(grep -c '^#' "$T/dhit.txt")" = 1 ] && grep -q '^#[0-9]* demo doc .*/repo/docs/adr/0007-ledger.md Decision' "$T/dhit.txt" || fail "a document hit names its file and heading: $(cat "$T/dhit.txt")"
+mkdir -p "$T/repo/docs/site" && cp "$T/repo/docs/adr/0007-ledger.md" "$T/repo/docs/site/copy.md"
+"$CTX" docs scan >/dev/null
+[ "$(dq quokka)" = 1 ] || fail "the same text in two files is shown once: $("$CTX" search --all quokka)"
+rm -r "$T/repo/docs/site" && "$CTX" docs scan >/dev/null
+"$CTX" docs | grep -q '/repo/docs demo 2$' || fail "docs lists each directory with its project and count: $("$CTX" docs)"
+sed -i.bak 's/quokka/wombat/' "$T/repo/docs/adr/0007-ledger.md" && rm "$T/repo/docs/adr/0007-ledger.md.bak"
+"$CTX" docs scan | grep -q '^2 documents, 1 changed$' || fail "only a changed document is read again"
+[ "$(dq quokka)" = 0 ] && [ "$(dq wombat)" = 1 ] || fail "a changed document replaces its old text"
+rm "$T/repo/docs/notes.txt"
+"$CTX" scan "$T/noscan" >/dev/null
+[ "$(dq numbat)" = 0 ] || fail "the periodic scan drops a deleted document"
+"$CTX" rebuild >/dev/null
+[ "$(dq wombat)" = 1 ] || fail "a rebuild reads the documents again"
+if "$CTX" docs add "$T/repo/nothere" 2>/dev/null; then fail "a directory that does not exist is refused"; fi
+"$CTX" docs remove "$T/repo/docs" | grep -q 'no longer indexed' || fail "docs remove"
+[ "$(dq wombat)" = 0 ] && [ -z "$("$CTX" docs)" ] || fail "a removed directory leaves nothing behind"
 # A working directory can be kept out of the archive, and a session can be forgotten.
 export CTX_DB="$T/excl.sqlite"
 "$CTX" init >/dev/null
@@ -1336,8 +1367,8 @@ CLAUDE_CONFIG_DIR="$XC" "$CTX" scan >/dev/null
 "$CTX" forget 5e550000-0000-0000-0000-00000000000 2>/dev/null && fail "an ambiguous prefix is refused"
 export CTX_DB="$T/rebuild.sqlite"
 "$CTX" init >/dev/null
-[ "$("$CTX" sql "PRAGMA user_version")" = 7 ] || fail "a new file is at the current version"
-[ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 6 ] || fail "derived version recorded"
+[ "$("$CTX" sql "PRAGMA user_version")" = 8 ] || fail "a new file is at the current version"
+[ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 7 ] || fail "derived version recorded"
 printf '{"uuid":"rb-1","timestamp":"2026-09-01T10:00:00Z","cwd":"/w/rb","message":{"role":"user","content":"the capybara rollout"}}\n{"uuid":"rb-2","timestamp":"2026-09-01T10:00:05Z","cwd":"/w/rb","message":{"role":"assistant","content":"rolled out the capybara"}}\n' > "$T/ab12cd99-rb.jsonl"
 "$CTX" archive "$T/ab12cd99-rb.jsonl" >/dev/null
 RT=$("$CTX" ticket new "Kept across a rebuild" --project rb)
@@ -1352,13 +1383,13 @@ before=$("$CTX" search --all capybara | grep -c '^#')
 "$CTX" sql "UPDATE ctx_meta SET value='1' WHERE key='derived_version'" >/dev/null
 "$CTX" search --all capybara 2>"$T/rb.err" >/dev/null
 grep -q 'rebuilding it once' "$T/rb.err" || fail "an old index is rebuilt on open"
-[ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 6 ] || fail "then it is current"
+[ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 7 ] || fail "then it is current"
 "$CTX" search --all capybara 2>"$T/rb2.err" >/dev/null; [ -s "$T/rb2.err" ] && fail "and is not rebuilt again"
 # A file from before versioning upgrades in place, without a rebuild.
 "$CTX" sql "DROP TABLE ctx_meta" >/dev/null; "$CTX" sql "PRAGMA user_version = 1" >/dev/null
 "$CTX" search --all capybara 2>"$T/rb3.err" | grep -q capybara || fail "an unversioned file still works"
 [ -s "$T/rb3.err" ] && fail "an unversioned file is upgraded without a rebuild"
-[ "$("$CTX" sql "PRAGMA user_version")" = 7 ] || fail "and is marked current"
+[ "$("$CTX" sql "PRAGMA user_version")" = 8 ] || fail "and is marked current"
 
 # The skill eval harness works end to end with a stand-in for the model.
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"
