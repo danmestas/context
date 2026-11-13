@@ -1,0 +1,1977 @@
+{
+ "s1": [
+  {
+   "id": "s1-01",
+   "stream": "s1",
+   "day": 1,
+   "kind": "instruction",
+   "prompt": "add a CLAUDE.md for this repo, under 15 lines. rules: we commit straight to main here, no branches. `make test` before every commit, never commit red. commit subjects imperative, under 60 chars, no body unless I ask. never touch vendor/. commit it.",
+   "follow_ups": [
+    "add one more: no new global variables in src/ctx.c. amend."
+   ]
+  },
+  {
+   "id": "s1-02",
+   "stream": "s1",
+   "day": 2,
+   "kind": "feature+instruction",
+   "prompt": "add `--count` to `ctx search`: print only the number of hits, nothing else. test in test/run.sh, commit.",
+   "follow_ups": [
+    "you forgot docs. from now on every new flag gets its line in docs/howto.md in the same commit as the code, never a later one. fix this one by amending."
+   ]
+  },
+  {
+   "id": "s1-03",
+   "stream": "s1",
+   "day": 3,
+   "kind": "decision+feature",
+   "prompt": "ctx search exits 0 even when nothing matches. two options: (A) exit 1 on no matches like grep does, (B) keep 0 and only say it on stderr. tradeoffs in a few lines, no code yet.",
+   "follow_ups": [
+    "A. my shell scripts do `if ctx search ...` and grep's convention is what everyone's fingers know. do it, fix whatever tests assumed 0, howto, commit."
+   ],
+   "collision": "exit-codes"
+  },
+  {
+   "id": "s1-04",
+   "stream": "s1",
+   "day": 4,
+   "kind": "refactor+instruction",
+   "prompt": "`ctx search --limit 5x` is accepted because of atoi. add a small helper parse_count(flag, text): strtol, reject trailing junk and anything below 1, die naming the flag. use it for search --limit only. test, commit.",
+   "follow_ups": [
+    "good. rule going forward: never atoi for anything new, always parse_count. and leave the old atoi call sites alone unless I ask."
+   ],
+   "collision": "--limit"
+  },
+  {
+   "id": "s1-05",
+   "stream": "s1",
+   "day": 5,
+   "kind": "abandoned",
+   "prompt": "experiment: make search try all words with AND first, and only fall back to the current OR query when AND finds nothing. build it, run the tests, show me what changed in the output for a two-word query on a scratch archive. don't commit yet.",
+   "follow_ups": [
+    "no. I search with sloppy half-remembered words and AND-first hides the partial matches I rely on, the hit I want is usually the one with only one of the words. revert all of it, leave nothing behind."
+   ]
+  },
+  {
+   "id": "s1-06",
+   "stream": "s1",
+   "day": 8,
+   "kind": "feature+regression-plant",
+   "prompt": "search results are noisy. add these to the stopword list in fts_query: get, set, new, run, fix, add, test, file, error, code, make. they match half the archive. if a test searches for one of those, give the test another word. commit.",
+   "follow_ups": [],
+   "collision": "noise"
+  },
+  {
+   "id": "s1-07",
+   "stream": "s1",
+   "day": 9,
+   "kind": "decision+feature",
+   "prompt": "`ctx turn` cuts a long turn at 8000 bytes and I lose the end, which is where the error usually is. options: (A) a `--max-bytes N` flag, (B) `--tail` that shows the last 8000 bytes instead of the first. few lines of tradeoffs, no code.",
+   "follow_ups": [
+    "B, --tail. the size is fine, it's the wrong end I'm getting, and I never remember numbers. implement with a test and the howto line, commit."
+   ],
+   "collision": "truncation"
+  },
+  {
+   "id": "s1-08",
+   "stream": "s1",
+   "day": 10,
+   "kind": "decision+feature",
+   "prompt": "I want `ctx search --since DATE` to only return turns on or after a date. before you write it: should DATE itself be included (A) or excluded (B)? one line each.",
+   "follow_ups": [
+    "A, inclusive, because --as-of is inclusive and the two should read the same way. reuse the existing date check so a bad date dies the same way. test, howto, commit."
+   ],
+   "collision": "date-validation"
+  },
+  {
+   "id": "s1-09",
+   "stream": "s1",
+   "day": 11,
+   "kind": "tests+unfinished+instruction",
+   "prompt": "cmd_turn is thinly tested. list the cases we're missing (BEFORE/AFTER windows, turn: refs, --full, --tail, bad ids, whatever else you see). implement only the first three today, commit them, and tell me exactly which are left, in chat, not in a file.",
+   "follow_ups": [
+    "noted. and that's a rule: never leave TODO or notes files in the repo, I lose track of them. what's pending gets said in chat."
+   ]
+  },
+  {
+   "id": "s1-10",
+   "stream": "s1",
+   "day": 12,
+   "kind": "revisit+tests",
+   "prompt": "the turn tests you listed but didn't write last time: do the rest now. if you can't tell which ones those were, work it out from the test file and tell me what you assumed. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s1-11",
+   "stream": "s1",
+   "day": 15,
+   "kind": "bugfix",
+   "prompt": "`ctx turn abc` and `ctx turn 0` both just print the usage line. say what's wrong instead: not a turn id / no such turn. and `ctx turn 12 -1` should be rejected, not treated as 0. tests, commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s1-12",
+   "stream": "s1",
+   "day": 16,
+   "kind": "feature+regression-plant",
+   "prompt": "snippets in search hits are too short to judge. widen the snippet from 40 tokens to 64. and while you're in search_run take out the loop that collapses whitespace, snippet() already gives one line and it's dead weight. adjust tests if any depend on it. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s1-13",
+   "stream": "s1",
+   "day": 17,
+   "kind": "decision+feature",
+   "prompt": "I want machine-readable search output. (A) `--json` printing one JSON object per hit per line, (B) `--json` printing a single JSON array. which and why, briefly.",
+   "follow_ups": [
+    "A, one object per line. I pipe into head and jq -c and half an array is not valid JSON. fields: id, project, speaker, date, snippet. escape properly. test, howto, commit."
+   ],
+   "collision": "--json"
+  },
+  {
+   "id": "s1-14",
+   "stream": "s1",
+   "day": 18,
+   "kind": "instruction+refactor",
+   "prompt": "house style for error messages from now on: start lowercase, no trailing period, name the flag or argument that was wrong. go through the messages in cmd_search and cmd_turn only and bring them in line. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s1-15",
+   "stream": "s1",
+   "day": 19,
+   "kind": "regression-fix+revisit",
+   "prompt": "`ctx search error` now says 'no search words'. that is the single most useful word to search for. it worked two weeks ago. find what broke it, fix it properly so it can't come back, test, commit. tell me which commit did it.",
+   "follow_ups": [],
+   "note": "cut off when the whole run was stopped early; kept as an interrupted session and picked up in s1-15b"
+  },
+  {
+   "id": "s1-15b",
+   "stream": "s1",
+   "day": 19,
+   "kind": "regression-fix+revisit+pickup",
+   "prompt": "we got cut off in the middle of the `ctx search error` fix. there's an uncommitted change in src/ctx.c from it. look at it, tell me in two lines what state it's in, then finish the job: the fix so it can't come back, a test, commit, and tell me which commit broke it.",
+   "follow_ups": [],
+   "note": "added to the plan after the run was stopped: picks up the work s1-15 left when it was cut off"
+  },
+  {
+   "id": "s1-16",
+   "stream": "s1",
+   "day": 22,
+   "kind": "abandoned",
+   "prompt": "try stemming: switch the FTS tokenizer to `porter unicode61` in schema/index.sql so 'hangs' finds 'hang'. bump whatever version needs bumping, rebuild, run tests, show me before/after for `ctx search hangs` on a scratch archive. don't commit.",
+   "follow_ups": [
+    "revert it. porter also mangles identifiers and flag names, and forcing an index rebuild on every machine for this isn't worth it. back to exactly what we had."
+   ]
+  },
+  {
+   "id": "s1-17",
+   "stream": "s1",
+   "day": 23,
+   "kind": "revisit+feature",
+   "prompt": "the count flag from the first week: it should honour --since too, and print 0 rather than complaining when nothing matches. check and fix, test, commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s1-18",
+   "stream": "s1",
+   "day": 24,
+   "kind": "decision",
+   "prompt": "ranking question. today search shows this project's hits and only looks elsewhere when the project has none. alternative (B): always fill up to the limit with other projects' hits after this project's. (A) is what we have. argue both in a few lines.",
+   "follow_ups": [
+    "stay with A. the last time an agent got a cross-project hit it applied another repo's convention here. but make the fallback obvious: when it does search everything, mark each hit line that is from another project. test, commit."
+   ]
+  },
+  {
+   "id": "s1-19",
+   "stream": "s1",
+   "day": 25,
+   "kind": "feature",
+   "prompt": "add `--project NAME` to search to search one named project instead of the current directory's. unknown project name is an error. test, howto, commit.",
+   "follow_ups": [],
+   "collision": "--project"
+  },
+  {
+   "id": "s1-20",
+   "stream": "s1",
+   "day": 26,
+   "kind": "regression-fix+revisit",
+   "prompt": "search hits now spill over several lines when the turn has newlines in it, which breaks my `grep -c '^#'` counting and looks awful. used to be one line per hit. find the commit, fix, add a test that would have caught it, commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s1-21",
+   "stream": "s1",
+   "day": 29,
+   "kind": "instruction+tests",
+   "prompt": "rule for tests from here on: test data in test/run.sh uses made-up animal words (capybara, heron...) and never a real project or product name. add the missing test for --project with --count following that. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s1-22",
+   "stream": "s1",
+   "day": 30,
+   "kind": "refactor+unfinished",
+   "prompt": "ok now I'm asking: convert every remaining atoi in src/ctx.c to parse_count (or a sibling that allows 0 where 0 is legal). go command by command, build and run the tests after each command, one commit per command.",
+   "follow_ups": [
+    "stop here, we'll pick it up later. don't start another command. tell me exactly which commands are converted and committed, and which are left."
+   ],
+   "interrupt_after": 210
+  },
+  {
+   "id": "s1-23",
+   "stream": "s1",
+   "day": 31,
+   "kind": "revisit+refactor",
+   "prompt": "pick the atoi conversion back up where we stopped and finish it. same way as before. at the end grep to prove none are left outside vendor/.",
+   "follow_ups": []
+  },
+  {
+   "id": "s1-24",
+   "stream": "s1",
+   "day": 32,
+   "kind": "abandoned",
+   "prompt": "try bold ANSI highlighting of the matched words in search output when stdout is a terminal, instead of the brackets. don't commit, show me the code path.",
+   "follow_ups": [
+    "drop it. agents never have a tty and I pipe everything, so it's a second code path nobody exercises. revert."
+   ]
+  },
+  {
+   "id": "s1-25",
+   "stream": "s1",
+   "day": 33,
+   "kind": "decision+feature",
+   "prompt": "default search limit is 12. options: (A) leave it, (B) drop to 8 and print a last line saying how many more matched and to use --limit. thoughts, short.",
+   "follow_ups": [
+    "B. twelve hits push the first one off my screen and agents read all of them anyway, the footer tells them there's more. implement, the footer goes to stderr so pipes stay clean. tests, howto, commit."
+   ],
+   "collision": "--limit"
+  },
+  {
+   "id": "s1-26",
+   "stream": "s1",
+   "day": 36,
+   "kind": "abandoned",
+   "prompt": "every search looks up the current project from the cwd. try caching that in a small file next to the database keyed by cwd, measure before and after with `time` on 20 runs. if the gain is under 5 ms per search, revert everything and tell me the numbers.",
+   "follow_ups": [
+    "as expected. make sure nothing of it is left, no cache file code, no test."
+   ]
+  },
+  {
+   "id": "s1-27",
+   "stream": "s1",
+   "day": 37,
+   "kind": "revisit+feature",
+   "prompt": "the json lines output: add the session id to each object, and make --count together with --json print {\"count\":N}. test, howto, commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s1-28",
+   "stream": "s1",
+   "day": 38,
+   "kind": "feature",
+   "prompt": "add `--speaker user|assistant|tool|meta` to search to keep only turns from that speaker. bad value is an error that lists the valid ones. test, howto, commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s1-29",
+   "stream": "s1",
+   "day": 39,
+   "kind": "instruction+docs",
+   "prompt": "from now on whenever search or turn output or flags change, skill/ctx/SKILL.md gets updated in the same commit, agents learn the tool from that file. now check SKILL.md against what we've changed so far on this branch and fix the drift. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s1-30",
+   "stream": "s1",
+   "day": 40,
+   "kind": "decision+bugfix",
+   "prompt": "search can sit for 30 seconds when another ctx process holds the database (busy timeout is 30000). for a read-only search that's silly. (A) fail after 2 seconds with 'archive is busy, try again', (B) keep waiting but print a notice every few seconds. pick one for me to confirm.",
+   "follow_ups": [
+    "A. a hook or an agent calling search must never stall a session, a clear failure beats a wait. only for search and turn, leave the writers at 30 s. test if you can do it without sleeping long, commit."
+   ],
+   "collision": "timeout"
+  },
+  {
+   "id": "s1-31",
+   "stream": "s1",
+   "day": 43,
+   "kind": "feature+unfinished",
+   "prompt": "ranking experiment, in stages. stage 1 today and nothing more: add `--explain` to search that prints the bm25 score next to each hit. commit that. then stop and tell me what stage 2 (preferring turns I typed over tool output) would need, don't start it.",
+   "follow_ups": []
+  },
+  {
+   "id": "s1-32",
+   "stream": "s1",
+   "day": 44,
+   "kind": "revisit+bugfix",
+   "prompt": "--since and --as-of together: if as-of is earlier than since that can never match. reject it with a message naming both flags. test, commit.",
+   "follow_ups": [],
+   "collision": "date-validation"
+  },
+  {
+   "id": "s1-33",
+   "stream": "s1",
+   "day": 45,
+   "kind": "decision+feature+revisit",
+   "prompt": "stage 2 of the ranking thing. (A) multiply the score of user-typed turns so they rank above tool output, (B) only use speaker as a tie-break between equal scores. what would each do to a search for an error message?",
+   "follow_ups": [
+    "B, tie-break only. A would bury the tool output that holds the literal error text, which is the thing I search for most. implement, show it with --explain in a test, commit."
+   ]
+  },
+  {
+   "id": "s1-34",
+   "stream": "s1",
+   "day": 46,
+   "kind": "abandoned",
+   "prompt": "try prefix matching: `ctx search --prefix migr` should match migrate, migration... build it on FTS5 prefix queries, test, show me timing on the test archive for a 3-letter prefix. no commit.",
+   "follow_ups": [
+    "revert. three-letter prefixes match everything and it's one more flag to explain for something I can do by typing the word. take it all out."
+   ]
+  },
+  {
+   "id": "s1-35",
+   "stream": "s1",
+   "day": 47,
+   "kind": "revisit+bugfix",
+   "prompt": "turn: --tail together with --full makes no sense. make that an error naming both flags, and check --tail doesn't split a multi-byte character at the cut. test, commit.",
+   "follow_ups": [],
+   "collision": "truncation"
+  },
+  {
+   "id": "s1-36",
+   "stream": "s1",
+   "day": 50,
+   "kind": "instruction+refactor",
+   "prompt": "exit codes, as a rule for everything new: 2 for usage errors (bad flag, bad value), 1 for runtime failures and for no matches. make search and turn follow it now, with tests. commit.",
+   "follow_ups": [],
+   "collision": "exit-codes"
+  },
+  {
+   "id": "s1-37",
+   "stream": "s1",
+   "day": 51,
+   "kind": "abandoned",
+   "prompt": "try moving the stopword list out of the C array into a table in schema/index.sql so it can be edited with ctx sql. no commit, I want to see the diff size first.",
+   "follow_ups": [
+    "no. a table means a schema bump and a rebuild for what is a word list, and nobody will edit it. revert, keep the array."
+   ]
+  },
+  {
+   "id": "s1-38",
+   "stream": "s1",
+   "day": 52,
+   "kind": "docs+unfinished",
+   "prompt": "write docs/search.md: a reference for every search and turn flag we have now, each with a real example and its real output, produced by running it against a scratch archive you build from test data. go flag by flag.",
+   "follow_ups": [
+    "stop here, we'll pick it up later. commit what's written if it's accurate so far, and tell me which flags are documented and which aren't."
+   ],
+   "interrupt_after": 200
+  },
+  {
+   "id": "s1-39",
+   "stream": "s1",
+   "day": 53,
+   "kind": "revisit+docs",
+   "prompt": "finish the search reference doc from where it stopped. link it from the howto's search section. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s1-40",
+   "stream": "s1",
+   "day": 54,
+   "kind": "revisit+review",
+   "prompt": "before I merge this branch of work: list every search and turn flag added since the start, one line each, and check each has a test, a howto line and is in SKILL.md. fix any gap you find and commit. then give me the list.",
+   "follow_ups": []
+  },
+  {
+   "id": "s1-41",
+   "stream": "s1",
+   "day": 55,
+   "kind": "refactor+unfinished",
+   "prompt": "the error-message house style only got applied to search and turn. now do the rest of src/ctx.c: every die() and stderr message, command by command in the order the commands appear in the file, build and run the tests after each command, one commit per command.",
+   "follow_ups": [
+    "stop here, we'll pick it up later. don't start another one. tell me exactly what is done and committed and what is left."
+   ],
+   "interrupt_after": 75,
+   "note": "added after the planned sessions ran: the stream was one short of a required element (a session interrupted mid-task, or for s2 a reverted attempt, since s2-25 hit the 12-minute deadline)"
+  }
+ ],
+ "s2": [
+  {
+   "id": "s2-01",
+   "stream": "s2",
+   "day": 1,
+   "kind": "instruction",
+   "prompt": "write a CLAUDE.md for this repo, short. rules: work on main. every commit subject starts with its area and a colon: `archive:`, `redact:`, `audit:`, `scan:` or `docs:`. run `make test` before committing. any secret-looking string in a test must contain the word EXAMPLE so nobody mistakes it for a real one. commit.",
+   "follow_ups": [
+    "also: commit bodies are fine when they explain why, keep them under 5 lines. amend."
+   ]
+  },
+  {
+   "id": "s2-02",
+   "stream": "s2",
+   "day": 2,
+   "kind": "feature+instruction",
+   "prompt": "redaction misses passwords given to sshpass: `sshpass -p VALUE ssh ...`. add a rule named `sshpass` that redacts VALUE. test in test/run.sh, commit.",
+   "follow_ups": [
+    "two things you have to do for every redaction rule from now on, same commit: raise REDACTION_VERSION so stored turns get redacted again, and add a seed file under fuzz/seed/redact. fix this commit by amending."
+   ]
+  },
+  {
+   "id": "s2-03",
+   "stream": "s2",
+   "day": 3,
+   "kind": "decision+feature",
+   "prompt": "long tool output keeps 16K at each end (TOOL_KEEP) and cuts the middle. options: (A) leave it symmetric, (B) keep less of the head and more of the tail. what do we lose either way? short.",
+   "follow_ups": [
+    "B: 8K head, 24K tail. the end holds the error and the summary, the head is mostly the command echoed back. two constants, update the test that builds the big output, commit."
+   ],
+   "collision": "truncation"
+  },
+  {
+   "id": "s2-04",
+   "stream": "s2",
+   "day": 4,
+   "kind": "feature",
+   "prompt": "add `ctx extract FILE --json`: one JSON object per turn per line with speaker, at and text, after redaction. test, a line in docs/howto.md, commit.",
+   "follow_ups": [],
+   "collision": "--json"
+  },
+  {
+   "id": "s2-05",
+   "stream": "s2",
+   "day": 5,
+   "kind": "refactor+regression-plant",
+   "prompt": "add_tool_text got ugly after the head/tail change. tidy it up. and the two while loops that step back off continuation bytes can go, tool output is ASCII in practice and they're noise. update tests if any pin that. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s2-06",
+   "stream": "s2",
+   "day": 8,
+   "kind": "abandoned",
+   "prompt": "experiment: don't archive the output of Read tool calls at all, the file contents are in the repo anyway. implement, run tests, tell me how much smaller the fixture's extract gets. no commit yet.",
+   "follow_ups": [
+    "no, revert. half my questions about old sessions are 'what did that file look like then', and the repo doesn't have yesterday's uncommitted state. take it all out."
+   ]
+  },
+  {
+   "id": "s2-07",
+   "stream": "s2",
+   "day": 10,
+   "kind": "decision+feature",
+   "prompt": "`ctx audit --limit N` caps the findings listed, default 30. I want a way to list all of them. (A) `--limit 0` means no limit, (B) a new flag. which?",
+   "follow_ups": [
+    "A. --all already means rescan here, a second flag with 'all' in it would confuse me, and 0-as-unlimited is what every other tool does. negative or junk is still an error. test, howto, commit."
+   ],
+   "collision": "--limit"
+  },
+  {
+   "id": "s2-08",
+   "stream": "s2",
+   "day": 11,
+   "kind": "instruction+tests",
+   "prompt": "new rule for tests: no more python3 heredocs in new tests, sh and printf only. the old ones stay as they are. in that style add a test that a harness reminder inside a user message is archived as speaker `meta`, if we don't have exactly that. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s2-09",
+   "stream": "s2",
+   "day": 12,
+   "kind": "bugfix",
+   "prompt": "what does `ctx archive` do with an empty file, and with a transcript whose last line is half written? find out, make both behave sensibly (nothing stored for the half line, no error), test both, commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s2-10",
+   "stream": "s2",
+   "day": 13,
+   "kind": "decision+feature",
+   "prompt": "I want `ctx scan --dry-run`: show what a scan would archive without storing anything. (A) list every transcript with how many bytes are new, (B) only print totals. which is more useful?",
+   "follow_ups": [
+    "A, with the totals as a last line. I want to see which transcript is the 300 MB one before I let it run. implement, test, howto, commit."
+   ],
+   "collision": "--dry-run"
+  },
+  {
+   "id": "s2-11",
+   "stream": "s2",
+   "day": 15,
+   "kind": "tests+unfinished",
+   "prompt": "go through the token_rules table and tell me which rule names have no test in test/run.sh. write tests for the first five missing ones today, commit, and tell me in chat which are still missing. remember EXAMPLE.",
+   "follow_ups": []
+  },
+  {
+   "id": "s2-12",
+   "stream": "s2",
+   "day": 16,
+   "kind": "revisit+tests",
+   "prompt": "the redaction rules that still had no test after last time: write those now. commit when the list is empty and show me the final count of rules against tests.",
+   "follow_ups": []
+  },
+  {
+   "id": "s2-13",
+   "stream": "s2",
+   "day": 17,
+   "kind": "refactor+regression-plant",
+   "prompt": "the keyword rule turns every `token = ...` line in archived parser diffs into [REDACTED], unreadable. drop `token` from the keyword words, the prefixed token rules catch the real ones. update the tests that expected it. bump the version as per the rule. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s2-14",
+   "stream": "s2",
+   "day": 18,
+   "kind": "feature",
+   "prompt": "add `ctx audit --rule NAME` to list only findings of one rule. unknown rule name is an error listing the valid names. test, howto, commit.",
+   "follow_ups": [],
+   "note": "cut off when the whole run was stopped early; kept as an interrupted session and picked up in s2-14b"
+  },
+  {
+   "id": "s2-14b",
+   "stream": "s2",
+   "day": 18,
+   "kind": "feature+pickup",
+   "prompt": "the `ctx audit --rule` work got interrupted before anything was committed, the tree is clean. check git status and the log to be sure, then do it from the start: `ctx audit --rule NAME` lists only that rule's findings, an unknown name is an error listing the valid ones. test, howto, commit.",
+   "follow_ups": [],
+   "note": "added to the plan after the run was stopped: picks up the work s2-14 left when it was cut off"
+  },
+  {
+   "id": "s2-15",
+   "stream": "s2",
+   "day": 19,
+   "kind": "regression-fix+revisit",
+   "prompt": "`ctx turn` shows a broken character in the middle of a long tool output that has box-drawing characters in it, and `ctx extract big.jsonl | iconv -f utf-8 -t utf-8 >/dev/null` fails. that used to be clean. find the commit that broke it, fix it, add a test with multi-byte text across the cut, commit.",
+   "follow_ups": [],
+   "collision": "truncation"
+  },
+  {
+   "id": "s2-16",
+   "stream": "s2",
+   "day": 22,
+   "kind": "instruction",
+   "prompt": "I want to know what trimming costs: how many bytes get cut from tool output per session. where would you record that? just propose, don't build.",
+   "follow_ups": [
+    "leave it for now. and a rule since you proposed a column: ask me before changing anything under schema/, every time, even a comment. write that down wherever you keep rules."
+   ]
+  },
+  {
+   "id": "s2-17",
+   "stream": "s2",
+   "day": 23,
+   "kind": "abandoned",
+   "prompt": "make `ctx archive -` read the transcript from stdin. implement, test, don't commit yet.",
+   "follow_ups": [
+    "revert that. the session id comes from the file name, with stdin there isn't one, and inventing one stores the same session twice under two ids. not worth it."
+   ]
+  },
+  {
+   "id": "s2-18",
+   "stream": "s2",
+   "day": 24,
+   "kind": "tests+instruction",
+   "prompt": "prove with a test that archiving the same transcript again stores 0 turns even when the file's mtime changed but its content didn't. fix it if it's not true. commit.",
+   "follow_ups": [
+    "and a rule: tests that depend on file times set them explicitly with touch -t. never sleep to get a newer mtime."
+   ],
+   "collision": "duplicates"
+  },
+  {
+   "id": "s2-19",
+   "stream": "s2",
+   "day": 25,
+   "kind": "decision+feature",
+   "prompt": "the detached archiving that a hook starts gives up after DRAIN_DEADLINE_SECS, an hour. that's long for a job that is stuck. (A) cut it to 10 minutes, (B) keep the hour but write a line to the calls log once it passes 5 minutes. opinion?",
+   "follow_ups": [
+    "B. a first scan of a big machine honestly takes more than 10 minutes and killing it means it never finishes. I just want to see it. implement, test what you can without waiting, commit."
+   ],
+   "collision": "timeout"
+  },
+  {
+   "id": "s2-20",
+   "stream": "s2",
+   "day": 26,
+   "kind": "revisit+feature",
+   "prompt": "the sshpass rule: it should also catch `sshpass -pVALUE` with no space and `--password=VALUE` on any command line. extend, with everything a rule change needs. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s2-21",
+   "stream": "s2",
+   "day": 29,
+   "kind": "instruction",
+   "prompt": "from now on a commit that changes redaction shows its effect: paste the before/after of `ctx extract` on fuzz/seed/redact/mixed.txt in the commit body, a few lines of diff is enough. no code change today, just save the rule and confirm you have it.",
+   "follow_ups": []
+  },
+  {
+   "id": "s2-22",
+   "stream": "s2",
+   "day": 30,
+   "kind": "regression-fix+decision+revisit",
+   "prompt": "`ctx audit --known` just flagged a value stored in clear: a line `token: 7c9e41aab03f55d2EXAMPLE` from a config dump. redaction used to catch `token:` lines. find when that stopped. then before fixing: (A) put the word back as it was, (B) put it back but skip values that look like code, e.g. followed by `(` or containing `.`. say which you'd take.",
+   "follow_ups": [
+    "B. I still don't want parser diffs shredded, but a bare value after `token:` must go. implement with tests for both sides, and follow every redaction rule we have. commit."
+   ]
+  },
+  {
+   "id": "s2-23",
+   "stream": "s2",
+   "day": 32,
+   "kind": "tests+unfinished",
+   "prompt": "every row of token_rules should have a seed file under fuzz/seed/redact named after the rule, holding one fake token of that shape (EXAMPLE in it where the shape allows). add them one rule at a time and check with `ctx extract` on a one-line transcript that each is redacted.",
+   "follow_ups": [
+    "stop here, we'll pick it up later. commit the seeds that are verified. tell me which rule names are done and which are left."
+   ],
+   "interrupt_after": 200
+  },
+  {
+   "id": "s2-24",
+   "stream": "s2",
+   "day": 33,
+   "kind": "revisit+tests",
+   "prompt": "finish the per-rule fuzz seeds from where we stopped. same checks. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s2-25",
+   "stream": "s2",
+   "day": 34,
+   "kind": "abandoned",
+   "prompt": "first scans of big machines are slow. try raising BATCH_BYTES from 8 MB to 64 MB and time `ctx archive` on a generated 40 MB transcript before and after. tell me the numbers, no commit.",
+   "follow_ups": [
+    "revert it whatever the numbers say, I don't want one process holding 64 MB of turns on the laptop for a few percent. back to 8."
+   ]
+  },
+  {
+   "id": "s2-26",
+   "stream": "s2",
+   "day": 36,
+   "kind": "abandoned",
+   "prompt": "add `ctx extract FILE --stats`: after the turns, print to stderr how many turns per speaker and how many redactions per rule. test it. don't commit yet, show me the output on the fixture.",
+   "follow_ups": [
+    "on second thought no. stderr noise on every extract, and audit already counts per rule. revert it."
+   ]
+  },
+  {
+   "id": "s2-27",
+   "stream": "s2",
+   "day": 37,
+   "kind": "decision+feature",
+   "prompt": "`ctx scan --since DATE`: only archive transcripts changed on or after DATE. (A) go by the file's mtime, (B) go by the first timestamp inside the file. which?",
+   "follow_ups": [
+    "A, mtime. it's cheap, no need to open thousands of files, and I use this right after restoring a backup where content dates are old anyway. reuse the date check. test following the mtime rule, howto, commit."
+   ],
+   "collision": "--since"
+  },
+  {
+   "id": "s2-28",
+   "stream": "s2",
+   "day": 38,
+   "kind": "revisit+feature",
+   "prompt": "the scan dry run should honour --since as well, and its last line should say how many transcripts were skipped as too old. test, commit.",
+   "follow_ups": [],
+   "collision": "--dry-run"
+  },
+  {
+   "id": "s2-29",
+   "stream": "s2",
+   "day": 39,
+   "kind": "bugfix",
+   "prompt": "check the bearer rule: does it catch `authorization: bearer VALUE` in lower case, and `Bearer<TAB>VALUE`? whatever it misses, fix, with tests and the things a rule change needs. commit.",
+   "follow_ups": [],
+   "collision": "bearer"
+  },
+  {
+   "id": "s2-30",
+   "stream": "s2",
+   "day": 40,
+   "kind": "decision+instruction",
+   "prompt": "malformed JSON lines in a transcript: what happens today in extract and archive? options (A) skip them but count and report on stderr, (B) die at the first one. which?",
+   "follow_ups": [
+    "A. a transcript that is still being written has a half line at the end every time, dying is wrong. print `N lines skipped` on stderr when N > 0. and that's a rule: nothing gets skipped silently anywhere in archiving, every skip is counted and reported. test, commit."
+   ]
+  },
+  {
+   "id": "s2-31",
+   "stream": "s2",
+   "day": 43,
+   "kind": "abandoned",
+   "prompt": "try redacting e-mail addresses with a rule named `email`. do everything a rule needs, run the tests, show me what the fixture's extract looks like. no commit.",
+   "follow_ups": [
+    "no. every `git log` in the archive loses its authors and I can't search for who did something any more. revert all of it including the version bump."
+   ]
+  },
+  {
+   "id": "s2-32",
+   "stream": "s2",
+   "day": 44,
+   "kind": "tests+unfinished",
+   "prompt": "speaker `meta` is for text the harness added. list the shapes we recognise as meta today and the ones in real transcripts we probably miss (think reminders, notifications, interruptions, command output wrappers). add the first two missing ones with tests, commit, tell me the rest in chat.",
+   "follow_ups": []
+  },
+  {
+   "id": "s2-33",
+   "stream": "s2",
+   "day": 45,
+   "kind": "revisit+feature",
+   "prompt": "the meta shapes you listed and didn't do: add them now, each with a test in the style we agreed. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s2-34",
+   "stream": "s2",
+   "day": 46,
+   "kind": "decision+feature",
+   "prompt": "`ctx audit` exits 1 whenever any finding is open, so my nightly job mails me every day about the same old ones. (A) exit 1 only when there are findings newer than the previous run, (B) leave it. short answer.",
+   "follow_ups": [
+    "A. a mail every day trains me to ignore it. old open findings are still listed, they just don't fail the run. test, howto, commit."
+   ],
+   "collision": "exit-codes"
+  },
+  {
+   "id": "s2-35",
+   "stream": "s2",
+   "day": 47,
+   "kind": "revisit+feature",
+   "prompt": "the head and tail sizes for tool output: let me override them for a one-off re-archive with CTX_TOOL_HEAD and CTX_TOOL_TAIL in bytes. validate them. add both to the Environment table in the howto. test, commit.",
+   "follow_ups": [],
+   "collision": "truncation"
+  },
+  {
+   "id": "s2-36",
+   "stream": "s2",
+   "day": 50,
+   "kind": "feature+instruction",
+   "prompt": "add `ctx audit --allow-rule NAME \"reason\"`: allow every open finding of that rule at once. test, howto, commit.",
+   "follow_ups": [
+    "it should say how many it allowed. rule: any flag that acts on many things at once prints how many it touched. amend."
+   ]
+  },
+  {
+   "id": "s2-37",
+   "stream": "s2",
+   "day": 51,
+   "kind": "abandoned",
+   "prompt": "try making scan archive transcripts in parallel, one child per file, four at a time. time it on 30 generated transcripts against the serial version. no commit.",
+   "follow_ups": [
+    "revert. they just queue on the database lock so there's nothing to win, and their output interleaves. serial stays."
+   ]
+  },
+  {
+   "id": "s2-38",
+   "stream": "s2",
+   "day": 52,
+   "kind": "docs+unfinished",
+   "prompt": "go through 'Archive your sessions' and 'Check the archive for secrets' in docs/howto.md sentence by sentence and check each against the code and against what we changed. fix the doc where it's wrong. keep a running list in chat of what you verified.",
+   "follow_ups": [
+    "stop here, we'll pick it up later. commit the fixes you're sure of and tell me the last sentence you verified."
+   ],
+   "interrupt_after": 190
+  },
+  {
+   "id": "s2-39",
+   "stream": "s2",
+   "day": 53,
+   "kind": "revisit+docs",
+   "prompt": "carry on checking the two howto sections against the code from where you stopped, to the end. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s2-40",
+   "stream": "s2",
+   "day": 54,
+   "kind": "revisit+review",
+   "prompt": "summary for the merge: every redaction rule added or changed in this line of work, what REDACTION_VERSION is now and why, and whether each rule has a test and a seed. fix what's missing, commit, then give me the table.",
+   "follow_ups": []
+  },
+  {
+   "id": "s2-41",
+   "stream": "s2",
+   "day": 55,
+   "kind": "abandoned+revisit",
+   "prompt": "experiment: cut the tool output head and tail down to 4K and 12K, run the tests, and tell me how much smaller the big-output test's stored turn gets. no commit.",
+   "follow_ups": [
+    "revert it. the 24K tail was chosen because the error and the summary sit there, and disk is not what hurts. back to 8K and 24K, nothing left behind."
+   ],
+   "collision": "truncation",
+   "note": "added after the planned sessions ran: the stream was one short of a required element (a session interrupted mid-task, or for s2 a reverted attempt, since s2-25 hit the 12-minute deadline)"
+  }
+ ],
+ "s3": [
+  {
+   "id": "s3-01",
+   "stream": "s3",
+   "day": 1,
+   "kind": "instruction",
+   "prompt": "set up a CLAUDE.md here, keep it short. how I work in this repo: every task on its own branch named topic/SOMETHING, merged into main with --no-ff once `make test` passes, then the branch is deleted. commit subjects in past tense ('Added ...', 'Fixed ...'), under 70 chars. commit it, on a branch like the rule says.",
+   "follow_ups": [
+    "add: never edit files under vendor/ or fuzz/seed/. same branch, then merge."
+   ]
+  },
+  {
+   "id": "s3-02",
+   "stream": "s3",
+   "day": 3,
+   "kind": "feature+instruction",
+   "prompt": "add `ctx rules --count`: print just the number of rules in force for this project, counting the every-project ones. test, merge.",
+   "follow_ups": [
+    "docs are missing. standing rule: a new flag or environment variable is documented in docs/howto.md in the same branch before it merges, and if it concerns the hooks also in plugin/INSTALL.md. fix it for --count."
+   ]
+  },
+  {
+   "id": "s3-03",
+   "stream": "s3",
+   "day": 4,
+   "kind": "decision+feature",
+   "prompt": "`ctx remember \"x\" --until 2020-01-01` is accepted and the rule is born expired. (A) reject an --until date in the past, (B) accept it with a warning. which?",
+   "follow_ups": [
+    "A, reject. a rule that can never apply is always a typo in the year. today itself is allowed. same for `rules accept --until`. test, merge."
+   ],
+   "collision": "date-validation"
+  },
+  {
+   "id": "s3-04",
+   "stream": "s3",
+   "day": 5,
+   "kind": "instruction",
+   "prompt": "make me a table, in chat only: every timeout or deadline on the hook path and in the rules machinery (hooks.json timeouts, the model deadline, the hourly check, anything else), with where each is set and what happens when it fires.",
+   "follow_ups": [
+    "useful. now a hard rule for this code: nothing that runs on the hook path may write to the database or call a model. hooks read and print. if a change seems to need otherwise, stop and ask me first."
+   ],
+   "collision": "timeout"
+  },
+  {
+   "id": "s3-05",
+   "stream": "s3",
+   "day": 8,
+   "kind": "refactor+regression-plant",
+   "prompt": "plugin/hooks/hooks.json: tidy it, consistent order of events and of keys inside each entry. and drop the PostToolUse block, that's for a tool I don't use and it's a process spawned on tool calls for nothing. keep plugin/INSTALL.md in step. merge.",
+   "follow_ups": []
+  },
+  {
+   "id": "s3-06",
+   "stream": "s3",
+   "day": 9,
+   "kind": "abandoned",
+   "prompt": "SessionStart runs two processes, `ctx ticket offer` and `ctx rules offer`. try one `ctx offer` that prints both, and point hooks.json at it. build, test, show me the timing of old against new. don't merge.",
+   "follow_ups": [
+    "no, drop the branch. the two have separate timeouts on purpose: if rules is slow the tickets still show up. one process loses that. delete it."
+   ]
+  },
+  {
+   "id": "s3-07",
+   "stream": "s3",
+   "day": 10,
+   "kind": "decision+feature",
+   "prompt": "`ctx decisions --open` only looks back 14 days. (A) leave it fixed, (B) add `--days N`, default 14. worth it?",
+   "follow_ups": [
+    "B. after two weeks away everything I owe an answer on is older than 14 days and the list comes back empty. validate N. test, howto, merge."
+   ],
+   "collision": "--days"
+  },
+  {
+   "id": "s3-08",
+   "stream": "s3",
+   "day": 11,
+   "kind": "decision+feature",
+   "prompt": "I want to read one rule in full: its text, where it came from, how many versions it has. (A) a subcommand `ctx rules show KEY`, (B) just `ctx rules KEY`. which?",
+   "follow_ups": [
+    "A. a positional key collides with the subcommand names the day someone has a rule file called review.md. implement show, unknown key is an error. test, howto, merge."
+   ]
+  },
+  {
+   "id": "s3-09",
+   "stream": "s3",
+   "day": 12,
+   "kind": "refactor+regression-plant",
+   "prompt": "the text `ctx rules offer` prints at session start is too long, agents skim it. tighten the wording of its opening lines, same facts in fewer words. and cut OFFER_RULES from 15 to 5 while you're there. fix tests that count. merge.",
+   "follow_ups": []
+  },
+  {
+   "id": "s3-10",
+   "stream": "s3",
+   "day": 15,
+   "kind": "tests+unfinished",
+   "prompt": "which `ctx rules` subcommands have no direct test in test/run.sh? list them. write tests for three of the untested ones today, merge, and tell me in chat which remain. don't write that list into the repo.",
+   "follow_ups": []
+  },
+  {
+   "id": "s3-11",
+   "stream": "s3",
+   "day": 16,
+   "kind": "revisit+tests",
+   "prompt": "the rules subcommands that were still untested after the last round: cover them now. merge. tell me if any can't be tested without a model and why.",
+   "follow_ups": []
+  },
+  {
+   "id": "s3-12",
+   "stream": "s3",
+   "day": 17,
+   "kind": "instruction+refactor",
+   "prompt": "house rule for anything the hooks print to an agent: plain declarative sentences. no 'please', no exclamation marks, no emoji, and never a sentence telling the agent to run something. read through what `rules offer` and the compaction brief print, fix what breaks the rule, and keep it for everything new. merge.",
+   "follow_ups": []
+  },
+  {
+   "id": "s3-13",
+   "stream": "s3",
+   "day": 18,
+   "kind": "decision+feature",
+   "prompt": "remembering the exact same text twice makes two rules. (A) refuse the second and print the existing key, (B) quietly return the existing key as if it were new. which?",
+   "follow_ups": [
+    "A. I want to be told I already said it. exit 0 though, it's not a failure, message on stderr, existing key on stdout. test, merge."
+   ],
+   "collision": "duplicates"
+  },
+  {
+   "id": "s3-14",
+   "stream": "s3",
+   "day": 19,
+   "kind": "abandoned",
+   "prompt": "status notes fade after 30 days (FADE_DAYS). try 14 and see what the tests say. don't merge, tell me what changes.",
+   "follow_ups": [
+    "leave it at 30 and delete the branch. 30 came out of the labelled set, shorter quieted true rules, and I have no new data that says otherwise."
+   ]
+  },
+  {
+   "id": "s3-15",
+   "stream": "s3",
+   "day": 20,
+   "kind": "regression-fix+revisit",
+   "prompt": "published pages aren't being kept any more: `ctx artifacts show URL` has no copy for anything from this week, older ones are fine. something stopped calling `ctx artifacts keep`. find what and when, fix it, and add a test that would have caught it. merge.",
+   "follow_ups": [],
+   "note": "cut off when the whole run was stopped early; kept as an interrupted session and picked up in s3-15b"
+  },
+  {
+   "id": "s3-15b",
+   "stream": "s3",
+   "day": 20,
+   "kind": "regression-fix+revisit+pickup",
+   "prompt": "we were interrupted while fixing the pages-not-being-kept problem. you're still on its topic branch with uncommitted changes to hooks.json and the tests. look at what's there, tell me what's done and what isn't, then finish: the fix, the test that would have caught it, and merge the way CLAUDE.md says.",
+   "follow_ups": [],
+   "note": "added to the plan after the run was stopped: picks up the work s3-15 left when it was cut off"
+  },
+  {
+   "id": "s3-16",
+   "stream": "s3",
+   "day": 22,
+   "kind": "feature",
+   "prompt": "add `ctx decisions --since DATE` to list only questions asked on or after DATE. bad date fails like the other date flags. test, docs per the rule, merge.",
+   "follow_ups": [],
+   "collision": "--since"
+  },
+  {
+   "id": "s3-17",
+   "stream": "s3",
+   "day": 23,
+   "kind": "instruction+bugfix",
+   "prompt": "change of process: from now on merge with `git merge --squash` instead of --no-ff. I want exactly one commit per topic on main, the branch history is noise. update CLAUDE.md to say so. first use of it: `ctx rules keep NOSUCHKEY` should be an error, fix and test that.",
+   "follow_ups": []
+  },
+  {
+   "id": "s3-18",
+   "stream": "s3",
+   "day": 25,
+   "kind": "tests+unfinished",
+   "prompt": "write a test for each event in plugin/hooks/hooks.json: run its command with CLAUDE_PLUGIN_ROOT pointing at a scratch dir holding our built ctx, check it exits 0 and finishes inside the timeout the file gives it. one event at a time, in the order of the file.",
+   "follow_ups": [
+    "stop here, we'll pick it up later. merge what passes following the current merge rule. tell me which events have a test now and which don't."
+   ],
+   "interrupt_after": 200
+  },
+  {
+   "id": "s3-19",
+   "stream": "s3",
+   "day": 26,
+   "kind": "revisit+tests",
+   "prompt": "finish the per-event hook tests from where you stopped. merge.",
+   "follow_ups": []
+  },
+  {
+   "id": "s3-20",
+   "stream": "s3",
+   "day": 28,
+   "kind": "regression-fix+decision+revisit",
+   "prompt": "my rule about the release checklist wasn't offered at session start. I have nine remembered rules in that project and it only showed some. find out why and since when. then: (A) put the cap back where it was, (B) keep the lower cap but end the list with a line saying how many more there are and to run `ctx rules`. which do you suggest?",
+   "follow_ups": [
+    "both: cap back to 15 and the 'N more' line when it still overflows. a rule that isn't shown is a rule that isn't followed, and silently is the worst way. test, merge."
+   ]
+  },
+  {
+   "id": "s3-21",
+   "stream": "s3",
+   "day": 29,
+   "kind": "feature",
+   "prompt": "`ctx rules review` lists 30 at a time. add `--limit N`. reject junk and anything under 1. test, docs, merge.",
+   "follow_ups": [],
+   "collision": "--limit"
+  },
+  {
+   "id": "s3-22",
+   "stream": "s3",
+   "day": 30,
+   "kind": "decision+feature",
+   "prompt": "the 120 second deadline on judge and classifier calls: my local model needs about 150. (A) raise the constant to 300 for everyone, (B) make CTX_MODEL_DEADLINE an official setting, default 120. which?",
+   "follow_ups": [
+    "B. nobody else should wait five minutes on a hung call because my laptop is slow. validate it (whole seconds, at least 1), document it in the Environment table. test, merge."
+   ],
+   "collision": "timeout"
+  },
+  {
+   "id": "s3-23",
+   "stream": "s3",
+   "day": 31,
+   "kind": "abandoned",
+   "prompt": "let `ctx rules accept` take several numbers at once: `ctx rules accept 12 13 14`. build it with tests. don't merge yet.",
+   "follow_ups": [
+    "scrap it. --text and --until would then apply to which of them? it's ambiguous and I'd rather type three lines. delete the branch."
+   ]
+  },
+  {
+   "id": "s3-24",
+   "stream": "s3",
+   "day": 32,
+   "kind": "revisit+feature",
+   "prompt": "the rules count flag: make it work with --all (every rule anywhere, retired too) and with `--project NAME`. test, docs, merge.",
+   "follow_ups": [],
+   "collision": "--project"
+  },
+  {
+   "id": "s3-25",
+   "stream": "s3",
+   "day": 33,
+   "kind": "instruction+tests",
+   "prompt": "rule: every subcommand of rules, decisions and artifacts appears in the usage text, and a test checks the usage text for it by name. bring the usage text and tests in line now, and keep doing it for new ones. merge.",
+   "follow_ups": []
+  },
+  {
+   "id": "s3-26",
+   "stream": "s3",
+   "day": 36,
+   "kind": "bugfix+instruction",
+   "prompt": "`ctx rules retire KEY --reason x --by NEWKEY` when NEWKEY doesn't exist: what happens? it should refuse. fix, test, merge.",
+   "follow_ups": [
+    "make that general, as a rule: a command given a KEY it can't find says which key and exits 2. it never falls through to doing something else."
+   ],
+   "collision": "retire"
+  },
+  {
+   "id": "s3-27",
+   "stream": "s3",
+   "day": 37,
+   "kind": "decision+docs",
+   "prompt": "importing CLAUDE.md makes the whole file one rule. alternative: one rule per top-level bullet. (A) whole file, (B) per bullet. which is right?",
+   "follow_ups": [
+    "A, whole file. a rule's history follows its file, and bullets have no identity once I reorder or reword them. say so in the howto in one sentence and add a test that a two-bullet CLAUDE.md is one rule. merge."
+   ],
+   "collision": "CLAUDE.md"
+  },
+  {
+   "id": "s3-28",
+   "stream": "s3",
+   "day": 38,
+   "kind": "tests+unfinished",
+   "prompt": "the brief an agent gets after a compaction: list its sections in the order they print and which of them have a test. write tests for the first two untested sections only, merge, and tell me the rest in chat.",
+   "follow_ups": []
+  },
+  {
+   "id": "s3-29",
+   "stream": "s3",
+   "day": 39,
+   "kind": "revisit+tests",
+   "prompt": "the remaining untested sections of the compaction brief: test them now. merge.",
+   "follow_ups": []
+  },
+  {
+   "id": "s3-30",
+   "stream": "s3",
+   "day": 40,
+   "kind": "abandoned",
+   "prompt": "add `ctx rules export`: write every rule in force to one markdown file. build, test, don't merge.",
+   "follow_ups": [
+    "no. that file is a second copy that goes stale the same day, and if it lands in a project the import reads it back in as a rule. delete the branch."
+   ]
+  },
+  {
+   "id": "s3-31",
+   "stream": "s3",
+   "day": 43,
+   "kind": "revisit+feature",
+   "prompt": "`ctx decisions --open`: show how old each waiting question is, in days, at the end of its line. test, merge.",
+   "follow_ups": []
+  },
+  {
+   "id": "s3-32",
+   "stream": "s3",
+   "day": 44,
+   "kind": "instruction+revisit+bugfix",
+   "prompt": "I regret the age-in-days thing. rule from now on: dates in any output are absolute, YYYY-MM-DD, never relative like '3 days' or 'yesterday'. relative text can't be pinned in a test and is wrong the moment it's archived. change --open to show the date asked instead, and check rules and artifacts output for relative dates too. merge.",
+   "follow_ups": []
+  },
+  {
+   "id": "s3-33",
+   "stream": "s3",
+   "day": 46,
+   "kind": "bugfix",
+   "prompt": "the offer cuts a long rule at the byte limit, in the middle of a word and maybe in the middle of a character. cut at the last space before the limit and end with '...'. never split a multi-byte character. test with a rule that has accented text across the limit. merge.",
+   "follow_ups": [],
+   "collision": "truncation"
+  },
+  {
+   "id": "s3-34",
+   "stream": "s3",
+   "day": 47,
+   "kind": "decision+bugfix",
+   "prompt": "what does `ctx rules offer` do when the database is missing or locked? (A) print nothing and exit 0, (B) exit non-zero with a message. which should a hook do?",
+   "follow_ups": [
+    "A. a failing hook puts an error banner on every session start and helps nobody. exit 0, and note the failure in the calls log so `ctx stats --hooks` shows it. check that's allowed under the hook-path rule before you write anything. test, merge."
+   ],
+   "collision": "exit-codes"
+  },
+  {
+   "id": "s3-35",
+   "stream": "s3",
+   "day": 48,
+   "kind": "abandoned",
+   "prompt": "SubagentStart runs `rules offer` again for every subagent. try caching the offer text in a file for 60 seconds so the second call is free. measure. don't merge.",
+   "follow_ups": [
+    "delete it. a rule I just remembered wouldn't show for a minute, and it's a file written from the hook path. not worth 10 ms."
+   ]
+  },
+  {
+   "id": "s3-36",
+   "stream": "s3",
+   "day": 50,
+   "kind": "docs+unfinished",
+   "prompt": "plugin/INSTALL.md and the hooks part of the howto: for every hook entry in hooks.json make sure the docs say what it runs, its timeout and why it exists. check each claim by reading the code, one event at a time. write it as a table.",
+   "follow_ups": [
+    "stop here, we'll pick it up later. merge the rows you've verified, tell me which events are done."
+   ],
+   "interrupt_after": 180
+  },
+  {
+   "id": "s3-37",
+   "stream": "s3",
+   "day": 51,
+   "kind": "revisit+docs",
+   "prompt": "finish the hooks table in the docs from where you left it. merge.",
+   "follow_ups": []
+  },
+  {
+   "id": "s3-38",
+   "stream": "s3",
+   "day": 52,
+   "kind": "revisit+feature",
+   "prompt": "`ctx rules show KEY` should take `--history` and then list every version of the rule with its date and first line. dates per the date rule. test, docs, usage, merge.",
+   "follow_ups": [],
+   "collision": "--history"
+  },
+  {
+   "id": "s3-39",
+   "stream": "s3",
+   "day": 53,
+   "kind": "abandoned",
+   "prompt": "add `--dry-run` to `ctx remember`: print the key and expiry it would create, store nothing. test. hold the merge.",
+   "follow_ups": [
+    "actually no. remember writes one line and retire undoes it, a dry run of that is ceremony. delete the branch."
+   ],
+   "collision": "--dry-run"
+  },
+  {
+   "id": "s3-40",
+   "stream": "s3",
+   "day": 54,
+   "kind": "revisit+review",
+   "prompt": "list every standing rule I've given you in this line of work, one line each, and say where each one is written down. any that only live in your own notes go into CLAUDE.md now, merged the current way. then show me the final CLAUDE.md.",
+   "follow_ups": []
+  },
+  {
+   "id": "s3-41",
+   "stream": "s3",
+   "day": 55,
+   "kind": "tests+unfinished",
+   "prompt": "the howto section 'Keep standing rules': for every sentence that states a behaviour, make sure a test in test/run.sh pins it. go top to bottom, one sentence at a time, on a topic branch, running the tests after each new one.",
+   "follow_ups": [
+    "stop here, we'll pick it up later. leave the branch unmerged with what passes committed on it. which sentences are covered now and which is next?"
+   ],
+   "interrupt_after": 75,
+   "note": "added after the planned sessions ran: the stream was one short of a required element (a session interrupted mid-task, or for s2 a reverted attempt, since s2-25 hit the 12-minute deadline)"
+  }
+ ],
+ "s4": [
+  {
+   "id": "s4-01",
+   "stream": "s4",
+   "day": 1,
+   "kind": "instruction",
+   "prompt": "create a CLAUDE.md for this repo, brief. conventions: commits go on main. subject starts with a capital verb, 72 chars max. every commit has a body line `Tests: ...` naming the test added or changed, or `Tests: none` with a reason. one logical change per commit: if a task touches ticket code and wiki code, that's two commits. `make test` must pass first. commit.",
+   "follow_ups": [
+    "one more line: never change vendor/ or schema/ticket-table.sql without asking. amend."
+   ]
+  },
+  {
+   "id": "s4-02",
+   "stream": "s4",
+   "day": 2,
+   "kind": "feature+instruction",
+   "prompt": "add `--limit N` to `ctx ticket ready`. test, commit.",
+   "follow_ups": [
+    "`--limit abc` gives what? write one helper, positive_int(flag, text), that dies naming the flag on junk or anything below 1, and use it here. rule from now on: every numeric flag in ticket, source and wiki code goes through it. howto line too, amend."
+   ],
+   "collision": "--limit"
+  },
+  {
+   "id": "s4-03",
+   "stream": "s4",
+   "day": 3,
+   "kind": "decision+feature",
+   "prompt": "`ctx ticket show` wants the full ten-character id. (A) accept any unique prefix of four or more characters, (B) full ids only. which?",
+   "follow_ups": [
+    "A. I type them from memory off the offer list. an ambiguous prefix is an error that lists the matches, shorter than four is an error. only for show today. test, howto, commit."
+   ]
+  },
+  {
+   "id": "s4-04",
+   "stream": "s4",
+   "day": 4,
+   "kind": "decision+feature",
+   "prompt": "I can only list tickets that are ready. I want to see done and dropped ones too. (A) a new `ctx ticket list [--status S]`, (B) a flag on ready like `--any`. which?",
+   "follow_ups": [
+    "A. ready means ready, a flag that makes it mean not-ready is a lie in the name. list shows id, status, type, title, newest first, `--status Open|Done|Dropped` filters. test, howto, commit."
+   ]
+  },
+  {
+   "id": "s4-05",
+   "stream": "s4",
+   "day": 5,
+   "kind": "refactor+regression-plant",
+   "prompt": "when `ctx source supersede` or `ctx source uses` is given a name that doesn't exist the message is vague. make it name the source it looked for. and normalise while you're there: stop accepting the `sources/` prefix in those two, bare names only, one way to say a thing. fix the tests and docs that used the prefix. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s4-06",
+   "stream": "s4",
+   "day": 6,
+   "kind": "abandoned",
+   "prompt": "when `ctx ticket new` is run without --body, open $EDITOR for the body like git does. implement, test what's testable. don't commit yet.",
+   "follow_ups": [
+    "revert it. agents have no editor, in their shells the editor is a no-op, so this hangs or files empty bodies. tickets without --body just have no body. take it out."
+   ]
+  },
+  {
+   "id": "s4-07",
+   "stream": "s4",
+   "day": 8,
+   "kind": "decision+feature",
+   "prompt": "the wiki gate refuses a page over 32 KB. (A) keep the hard refusal only, (B) also warn from 24 KB on. opinions?",
+   "follow_ups": [
+    "B. nobody notices a page creeping up until a save fails in the middle of a session, a warning three saves earlier is cheap. warning on stderr, save still succeeds. test, howto, commit."
+   ]
+  },
+  {
+   "id": "s4-08",
+   "stream": "s4",
+   "day": 9,
+   "kind": "instruction+tests",
+   "prompt": "rule for tests: wiki and source tests use the `kb` fixture project that test/run.sh already builds. never set up another fixture project, the suite is slow enough. check the 24 KB warning test follows that, and add a test that a page of exactly the limit is accepted if we lack one. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s4-09",
+   "stream": "s4",
+   "day": 10,
+   "kind": "feature",
+   "prompt": "add `--json` to `ctx ticket ready`: one object per ticket per line with id, type, title, project. test, howto, commit.",
+   "follow_ups": [],
+   "collision": "--json"
+  },
+  {
+   "id": "s4-10",
+   "stream": "s4",
+   "day": 11,
+   "kind": "tests+unfinished",
+   "prompt": "ticket lifecycle: list the transitions that matter (new to claim to done, new to drop, blocked becoming ready when its blocker is done or dropped, claiming twice, done without a claim, unknown ids...) and say which have a test. write the first three missing ones, commit, tell me the rest in chat.",
+   "follow_ups": []
+  },
+  {
+   "id": "s4-11",
+   "stream": "s4",
+   "day": 12,
+   "kind": "revisit+tests",
+   "prompt": "the ticket transitions you listed as untested and left: write those tests now. commit. if one of them shows a real bug, fix it in its own commit.",
+   "follow_ups": [],
+   "note": "cut off when the whole run was stopped early; kept as an interrupted session and picked up in s4-11b"
+  },
+  {
+   "id": "s4-11b",
+   "stream": "s4",
+   "day": 12,
+   "kind": "revisit+tests+pickup",
+   "prompt": "got interrupted during the remaining ticket transition tests and there's an uncommitted change in test/run.sh. I don't trust half-written tests I haven't seen. show me the diff stat, then throw it away with git checkout and write the remaining transition tests fresh. commit. if one shows a real bug, fix it in its own commit.",
+   "follow_ups": [],
+   "note": "added to the plan after the run was stopped: picks up the work s4-11 left when it was cut off"
+  },
+  {
+   "id": "s4-12",
+   "stream": "s4",
+   "day": 15,
+   "kind": "refactor+regression-plant",
+   "prompt": "when a quote isn't found, `ctx wiki save` prints the entire claim, which floods the terminal. print the footnote name and the first 80 characters. and drop the check that every page link points at an existing page from save: it forces me to save pages in dependency order. fix tests. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s4-13",
+   "stream": "s4",
+   "day": 17,
+   "kind": "decision+feature",
+   "prompt": "what does `ctx source add` do when --class is left out? tell me. then: (A) make a missing class an error, (B) default it to evergreen.",
+   "follow_ups": [
+    "A, an error. the class is the whole point, and a silent evergreen is a source nobody ever reviews. message lists the three classes. test, commit."
+   ]
+  },
+  {
+   "id": "s4-14",
+   "stream": "s4",
+   "day": 18,
+   "kind": "bugfix+instruction",
+   "prompt": "is `--review-after` really required for `--class perishable`, and is a review date earlier than `--retrieved` rejected? check, fix what isn't, test, commit.",
+   "follow_ups": [
+    "rule: every date flag in this code goes through the existing date check. no new date parsing, ever."
+   ],
+   "collision": "date-validation"
+  },
+  {
+   "id": "s4-15",
+   "stream": "s4",
+   "day": 19,
+   "kind": "regression-fix+revisit",
+   "prompt": "`ctx source uses sources/spec.md` says there is no such source. I paste paths with tab completion from the checkout, so they always start with sources/. this worked a couple of weeks ago. find what changed, make both forms work again in uses and supersede, test both forms, put the docs right. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s4-16",
+   "stream": "s4",
+   "day": 22,
+   "kind": "instruction+refactor",
+   "prompt": "rule for any ticket that ctx files by itself (from wiki repin, from audit, anything later): title is imperative and at most 60 characters, the body says what and where, and there is always an acceptance line. find the places that file tickets and bring them in line. commits as per our conventions.",
+   "follow_ups": []
+  },
+  {
+   "id": "s4-17",
+   "stream": "s4",
+   "day": 23,
+   "kind": "abandoned",
+   "prompt": "sort `ctx ticket ready` by type: Bug, then Task, Feature, Question, oldest first inside each. implement and test, hold the commit.",
+   "follow_ups": [
+    "no, revert. oldest-first across everything is the only order where nothing starves, and 'Bug' is whatever the filer felt that day. back to how it was."
+   ]
+  },
+  {
+   "id": "s4-18",
+   "stream": "s4",
+   "day": 24,
+   "kind": "feature",
+   "prompt": "add `--dry-run` to `ctx source add`: print the origin record it would write, copy nothing, write nothing. test, howto, commit.",
+   "follow_ups": [],
+   "collision": "--dry-run"
+  },
+  {
+   "id": "s4-19",
+   "stream": "s4",
+   "day": 25,
+   "kind": "docs+unfinished",
+   "prompt": "skill/ctx-wiki/SKILL.md tells agents the gate's rules. verify it rule by rule: for each rule in the skill, build a page in the kb scratch project that breaks it and see that save refuses with the message the skill implies. fix the skill where it's wrong or stale.",
+   "follow_ups": [
+    "stop here, we'll pick it up later. commit the corrections you've confirmed and tell me which rules of the skill are verified and which aren't."
+   ],
+   "interrupt_after": 210
+  },
+  {
+   "id": "s4-20",
+   "stream": "s4",
+   "day": 26,
+   "kind": "revisit+docs",
+   "prompt": "finish verifying the wiki skill against the gate, from the rule where you stopped. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s4-21",
+   "stream": "s4",
+   "day": 29,
+   "kind": "decision+tests",
+   "prompt": "a perishable source counts as gone 90 days past its review date (RETIRE_HORIZON_DAYS). (A) keep one fixed number, (B) let each source carry its own grace period in its origin record. which?",
+   "follow_ups": [
+    "A. one number I can remember beats a knob per source that nobody sets. say in the howto where 90 applies, and add a boundary test: 90 days past is still there, 91 is gone. commit."
+   ],
+   "collision": "retire"
+  },
+  {
+   "id": "s4-22",
+   "stream": "s4",
+   "day": 30,
+   "kind": "bugfix",
+   "prompt": "`ctx ticket new \"x\" --blocked-by NOSUCHID`: is that accepted? a blocker that doesn't exist should be refused, naming the id. test, commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s4-23",
+   "stream": "s4",
+   "day": 31,
+   "kind": "regression-fix+decision+revisit",
+   "prompt": "a page went live linking to 'Evicton policy', a typo, no such page, and `ctx wiki check` is green. saving a page with a dead link used to be refused. find when that stopped. then choose: (A) refuse at save again as before, (B) allow it at save but make `wiki check` fail on dead links and list them on Wiki Health.",
+   "follow_ups": [
+    "B. the save-order problem was real, I don't want it back, and check runs in CI so a dead link can't stay. implement B with tests on both sides and fix the docs and the skill. commits per convention."
+   ]
+  },
+  {
+   "id": "s4-24",
+   "stream": "s4",
+   "day": 32,
+   "kind": "instruction+bugfix",
+   "prompt": "every command here takes --project P. rule: with --project it must work from any directory, and each new command gets a test that runs it from `/`. now try the source and wiki subcommands from another directory with --project and fix whichever don't work. commit.",
+   "follow_ups": [],
+   "collision": "--project"
+  },
+  {
+   "id": "s4-25",
+   "stream": "s4",
+   "day": 33,
+   "kind": "abandoned",
+   "prompt": "experiment: let a wiki claim cite another wiki page, as long as every claim on that page is itself pinned to sources. implement the gate change with tests. don't commit.",
+   "follow_ups": [
+    "revert. provenance through another page means that when it changes everything downstream needs rechecking, and the gate is trusted because it is simple. no page-to-page citations."
+   ]
+  },
+  {
+   "id": "s4-26",
+   "stream": "s4",
+   "day": 36,
+   "kind": "revisit+refactor",
+   "prompt": "`ctx ticket offer` has its own query with five baked in. make it go through the same code as ready with the limit flag, limit 5. output must not change. test, commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s4-27",
+   "stream": "s4",
+   "day": 37,
+   "kind": "decision+feature",
+   "prompt": "`ctx ticket new` with the same title as an open ticket in the same project: (A) refuse, (B) create it and print a note naming the similar ticket. which?",
+   "follow_ups": [
+    "B. two real tickets can share a title, and refusing would block an agent in the middle of something. note on stderr with the other id. test, commit."
+   ],
+   "collision": "duplicates"
+  },
+  {
+   "id": "s4-28",
+   "stream": "s4",
+   "day": 39,
+   "kind": "tests+unfinished",
+   "prompt": "`ctx source check`: list every condition it checks with the message for each, and which have a test. add tests for the first two untested conditions, commit, and stop. give me the remaining ones in chat.",
+   "follow_ups": []
+  },
+  {
+   "id": "s4-29",
+   "stream": "s4",
+   "day": 40,
+   "kind": "revisit+tests+instruction",
+   "prompt": "the untested conditions of source check from last time: test them now. commit.",
+   "follow_ups": [
+    "and make it a rule: every message from a checker starts with the name of the source or page it is about, then a colon, so I can grep by name. fix the ones in source check that don't."
+   ]
+  },
+  {
+   "id": "s4-30",
+   "stream": "s4",
+   "day": 41,
+   "kind": "decision+bugfix",
+   "prompt": "`ctx ticket claim` syncs with the remote before and after. if the remote is down, how long does a claim hang, and what happens then? find out. options: (A) the claim fails, (B) it claims locally and warns.",
+   "follow_ups": [
+    "A. the point of the sync is that two machines can't take one ticket, a local-only claim defeats it. but it mustn't hang: if you can cap the wait at about 10 seconds do that, message 'remote unreachable, not claimed'. if capping it means changing vendor code, stop and tell me instead. commit what's done."
+   ],
+   "collision": "timeout"
+  },
+  {
+   "id": "s4-31",
+   "stream": "s4",
+   "day": 43,
+   "kind": "abandoned",
+   "prompt": "add `ctx wiki save --force` that skips the gate, for drafts. test. hold the commit.",
+   "follow_ups": [
+    "no. a forced page is exactly the unsourced claim the wiki exists to refuse, and it would look like any other page afterwards. drafts live in files. revert."
+   ]
+  },
+  {
+   "id": "s4-32",
+   "stream": "s4",
+   "day": 44,
+   "kind": "instruction+refactor",
+   "prompt": "exit codes for checkers, as a rule: 0 clean, 1 problems found, 2 could not run at all (no project, bad flag, unreadable file). make `ctx wiki check` and `ctx source check` follow it, tests for each code. every checker-like command from now on does the same. commit.",
+   "follow_ups": [],
+   "collision": "exit-codes"
+  },
+  {
+   "id": "s4-33",
+   "stream": "s4",
+   "day": 45,
+   "kind": "revisit+feature",
+   "prompt": "`ctx ticket list` from earlier: add `--type T` and `--limit N`. the number rule applies. test, howto, commit.",
+   "follow_ups": [],
+   "collision": "--limit"
+  },
+  {
+   "id": "s4-34",
+   "stream": "s4",
+   "day": 46,
+   "kind": "bugfix",
+   "prompt": "sources are indexed in chunks of at most 8000 bytes (CHUNK_MAX). can a chunk boundary land inside a multi-byte character? check with a source of accented text longer than a chunk. fix it if so, test either way, commit.",
+   "follow_ups": [],
+   "collision": "truncation"
+  },
+  {
+   "id": "s4-35",
+   "stream": "s4",
+   "day": 47,
+   "kind": "abandoned",
+   "prompt": "when `ctx source check` finds a perishable source due for review, have it open a ticket for it. implement, test. no commit yet.",
+   "follow_ups": [
+    "revert. source check runs in CI on every push, it would file the same ticket each run unless it dedupes, and CI has no private repository to file into. it stays a pure check."
+   ]
+  },
+  {
+   "id": "s4-36",
+   "stream": "s4",
+   "day": 50,
+   "kind": "docs+unfinished",
+   "prompt": "the howto sections 'Add sources', 'Retire a source' and 'Keep a wiki': run every command they show against a scratch project, block by block, and fix the docs where a command doesn't work as written or the output differs from what the text says.",
+   "follow_ups": [
+    "stop here, we'll pick it up later. commit the doc fixes so far and tell me the last block you ran."
+   ],
+   "interrupt_after": 200
+  },
+  {
+   "id": "s4-37",
+   "stream": "s4",
+   "day": 51,
+   "kind": "revisit+docs",
+   "prompt": "continue running the howto's source and wiki command blocks from where you stopped, to the end of 'Keep a wiki'. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s4-38",
+   "stream": "s4",
+   "day": 52,
+   "kind": "abandoned",
+   "prompt": "add `--commit HASH` to `ctx ticket done`, stored with the result. test. don't commit yet.",
+   "follow_ups": [
+    "leave it out, revert. ctx can't see the code repository so it can't check the hash, which makes it free text with extra steps, and --result already holds it."
+   ]
+  },
+  {
+   "id": "s4-39",
+   "stream": "s4",
+   "day": 53,
+   "kind": "revisit+feature",
+   "prompt": "the short ticket ids: they only work in show. make claim, done, drop and --blocked-by take them too, same rules for ambiguity. test, howto, commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s4-40",
+   "stream": "s4",
+   "day": 54,
+   "kind": "revisit+review",
+   "prompt": "wrap-up: list every ticket, source and wiki flag or subcommand added in this line of work. for each, is it in the usage text, the howto and where relevant the wiki skill? fix the gaps, commit, show me the list.",
+   "follow_ups": []
+  },
+  {
+   "id": "s4-41",
+   "stream": "s4",
+   "day": 55,
+   "kind": "docs+unfinished",
+   "prompt": "the howto sections 'Set up a project' and 'Work with tickets': run every command they show against a scratch database, block by block, and fix the docs wherever a command doesn't work as written. one commit per section.",
+   "follow_ups": [
+    "stop here, we'll pick it up later. don't start another one. tell me exactly what is done and committed and what is left."
+   ],
+   "interrupt_after": 75,
+   "note": "added after the planned sessions ran: the stream was one short of a required element (a session interrupted mid-task, or for s2 a reverted attempt, since s2-25 hit the 12-minute deadline)"
+  }
+ ],
+ "s5": [
+  {
+   "id": "s5-01",
+   "stream": "s5",
+   "day": 1,
+   "kind": "instruction",
+   "prompt": "add a CLAUDE.md, short. for this repo: commit on main. commit subjects are `type: summary` with type one of build, test, fuzz, docs, ci. only ever run `make` and `make test` here: never `make check`, `make sanitize`, `make fuzz`, `make filc` or tools/dist-linux.sh unless I say so in that message, they take many minutes or need docker. `make test` green before each commit. commit it.",
+   "follow_ups": [
+    "add: vendor/ is read-only. amend."
+   ]
+  },
+  {
+   "id": "s5-02",
+   "stream": "s5",
+   "day": 2,
+   "kind": "feature+instruction",
+   "prompt": "add a `make help` target that lists the targets with a one-line description each, taken from `##` comments next to the targets. commit.",
+   "follow_ups": [
+    "from now on every new make target carries its `##` description, and the README's 'Building and checks' section mentions it, same commit. do that for help itself, amend."
+   ]
+  },
+  {
+   "id": "s5-03",
+   "stream": "s5",
+   "day": 3,
+   "kind": "decision+bugfix",
+   "prompt": "`python3 tools/bench_page.py --check` (first step of make check, just run that one command) fails in this checkout because bench/results isn't here. (A) skip with a clear message when the directory is absent, (B) keep failing. which is right?",
+   "follow_ups": [
+    "A. a source archive doesn't carry results, and a check should check what is there. one line on stderr saying it was skipped and why, exit 0. same for the generator if it has the problem. test in tools/test_bench_page.py, commit."
+   ]
+  },
+  {
+   "id": "s5-04",
+   "stream": "s5",
+   "day": 4,
+   "kind": "docs",
+   "prompt": "in docs/howto.md rename the heading 'Install from source' to 'Build from source' and 'From a release archive' to 'Install a release'. they read better. content stays. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s5-05",
+   "stream": "s5",
+   "day": 8,
+   "kind": "decision+instruction",
+   "prompt": "we have no changelog. (A) keep a CHANGELOG.md with an Unreleased section, (B) rely on the commit log. which?",
+   "follow_ups": [
+    "A. I read changelogs before upgrading, nobody reads a commit log. create it with Unreleased holding what we've done so far here. rule: every user-visible change adds its line under Unreleased in the same commit. commit."
+   ]
+  },
+  {
+   "id": "s5-06",
+   "stream": "s5",
+   "day": 9,
+   "kind": "abandoned",
+   "prompt": "experiment: split test/run.sh into test/NN-name.sh files, one per area, run in order by a small loop. do the first four areas, see what shared setup each needs, and tell me the suite time before and after. no commit.",
+   "follow_ups": [
+    "revert. the sections lean on one database and one fixture built at the top, so every file repeats the setup, and one file greps better than twenty. the single file stays."
+   ]
+  },
+  {
+   "id": "s5-07",
+   "stream": "s5",
+   "day": 10,
+   "kind": "abandoned",
+   "prompt": "add `make install` and `make uninstall` with PREFIX (default ~/.local) and DESTDIR. test by installing into a scratch dir. don't commit yet.",
+   "follow_ups": [
+    "no, take it out. a release is installed as a plugin directory plus a symlink, the README says so, and a second way to install is a second thing to document and to undo. revert."
+   ]
+  },
+  {
+   "id": "s5-08",
+   "stream": "s5",
+   "day": 11,
+   "kind": "tests+unfinished",
+   "prompt": "when a test fails I get `FAIL: message` and no idea where in 1300 lines it was. add a `step NAME` helper to test/run.sh that records the current section, have fail() print it, and call step at the top of each section. do the first ten sections only today, commit, and tell me how many sections are left and where you stopped.",
+   "follow_ups": []
+  },
+  {
+   "id": "s5-09",
+   "stream": "s5",
+   "day": 12,
+   "kind": "revisit+tests",
+   "prompt": "carry on with the step calls in the test script from where you stopped, all the way down. commit.",
+   "follow_ups": [],
+   "note": "cut off when the whole run was stopped early; kept as an interrupted session and picked up in s5-09b"
+  },
+  {
+   "id": "s5-09b",
+   "stream": "s5",
+   "day": 12,
+   "kind": "revisit+tests+pickup",
+   "prompt": "we were interrupted while you were adding step calls down the test script, test/run.sh has uncommitted changes. check that what's there still passes `make test`. if it does keep it and carry on to the bottom of the file, if not say why and fix it. commit.",
+   "follow_ups": [],
+   "note": "added to the plan after the run was stopped: picks up the work s5-09 left when it was cut off"
+  },
+  {
+   "id": "s5-10",
+   "stream": "s5",
+   "day": 15,
+   "kind": "refactor+regression-plant",
+   "prompt": "make fail() also print the line number it was called from, if that can be done in plain sh. and drop the `-e` from `set -eu` at the top of test/run.sh: it makes the script die without saying anything when some setup command fails, and fail() covers the checks. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s5-11",
+   "stream": "s5",
+   "day": 16,
+   "kind": "instruction+refactor",
+   "prompt": "rule: test/run.sh and every Makefile recipe are POSIX sh. no `local`, no arrays, no `[[`, no process substitution, no `echo -e`. check both files for violations with whatever you have (`sh -n`, reading) and fix them. keep it that way. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s5-12",
+   "stream": "s5",
+   "day": 17,
+   "kind": "decision+docs",
+   "prompt": "ci/test.yml has timeout-minutes: 45. the whole check takes about 12 on the runner. (A) lower it to 20, (B) leave 45. which?",
+   "follow_ups": [
+    "A, 20. a hung fuzz job shouldn't hold the runner for 45 minutes, and 20 still leaves room. add a comment saying what the number is based on. changelog doesn't need this one, it isn't user-visible. commit."
+   ],
+   "collision": "timeout"
+  },
+  {
+   "id": "s5-13",
+   "stream": "s5",
+   "day": 18,
+   "kind": "docs+instruction",
+   "prompt": "write fuzz/README.md: for each fuzzer what it feeds, which function in src/ctx.c it enters, and where its seeds are. don't run any fuzzer. check each harness at least parses with `cc -fsyntax-only` and the right -I flags. commit.",
+   "follow_ups": [
+    "also put a two-line comment at the top of each fuzz/fuzz_*.c saying what it feeds and which bug classes it is meant to find. rule: every new harness starts with that comment."
+   ]
+  },
+  {
+   "id": "s5-14",
+   "stream": "s5",
+   "day": 19,
+   "kind": "abandoned",
+   "prompt": "try `-O3 -flto` as the default CFLAGS. full rebuild, compare binary size and the wall time of `make test` against -O2, three runs each. tell me the numbers. no commit.",
+   "follow_ups": [
+    "revert to -O2. nothing in the suite is CPU bound enough to notice and LTO makes every link slow. make sure build/ is rebuilt with the old flags before you finish."
+   ]
+  },
+  {
+   "id": "s5-15",
+   "stream": "s5",
+   "day": 21,
+   "kind": "regression-fix+revisit",
+   "prompt": "I broke `ctx init` on purpose to see what the suite does and it carried on and reported some unrelated FAIL forty lines later. it used to stop right at the failing command. since when doesn't it? find the commit, fix it so setup failures stop the run again and still say where, and add a self-check for that if you can do it cheaply. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s5-16",
+   "stream": "s5",
+   "day": 22,
+   "kind": "decision+feature+instruction",
+   "prompt": "I want a check that every `ctx SUBCOMMAND` mentioned in docs/howto.md actually exists in the binary's usage text. (A) a python script in tools/, (B) a sh script with grep. which?",
+   "follow_ups": [
+    "B, sh. python here is only for the bench tools, and the test path should run on a box with nothing but a compiler. tools/check_docs.sh, wire it into `make check` (don't run make check, run the script). fix what it finds. commit.",
+    "rule for check scripts: each finishes in under two seconds and is wired into make check in the same commit."
+   ]
+  },
+  {
+   "id": "s5-17",
+   "stream": "s5",
+   "day": 23,
+   "kind": "instruction+docs",
+   "prompt": "docs style, from now on: headings in sentence case, no future tense ('will'), commands and file names in backticks, lines wrapped at 100. apply it to README.md only today. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s5-18",
+   "stream": "s5",
+   "day": 24,
+   "kind": "docs+unfinished",
+   "prompt": "apply the docs style to docs/howto.md, section by section from the top, one commit per section so I can review them separately.",
+   "follow_ups": [
+    "stop here, we'll pick it up later. don't start another section. which sections are done and committed, which is next?"
+   ],
+   "interrupt_after": 210
+  },
+  {
+   "id": "s5-19",
+   "stream": "s5",
+   "day": 25,
+   "kind": "revisit+docs",
+   "prompt": "continue the howto style pass from the section where you stopped. same rules, same one commit per section. go as far as 'Keep a wiki' and tell me what's left after that.",
+   "follow_ups": []
+  },
+  {
+   "id": "s5-20",
+   "stream": "s5",
+   "day": 26,
+   "kind": "refactor+regression-plant",
+   "prompt": "the Makefile has LDLIBS and then a separate DIST_LDLIBS just for dist. two variables for one thing. simplify: dist links with LDLIBS like everything else, delete DIST_LDLIBS. yes I've seen the comment, do it anyway. show me `make -n dist`. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s5-21",
+   "stream": "s5",
+   "day": 30,
+   "kind": "decision+feature+instruction",
+   "prompt": "if ./ctx doesn't exist, `sh test/run.sh` dies on its first line with a confusing 'not found'. (A) exit 2 with a message telling you to run make, (B) have the script build it. which?",
+   "follow_ups": [
+    "A. a test script that builds things is a surprise, and `make test` already depends on the binary. exit 2, message on stderr. commit.",
+    "rule: every script here prints its errors to stderr prefixed with its own name, like `run.sh: ...`."
+   ],
+   "collision": "exit-codes"
+  },
+  {
+   "id": "s5-22",
+   "stream": "s5",
+   "day": 31,
+   "kind": "decision+feature",
+   "prompt": "tools/dist-linux.sh needs docker, so I can't even see what it would do on a machine without it. (A) a `--dry-run` flag that prints the docker command instead of running it, (B) an env var DRY_RUN=1. which?",
+   "follow_ups": [
+    "A, the flag. a flag shows up in the usage line, an env var I set once and forget is still set. implement, don't run docker. commit."
+   ],
+   "collision": "--dry-run"
+  },
+  {
+   "id": "s5-23",
+   "stream": "s5",
+   "day": 32,
+   "kind": "abandoned",
+   "prompt": "clean builds take over a minute because of sqlite3.c. try caching build/sqlite3.o and build/libfossil.o in ~/.cache/ctx-build keyed by a hash of the source and flags. measure a clean build with a warm cache. no commit.",
+   "follow_ups": [
+    "revert. a build that writes outside the tree surprises people and `make clean` is rare. remove the cache directory too."
+   ]
+  },
+  {
+   "id": "s5-24",
+   "stream": "s5",
+   "day": 33,
+   "kind": "revisit+feature",
+   "prompt": "`make help` should also list the variables you can set (CC, CFLAGS, FUZZ_SECONDS, FUZZCC and the like) with their defaults, under the targets. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s5-25",
+   "stream": "s5",
+   "day": 36,
+   "kind": "bugfix",
+   "prompt": "`make fuzz FUZZ_SECONDS=abc` only fails once the first fuzzer starts. add a guard at the top of the fuzz target: FUZZ_SECONDS must be a positive whole number, otherwise a one-line error. check it with `make -n fuzz FUZZ_SECONDS=abc` or by running only the guard, not the fuzzers. commit.",
+   "follow_ups": [],
+   "collision": "--limit"
+  },
+  {
+   "id": "s5-26",
+   "stream": "s5",
+   "day": 37,
+   "kind": "regression-fix+revisit",
+   "prompt": "the linux release binary from the build box won't start in a minimal container: 'error while loading shared libraries: libz.so.1'. INSTALL says it needs only the C library and it used to be true. find what changed and put it right, with a comment so it doesn't get simplified away again. you can't build linux here, show me `make -n dist` and reason about it. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s5-27",
+   "stream": "s5",
+   "day": 38,
+   "kind": "instruction",
+   "prompt": "new rule after that one: for any Makefile change, run `make -n` on each target you touched and paste the output in chat before committing. nothing to change today, save it and confirm.",
+   "follow_ups": []
+  },
+  {
+   "id": "s5-28",
+   "stream": "s5",
+   "day": 39,
+   "kind": "tests+unfinished",
+   "prompt": "tools/test_bench_page.py: which functions of tools/bench_page.py does it not exercise? list them. add tests for two of them today, commit, and give me the rest in chat.",
+   "follow_ups": []
+  },
+  {
+   "id": "s5-29",
+   "stream": "s5",
+   "day": 40,
+   "kind": "revisit+tests",
+   "prompt": "the bench page functions that still had no test: write those tests. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s5-30",
+   "stream": "s5",
+   "day": 43,
+   "kind": "abandoned",
+   "prompt": "the three awk rules that turn schema/*.sql into C headers: try replacing them with `xxd -i`. build, run tests, show me the Makefile diff. no commit.",
+   "follow_ups": [
+    "revert. xxd ships with vim and isn't on minimal images, and the awk output is readable in a debugger. keep awk."
+   ]
+  },
+  {
+   "id": "s5-31",
+   "stream": "s5",
+   "day": 44,
+   "kind": "decision+docs",
+   "prompt": "version number. (A) bump CTX_VERSION to 0.1.0 now, (B) stay on 0.0.x until the archive and sync formats are frozen. which?",
+   "follow_ups": [
+    "B. 0.1 would read as a promise that the archive format is stable, and it isn't yet. say exactly that in the README's Releases section, one or two sentences. commit."
+   ]
+  },
+  {
+   "id": "s5-32",
+   "stream": "s5",
+   "day": 45,
+   "kind": "feature",
+   "prompt": "when the extract comparison in test/run.sh fails it dumps the whole diff, which can be thousands of lines. show the first 40 lines and then how many more there were. commit.",
+   "follow_ups": [],
+   "collision": "truncation"
+  },
+  {
+   "id": "s5-33",
+   "stream": "s5",
+   "day": 46,
+   "kind": "abandoned+revisit",
+   "prompt": "the suite takes a while. try running independent sections of test/run.sh in parallel, four at a time. see how far you get in ten minutes and what stands in the way. no commit.",
+   "follow_ups": [
+    "that's the same wall as the split I rejected: they share one database. leave it serial, revert everything."
+   ]
+  },
+  {
+   "id": "s5-34",
+   "stream": "s5",
+   "day": 47,
+   "kind": "docs+unfinished",
+   "prompt": "README sections 'Building and checks' and 'Releases': check every sentence against the Makefile and tools/, sentence by sentence, fix what's wrong or out of date after our changes. keep a list in chat of what you verified.",
+   "follow_ups": [
+    "stop here, we'll pick it up later. commit the fixes you're sure about and tell me the last sentence you checked."
+   ],
+   "interrupt_after": 180
+  },
+  {
+   "id": "s5-35",
+   "stream": "s5",
+   "day": 50,
+   "kind": "revisit+docs",
+   "prompt": "finish checking the README's build and release sections against the Makefile from the sentence where you stopped. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s5-36",
+   "stream": "s5",
+   "day": 51,
+   "kind": "revisit+docs",
+   "prompt": "go through the commit log since we started and make sure every user-visible change has its changelog line. add the missing ones. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s5-37",
+   "stream": "s5",
+   "day": 52,
+   "kind": "decision+feature+revisit",
+   "prompt": "if ctx hangs, `make test` hangs forever. I want the suite to kill itself after TEST_TIMEOUT seconds (default 600) and say which step it was in. (A) a watchdog inside test/run.sh, (B) wrap the call in the Makefile with timeout(1). which?",
+   "follow_ups": [
+    "A, inside the script. macOS has no timeout(1), and the script knows the current step. plain sh per our rule, and the watchdog must not outlive the script. test it with a tiny TEST_TIMEOUT. commit."
+   ],
+   "collision": "timeout"
+  },
+  {
+   "id": "s5-38",
+   "stream": "s5",
+   "day": 53,
+   "kind": "bugfix+docs",
+   "prompt": "check every relative link and #anchor in README.md, docs/howto.md and plugin/INSTALL.md resolves to a file or heading that exists. fix the dead ones. then add that as tools/check_links.sh following our rule for check scripts. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s5-39",
+   "stream": "s5",
+   "day": 54,
+   "kind": "feature",
+   "prompt": "`make clean` leaves fuzz crash files (crash-*, leak-*, timeout-*, oom-*) lying in the top directory. add a `make distclean` that removes those too, plus build/. everything a new target needs. commit.",
+   "follow_ups": []
+  },
+  {
+   "id": "s5-40",
+   "stream": "s5",
+   "day": 55,
+   "kind": "revisit+review",
+   "prompt": "write down, in chat, every build, test and docs convention we've set in this line of work, and check CLAUDE.md has each one. add what's missing, make sure `make help` is current, commit, then show me the list.",
+   "follow_ups": []
+  }
+ ]
+}

@@ -5459,7 +5459,22 @@ static int cmd_exclude(int argc, char **argv) {
   if (!(argc == 1 && argv[0][0] != '-') && !remove) die("usage: ctx exclude [DIR | --remove DIR]");
   const char *given = argv[argc - 1];
   char real[4200], slug[4200];
-  if (!realpath(given, real)) snprintf(real, sizeof real, "%s", given); /* a directory that is gone can still be excluded */
+  if (!realpath(given, real)) { /* gone: resolve the part that still exists and keep the rest as given */
+    char head[4200], tail[4200] = "";
+    snprintf(head, sizeof head, "%s", given);
+    snprintf(real, sizeof real, "%s", given);
+    for (char *cut; (cut = strrchr(head, '/')) && cut != head;) {
+      char rest[4200];
+      snprintf(rest, sizeof rest, "%s%s", cut, tail);
+      snprintf(tail, sizeof tail, "%s", rest);
+      *cut = 0;
+      char found[4200];
+      if (realpath(head, found)) {
+        snprintf(real, sizeof real, "%s%s", found, tail);
+        break;
+      }
+    }
+  }
   size_t n = strlen(real);
   while (n > 1 && real[n - 1] == '/') real[--n] = 0;
   snprintf(slug, sizeof slug, "%s", real);

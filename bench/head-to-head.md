@@ -117,5 +117,8 @@ is called the winner on a gap of a few questions.
 - 2026-11-12: the 30 held-out questions have now informed three decisions, so they are
   treated as tuning questions from here on. A second set of 40, `questions2.json`, is the
   untouched one.
+- 2026-11-12: a second corpus, [shipyard2/README.md](shipyard2/README.md), with 209
+  sessions and 139 questions. ctx was frozen before it was built and nothing was tuned
+  on it, so all of its questions count and it has no held-out split.
 - 2026-11-12: third-party tools are run in containers with only the corpus mounted, so
   their index time includes container overhead and is not compared with ctx's.

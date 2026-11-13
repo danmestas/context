@@ -1,0 +1,49 @@
+{
+ "name": "shipyard2-retrieval",
+ "title": "209 coding sessions: finding the session that holds the answer",
+ "section": "Search",
+ "order": 35,
+ "date": "2026-11-12",
+ "good_until": "2027-05-11",
+ "commit": "87fb691a8cb2",
+ "command": "tar -xzf bench/shipyard2/sessions.tar.gz -C DIR && cp bench/shipyard2/questions.json DIR && bench/shipyard.py --data DIR --turns 200",
+ "conditions": {
+  "corpus": "the second shipyard corpus: 209 real agent sessions in five streams of work on one codebase over a simulated eight weeks, with vocabulary shared between streams; 139 questions that the repositories, their commit messages and the agents' memory notes do not answer",
+  "freshness": "ctx's search was frozen before this corpus existed, and none of its questions was used to tune anything, so all 139 count",
+  "scoring": "every session holding the answer among the first five returned; no model involved"
+ },
+ "summary": "The first corpus had 32 sessions, few enough that counting matching words per session works about as well as an index. This one is six times larger, and its streams reuse each other's vocabulary.",
+ "baseline": "ranked grep over the same transcript files: each session scored by how many of the question's words it contains, then by how often",
+ "bar": "a difference counts only if a sign test on the paired questions gives p below 0.05 (set in bench/head-to-head.md)",
+ "verdict": "pass",
+ "meaning": "At this size the index is clearly better than ranked grep. In the session's own terms ctx found the right session for 125 of 139 questions and grep for 71; ctx alone was right on 54 and grep alone on none (p below 0.0001). Where the answer is spread over two or more sessions, ctx found all of them for 27 of 40 questions and grep for 6. On the 32-session corpus the two were level. Paraphrased questions are still poor: 23 of 139, though again well ahead of grep's 5.",
+ "metrics": [
+  {
+   "label": "ctx, session's own terms",
+   "value": "125 of 139",
+   "note": "one session needed: 98 of 99; two or more: 27 of 40"
+  },
+  {
+   "label": "grep, session's own terms",
+   "value": "71 of 139",
+   "note": "one session needed: 65 of 99; two or more: 6 of 40"
+  },
+  {
+   "label": "ctx, paraphrased",
+   "value": "23 of 139"
+  },
+  {
+   "label": "grep, paraphrased",
+   "value": "5 of 139"
+  },
+  {
+   "label": "Questions only one method got right, own terms",
+   "value": "ctx 54, grep 0"
+  },
+  {
+   "label": "Questions only one method got right, paraphrased",
+   "value": "ctx 22, grep 4",
+   "note": "p = 0.0005"
+  }
+ ]
+}

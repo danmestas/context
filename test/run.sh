@@ -1278,6 +1278,13 @@ CLAUDE_CONFIG_DIR="$XC" "$CTX" scan >/dev/null
 "$CTX" archive "$XC/projects/-w-bench-run1/5e550000-0000-0000-0000-000000000002.jsonl" >/dev/null
 [ "$(xn kestrel)" = 0 ] || fail "the per-turn hook does not archive an excluded session either"
 "$CTX" exclude --remove /w/bench | grep -q 'no longer excluded' || fail "an exclusion can be removed"
+# A directory that is gone is resolved through the part of its path that still exists, as
+# Claude Code saw it when it named the folder (/tmp is /private/tmp on a Mac).
+mkdir -p "$T/excl/link-target" && ln -s "$T/excl/link-target" "$T/excl/link"
+"$CTX" exclude "$T/excl/link/gone/sub" >/dev/null
+WANT=$(python3 -c "import os,re,sys; print(re.sub(r'[^A-Za-z0-9]', '-', os.path.realpath(sys.argv[1]) + '/gone/sub'))" "$T/excl/link")
+[ "$("$CTX" sql "SELECT slug FROM ctx_exclude WHERE dir LIKE '%/gone/sub'")" = "$WANT" ] || fail "a vanished directory is resolved through its existing parent: $("$CTX" sql "SELECT slug FROM ctx_exclude WHERE dir LIKE '%/gone/sub'") against $WANT"
+"$CTX" exclude --remove "$T/excl/link/gone/sub" >/dev/null
 CLAUDE_CONFIG_DIR="$XC" "$CTX" scan >/dev/null
 [ "$(xn kestrel)" = 1 ] || fail "once the exclusion is removed the session is archived"
 if "$CTX" forget nosuchsession 2>/dev/null; then fail "forgetting an unknown session fails"; fi

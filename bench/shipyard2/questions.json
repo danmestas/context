@@ -1,0 +1,2150 @@
+[
+ {
+  "id": "s1-q01",
+  "kind": "user-said",
+  "question": "Was the 'no new global variables in src/ctx.c' rule part of the original request for CLAUDE.md, and how did it get into the commit?",
+  "paraphrase": "The ban on introducing more file-wide state in the main C source: did the person include it when first asking for the agent's instruction sheet, and how was it folded into the saved history?",
+  "answer": "No. The original request listed the git workflow rules and the vendor ban only; the globals rule came as a follow-up in the same session, and the user asked for the existing commit to be amended rather than a new one made.",
+  "must_include": [
+   "it was a follow-up, not part of the original request",
+   "it was added by amending the existing commit"
+  ],
+  "gold_sessions": [
+   "d43e027f-b7b5-4779-81f3-248f55c11928"
+  ],
+  "evidence": "d43e027f-b7b5-4779-81f3-248f55c11928 user turn 1 (no globals rule), user turn 2 ('add one more ... amend'), closing summary"
+ },
+ {
+  "id": "s1-q02",
+  "kind": "decision",
+  "question": "When ctx search started exiting 1 on no matches, why did real errors keep exiting 1 as well, and how was that eventually sorted out?",
+  "paraphrase": "Once a lookup of past work that finds nothing began signalling failure to its caller, genuine mistakes in how it was invoked still gave the very same signal. What reason was given back then, and what happened later to tell the two apart?",
+  "answer": "At the time the assistant left errors at 1 because die() is shared by every command and it did not want to change them all. Weeks later the user set a rule (2 for usage errors, 1 for runtime failures and no matches) and search and turn were moved to it with a new die_usage and status-taking parser variants; the other commands still exit 1.",
+  "must_include": [
+   "errors were left at 1 at first because die() is shared by every command",
+   "later the user set the rule: 2 for usage errors, 1 for runtime failures and no matches",
+   "only search and turn were moved to exit 2; other commands still exit 1"
+  ],
+  "gold_sessions": [
+   "ea4aaa2c-1eab-4778-9a3b-f8b3b5338bf4",
+   "fb278a83-9e7b-46d2-b830-e7a6e9389ad6"
+  ],
+  "evidence": "ea4aaa2c-1eab-4778-9a3b-f8b3b5338bf4 closing summary ('I didn't switch errors to exit 2 because die() is shared by every command'); fb278a83-9e7b-46d2-b830-e7a6e9389ad6 user turn 1 and closing summary (die_usage, *_st variants, other commands left at 1)"
+ },
+ {
+  "id": "s1-q03",
+  "kind": "decision",
+  "question": "For the 8000-byte cut in ctx turn, why did we go with --tail rather than a --max-bytes N flag, and which of the two had the assistant recommended?",
+  "paraphrase": "Long stored exchanges were being chopped so that their ending was lost, and two remedies were weighed. Why did the person pick the one that shows the ending over an adjustable size, and which one had the assistant favoured?",
+  "answer": "The user said the size is fine, it is the wrong end being shown, and they never remember numbers, so a boolean flag suited them. The assistant had recommended --max-bytes (with 0 meaning unlimited), with --tail as a possible follow-up.",
+  "must_include": [
+   "the size was fine; the problem was which end is shown",
+   "the user never remembers numbers",
+   "the assistant had recommended --max-bytes"
+  ],
+  "gold_sessions": [
+   "f76a7fe2-8c91-472d-a169-3a0161a17990"
+  ],
+  "evidence": "f76a7fe2-8c91-472d-a169-3a0161a17990 assistant reply to user turn 1 (recommendation: do (A)), user turn 2 ('the size is fine, it's the wrong end I'm getting, and I never remember numbers')"
+ },
+ {
+  "id": "s1-q04",
+  "kind": "decision",
+  "question": "Why does ctx search --json print one object per line instead of a single JSON array?",
+  "paraphrase": "For the form of lookup results meant for programs to consume, why was a record-per-row layout preferred to one enclosing list?",
+  "answer": "The user pipes the output into head and jq -c, and half an array is not valid JSON, so each hit had to be a complete object on its own line.",
+  "must_include": [
+   "the user pipes the output into head and/or jq -c",
+   "a truncated array is not valid JSON"
+  ],
+  "gold_sessions": [
+   "9a891dd8-4800-4b89-95f1-4aa1a460763f"
+  ],
+  "evidence": "9a891dd8-4800-4b89-95f1-4aa1a460763f user turn 2 ('I pipe into head and jq -c and half an array is not valid JSON')"
+ },
+ {
+  "id": "s1-q05",
+  "kind": "decision",
+  "question": "Why did search stay with falling back to other projects only when this project has no hits, rather than always filling up to the limit with other projects' hits, and what was done instead?",
+  "paraphrase": "A proposal would have padded every lookup's results with material from unrelated codebases. Why did the person turn it down, what had the assistant advised, and what was built in its place?",
+  "answer": "The user kept the existing behaviour because the last time an agent got a cross-project hit it applied another repo's convention in this one. Instead the fallback was made obvious: each fallback hit is marked as coming from another project. The assistant had recommended the fill-up option, provided hits were labelled.",
+  "must_include": [
+   "an agent had applied another repo's convention after getting a cross-project hit",
+   "instead, hits from the fallback are marked as from another project"
+  ],
+  "gold_sessions": [
+   "0ee46b7b-5de0-4a8f-b472-905148a0d508"
+  ],
+  "evidence": "0ee46b7b-5de0-4a8f-b472-905148a0d508 assistant reply to user turn 1 (recommends B with labels), user turn 2 ('stay with A. the last time an agent got a cross-project hit it applied another repo's convention here'), closing summary"
+ },
+ {
+  "id": "s1-q06",
+  "kind": "decision",
+  "question": "Why was the default search limit lowered from 12 to 8, why does the 'more matched' footer go to stderr, and did the assistant agree with lowering it?",
+  "paraphrase": "The quantity of results shown when none is specified was reduced and a closing remark about the remainder was introduced. What reasons did the person give for the reduction and for where that remark is written, and what had the assistant preferred?",
+  "answer": "The user said twelve hits push the first one off their screen, and agents read everything anyway and the footer tells them there is more. The footer goes to stderr so pipes stay clean. The assistant had argued the notice was the valuable part and that keeping 12 with the notice was probably best.",
+  "must_include": [
+   "twelve hits pushed the first one off the user's screen",
+   "the footer goes to stderr so piped output stays clean",
+   "the assistant had favoured keeping 12 and only adding the notice"
+  ],
+  "gold_sessions": [
+   "37ab8299-1c0d-4150-aba2-0681a5c96863"
+  ],
+  "evidence": "37ab8299-1c0d-4150-aba2-0681a5c96863 assistant reply to user turn 1 ('B with the default left at 12 is probably the best'), user turn 2 ('twelve hits push the first one off my screen ... the footer goes to stderr so pipes stay clean')"
+ },
+ {
+  "id": "s1-q07",
+  "kind": "decision",
+  "question": "When search could sit for 30 seconds behind another ctx process, what was the alternative to failing after 2 seconds, which did the assistant recommend, and in what situation did it say the 2-second limit actually bites?",
+  "paraphrase": "Lookups could hang for half a minute when something else had the store locked. Besides bailing out quickly, what other remedy was on the table, which did the assistant favour before the person confirmed, and under what circumstances did it say the shorter wait really matters?",
+  "answer": "The alternative was to keep waiting but print a notice every few seconds. The assistant recommended failing after 2 seconds and the user confirmed it, restricting it to search and turn. The assistant added that the archive runs in WAL mode, so a plain search does not block behind a writer; the limit only applies when a reader needs the write lock, such as the first run after an upgrade.",
+  "must_include": [
+   "the alternative was to keep waiting and print a notice every few seconds",
+   "the assistant recommended failing fast and the user confirmed it",
+   "the limit only matters when a reader needs the write lock (e.g. first run after an upgrade), since WAL lets plain searches through"
+  ],
+  "gold_sessions": [
+   "0064253a-4e73-4269-8c22-167c4214b6ca"
+  ],
+  "evidence": "0064253a-4e73-4269-8c22-167c4214b6ca user turn 1 (options A and B), assistant reply ('I recommend (A)'), user turn 2 ('A.'), closing summary last paragraph ('The archive runs in WAL mode ...')"
+ },
+ {
+  "id": "s1-q08",
+  "kind": "decision",
+  "question": "The search ranking experiment was done in stages. What did stage 1 deliver, how was stage 2 sketched at that point, and what did stage 2 end up being and why?",
+  "paraphrase": "How results are sorted was reworked in two steps. What did the first step add, how was the second step first imagined, and what was finally built and for what reason?",
+  "answer": "Stage 1 added --explain, which prints the bm25 score next to each hit. Stage 2 was sketched as a weighted score, multiplying the rank by a per-speaker factor so typed turns outrank tool output. What was built is a tie-break only (speaker decides between exactly equal scores), because the user said a multiplier would bury the tool output that holds the literal error text, which is what they search for most.",
+  "must_include": [
+   "stage 1 was --explain showing the bm25 score per hit",
+   "stage 2 was first sketched as a per-speaker weight multiplying the score",
+   "what was built uses speaker only as a tie-break between equal scores",
+   "because a boost would bury tool output holding the literal error text"
+  ],
+  "gold_sessions": [
+   "6db2fa01-274e-46c3-b5ac-3b1b02add364",
+   "4d0b826e-2e77-46c3-9ec8-2893b37dbaf5"
+  ],
+  "evidence": "6db2fa01-274e-46c3-b5ac-3b1b02add364 user turn 1 and closing summary ('What stage 2 ... would need', item 2 weighted score); 4d0b826e-2e77-46c3-9ec8-2893b37dbaf5 user turn 2 ('B, tie-break only. A would bury the tool output that holds the literal error text') and closing summary"
+ },
+ {
+  "id": "s1-q09",
+  "kind": "failure",
+  "question": "What happened to the experiment that made search try all words with AND first and fall back to OR only when AND found nothing?",
+  "paraphrase": "There was a trial in which a multi-word lookup first required every word to be present before loosening. How did it end, and what was the objection?",
+  "answer": "It was built but never committed, and the user rejected it after seeing the comparison: they search with sloppy, half-remembered words and the hit they want usually has only one of them, so AND-first hides the partial matches they rely on. Everything was reverted and the scratch files removed.",
+  "must_include": [
+   "it was reverted and never committed",
+   "the user searches with half-remembered words and relies on partial matches (hits with only one of the words)"
+  ],
+  "gold_sessions": [
+   "c35bd4c3-f9a4-4d2b-a5d2-628ecf674d2a"
+  ],
+  "evidence": "c35bd4c3-f9a4-4d2b-a5d2-628ecf674d2a user turn 2 ('I search with sloppy half-remembered words and AND-first hides the partial matches I rely on ... revert all of it'), closing message"
+ },
+ {
+  "id": "s1-q10",
+  "kind": "failure",
+  "question": "What happened when we tried switching the FTS tokenizer to porter unicode61 so 'hangs' finds 'hang', and what came of the request to revert it?",
+  "paraphrase": "Someone wanted word-ending normalisation tried out so that a plural would find its singular. What did the attempt discover, and what happened when the person then called it off?",
+  "answer": "Nothing was changed: the schema already used the porter tokenizer and had since the initial import, so there was nothing to switch or bump. When the user said to revert, the assistant pointed out there was nothing to revert, and that actually removing porter would be a new change needing a derived-version bump and an index rebuild on every machine, which it did not do.",
+  "must_include": [
+   "porter was already in the schema since the initial import",
+   "no change was made, so there was nothing to revert",
+   "removing porter would need a derived-version bump and an index rebuild"
+  ],
+  "gold_sessions": [
+   "79988f8e-a2a3-4e67-ac63-272452e72c50"
+  ],
+  "evidence": "79988f8e-a2a3-4e67-ac63-272452e72c50 closing reply to user turn 1 ('No change was needed'), reply to user turn 2 ('There's nothing to revert ... needs a CTX_DERIVED_VERSION bump from 6 to 7')"
+ },
+ {
+  "id": "s1-q11",
+  "kind": "failure",
+  "question": "What did the measurements show for the experiment that cached the cwd-to-project lookup in a small file next to the database, and what happened to it?",
+  "paraphrase": "A trial tried remembering, in a side note on disk, which codebase the current folder belongs to, hoping to speed up lookups. What bar had the person set, what did the stopwatch say, and what was the outcome?",
+  "answer": "The user's bar was a gain of at least 5 ms per search, otherwise revert. A whole search took about 9 to 11 ms and the cached binary was within 1 to 2 ms of the baseline in either direction, which is noise, so the change was reverted and nothing was committed.",
+  "must_include": [
+   "the bar was 5 ms per search",
+   "the gain was well under it (about 1-2 ms either way, within noise)",
+   "it was reverted, nothing committed"
+  ],
+  "gold_sessions": [
+   "07a9193b-286a-421f-b35a-621aabb945fd"
+  ],
+  "evidence": "07a9193b-286a-421f-b35a-621aabb945fd user turn 1 ('if the gain is under 5 ms per search, revert everything'), closing reply with the timing table and 'Per search' line, reply to user turn 2"
+ },
+ {
+  "id": "s1-q12",
+  "kind": "failure",
+  "question": "Why was the --prefix flag for ctx search never shipped?",
+  "paraphrase": "An option for matching just the beginnings of words in lookups was built and then discarded. What did the person object to?",
+  "answer": "It was built uncommitted on FTS5 prefix queries and timed (a 3-letter prefix cost roughly 4 to 5 times an exact term), but the user had it reverted: three-letter prefixes match everything, and it is one more flag to explain for something they can do by typing the word.",
+  "must_include": [
+   "three-letter prefixes match everything",
+   "one more flag to explain for something done by typing the whole word",
+   "it was reverted without a commit"
+  ],
+  "gold_sessions": [
+   "8f835811-dde9-4186-95f6-25c54b765b9e"
+  ],
+  "evidence": "8f835811-dde9-4186-95f6-25c54b765b9e closing reply to user turn 1 (timing table), user turn 2 ('three-letter prefixes match everything and it's one more flag to explain for something I can do by typing the word'), final message"
+ },
+ {
+  "id": "s1-q13",
+  "kind": "failure",
+  "question": "What became of the attempt to move the stopword list out of the C array into a table in schema/index.sql?",
+  "paraphrase": "There was a try at keeping the list of ignored common words as editable rows so it could be changed without recompiling. Why was it abandoned?",
+  "answer": "It was built without committing (38 insertions and 25 deletions across 3 files), but the user rejected it: a table means a schema bump and an index rebuild for what is just a word list, and nobody will edit it. All three files were reverted and the array stayed.",
+  "must_include": [
+   "it was reverted and the array kept",
+   "a table would mean a schema bump and a rebuild",
+   "nobody would edit the list"
+  ],
+  "gold_sessions": [
+   "ad26da94-5fac-466e-b14c-40f6208d26a2"
+  ],
+  "evidence": "ad26da94-5fac-466e-b14c-40f6208d26a2 closing reply to user turn 1 (diff size, version 6 to 7), user turn 2 ('a table means a schema bump and a rebuild for what is a word list, and nobody will edit it'), final message"
+ },
+ {
+  "id": "s1-q14",
+  "kind": "failure",
+  "question": "The whitespace-collapsing loop in search_run was questioned twice: once the user wanted it removed as dead weight, later they reported hits spilling over several lines. What did each investigation conclude?",
+  "paraphrase": "A small piece of code squeezes each result excerpt onto one row. It was once nominated for deletion as redundant and later suspected when output seemed to break across rows. What was found on each occasion?",
+  "answer": "The first time the assistant refused to remove it: it tested snippet() and found it returns newlines and tabs as they are, so the loop is what keeps a hit on one line. The second time no regression commit could be found (the loop was untouched since the initial import) and the reported spill could not be reproduced; the only gap was that vertical tabs and form feeds were not collapsed, and that was fixed.",
+  "must_include": [
+   "the loop was kept because snippet() does not return a single line",
+   "no regression commit was found and the reported multi-line hits could not be reproduced",
+   "the only gap found (and fixed) was vertical tab and form feed"
+  ],
+  "gold_sessions": [
+   "3016ba2c-1b1f-4ce0-8aaa-9799d1beda6a",
+   "5d40ea6b-f0f8-4af4-879d-2d9e6a60b567"
+  ],
+  "evidence": "3016ba2c-1b1f-4ce0-8aaa-9799d1beda6a closing summary ('I did not remove the whitespace-collapsing loop ... snippet() doesn't return a single line'); 5d40ea6b-f0f8-4af4-879d-2d9e6a60b567 closing summary ('No regression commit', 'I couldn't reproduce the bug', 'A gap in vertical-tab and form-feed handling')"
+ },
+ {
+  "id": "s1-q15",
+  "kind": "failure",
+  "question": "When fixing the report of search hits spilling over several lines, why did the first version of the new test pass against the unfixed code, and what was it changed to check?",
+  "paraphrase": "A fresh safeguard check for results breaking across rows succeeded even before the repair was applied. Why was it blind, and how was it altered?",
+  "answer": "The first test counted output lines with wc -l, which does not count vertical tabs or form feeds, so it passed with or without the fix. It was changed to check for stray control characters in the output, after which it failed on the old code and passed on the new.",
+  "must_include": [
+   "wc -l does not count vertical tabs or form feeds",
+   "it was changed to check for control characters in the output"
+  ],
+  "gold_sessions": [
+   "5d40ea6b-f0f8-4af4-879d-2d9e6a60b567"
+  ],
+  "evidence": "5d40ea6b-f0f8-4af4-879d-2d9e6a60b567 assistant messages mid-session ('The new test passed against the unfixed code, so it can't catch the bug. wc -l doesn't count \\v or \\f. I'll check for stray control characters instead', then 'The test fails without the fix and passes with it')"
+ },
+ {
+  "id": "s1-q16",
+  "kind": "fix",
+  "question": "`ctx search error` started dying with 'no search words'. Which commit broke it, and how was it fixed so it cannot come back?",
+  "paraphrase": "Looking up one very common diagnostic word alone suddenly produced a complaint that nothing had been given to look for. Which earlier change caused that, and what was the remedy?",
+  "answer": "Commit 34558b3, 'Add noisy words to the search stopword list', had added 'error' (and ten other words) to the stopwords, so a search for it alone had no terms left. The fix split fts_query into a pass that drops stopwords and a fallback pass that keeps them, so a query made only of stopwords is searched as typed, with a regression test.",
+  "must_include": [
+   "the commit that added the noisy words (including 'error') to the stopword list, 34558b3",
+   "a query made only of stopwords is now searched as typed (a fallback pass keeps them)"
+  ],
+  "gold_sessions": [
+   "e31e010b-9731-4d21-af3b-dffa1516cced"
+  ],
+  "evidence": "e31e010b-9731-4d21-af3b-dffa1516cced closing summary ('Which commit broke it: 34558b3', 'splits fts_query into a pass that drops stopwords and a fallback pass that keeps them')"
+ },
+ {
+  "id": "s1-q17",
+  "kind": "fix",
+  "question": "While finishing the `ctx search error` fix, the new regression test failed at first. Was the fix wrong, and what was changed?",
+  "paraphrase": "After an interrupted repair to lookups of a single very common word was picked up again, its freshly written check went red. Where did the fault lie and what was corrected?",
+  "answer": "The fix was fine; the test was wrong. Its grep did not allow for the [error] highlight brackets that search puts around the matched word in the output, so the test's expected text was corrected.",
+  "must_include": [
+   "the fix itself worked; the test was at fault",
+   "the grep missed the highlight brackets around the matched word"
+  ],
+  "gold_sessions": [
+   "e31e010b-9731-4d21-af3b-dffa1516cced"
+  ],
+  "evidence": "e31e010b-9731-4d21-af3b-dffa1516cced assistant messages mid-session ('The new test fails, so I'm checking whether the test or the fix is wrong', 'The fix works. My grep missed the [error] highlight brackets in the output, so I'm correcting the test')"
+ },
+ {
+  "id": "s1-q18",
+  "kind": "fix",
+  "question": "While adding the exit-code tests for search and turn, the exit-1 assertion failed even though 'no matches' was printed. What was the cause and the fix?",
+  "paraphrase": "During the work on what the lookup commands hand back to the shell when they finish, a check for the 'nothing found' case kept failing although the program itself behaved correctly. What was going on?",
+  "answer": "The test script runs under set -e, so the subshell's non-zero exit aborted the code() helper before it could echo the status. The helper in the test script was fixed to capture the status; the ctx code was not at fault.",
+  "must_include": [
+   "set -e made the non-zero exit abort the helper before it echoed the status",
+   "the test helper was fixed, not the command"
+  ],
+  "gold_sessions": [
+   "fb278a83-9e7b-46d2-b830-e7a6e9389ad6"
+  ],
+  "evidence": "fb278a83-9e7b-46d2-b830-e7a6e9389ad6 assistant messages mid-session ('the exit-1 assertion fails even though the message shows \"no matches\"', '`set -e` is the cause. The subshell's non-zero exit aborts `code()` before it can echo the status. I'm fixing the helper')"
+ },
+ {
+  "id": "s1-q19",
+  "kind": "fix",
+  "question": "The first draft of the test for --project together with --count failed. Why, and how was it fixed?",
+  "paraphrase": "A new check combining the named-codebase option with the tally option broke on its first run. What was wrong with it and what was changed?",
+  "answer": "The draft changed into a 'beta' directory that the test script never creates, so the cd failed. It was switched to run from the 'alpha' directory, which exists and is the project the test names.",
+  "must_include": [
+   "it cd'd into a directory (beta) that the test does not create",
+   "it was switched to the existing alpha directory"
+  ],
+  "gold_sessions": [
+   "072cc7c0-3000-42ba-bb3b-643273172643"
+  ],
+  "evidence": "072cc7c0-3000-42ba-bb3b-643273172643 tool result 'cd: .../beta: No such file or directory', assistant message 'The beta directory doesn't exist, so I'll use a directory that does', closing summary last paragraph"
+ },
+ {
+  "id": "s1-q20",
+  "kind": "user-said",
+  "question": "What rule did the user set for the test data in test/run.sh?",
+  "paraphrase": "What convention did the person lay down for the sample words and names that the automated checks feed in?",
+  "answer": "From then on, test data uses made-up animal words (capybara, heron and the like) and never a real project or product name.",
+  "must_include": [
+   "made-up animal words",
+   "never a real project or product name"
+  ],
+  "gold_sessions": [
+   "072cc7c0-3000-42ba-bb3b-643273172643"
+  ],
+  "evidence": "072cc7c0-3000-42ba-bb3b-643273172643 user turn 1 ('test data in test/run.sh uses made-up animal words (capybara, heron...) and never a real project or product name')"
+ },
+ {
+  "id": "s1-q21",
+  "kind": "user-said",
+  "question": "What are the rules of the error-message house style that was first applied to cmd_search and cmd_turn?",
+  "paraphrase": "The person dictated a phrasing convention for failure output and had it applied to the two lookup commands first. What are its three points?",
+  "answer": "Messages start lowercase, have no trailing period, and name the flag or argument that was wrong.",
+  "must_include": [
+   "start lowercase",
+   "no trailing period",
+   "name the flag or argument that was wrong"
+  ],
+  "gold_sessions": [
+   "61cbbcaf-2461-4550-8d77-a3eca9616016"
+  ],
+  "evidence": "61cbbcaf-2461-4550-8d77-a3eca9616016 user turn 1 ('house style for error messages from now on: start lowercase, no trailing period, name the flag or argument that was wrong')"
+ },
+ {
+  "id": "s1-q22",
+  "kind": "user-said",
+  "question": "What should ctx turn do when given both --tail and --full: what did the tests originally pin down, and what did the user later ask for?",
+  "paraphrase": "Asking to see an entire stored exchange and only its ending in the same call: how was that pairing first handled, and what did the person request afterwards?",
+  "answer": "The first batch of turn tests asserted that --full overrides --tail. Later the user said the combination makes no sense and asked for an error naming both flags; the two old tests were replaced by ones expecting that failure.",
+  "must_include": [
+   "originally --full overrode --tail and tests asserted it",
+   "the user later asked for an error naming both flags"
+  ],
+  "gold_sessions": [
+   "2bacff10-775e-4f9f-83ee-62f6fd451f44",
+   "af6f259f-ea69-41d4-9e57-82db40dbef17"
+  ],
+  "evidence": "2bacff10-775e-4f9f-83ee-62f6fd451f44 closing summary, item 3 ('--full ... It overrides --tail'); af6f259f-ea69-41d4-9e57-82db40dbef17 user turn 1 ('--tail together with --full makes no sense. make that an error naming both flags') and closing summary ('the two old tests that expected --full to win')"
+ },
+ {
+  "id": "s1-q23",
+  "kind": "user-said",
+  "question": "Before merging the search work, what did the user ask to have checked for every search and turn flag added, and what did the check turn up?",
+  "paraphrase": "Ahead of integrating the whole body of lookup work, the person asked for an audit of each newly introduced option. What three things had to exist for each, and what was the result?",
+  "answer": "Each flag added since the start had to have a test, a line in docs/howto.md and an entry in SKILL.md, with gaps fixed and committed. Seven flags were listed (search --count, --json, --project, --since, --speaker, --explain and turn --tail), no gaps were found, and so no commit was made.",
+  "must_include": [
+   "each flag needs a test, a howto line and a SKILL.md entry",
+   "no gaps were found, so nothing was committed"
+  ],
+  "gold_sessions": [
+   "72eeccf5-676c-47ec-a0f8-63b3ae4d9c10"
+  ],
+  "evidence": "72eeccf5-676c-47ec-a0f8-63b3ae4d9c10 user turn 1, assistant reply ('I found no gaps, so I made no commit' and the seven-item list)"
+ },
+ {
+  "id": "s1-q24",
+  "kind": "status",
+  "question": "Where did the conversion of the remaining atoi calls stop when the user paused it, and how were the leftover sites finished?",
+  "paraphrase": "A sweep replacing the forgiving text-to-number conversions throughout the main source was halted partway by the person. Which commands were done at that point, what remained and why, and how was the remainder completed?",
+  "answer": "At the pause two commands were converted and committed: stats (--weeks and --days) and audit (--limit, with the helper that allows 0). Left were the artifact version parsing sites and the CTX_MODEL_DEADLINE environment variable, because they are not flags and the strict parser would die on bad input. The next day they were finished in one commit: the env var now uses the strict parser, and the version sites use a new non-dying leading_int helper.",
+  "must_include": [
+   "stats and audit were converted and committed before the pause",
+   "left over: the artifact version parsing sites and the CTX_MODEL_DEADLINE env var",
+   "finished with a new non-dying helper (leading_int) for the version sites and parse_count for the env var"
+  ],
+  "gold_sessions": [
+   "3dcff164-aedf-491c-81b1-6f118925ec36",
+   "e3fb8441-8ee1-4331-9653-ec5fe2d09e5b"
+  ],
+  "evidence": "3dcff164-aedf-491c-81b1-6f118925ec36 reply to user turn 2 ('Converted and committed', 'Left unconverted'); e3fb8441-8ee1-4331-9653-ec5fe2d09e5b closing summary (CTX_MODEL_DEADLINE through parse_count, leading_int helper, grep proof)"
+ },
+ {
+  "id": "s1-q25",
+  "kind": "status",
+  "question": "How far did the rollout of the error-message house style to the rest of src/ctx.c get?",
+  "paraphrase": "The person asked for the phrasing convention for failure output to be carried across every remaining command, each as its own saved step. What state was that job in when they halted it?",
+  "answer": "Nothing was done and nothing committed. The assistant found the style was not written down anywhere, inferred rules from the earlier search/turn commit, and stopped to ask three questions (whether its reading of the style is right, whether exit codes stay as they are, and whether 'no X' lookup messages become 'bad ID argument: no such X'). The whole job is still to do and is blocked on those answers.",
+  "must_include": [
+   "nothing was changed or committed",
+   "it is blocked on the assistant's open questions about what the style rules are"
+  ],
+  "gold_sessions": [
+   "1cc30a89-3454-441a-bea1-c017f355a590"
+  ],
+  "evidence": "1cc30a89-3454-441a-bea1-c017f355a590 assistant reply to user turn 1 ('I haven't changed anything yet ... Questions'), reply to user turn 2 ('Nothing is done and nothing is committed ... blocked on your answers to my three questions')"
+ },
+ {
+  "id": "s1-q26",
+  "kind": "status",
+  "question": "When docs/search.md was first committed, which cases were flagged as thin or not demonstrated, and did the follow-up session fill them in?",
+  "paraphrase": "The manual page listing every option of the lookup commands was saved while the person broke off the work. Which weak spots were called out at that moment, and were they dealt with when the work resumed?",
+  "answer": "Flagged as thin: --history on retired or retracted material, --as-of leaving out wiki pages, the other-project marker in --json output, the busy-archive failure, and --tail on a short turn (plus two unresolved oddities, --as-of with --history and ctx sql ignoring a second statement). The follow-up judged the doc already complete, did not change it, and only added a link to it from the howto.",
+  "must_include": [
+   "the follow-up changed nothing in the doc and only added the link from the howto",
+   "names at least three of the thin cases: --history on retired/retracted material, --as-of excluding wiki pages, other_project in --json, the busy-archive failure, --tail on a short turn"
+  ],
+  "gold_sessions": [
+   "314832ad-3381-4a80-8844-521a059670b0",
+   "41505290-76aa-4db2-b693-a87b48be9773"
+  ],
+  "evidence": "314832ad-3381-4a80-8844-521a059670b0 reply to user turn 2 ('A few cases are thinner than the flags themselves' list); 41505290-76aa-4db2-b693-a87b48be9773 closing summary ('docs/search.md was already complete, so I didn't change it ... I added a link')"
+ },
+ {
+  "id": "s1-q27",
+  "kind": "status",
+  "question": "After the first batch of cmd_turn tests, four groups of cases were listed in chat as still missing. Did the follow-up session work from that list, and which group did it never write?",
+  "paraphrase": "Coverage for the command that displays a stored exchange was written across two days, with the leftovers enumerated only in conversation. Did the second day actually use that enumeration, and which whole category was skipped?",
+  "answer": "No. The follow-up could not see the earlier list, so it worked out the gaps from the test file and the code and said what it assumed. It wrote UTF-8 cut tests, a short turn with --tail and bad arguments; the output-format group from the original list (the header line and blank-line separators) was not written.",
+  "must_include": [
+   "the follow-up could not see the earlier list and inferred the gaps from the repository",
+   "the output-format group (header line and separators) was not written"
+  ],
+  "gold_sessions": [
+   "2bacff10-775e-4f9f-83ee-62f6fd451f44",
+   "9ca46bd8-e097-4423-b36e-48d516801fc7"
+  ],
+  "evidence": "2bacff10-775e-4f9f-83ee-62f6fd451f44 closing summary, 'Left (not done)' items 4 to 7; 9ca46bd8-e097-4423-b36e-48d516801fc7 closing summary ('I couldn't see last session's list, so I worked from the repo' and the three bullets it covered)"
+ },
+ {
+  "id": "s1-q28",
+  "kind": "status",
+  "question": "Has CTX_DERIVED_VERSION been bumped during the search work, and on which occasions did bumping it come up?",
+  "paraphrase": "There is a counter in the source that, when incremented, forces all installations to regenerate what they have computed. Did it move over the course of the lookup work, and on which occasions was moving it considered?",
+  "answer": "No, it is still 6. It came up twice: in the stemming request, where the assistant noted that removing the porter tokenizer would need a bump to 7 and did not do it, and in the stopword-table experiment, where it was raised to 7 in the working tree and then reverted with the rest.",
+  "must_include": [
+   "it was never bumped in a commit (still 6)",
+   "a bump to 7 was discussed for removing the porter tokenizer",
+   "it was raised to 7 in the stopword-table experiment and reverted"
+  ],
+  "gold_sessions": [
+   "79988f8e-a2a3-4e67-ac63-272452e72c50",
+   "ad26da94-5fac-466e-b14c-40f6208d26a2"
+  ],
+  "evidence": "79988f8e-a2a3-4e67-ac63-272452e72c50 replies to user turns 1 and 2 ('I didn't bump CTX_DERIVED_VERSION (currently 6)', 'bump from 6 to 7'); ad26da94-5fac-466e-b14c-40f6208d26a2 closing reply to user turn 1 ('raised CTX_DERIVED_VERSION from 6 to 7') and final message ('reverted all three files')"
+ },
+ {
+  "id": "s2-q01",
+  "kind": "user-said",
+  "question": "Why were the two loops that step back off UTF-8 continuation bytes taken out of add_tool_text in the first place, and what did the user later report that got them put back?",
+  "paraphrase": "The code that shortens very long command results used to avoid chopping a non-English symbol in half, then lost that care, then got it back. Who wanted it gone and on what assumption, and what symptom proved the assumption wrong?",
+  "answer": "The user asked for them to go as noise, saying tool output is ASCII in practice. Two weeks later the user reported a broken character in the middle of a long tool output that had box-drawing characters, and iconv failing on the extract output, so the boundary stepping was restored.",
+  "must_include": [
+   "the user asked for the removal, on the grounds that tool output is ASCII in practice",
+   "the user later saw a broken character in a long tool output containing box-drawing characters (iconv rejected the extract output)"
+  ],
+  "gold_sessions": [
+   "fd0bfd36-3a18-491b-93ef-5f4fc57795d9",
+   "9110f550-d788-4d7a-8032-147e18faa6ea"
+  ],
+  "evidence": "fd0bfd36-3a18-491b-93ef-5f4fc57795d9 user turn 1 (the removal request and its reason); 9110f550-d788-4d7a-8032-147e18faa6ea user turn 1 (the symptom) and the closing summary (stepping restored)"
+ },
+ {
+  "id": "s2-q02",
+  "kind": "user-said",
+  "question": "After the experiment that stopped archiving the output of Read tool calls, why did the user have it reverted?",
+  "paraphrase": "There was a trial in which the contents returned by file-viewing calls were left out of the stored history, on the grounds that the files are under version control anyway. What objection ended the trial?",
+  "answer": "Because half of the user's questions about old sessions are \"what did that file look like then\", and the repository does not hold yesterday's uncommitted state. The whole change was taken out and nothing was committed.",
+  "must_include": [
+   "the user often asks what a file looked like at the time of an old session",
+   "the repository does not have past uncommitted state"
+  ],
+  "gold_sessions": [
+   "07ff2c67-f236-4aed-aba5-9cbcb785126b"
+  ],
+  "evidence": "07ff2c67-f236-4aed-aba5-9cbcb785126b user turn 2 and the closing assistant message"
+ },
+ {
+  "id": "s2-q03",
+  "kind": "decision",
+  "question": "For listing every open finding in `ctx audit`, why did the user pick `--limit 0` over adding a new flag?",
+  "paraphrase": "The secret-checking command shows thirty entries unless told otherwise, and needed a way to show the complete list. Two designs were offered; what were the person's two reasons for the one they picked?",
+  "answer": "`--all` already means rescan in that command, so a second flag with \"all\" in it would confuse the user, and 0-as-unlimited is what every other tool does. Negative or junk values stay an error.",
+  "must_include": [
+   "`--all` already means rescan there, so another flag with 'all' in its name would be confusing",
+   "0 meaning unlimited is what other tools do"
+  ],
+  "gold_sessions": [
+   "e1dd8c17-aeb3-4eff-88e1-7cb7a5ab8d65"
+  ],
+  "evidence": "e1dd8c17-aeb3-4eff-88e1-7cb7a5ab8d65 user turn 2"
+ },
+ {
+  "id": "s2-q04",
+  "kind": "failure",
+  "question": "What happened when the assistant was asked to add a test that a harness reminder inside a user message is archived as speaker `meta`?",
+  "paraphrase": "A check was requested to prove that notes the tooling injects into a person's turn are stored under the label kept for tooling-added text. How did that go?",
+  "answer": "The test could not pass: extract drops reminder text outright, so a message made only of a reminder produces no turn at all rather than a meta turn. The assistant reverted the test, committed nothing, and asked whether to test the current behaviour or change the code to keep reminders.",
+  "must_include": [
+   "reminders are dropped rather than archived as meta, so the test failed",
+   "the test was reverted and nothing was committed"
+  ],
+  "gold_sessions": [
+   "eb85646f-d874-47f5-8ed3-3de96b25f1a4"
+  ],
+  "evidence": "eb85646f-d874-47f5-8ed3-3de96b25f1a4 assistant message after the failing make test and the closing summary"
+ },
+ {
+  "id": "s2-q05",
+  "kind": "user-said",
+  "question": "What rule did the user set about python3 heredocs in tests, and did it cover the tests that already existed?",
+  "paraphrase": "What restriction did the person place on the scripting language used inside newly written checks, and were the older checks to be converted?",
+  "answer": "No more python3 heredocs in new tests: sh and printf only. The old tests stay as they are.",
+  "must_include": [
+   "new tests use sh and printf only, with no python3 heredocs",
+   "existing tests are left as they are"
+  ],
+  "gold_sessions": [
+   "eb85646f-d874-47f5-8ed3-3de96b25f1a4"
+  ],
+  "evidence": "eb85646f-d874-47f5-8ed3-3de96b25f1a4 user turn 1"
+ },
+ {
+  "id": "s2-q06",
+  "kind": "fix",
+  "question": "While the empty-file and half-written-line tests for `ctx archive` were being added, `make test` failed with \"duplicate turns after replacement\". What caused it and how was it resolved?",
+  "paraphrase": "When coverage was added for zero-length inputs and inputs that end mid-record, an unrelated older check went red. Why, and what was done about it?",
+  "answer": "The new test stored one extra whole line, which raised the chunk total that a later assertion expected to be 6. The assistant moved the new test block to after that assertion so the existing count stayed untouched; ctx itself needed no change.",
+  "must_include": [
+   "the new test's extra stored line raised the chunk count that an existing assertion expected",
+   "the new test block was moved to after that assertion"
+  ],
+  "gold_sessions": [
+   "2b5d6d47-9931-430b-aab8-765187c06d4e"
+  ],
+  "evidence": "2b5d6d47-9931-430b-aab8-765187c06d4e the FAIL output and the two assistant notes that follow it ('As expected...', 'Simpler: move my tail test...')"
+ },
+ {
+  "id": "s2-q07",
+  "kind": "failure",
+  "question": "The per-rule tests for github-pat, api-key, stripe, aws-key and slack were first written against `ctx audit`. Why did that fail, and what do they go through instead?",
+  "paraphrase": "The first try at giving five of the secret patterns their own individual checks leaned on the command that reports leaked secrets, and it did not work. What got in the way, and which route was taken?",
+  "answer": "make test failed with \"audit names the github-pat rule\": audit treats anything containing \"example\" as a placeholder and skips it, and the test secrets have to contain EXAMPLE. The tests were rewritten to archive a turn per rule and check that the token is stored as [REDACTED].",
+  "must_include": [
+   "audit skips values containing 'example' as placeholders, so the test tokens never became findings",
+   "the tests go through archive and check the redacted text instead"
+  ],
+  "gold_sessions": [
+   "8cb338ed-4b0b-49af-9f67-87182e6f9852"
+  ],
+  "evidence": "8cb338ed-4b0b-49af-9f67-87182e6f9852 FAIL line, the assistant note after it and the 'Audit limitation' bullet of the closing summary"
+ },
+ {
+  "id": "s2-q08",
+  "kind": "status",
+  "question": "After the first five per-rule redaction tests were committed, how many rule names did the assistant report as still missing, how many rules did the follow-up session add tests for, and what was the final count?",
+  "paraphrase": "Individual checks for the secret patterns were written over two days. How many patterns were said to be outstanding at the end of the first day, how many got checks on the second, and what was the closing tally?",
+  "answer": "13 names were reported still missing, counting only the prefixed token rules. The follow-up added tests for 21 rules, those 13 token names plus eight non-token rules, and ended at 28 redaction rules with 28 tested by name.",
+  "must_include": [
+   "13 reported as still missing",
+   "21 rules given tests in the follow-up",
+   "final count 28 rules, 28 tested"
+  ],
+  "gold_sessions": [
+   "8cb338ed-4b0b-49af-9f67-87182e6f9852",
+   "f0326af5-fdb3-4898-bcfe-04de0c96b131"
+  ],
+  "evidence": "8cb338ed-4b0b-49af-9f67-87182e6f9852 'Still missing' list in the closing summary; f0326af5-fdb3-4898-bcfe-04de0c96b131 closing summary ('The last 21 redaction rules', 'Final count: 28 redaction rules, 28 tested by name')"
+ },
+ {
+  "id": "s2-q09",
+  "kind": "failure",
+  "question": "In the tests for the remaining redaction rules, the url-credential case failed on its first run. What was wrong?",
+  "paraphrase": "One of the newly written per-pattern checks, the one for logins embedded in web addresses, went red the first time. Was the product at fault, and what was corrected?",
+  "answer": "The rule was right and the test's expected text was wrong. The rule replaces the whole user:password part, so `https://user:...@host` becomes `https://[REDACTED]@host`, and the assistant fixed the expectation.",
+  "must_include": [
+   "the test's expectation was wrong, not the rule",
+   "the rule redacts the whole user:password part, user name included"
+  ],
+  "gold_sessions": [
+   "f0326af5-fdb3-4898-bcfe-04de0c96b131"
+  ],
+  "evidence": "f0326af5-fdb3-4898-bcfe-04de0c96b131 FAIL line, the assistant note 'Whole userinfo is replaced (user too)...' and the 'A wrong expectation of mine' bullet"
+ },
+ {
+  "id": "s2-q10",
+  "kind": "status",
+  "question": "How far did the first attempt at `ctx audit --rule NAME` get before it was cut off, and how was the work picked up?",
+  "paraphrase": "The option that narrows the secret report to a single pattern took two sittings. What did the first sitting leave behind, and what did the second do before writing any code?",
+  "answer": "The first session only read the audit code; it edited no file and committed nothing. The next session checked git status and the log, found a clean tree with no audit work in the history, and built the feature from scratch.",
+  "must_include": [
+   "the first attempt changed nothing and committed nothing (it only read code)",
+   "the next session confirmed a clean tree and log, then did it from the start"
+  ],
+  "gold_sessions": [
+   "2ff0a501-013e-4122-bed0-aa6744e479ef",
+   "687ce4a1-2067-470a-8e3c-76fa1714eac2"
+  ],
+  "evidence": "2ff0a501-013e-4122-bed0-aa6744e479ef the whole session (only read-only commands, no closing message); 687ce4a1-2067-470a-8e3c-76fa1714eac2 user turn 1 and the opening of the closing summary"
+ },
+ {
+  "id": "s2-q11",
+  "kind": "decision",
+  "question": "What decided the exit status of `ctx audit --rule NAME` when the flag was first added, and what decides it since the nightly-mail change?",
+  "paraphrase": "For the single-pattern filter on the secret report, how was the command's pass-or-fail result determined at first, and how is it determined after the person complained about getting the same notification every day?",
+  "answer": "At first, by the assistant's own choice, it exited 1 whenever that rule had any open findings, as a per-rule gate. Since the nightly-mail change it exits 1 only if the run opened a new finding of that rule; old ones are still listed.",
+  "must_include": [
+   "originally it exited 1 whenever the named rule had open findings",
+   "now it exits 1 only when the run opens a new finding of that rule"
+  ],
+  "gold_sessions": [
+   "687ce4a1-2067-470a-8e3c-76fa1714eac2",
+   "c14733bd-bc47-430f-aba5-feafdc0fbf07"
+  ],
+  "evidence": "687ce4a1-2067-470a-8e3c-76fa1714eac2 'Exit code (my choice)' bullet of the closing summary; c14733bd-bc47-430f-aba5-feafdc0fbf07 '--rule NAME' bullet of the closing summary"
+ },
+ {
+  "id": "s2-q12",
+  "kind": "fix",
+  "question": "In the box-drawing cut test, why does the `iconv` check write to a file instead of `>/dev/null` as in the user's own command?",
+  "paraphrase": "The regression test for wide symbols straddling the trimming point validates the encoding with a standard conversion utility, but sends that utility's result somewhere other than the usual throwaway sink. Why?",
+  "answer": "On macOS, iconv errored with \"Inappropriate ioctl for device\" when writing straight to /dev/null, so the test redirects its output to a file.",
+  "must_include": [
+   "iconv on macOS failed when writing directly to /dev/null ('Inappropriate ioctl for device')"
+  ],
+  "gold_sessions": [
+   "9110f550-d788-4d7a-8032-147e18faa6ea"
+  ],
+  "evidence": "9110f550-d788-4d7a-8032-147e18faa6ea the iconv error in the tool output and the last paragraph of the closing summary"
+ },
+ {
+  "id": "s2-q13",
+  "kind": "decision",
+  "question": "Why was `ctx archive -`, reading the transcript from stdin, reverted after it was built and tested?",
+  "paraphrase": "A trial let the storing command take a session log from a pipe instead of a named path. It worked and passed its checks, yet was thrown away. On what grounds?",
+  "answer": "The session id comes from the file name and piped input has none, so the id had to be invented, and an invented id stores the same session twice under two ids. The user judged it not worth it.",
+  "must_include": [
+   "the session id comes from the file name, which piped input lacks",
+   "an invented id would store the same session twice under two ids"
+  ],
+  "gold_sessions": [
+   "7ffd28bd-2219-49bd-bc29-b85aeb18b629"
+  ],
+  "evidence": "7ffd28bd-2219-49bd-bc29-b85aeb18b629 user turn 2 and the closing assistant message"
+ },
+ {
+  "id": "s2-q14",
+  "kind": "status",
+  "question": "The `touch -t` rule sits in CLAUDE.md as an uncommitted edit. Why wasn't it committed when it was written?",
+  "paraphrase": "One of the project's written working agreements, the one about how checks should set the times on files, is in the working copy but never entered the history. Why was it not recorded on the day it was written down?",
+  "answer": "The assistant added the bullet when the user stated the rule but did not commit it because the user had not asked for a commit; it only offered a `docs:` subject for later. The user never followed up.",
+  "must_include": [
+   "the assistant added the line but did not commit because the user had not asked for a commit"
+  ],
+  "gold_sessions": [
+   "ad19a573-f793-449e-9a27-efa21fc9adfa"
+  ],
+  "evidence": "ad19a573-f793-449e-9a27-efa21fc9adfa user turn 2 and the closing assistant message"
+ },
+ {
+  "id": "s2-q15",
+  "kind": "failure",
+  "question": "After `token` went back into the keyword rule with the guard for code, which code-looking form still gets redacted, and what happened to its test case?",
+  "paraphrase": "When the general credential-word pattern was taught to leave source-code lines alone, one shape of source line slipped past the exemption. Which shape, and how was the gap handled?",
+  "answer": "A call with a space before the parenthesis, `token = next_token (input)`, is still redacted. The assistant dropped that test case instead of widening the rule and left it to the user to ask for more.",
+  "must_include": [
+   "a call written with a space before the opening parenthesis is still redacted",
+   "the test case was dropped rather than the rule widened"
+  ],
+  "gold_sessions": [
+   "ef51bfd9-ec86-4f47-83bb-b32c1cfc497f"
+  ],
+  "evidence": "ef51bfd9-ec86-4f47-83bb-b32c1cfc497f the AssertionError 'changed ordinary text: token = next_token (input)' and the 'Spaced calls' bullet of the closing summary"
+ },
+ {
+  "id": "s2-q16",
+  "kind": "fix",
+  "question": "`ctx extract` could not be run directly on fuzz/seed/redact/mixed.txt for the before/after in the commit body. How did the assistant get the comparison?",
+  "paraphrase": "The standing instruction to show a masking change's effect on one particular sample file hit a snag the first time it was followed: the sample is plain text, not a session log. How was the comparison produced?",
+  "answer": "extract only reads JSONL, so the assistant wrapped the file's text as a single JSONL turn and ran extract on that before and after the change. The one changed line went into the commit body.",
+  "must_include": [
+   "the file was wrapped as a single JSONL turn and extract was run on that"
+  ],
+  "gold_sessions": [
+   "ef51bfd9-ec86-4f47-83bb-b32c1cfc497f"
+  ],
+  "evidence": "ef51bfd9-ec86-4f47-83bb-b32c1cfc497f the wrap.py commands and the 'Seed file and commit body' part of the closing summary"
+ },
+ {
+  "id": "s2-q17",
+  "kind": "fix",
+  "question": "The first `doppler` fuzz seed did not trigger its rule. Why, and what became of that line?",
+  "paraphrase": "While sample inputs were being written for the patterns that had none, the sample for one secrets-manager vendor's keys was not masked on the first try. What was wrong with it, and was it thrown away?",
+  "answer": "The seed's token had an extra `dev.` segment after the prefix, and a dot inside the value stops the rule from matching. The assistant fixed the seed and kept the original line in the file as a near-miss.",
+  "must_include": [
+   "the token had a dot inside its value (an extra dotted segment), so the rule did not fire",
+   "the line was kept in the seed as a near-miss"
+  ],
+  "gold_sessions": [
+   "807d107f-ad99-4aa2-85bd-d854880d36d7"
+  ],
+  "evidence": "807d107f-ad99-4aa2-85bd-d854880d36d7 the extract output for the doppler seed and the 'My first doppler seed' paragraph of the closing summary"
+ },
+ {
+  "id": "s2-q18",
+  "kind": "status",
+  "question": "How was the job of giving every redaction rule a fuzz seed split across its two sessions, and which rule names were deliberately left without one?",
+  "paraphrase": "Sample inputs for the secret patterns were completed over two consecutive days. What did each day cover, in numbers, and which pattern names ended up with no sample on purpose?",
+  "answer": "The first session added 18 seed files covering all 30 rows of token_rules. The second added seeds for the nine remaining non-token rules. assignment, entropy and known got none because they are audit-only rules, not redaction rules.",
+  "must_include": [
+   "first session: 18 seed files covering the 30 token_rules rows",
+   "second session: the nine remaining non-token rules",
+   "assignment, entropy and known were left without seeds because they are audit-only"
+  ],
+  "gold_sessions": [
+   "5a95c450-bab2-4409-ae10-8a9f7dbee474",
+   "807d107f-ad99-4aa2-85bd-d854880d36d7"
+  ],
+  "evidence": "5a95c450-bab2-4409-ae10-8a9f7dbee474 both closing summaries (18 files, 30 rows, no token_rules rows left); 807d107f-ad99-4aa2-85bd-d854880d36d7 closing summary (nine rules; audit-only rules left out)"
+ },
+ {
+  "id": "s2-q19",
+  "kind": "decision",
+  "question": "Why was `ctx extract FILE --stats` dropped after it had been built and tested?",
+  "paraphrase": "A summary option for the command that prints a session log's exchanges, tallying entries by who spoke and maskings by pattern, was finished and then discarded. What two reasons did the person give?",
+  "answer": "The user decided it was stderr noise on every extract, and audit already counts per rule. It was reverted without a commit.",
+  "must_include": [
+   "it would be stderr noise on every extract",
+   "audit already counts per rule"
+  ],
+  "gold_sessions": [
+   "8e65641d-d586-48cd-95f4-97bc156c722a"
+  ],
+  "evidence": "8e65641d-d586-48cd-95f4-97bc156c722a user turn 2"
+ },
+ {
+  "id": "s2-q20",
+  "kind": "status",
+  "question": "After the nothing-is-skipped-silently rule went in for malformed lines, which skips in scanning and archiving were still unreported, and why did the assistant leave them?",
+  "paraphrase": "Once unparseable records were being tallied and announced, some other things the ingestion code passes over were knowingly left unannounced. Which ones, and what held the assistant back from covering them too?",
+  "answer": "scan still skips unreadable directories and files that fail stat, and the relabel pass skips transcripts it can no longer open, all without a report. The assistant left them because they are files and directories rather than lines, so the `N lines skipped` wording does not fit, and asked the user to decide.",
+  "must_include": [
+   "scan skips unreadable directories and files that fail stat without reporting it",
+   "the relabel pass skips transcripts it can no longer open",
+   "they were left because they are files and directories, not lines, so the agreed message does not fit, and the user was asked"
+  ],
+  "gold_sessions": [
+   "7191ffce-d288-4a73-9446-a074325fc618"
+  ],
+  "evidence": "7191ffce-d288-4a73-9446-a074325fc618 the last part of the closing summary ('archive and scan still skip other things without saying so...')"
+ },
+ {
+  "id": "s2-q21",
+  "kind": "fix",
+  "question": "While the malformed-line tests were being added, `make test` failed with \"half line was stored\". What was the cause and what was the fix?",
+  "paraphrase": "During the work that made unparseable records get tallied instead of quietly ignored, an older check about incomplete trailing records began to fail. What triggered it, and what was the remedy?",
+  "answer": "The new half-line turn in the test contained the word \"cut\", which an older test searches the index for to prove a half line was not stored. The assistant changed its word to \"sliced\".",
+  "must_include": [
+   "the new test text contained the word 'cut', which an older test searches for",
+   "the word in the new test was changed (to 'sliced')"
+  ],
+  "gold_sessions": [
+   "7191ffce-d288-4a73-9446-a074325fc618"
+  ],
+  "evidence": "7191ffce-d288-4a73-9446-a074325fc618 the 'FAIL: half line was stored' output and the assistant note that follows it"
+ },
+ {
+  "id": "s2-q22",
+  "kind": "user-said",
+  "question": "Why did the user turn down the `email` redaction rule, and how much did they want undone?",
+  "paraphrase": "A trial pattern that masked people's mail addresses in saved history was rejected. What would it have cost the person, and how complete a rollback did they demand?",
+  "answer": "Every `git log` in the archive would lose its authors, so the user could no longer search for who did something. They asked for all of it to be reverted, including the REDACTION_VERSION bump, which went back from 7 to 6.",
+  "must_include": [
+   "archived git log output would lose its authors, so searching for who did something would stop working",
+   "everything was to be reverted, including the version bump"
+  ],
+  "gold_sessions": [
+   "2b17ff67-6714-4067-a726-9f68d1a403f2"
+  ],
+  "evidence": "2b17ff67-6714-4067-a726-9f68d1a403f2 user turn 2 and the closing assistant message"
+ },
+ {
+  "id": "s2-q23",
+  "kind": "status",
+  "question": "After `<bash-` and `<ide_` were added as meta shapes, the assistant listed six more that were still missing. Were those ever added?",
+  "paraphrase": "Two kinds of tooling-injected text were taught to the who-said-it tagging, and several more were named in chat as not yet recognised. What became of that remainder when the person asked for it the next day?",
+  "answer": "No. When asked the next day, the assistant said the earlier list was not in its context and not anywhere in the repository, refused to guess because a wrong prefix would label real user turns as meta, and asked the user to paste the list. Nothing was changed or committed.",
+  "must_include": [
+   "none of the remaining shapes were added",
+   "the assistant no longer had the list (not in its context or the repository) and asked the user to supply it"
+  ],
+  "gold_sessions": [
+   "3460e0da-5f42-4ede-8a97-71b02f1d3320",
+   "63c7a011-e2ed-499f-bc34-ad92b530aeaa"
+  ],
+  "evidence": "3460e0da-5f42-4ede-8a97-71b02f1d3320 'Still missing' list in the closing summary; 63c7a011-e2ed-499f-bc34-ad92b530aeaa the whole session, especially the closing message"
+ },
+ {
+  "id": "s2-q24",
+  "kind": "user-said",
+  "question": "After `ctx audit --allow-rule` was committed, the user said it should say how many it allowed and asked for an amend. What did the assistant do?",
+  "paraphrase": "Right after the bulk-dismiss option for the secret report landed, the person asked for it to be reworked so that it reports how many entries it affected. Was the saved change rewritten?",
+  "answer": "It did not amend: the command already printed `N findings allowed` and a test already checked the number, so the commit stayed as it was. It only saved the general rule about bulk flags printing a count.",
+  "must_include": [
+   "the commit was not amended",
+   "the command already printed how many findings it allowed"
+  ],
+  "gold_sessions": [
+   "a332abfc-6f39-40c7-a01c-3c39d17d2804"
+  ],
+  "evidence": "a332abfc-6f39-40c7-a01c-3c39d17d2804 user turn 2 and the two assistant messages after it"
+ },
+ {
+  "id": "s2-q25",
+  "kind": "failure",
+  "question": "Two experiments tried to make scanning a big machine faster: raising BATCH_BYTES from 8 MB to 64 MB, and archiving four transcripts in parallel. What did each measurement show?",
+  "paraphrase": "Two separate trials aimed to speed up bulk ingestion on a large machine, one by writing eight times as much to the store in one go and one by running several worker processes at once. What numbers did each trial yield?",
+  "answer": "The batch-size run produced no numbers at all: the session was cut off while the assistant was still waiting for the background archive runs. The parallel run was only about 8% faster than serial (for example 10.35 s against 11.63 s) and was reverted because the children just queue on the database lock and their output interleaves.",
+  "must_include": [
+   "the batch-size comparison never reported any timings (the session ended while the runs were still going)",
+   "the parallel scan was only about 8% faster than serial",
+   "the parallel version was reverted"
+  ],
+  "gold_sessions": [
+   "1b6c6b5b-2695-40bc-b3e4-cb5745a995d5",
+   "bf073df2-2626-4455-a59d-9afccfd7b8c3"
+  ],
+  "evidence": "1b6c6b5b-2695-40bc-b3e4-cb5745a995d5 the backgrounded benchmark command, the 'Waiting on the background benchmark runs' note and the final 'Exit code 137'; bf073df2-2626-4455-a59d-9afccfd7b8c3 the timing table in the first closing summary and user turn 2"
+ },
+ {
+  "id": "s2-q26",
+  "kind": "status",
+  "question": "The sentence-by-sentence check of the howto's 'Archive your sessions' and 'Check the archive for secrets' sections against the code ran over two sessions. How many doc fixes did the first produce, and what did the second find?",
+  "paraphrase": "Two chapters of the user guide, the one on saving past conversations and the one on hunting for leaked credentials, were proofread line by line against the program over two days. What was the yield of each day?",
+  "answer": "The first session fixed five places in the doc and committed them when told to stop. The second checked the rest of the secrets section, found nothing to fix and made no commit.",
+  "must_include": [
+   "five fixes in the first session",
+   "the second session found nothing to fix and made no commit"
+  ],
+  "gold_sessions": [
+   "3b9e803e-97fd-4b37-a1a6-0326e1250029",
+   "34b7f28f-1e4d-4c50-833a-dcc1437a6934"
+  ],
+  "evidence": "3b9e803e-97fd-4b37-a1a6-0326e1250029 'Fixed' list of the first summary and the closing message; 34b7f28f-1e4d-4c50-833a-dcc1437a6934 closing summary"
+ },
+ {
+  "id": "s2-q27",
+  "kind": "decision",
+  "question": "What did the experiment with a 4K head and 12K tail for tool output show, and why did the user go back to 8K and 24K?",
+  "paraphrase": "A trial halved how much of the start and end of an oversized command result is kept. How much space did it save in the test case, and on what grounds was it undone?",
+  "answer": "The big-output test's stored turn shrank from 32,827 to 16,443 bytes, about half, and make test failed on the 24K tail assertion. The user reverted it because the 24K tail was chosen for the error and summary that sit there, and disk is not what hurts.",
+  "must_include": [
+   "the stored turn got about 50% smaller (32,827 to 16,443 bytes)",
+   "the tail size was chosen because the error and the summary sit at the end",
+   "disk space is not the problem"
+  ],
+  "gold_sessions": [
+   "40764e3f-ce36-4fd2-836e-92936bd74a68"
+  ],
+  "evidence": "40764e3f-ce36-4fd2-836e-92936bd74a68 first closing summary and user turn 2"
+ },
+ {
+  "id": "s3-q01",
+  "kind": "failure",
+  "question": "When `ctx decisions --since` was added the user asked for 'docs per the rule'. Did the assistant know which rule that was, and what had the rule actually said?",
+  "paraphrase": "For the option that restricts the list of items awaiting a reply to those raised from a given day onward, the person pointed to an existing requirement about write-ups. Could the helper locate that requirement, and what had the person originally laid down?",
+  "answer": "No. It reported finding no docs rule in CLAUDE.md or its memory notes and simply updated the howto and usage text. The rule had been given weeks earlier, when `ctx rules --count` merged undocumented: a new flag or environment variable is documented in docs/howto.md in the same branch before it merges, and in plugin/INSTALL.md too if it concerns the hooks.",
+  "must_include": [
+   "the assistant said it found no docs rule in CLAUDE.md or its memory notes",
+   "the rule: a new flag or environment variable is documented in docs/howto.md in the same branch before it merges"
+  ],
+  "gold_sessions": [
+   "395cf5e5-51d5-48bc-8c4e-34277c5c057b",
+   "a4dd4ff2-eede-4ff3-8e42-68ffaf123198"
+  ],
+  "evidence": "395cf5e5-51d5-48bc-8c4e-34277c5c057b user turn 2 states the standing docs rule (howto in the same branch, INSTALL.md if hooks) and the assistant's reply promises to keep it; a4dd4ff2-eede-4ff3-8e42-68ffaf123198 user turn 1 says 'docs per the rule', closing summary says no docs rule was found in CLAUDE.md or memory notes"
+ },
+ {
+  "id": "s3-q02",
+  "kind": "user-said",
+  "question": "Why did the user want the PostToolUse block dropped from plugin/hooks/hooks.json when it was tidied?",
+  "paraphrase": "During the clean-up of the file that wires the program into the assistant's lifecycle, one entry that fires after an action finishes was removed on the person's instruction. What justification did they give?",
+  "answer": "They said it was for a tool they don't use, so it was a process spawned on tool calls for nothing.",
+  "must_include": [
+   "it was for a tool the user does not use",
+   "it spawned a process on tool calls for nothing"
+  ],
+  "gold_sessions": [
+   "887d41ef-b0a8-4bc1-bb6a-320f16f35052"
+  ],
+  "evidence": "887d41ef-b0a8-4bc1-bb6a-320f16f35052 user turn 1"
+ },
+ {
+  "id": "s3-q03",
+  "kind": "status",
+  "question": "The first session on the 'published pages aren't being kept' problem was cut off. How far had it got: what had been identified, and what state was the work left in?",
+  "paraphrase": "The initial attempt at the bug where shared web documents stopped being saved ended abruptly. What had been worked out by then, and what was sitting unfinished in the working copy?",
+  "answer": "It had pinned the cause on commit d6a6cb3, which dropped the PostToolUse hook that runs `artifacts keep`, and had started topic/restore-artifact-keep-hook. The hooks.json fix and the new test were written but uncommitted; nothing was committed or merged.",
+  "must_include": [
+   "the cause had been identified: the earlier commit that dropped the PostToolUse hook from hooks.json",
+   "the fix and the test were written on a topic branch but uncommitted, and nothing was merged"
+  ],
+  "gold_sessions": [
+   "877c611a-7a45-4a04-a0d9-92ec6b8439df",
+   "a5ad476c-b53d-4e7e-b66c-3e38c1728e83"
+  ],
+  "evidence": "877c611a-7a45-4a04-a0d9-92ec6b8439df assistant message 'Suspect: d6a6cb3' and the last tool call (branch created, edits written, command killed); a5ad476c-b53d-4e7e-b66c-3e38c1728e83 user turn 1 (still on the topic branch with uncommitted changes to hooks.json and the tests) and the 'What was already there' part of the closing summary"
+ },
+ {
+  "id": "s3-q04",
+  "kind": "fix",
+  "question": "How did the assistant check that the new hooks.json test would actually have caught the missing `artifacts keep` hook?",
+  "paraphrase": "Before landing the repair for saved web documents, how was it demonstrated that the added regression check really detects the fault?",
+  "answer": "It temporarily put the old hooks.json from HEAD back, ran the tests and saw the new check fail ('hooks.json lacks the PostToolUse Artifact hook running artifacts keep'), then restored the fixed file and the suite passed.",
+  "must_include": [
+   "it temporarily restored the old hooks.json that lacked the hook",
+   "the new test failed against the old file and passed again with the fix"
+  ],
+  "gold_sessions": [
+   "a5ad476c-b53d-4e7e-b66c-3e38c1728e83"
+  ],
+  "evidence": "a5ad476c-b53d-4e7e-b66c-3e38c1728e83 tool call that copies hooks.json aside, restores HEAD's version and runs test/run.sh (FAIL line), assistant message 'The test fails without the fix and passes with it', closing summary 'Test check'"
+ },
+ {
+  "id": "s3-q05",
+  "kind": "decision",
+  "question": "Two hook speed-ups were built, timed and then thrown away: a single `ctx offer` for SessionStart and a 60-second cache for the SubagentStart offer. Why did the user reject each?",
+  "paraphrase": "Twice an optimisation for what runs when a conversation or a delegated worker begins was prototyped, measured and discarded: folding two start-up programs into one, and briefly reusing recently produced text. What was the person's objection to each?",
+  "answer": "The combined `ctx offer`: the two hooks have separate timeouts on purpose, so that if rules is slow the tickets still show up, and one process loses that. The cache: a rule just remembered would not show for a minute, and it is a file written from the hook path; not worth 10 ms.",
+  "must_include": [
+   "combined offer rejected: the two have separate timeouts on purpose, so slow rules do not stop the tickets showing",
+   "cache rejected: a rule just remembered would not show for a minute",
+   "cache rejected: it writes a file from the hook path"
+  ],
+  "gold_sessions": [
+   "6d0ffc52-58f3-429d-b559-a843275f9089",
+   "4d00ee64-1ba1-4d6a-b47e-0d8af94c62b7"
+  ],
+  "evidence": "6d0ffc52-58f3-429d-b559-a843275f9089 user turn 2 ('drop the branch... separate timeouts on purpose'); 4d00ee64-1ba1-4d6a-b47e-0d8af94c62b7 user turn 2 ('delete it... wouldn't show for a minute... file written from the hook path. not worth 10 ms')"
+ },
+ {
+  "id": "s3-q06",
+  "kind": "decision",
+  "question": "Why did the user want `--days N` on `ctx decisions --open`, and how are bad values of N handled compared with what the assistant first proposed?",
+  "paraphrase": "What was the person's motivation for making the look-back span on the list of items awaiting a reply adjustable, and what happens to nonsense input as opposed to the helper's original suggestion?",
+  "answer": "After two weeks away everything they owe an answer on is older than 14 days, so the list comes back empty. The assistant had proposed clamping a bad value back to 14, as `ctx stats` does; the user said to validate N, so bad values are rejected with an error.",
+  "must_include": [
+   "after two weeks away every question the user owes an answer on is older than 14 days, so the list comes back empty",
+   "bad values are rejected with an error, not clamped back to 14 as the assistant first proposed"
+  ],
+  "gold_sessions": [
+   "5fb71691-5b1a-4453-b059-f6213e38b8c4"
+  ],
+  "evidence": "5fb71691-5b1a-4453-b059-f6213e38b8c4 assistant's first reply (edge cases: clamp days <= 0 back to 14), user turn 2 ('B. after two weeks away... validate N'), closing summary ('rejected bad values rather than clamping')"
+ },
+ {
+  "id": "s3-q07",
+  "kind": "decision",
+  "question": "Why is reading one rule in full `ctx rules show KEY` and not just `ctx rules KEY`? What reason and example did the user give?",
+  "paraphrase": "To print a single stored instruction completely, a dedicated verb was preferred over passing the identifier bare. What argument and concrete case did the person offer against the bare form?",
+  "answer": "A positional key collides with the subcommand names the day someone has a rule file called review.md.",
+  "must_include": [
+   "a bare positional key would collide with the subcommand names",
+   "the example: a rule file called review.md"
+  ],
+  "gold_sessions": [
+   "60c1c92f-bc7d-41d9-a86f-c333fbb025d9"
+  ],
+  "evidence": "60c1c92f-bc7d-41d9-a86f-c333fbb025d9 user turn 2 ('A. a positional key collides with the subcommand names the day someone has a rule file called review.md')"
+ },
+ {
+  "id": "s3-q08",
+  "kind": "decision",
+  "question": "OFFER_RULES went from 15 to 5 and back to 15. What was the user's reason for the cut, and what did they say when they reversed it?",
+  "paraphrase": "The ceiling on how many stored instructions are shown when a conversation begins was lowered and later raised again. Why was it lowered, and what argument did the person make when undoing that?",
+  "answer": "It was cut because the session-start text was too long and agents skim it. It was reversed after the user's release-checklist rule was not offered (nine rules, five shown): 'a rule that isn't shown is a rule that isn't followed, and silently is the worst way'. The assistant had suggested keeping 5 with an 'N more' line; the user asked for both the cap back at 15 and the line.",
+  "must_include": [
+   "cut because the offer text was too long and agents skim it",
+   "restored because a rule that isn't shown is a rule that isn't followed, and dropping it silently is the worst way"
+  ],
+  "gold_sessions": [
+   "d7ff21f1-afff-445f-ba9b-fd81ae016a22",
+   "21a35919-e6b3-45d9-8692-305279a6f406"
+  ],
+  "evidence": "d7ff21f1-afff-445f-ba9b-fd81ae016a22 user turn 1 ('too long, agents skim it... cut OFFER_RULES from 15 to 5'); 21a35919-e6b3-45d9-8692-305279a6f406 user turn 1 (release checklist rule not offered), assistant's suggestion B, user turn 2 ('both: cap back to 15 and the N more line... a rule that isn't shown...')"
+ },
+ {
+  "id": "s3-q09",
+  "kind": "fix",
+  "question": "When OFFER_RULES was cut to 5, what else had to change for the cap to really apply?",
+  "paraphrase": "Lowering the constant that limits how many instructions are shown at start-up was not sufficient by itself. What second spot had to be edited?",
+  "answer": "The SQL query had its own hardcoded `LIMIT 15` literal, separate from the define, so that was changed to 5 as well (there was no STR macro to tie the two together).",
+  "must_include": [
+   "the SQL query's separately hardcoded LIMIT 15 literal had to be changed too"
+  ],
+  "gold_sessions": [
+   "d7ff21f1-afff-445f-ba9b-fd81ae016a22"
+  ],
+  "evidence": "d7ff21f1-afff-445f-ba9b-fd81ae016a22 assistant message 'There's no STR macro in the file, so I'm replacing the SQL LIMIT with a plain literal' and closing summary 'Cap'"
+ },
+ {
+  "id": "s3-q10",
+  "kind": "user-said",
+  "question": "When the user asked which `ctx rules` subcommands had no direct test and wanted three of them tested, where did they want the list of the ones still remaining to go?",
+  "paraphrase": "The person requested an inventory of the instruction-management verbs lacking coverage, with a few to be covered that day. How was the leftover inventory to be reported, and where was it not allowed to be put?",
+  "answer": "Told to them in chat; they said not to write that list into the repo.",
+  "must_include": [
+   "tell the user in chat which remain",
+   "do not write the list into the repo"
+  ],
+  "gold_sessions": [
+   "9c1712b6-8e85-4087-b27e-3303e3463d36"
+  ],
+  "evidence": "9c1712b6-8e85-4087-b27e-3303e3463d36 user turn 1 ('tell me in chat which remain. don't write that list into the repo'); closing summary confirms the list was not written to the repo"
+ },
+ {
+  "id": "s3-q11",
+  "kind": "decision",
+  "question": "For `ctx remember` given the exact same text twice, which option did the assistant recommend, and what did the user pick instead and why?",
+  "paraphrase": "When an identical instruction is stored a second time, what behaviour did the helper argue for, and what did the person choose and for what reason?",
+  "answer": "The assistant recommended B: quietly return the existing key as if it were new, for idempotence. The user chose A, refuse the second and print the existing key, because 'I want to be told I already said it', but with exit 0 since it is not a failure, the message on stderr and the key on stdout.",
+  "must_include": [
+   "the assistant recommended quietly returning the existing key as if new (option B)",
+   "the user chose to refuse the repeat and print the existing key, because they want to be told they already said it"
+  ],
+  "gold_sessions": [
+   "2dbb6b4f-1d11-42f4-aa39-c2be59c6831a"
+  ],
+  "evidence": "2dbb6b4f-1d11-42f4-aa39-c2be59c6831a assistant's first reply ('B: return the existing key quietly'), user turn 2 ('A. I want to be told I already said it. exit 0 though...')"
+ },
+ {
+  "id": "s3-q12",
+  "kind": "decision",
+  "question": "What came of the experiment of dropping FADE_DAYS from 30 to 14?",
+  "paraphrase": "A trial roughly halved the period after which short-lived progress memos stop applying. How did it end, and what was the person's reasoning?",
+  "answer": "`make test` still passed at 14, but the user said to leave it at 30 and delete the branch: 30 came out of the labelled set, shorter values quieted true rules, and they had no new data that says otherwise.",
+  "must_include": [
+   "it stayed at 30 and the trial branch was deleted",
+   "30 came out of the labelled set, where shorter values quieted true rules, and there was no new data to change it"
+  ],
+  "gold_sessions": [
+   "b930f708-c7ad-4bd6-86f7-aeabdc059d28"
+  ],
+  "evidence": "b930f708-c7ad-4bd6-86f7-aeabdc059d28 closing summary of the trial (tests pass at 14), user turn 2 ('leave it at 30 and delete the branch. 30 came out of the labelled set...'), final assistant message"
+ },
+ {
+  "id": "s3-q13",
+  "kind": "failure",
+  "question": "The user said `ctx rules keep NOSUCHKEY` should be an error and asked for a fix. What did the assistant find when it tried to reproduce that, and what was actually wrong?",
+  "paraphrase": "A report said that confirming a stored instruction under a made-up identifier ought to fail. What did investigation show about that exact case, and what related defect turned up instead?",
+  "answer": "It could not reproduce it: the command already exited 1 with 'no rule NOSUCHKEY' and a test already covered an unknown key. The real bug was that `keep` matched the key with SQL GLOB, so a pattern such as `notam*` or `[n]otam-mono.md` matched an imported rule and recorded it as kept; it was changed to a literal suffix match.",
+  "must_include": [
+   "the reported case could not be reproduced: an unknown key was already an error",
+   "the real bug: keys were matched as glob patterns, so a wildcard key recorded a rule as kept"
+  ],
+  "gold_sessions": [
+   "a84c885a-7556-4192-a167-631f1f714f6f"
+  ],
+  "evidence": "a84c885a-7556-4192-a167-631f1f714f6f assistant messages 'I can't reproduce the bug with NOSUCHKEY: it already exits 1' and 'That's a real bug. keep matches the key with GLOB', closing summary"
+ },
+ {
+  "id": "s3-q14",
+  "kind": "failure",
+  "question": "plugin/INSTALL.md and the howto say Claude Code's default of 600 s applies to the async `ctx hook` entries that set no timeout. Where did that figure come from, and was it ever verified?",
+  "paraphrase": "The setup guide states a ten-minute ceiling for the background entries that declare none of their own. What is the origin of that number, and has anyone confirmed it?",
+  "answer": "It started as the assistant's own belief when it wrote test/hooks.py, where it is the fallback for entries with no timeout ('which I believe is Claude Code's default'). The docs table later repeated it on the strength of that test file, and the assistant said it could not confirm the figure from the repo. It was never verified.",
+  "must_include": [
+   "it originated as the assistant's unconfirmed belief when writing the hook tests (the fallback in test/hooks.py)",
+   "the docs table took it from that test file, and the assistant flagged it as not verified"
+  ],
+  "gold_sessions": [
+   "5631e2e6-cba8-48f1-a057-777d635df7ca",
+   "c3657379-7128-4329-9734-2ab0a3752b6b"
+  ],
+  "evidence": "5631e2e6-cba8-48f1-a057-777d635df7ca closing summary 'Missing timeouts' ('the test uses 600s, which I believe is Claude Code's default'); c3657379-7128-4329-9734-2ab0a3752b6b closing summary 'Default timeout' ('because test/hooks.py says so. I couldn't confirm that figure') and the reply to the stop message"
+ },
+ {
+  "id": "s3-q15",
+  "kind": "status",
+  "question": "The user asked to 'finish the per-event hook tests from where you stopped' and merge. What was left to do?",
+  "paraphrase": "The day after work on checks for each lifecycle trigger was paused, the person asked for the remainder to be completed. What did that follow-up actually change?",
+  "answer": "Nothing. test/hooks.py already covered all 8 commands across the 6 events in hooks.json and was already on main as one commit, with no topic branch and a clean tree, so the assistant made no changes.",
+  "must_include": [
+   "nothing was left and no changes were made",
+   "the tests for every event were already complete and on main"
+  ],
+  "gold_sessions": [
+   "7b787946-74cd-4d1d-8856-a1f3dee4b1ba"
+  ],
+  "evidence": "7b787946-74cd-4d1d-8856-a1f3dee4b1ba closing message ('There's nothing left to finish or merge, so I made no changes')"
+ },
+ {
+  "id": "s3-q16",
+  "kind": "decision",
+  "question": "Why was CTX_MODEL_DEADLINE made an official setting instead of raising the 120-second constant to 300?",
+  "paraphrase": "A slow AI backend running on the person's own computer needed longer than the built-in cut-off for its replies. Why did the person prefer an opt-in knob over simply lifting the cut-off for all?",
+  "answer": "The user's local model needs about 150 seconds, but they said nobody else should wait five minutes on a hung call because their laptop is slow, so the default stays at 120 and the variable is the opt-in.",
+  "must_include": [
+   "nobody else should have to wait five minutes on a hung call because the user's own machine is slow"
+  ],
+  "gold_sessions": [
+   "18d702a3-50c8-4b8e-b1d0-0c0bbd119b97"
+  ],
+  "evidence": "18d702a3-50c8-4b8e-b1d0-0c0bbd119b97 user turn 1 (options A and B, 'my local model needs about 150'), user turn 2 ('B. nobody else should wait five minutes on a hung call because my laptop is slow')"
+ },
+ {
+  "id": "s3-q17",
+  "kind": "decision",
+  "question": "`ctx rules accept 12 13 14` and `ctx remember --dry-run` were both built and tested on branches and then deleted. What was the user's reason in each case?",
+  "paraphrase": "Two conveniences for the instruction-keeping commands were implemented and then discarded without landing: approving several pending suggestions in one go, and a rehearsal mode for storing an instruction. Why was each turned down?",
+  "answer": "Accepting several numbers: `--text` and `--until` would then apply to which of them? It is ambiguous and the user would rather type three lines. The dry run: remember writes one line and retire undoes it, so a dry run of that is ceremony.",
+  "must_include": [
+   "multi-accept: it is ambiguous which of them --text and --until would apply to; the user would rather type three lines",
+   "dry run: remember writes one line and retire undoes it, so a dry run is ceremony"
+  ],
+  "gold_sessions": [
+   "41e4bd7d-b35d-4914-863f-f04cafca47ab",
+   "0854f681-8730-4e3d-8a45-b191729b535c"
+  ],
+  "evidence": "41e4bd7d-b35d-4914-863f-f04cafca47ab user turn 2 ('scrap it. --text and --until would then apply to which of them?...'); 0854f681-8730-4e3d-8a45-b191729b535c user turn 2 ('actually no. remember writes one line and retire undoes it, a dry run of that is ceremony')"
+ },
+ {
+  "id": "s3-q18",
+  "kind": "fix",
+  "question": "While adding tests for the 'missing KEY exits 2' rule, why did the first version of the checks stop test/run.sh, and what replaced it?",
+  "paraphrase": "When checks for the new not-found status code were first written, the suite itself ended early. What caused that and how was it worked around?",
+  "answer": "test/run.sh runs under `set -e`, so a bare command that exits 2 aborted the script before the `$?` check was reached. The assistant added an `exits2` helper that captures the status and used it for the checks.",
+  "must_include": [
+   "the script runs under set -e, so a bare command exiting 2 aborted it before the status could be checked",
+   "a helper function that captures the exit status (exits2) was used instead"
+  ],
+  "gold_sessions": [
+   "62ca5c32-6373-4c1d-82b8-28f751a65a6c"
+  ],
+  "evidence": "62ca5c32-6373-4c1d-82b8-28f751a65a6c assistant message 'The script runs under set -e, so a bare command that exits 2 aborts it before my $? check. I'll use a helper instead' and the following edit adding exits2; closing summary 'Tests'"
+ },
+ {
+  "id": "s3-q19",
+  "kind": "status",
+  "question": "Is `ctx rules retire K --reason x --by K`, a rule replaced by itself, refused?",
+  "paraphrase": "Can a stored instruction be withdrawn while naming itself as its own successor, and was that ever dealt with?",
+  "answer": "No, it is still accepted. The assistant noticed it while testing a missing `--by` key, left it alone because the user had not asked about it, and after the exit-2 work listed it again as still accepted, as before.",
+  "must_include": [
+   "it is still accepted, not refused",
+   "the assistant noticed and reported it but deliberately left it unchanged"
+  ],
+  "gold_sessions": [
+   "62ca5c32-6373-4c1d-82b8-28f751a65a6c"
+  ],
+  "evidence": "62ca5c32-6373-4c1d-82b8-28f751a65a6c first summary ('One related gap: --by accepts the rule's own key... I left that alone') and final summary ('Self-replacement: retire K --by K is still accepted, as before')"
+ },
+ {
+  "id": "s3-q20",
+  "kind": "failure",
+  "question": "What went wrong with the first draft of the tests for the compaction brief's messages and standing-rules sections?",
+  "paraphrase": "When coverage was added for two parts of the recap handed over once a long conversation has been condensed, the initial attempt disturbed other checks. In what way, and how was it resolved?",
+  "answer": "The new sessions and proposals leaked into later tests: the block moved the publisher-artifact watermark and broke that test and the 'nothing is proposed' check, and its turn ids (such as o-2) collided with ids used elsewhere. The assistant gave the ids unique names and moved the block to after the proposal tests, just before the 'Stats count' section.",
+  "must_include": [
+   "the new fixtures leaked into existing tests (the publisher-artifact test and the 'nothing is proposed' check broke)",
+   "its turn ids collided with ids already used in the file",
+   "fixed by moving the block to after the proposal tests and using unique ids"
+  ],
+  "gold_sessions": [
+   "6e20ce8b-f396-4ce3-9d42-8203cc6fffe8"
+  ],
+  "evidence": "6e20ce8b-f396-4ce3-9d42-8203cc6fffe8 assistant messages about the publisher-artifact watermark, 'Turn id o-2 collides', 'My proposals also leak into the earlier nothing is proposed check', 'move the block to just before the Stats count section'; closing summary 'Two things I hit'"
+ },
+ {
+  "id": "s3-q21",
+  "kind": "decision",
+  "question": "Why was `ctx rules export` deleted without being merged?",
+  "paraphrase": "A command that wrote all instructions currently applying into a single document was built and then discarded. What were the person's objections?",
+  "answer": "The user said the file is a second copy that goes stale the same day, and if it lands in a project the import reads it back in as a rule.",
+  "must_include": [
+   "the exported file is a second copy that goes stale the same day",
+   "if it lands in a project, the import reads it back in as a rule"
+  ],
+  "gold_sessions": [
+   "6e78f688-871e-42b4-b0d9-e2ce961484a8"
+  ],
+  "evidence": "6e78f688-871e-42b4-b0d9-e2ce961484a8 user turn 2 ('no. that file is a second copy that goes stale the same day, and if it lands in a project the import reads it back in as a rule. delete the branch')"
+ },
+ {
+  "id": "s3-q22",
+  "kind": "status",
+  "question": "What did `ctx decisions --open` print about a waiting question's age when that was first added, and what does it show now that the user has changed their mind?",
+  "paraphrase": "A suffix telling how long each pending item had waited was introduced and undone a day later. What did the suffix look like, and what was put in its place?",
+  "answer": "At first each question's line ended with its age, for example '40 days old'. The next day the user regretted it; the age was removed and nothing new was added, because each line already starts with the absolute date the question was asked (YYYY-MM-DD).",
+  "must_include": [
+   "originally each line ended with the age in days, like '40 days old'",
+   "the age was removed and no new column added, because the line already starts with the absolute date the question was asked"
+  ],
+  "gold_sessions": [
+   "93de1acf-8d43-425d-a934-a8c30ff3bf8b",
+   "c16cae71-522d-40c7-be91-ab71472c42bf"
+  ],
+  "evidence": "93de1acf-8d43-425d-a934-a8c30ff3bf8b closing summary (example line ending '40 days old'); c16cae71-522d-40c7-be91-ab71472c42bf user turn 1 ('I regret the age-in-days thing... show the date asked instead') and closing summary ('I removed the age column. Each question's line already starts with the absolute date')"
+ },
+ {
+  "id": "s3-q23",
+  "kind": "fix",
+  "question": "The user reported that the offer cuts a long rule at the byte limit, mid-character. Where did the cut actually happen, and why did the new accented-text test fail the first time it ran?",
+  "paraphrase": "A long stored instruction was coming out chopped partway through a letter in the start-of-conversation text. Which piece of code turned out to be responsible, and what tripped up the first run of the regression check?",
+  "answer": "Not in the offer itself: `rule_title()` copied titles into a fixed 200-byte buffer with snprintf, so they were cut when stored. The new test first failed because the long rule was not among the 15 listed, since the overflow probes earlier in the test had already filled the list; the test was moved above them.",
+  "must_include": [
+   "the cut was in rule_title(), which copied the title into a fixed 200-byte buffer with snprintf, not in the offer code",
+   "the test first failed because the long rule was not among the 15 listed (earlier overflow test rules filled the list), so it was moved above them"
+  ],
+  "gold_sessions": [
+   "c033d684-e741-4c2c-b558-6a897ddcf625"
+  ],
+  "evidence": "c033d684-e741-4c2c-b558-6a897ddcf625 assistant messages 'The cut is in rule_title()... snprintf into a 200-byte buffer' and 'The test failed because the long rule isn't in the 15 listed... I'll move my test above them'; closing summary"
+ },
+ {
+  "id": "s3-q24",
+  "kind": "user-said",
+  "question": "Before `rules offer` failures were logged to the calls log, what did the user tell the assistant to check first, and what did it conclude?",
+  "paraphrase": "When a start-up program was changed to record its own read errors, the person required one thing to be confirmed before any code was written. What was it, and what was the verdict?",
+  "answer": "To check that it is allowed under the hook-path rule before writing anything. The assistant concluded it is: the call log is a plain file beside the database that every hook already appends to, so the new line is not a database write.",
+  "must_include": [
+   "check that it is allowed under the hook-path rule before writing anything",
+   "allowed: the calls log is a plain file beside the database that every hook already appends to, not a database write"
+  ],
+  "gold_sessions": [
+   "eb07b087-deb6-41ae-9e62-704c07c34fcc"
+  ],
+  "evidence": "eb07b087-deb6-41ae-9e62-704c07c34fcc user turn 2 ('check that's allowed under the hook-path rule before you write anything'), closing summary 'Rule check'"
+ },
+ {
+  "id": "s3-q25",
+  "kind": "fix",
+  "question": "Why did `ctx rules show KEY --history` need its own code to read old versions of a rule, and how much of that reader do the tests exercise?",
+  "paraphrase": "Showing every past revision of a stored instruction required new low-level decoding. Why could the bundled library not simply be asked, and what about the decoder remains unproven?",
+  "answer": "libfossil's `fsl_technote()` only returns the newest version and there is no SQL function for an older one, so the assistant wrote a small reader in src/ctx.c that decompresses older versions and applies Fossil deltas, leaving vendor/ untouched. The tests only use a two-version rule, so it has not been run against long delta chains.",
+  "must_include": [
+   "the library's fsl_technote() only returns the newest version",
+   "a reader that decompresses older versions and applies Fossil deltas was written in src/ctx.c",
+   "only a two-version rule is tested; long delta chains are unexercised"
+  ],
+  "gold_sessions": [
+   "7475ea99-a616-4f43-9c04-b6217d1eea0a"
+  ],
+  "evidence": "7475ea99-a616-4f43-9c04-b6217d1eea0a assistant messages 'there's no SQL function to read an older technote version' and 'Writing the version reader (zlib plus Fossil delta)'; closing summary 'Reading old versions' and 'Test'"
+ },
+ {
+  "id": "s3-q26",
+  "kind": "failure",
+  "question": "When the user asked for every standing rule they had given to be listed, and the memory-only ones (hook path, usage text, absolute dates) were moved into CLAUDE.md, which standing rules from earlier sessions were missing from the list?",
+  "paraphrase": "An audit was requested of all lasting requirements the person had issued, and a few that lived only in the helper's private jottings were copied into the shared conventions file. Which previously issued requirements did that audit overlook?",
+  "answer": "Two. The documentation rule (a new flag or environment variable is documented in docs/howto.md in the same branch before it merges, and in plugin/INSTALL.md if it concerns the hooks) and the missing-key rule (a command given a KEY it can't find says which key and exits 2, never falling through). Neither had been saved to memory or CLAUDE.md, and the list of eight left both out.",
+  "must_include": [
+   "the rule that a new flag or environment variable is documented in docs/howto.md in the same branch before it merges",
+   "the rule that a command given a KEY it cannot find says which key and exits 2"
+  ],
+  "gold_sessions": [
+   "87b726b9-caae-4039-a68e-9b021741f4ed",
+   "395cf5e5-51d5-48bc-8c4e-34277c5c057b",
+   "62ca5c32-6373-4c1d-82b8-28f751a65a6c"
+  ],
+  "evidence": "87b726b9-caae-4039-a68e-9b021741f4ed the numbered list of eight rules and the final CLAUDE.md (neither rule appears); 395cf5e5-51d5-48bc-8c4e-34277c5c057b user turn 2 ('standing rule: a new flag or environment variable is documented in docs/howto.md in the same branch...'); 62ca5c32-6373-4c1d-82b8-28f751a65a6c user turn 2 ('make that general, as a rule: a command given a KEY it can't find says which key and exits 2') and closing note that it was not added to CLAUDE.md"
+ },
+ {
+  "id": "s3-q27",
+  "kind": "status",
+  "question": "Where did the pass over the howto's 'Keep standing rules' section stop: what is committed, and which sentence was next?",
+  "paraphrase": "The line-by-line effort to back each documented claim about lasting instructions with a check was halted partway. What had been saved by then, and what was the following item to tackle?",
+  "answer": "One new test is committed on topic/howto-standing-rules-tests (6ca8b39), unmerged: `ctx remember --project '*'` makes a rule that applies in every project. The next gap was the sentence that every scan also imports each project's CLAUDE.md and AGENTS.md; a half-written test for it had not run and was removed. The section from the judge paragraph down had not been read.",
+  "must_include": [
+   "one test is committed on an unmerged topic branch: remember --project '*' applies in every project",
+   "next was the sentence that a scan also imports each project's CLAUDE.md and AGENTS.md"
+  ],
+  "gold_sessions": [
+   "b8e54e39-89e6-4e91-900f-b43acc790efe"
+  ],
+  "evidence": "b8e54e39-89e6-4e91-900f-b43acc790efe user's stop message and the final assistant message ('Added so far', 'Next gap', 'Remaining gaps'); the assistant message before it about removing the second edit that never ran"
+ },
+ {
+  "id": "s3-q28",
+  "kind": "user-said",
+  "question": "What did the user ask for in the inventory of timeouts and deadlines that came just before the hook-path rule, and where was it to be delivered?",
+  "paraphrase": "Ahead of laying down the read-only requirement for event handlers, the person requested a survey of every time bound in that area. What did each entry have to state, and in what form was it to be given?",
+  "answer": "A table, in chat only, of every timeout or deadline on the hook path and in the rules machinery, with where each is set and what happens when it fires.",
+  "must_include": [
+   "a table given in chat only",
+   "for each entry: where it is set and what happens when it fires"
+  ],
+  "gold_sessions": [
+   "10b4fd9e-adae-4ffc-854c-962322275a44"
+  ],
+  "evidence": "10b4fd9e-adae-4ffc-854c-962322275a44 user turn 1 ('make me a table, in chat only: every timeout or deadline on the hook path and in the rules machinery... with where each is set and what happens when it fires')"
+ },
+ {
+  "id": "s4-q01",
+  "kind": "decision",
+  "question": "Why did we add a separate `ctx ticket list` instead of an `--any` flag on `ctx ticket ready` for seeing done and dropped tickets?",
+  "paraphrase": "To let people see closed and abandoned work items too, a whole new command was created instead of widening the one that shows what can be picked up next. What was the person's objection to widening it?",
+  "answer": "The user said ready means ready: a flag that makes it show tickets that are not ready is a lie in the name. So a new list command was added and ready was left unchanged.",
+  "must_include": [
+   "a flag that makes `ready` show tickets that are not ready would make the command's name untrue"
+  ],
+  "gold_sessions": [
+   "b2c58970-6314-4328-9315-e903c1c31f38"
+  ],
+  "evidence": "b2c58970-6314-4328-9315-e903c1c31f38 user turn 2 ('ready means ready, a flag that makes it mean not-ready is a lie in the name'); options in user turn 1"
+ },
+ {
+  "id": "s4-q02",
+  "kind": "decision",
+  "question": "Why is a missing `--class` on `ctx source add` an error rather than defaulting to evergreen?",
+  "paraphrase": "When a reference document is registered without saying which lifespan category it belongs to, the tool stops instead of assuming the never-expires category. What was the person's reasoning?",
+  "answer": "The user said the class is the whole point, and a silent evergreen is a source nobody ever reviews.",
+  "must_include": [
+   "a source silently defaulted to evergreen would never be reviewed"
+  ],
+  "gold_sessions": [
+   "ecb86152-da5b-4f46-b001-aad9f19f06ef"
+  ],
+  "evidence": "ecb86152-da5b-4f46-b001-aad9f19f06ef user turn 2 ('the class is the whole point, and a silent evergreen is a source nobody ever reviews')"
+ },
+ {
+  "id": "s4-q03",
+  "kind": "decision",
+  "question": "Why did we keep the single RETIRE_HORIZON_DAYS number instead of letting each source carry its own grace period in its origin record?",
+  "paraphrase": "How long an expiring reference document still counts after its check-by day has passed is one figure shared by all of them. Why did the person turn down having every document set its own?",
+  "answer": "The user chose the fixed number: one number they can remember beats a knob per source that nobody sets.",
+  "must_include": [
+   "one number that can be remembered beats a per-source setting that nobody would set"
+  ],
+  "gold_sessions": [
+   "7653f50d-1ebf-4288-9141-8687cc666f7e"
+  ],
+  "evidence": "7653f50d-1ebf-4288-9141-8687cc666f7e user turn 2 ('one number I can remember beats a knob per source that nobody sets'); options in user turn 1"
+ },
+ {
+  "id": "s4-q04",
+  "kind": "decision",
+  "question": "Why are the regression tests for `ticket done` and `ticket drop` on an already finished ticket in the same commit as the fix, rather than in a test-only commit before it?",
+  "paraphrase": "The checks proving that a work item which is already closed or abandoned can't be closed or abandoned again landed together with the code correction. Why weren't they recorded on their own first?",
+  "answer": "A test-only commit would have failed make test, and the repo's conventions require make test to pass before every commit, so the failing tests went in with the fix.",
+  "must_include": [
+   "a commit holding only those tests would fail make test, which has to pass before every commit"
+  ],
+  "gold_sessions": [
+   "70a4f981-8302-44a1-932b-f44a3ba9e060"
+  ],
+  "evidence": "70a4f981-8302-44a1-932b-f44a3ba9e060 closing summary ('I kept the regression tests in the fix commit rather than a separate one...')"
+ },
+ {
+  "id": "s4-q05",
+  "kind": "failure",
+  "question": "Did we ever try opening $EDITOR for the body when `ctx ticket new` is run without --body? What happened to it?",
+  "paraphrase": "Was there an attempt to pop up a text-writing program, the way version control does for its messages, when someone opens a work item without giving a description? How did it end, and why?",
+  "answer": "Yes. It was implemented and tested but never committed, and the user had it reverted: agents have no editor, in their shells the editor is a no-op, so it would hang or file empty bodies. A ticket without --body just has no body.",
+  "must_include": [
+   "it was implemented and then reverted without being committed",
+   "agents have no working editor, so it would hang or file empty bodies"
+  ],
+  "gold_sessions": [
+   "b95a2988-78e9-4fba-bf5f-8fd63e9e0073"
+  ],
+  "evidence": "b95a2988-78e9-4fba-bf5f-8fd63e9e0073 user turn 1 (request, 'don't commit yet'), user turn 2 (revert and reason), final assistant message"
+ },
+ {
+  "id": "s4-q06",
+  "kind": "failure",
+  "question": "Why was sorting `ctx ticket ready` by type (Bug, then Task, Feature, Question) reverted?",
+  "paraphrase": "There was an experiment to show defects ahead of other kinds in the queue of work that can be picked up. On what grounds was it thrown out?",
+  "answer": "The user said oldest-first across everything is the only order where nothing starves, and 'Bug' is whatever the filer felt that day. The uncommitted change was reverted to plain creation-time order.",
+  "must_include": [
+   "oldest-first across all tickets is the only order in which nothing starves",
+   "the Bug label only reflects how the filer felt, so it is not a reliable priority"
+  ],
+  "gold_sessions": [
+   "8194650f-9cf3-4593-9a63-0eb631e14e41"
+  ],
+  "evidence": "8194650f-9cf3-4593-9a63-0eb631e14e41 user turn 2 ('oldest-first across everything is the only order where nothing starves, and Bug is whatever the filer felt that day')"
+ },
+ {
+  "id": "s4-q07",
+  "kind": "failure",
+  "question": "Why was the experiment that let a wiki claim cite another wiki page (when every claim on that page is itself pinned to sources) reverted?",
+  "paraphrase": "A trial allowed a statement in the knowledge base to lean on a sibling article instead of on original material, provided that article was itself fully backed. Why did the person reject it?",
+  "answer": "The user said provenance through another page means that when it changes everything downstream needs rechecking, and the gate is trusted because it is simple. No page-to-page citations; nothing was committed.",
+  "must_include": [
+   "when the cited page changes, everything downstream would need rechecking",
+   "the gate is trusted because it is simple"
+  ],
+  "gold_sessions": [
+   "97bafd62-c198-4e93-b38b-79bafb09f5e7"
+  ],
+  "evidence": "97bafd62-c198-4e93-b38b-79bafb09f5e7 user turn 2 (revert and reason); final assistant message confirms the revert"
+ },
+ {
+  "id": "s4-q08",
+  "kind": "failure",
+  "question": "What happened to `ctx wiki save --force`, the flag for saving drafts past the gate?",
+  "paraphrase": "Someone wanted a way to store an unfinished knowledge-base article while bypassing the citation checks. Was that kept, and what was the argument?",
+  "answer": "It was implemented with a test and a howto note but never committed. The user had it reverted: a forced page is exactly the unsourced claim the wiki exists to refuse, and it would look like any other page afterwards. Drafts live in files.",
+  "must_include": [
+   "it was reverted and never committed",
+   "a forced page is an unsourced claim that would afterwards look like any other page"
+  ],
+  "gold_sessions": [
+   "339d6488-dace-4e9a-a937-2a85b7fab332"
+  ],
+  "evidence": "339d6488-dace-4e9a-a937-2a85b7fab332 user turn 1 ('hold the commit'), user turn 2 (revert and reason), final assistant message"
+ },
+ {
+  "id": "s4-q09",
+  "kind": "failure",
+  "question": "Why doesn't `ctx source check` open a ticket for a perishable source that is due for review? Was it tried?",
+  "paraphrase": "The command that audits reference documents only reports the ones past their look-again day. An attempt to have it also raise a work item for each was undone. Why?",
+  "answer": "It was implemented and tested, then reverted uncommitted. The user said source check runs in CI on every push, so it would file the same ticket each run unless it dedupes, and CI has no private repository to file into. It stays a pure check.",
+  "must_include": [
+   "it was built and then reverted without a commit",
+   "source check runs in CI on every push, where there is no private repository to file tickets into"
+  ],
+  "gold_sessions": [
+   "345911f7-18ec-4e74-ba36-733f26b9d84a"
+  ],
+  "evidence": "345911f7-18ec-4e74-ba36-733f26b9d84a user turn 2 (revert and reason); the assistant's last message explains why its dedupe would not have helped in CI"
+ },
+ {
+  "id": "s4-q10",
+  "kind": "failure",
+  "question": "Why was `--commit HASH` on `ctx ticket done` dropped, and where did the trial version store the hash?",
+  "paraphrase": "A trial let someone attach a version-control revision identifier when closing a work item. Why was it thrown away, and how had the identifier been kept during the trial?",
+  "answer": "The user had it reverted: ctx can't see the code repository, so it can't check the hash, which makes it free text with extra steps, and --result already holds it. The trial had folded the hash into the existing result text (for example 'shipped (commit abc1234)') because the ticket schema file is protected.",
+  "must_include": [
+   "ctx cannot see the code repository, so it cannot check the hash",
+   "--result already holds that information",
+   "the trial stored the hash inside the existing result text, not in a new column"
+  ],
+  "gold_sessions": [
+   "931caa72-72dc-4c36-b599-43fb9ae67ac4"
+  ],
+  "evidence": "931caa72-72dc-4c36-b599-43fb9ae67ac4 assistant summary after user turn 1 (Storage bullet), user turn 2 (revert and reason)"
+ },
+ {
+  "id": "s4-q11",
+  "kind": "failure",
+  "question": "While checking whether a CHUNK_MAX chunk boundary can land inside a multi-byte character, what did the assistant's first manual experiment leave behind, and was it cleaned up?",
+  "paraphrase": "During the investigation of whether cutting long reference text into pieces could cut a letter carrying a diacritic in two, the first hand-run trial had a side effect outside its sandbox. What was it, and what was done about it?",
+  "answer": "The first run was not isolated, so it registered a stray project named acc in the shared scratch database that CTX_DB pointed at. It was left there, because there is no project remove command; the assistant reported it and offered to delete the rows by hand.",
+  "must_include": [
+   "a stray project (acc) was registered in the shared database that CTX_DB pointed at",
+   "it was not cleaned up, since there is no command to remove a project; it was reported to the user"
+  ],
+  "gold_sessions": [
+   "7ceedfaf-0fb0-435c-b1f2-8d363020949f"
+  ],
+  "evidence": "7ceedfaf-0fb0-435c-b1f2-8d363020949f assistant messages 'My first run used the real $HOME...' and 'CTX_DB points at a shared scratch database...'; last paragraph of the closing summary"
+ },
+ {
+  "id": "s4-q12",
+  "kind": "failure",
+  "question": "The user reported `ctx wiki check` was green even though a live page linked to the non-existent 'Evicton policy'. Did the assistant reproduce that, and what explanation did it offer?",
+  "paraphrase": "A published article pointed at a wrongly spelled article title and the verification command reportedly still passed. Could that passing result be recreated, and what was the leading guess for it?",
+  "answer": "No. In a scratch repo the check printed a dead link line for the page and failed. The assistant's guesses were that the live link was written as a Fossil [[Page]] link, which is not parsed as a link at all, or that check was not re-run after the save, or that a different project was checked.",
+  "must_include": [
+   "it was not reproduced: in the repro, wiki check reported the dead link and failed",
+   "suggested explanation: a [[Page]]-style link, which is not parsed as a link and so never checked"
+  ],
+  "gold_sessions": [
+   "e4d39641-6c92-44a0-a888-fef587831a70"
+  ],
+  "evidence": "e4d39641-6c92-44a0-a888-fef587831a70 first assistant summary ('Green check not reproduced' section) and the '[[Page]] links' paragraph of the final summary"
+ },
+ {
+  "id": "s4-q13",
+  "kind": "fix",
+  "question": "When the quote-missing message of `ctx wiki save` was changed to show the footnote name and the first 80 characters, why did the test fail at first and what fixed it?",
+  "paraphrase": "After the refusal text for an unmatched citation excerpt was shortened to a fixed-length preview, the suite went red once. What was the cause and the remedy?",
+  "answer": "The buffer that holds the head of the message was too small at 96 bytes and cut off the closing quote; it was enlarged to 128.",
+  "must_include": [
+   "the buffer was too small and cut off the closing quote",
+   "it was enlarged from 96 to 128 bytes"
+  ],
+  "gold_sessions": [
+   "541f03f0-02e5-4dae-a1ee-b41797975dc6"
+  ],
+  "evidence": "541f03f0-02e5-4dae-a1ee-b41797975dc6 assistant message 'Fixing a buffer that was too small (it cut off the closing quote)' and the edit after it (char head[96] to char head[128])"
+ },
+ {
+  "id": "s4-q14",
+  "kind": "fix",
+  "question": "How was the 90/91-day boundary test for the retire horizon shown to actually catch the off-by-one, and why does it use two sources instead of one?",
+  "paraphrase": "For the edge-case check on when an expiring reference stops counting, how was it confirmed that the check would go red on the earlier bug, and why does it need a pair of documents?",
+  "answer": "The assistant put the old <= comparison back temporarily, saw the test fail, then restored the fix. It uses two sources, one 90 and one 91 days past review, because wiki retire --auto re-indexes from the origin records, which throws away any direct SQL edit of the review date.",
+  "must_include": [
+   "the old <= comparison was temporarily put back and the test failed",
+   "retire --auto re-indexes from the origin records, so a direct SQL edit of the review date would be discarded"
+  ],
+  "gold_sessions": [
+   "7653f50d-1ebf-4288-9141-8687cc666f7e"
+  ],
+  "evidence": "7653f50d-1ebf-4288-9141-8687cc666f7e assistant messages 'Now I'll check that the test catches the old <= behavior' and 'The test fails with the old <= and passes with the fix'; closing summary, Boundary test bullet and the paragraph after it"
+ },
+ {
+  "id": "s4-q15",
+  "kind": "fix",
+  "question": "`ctx source uses sources/spec.md` started failing with 'no such source'. Was the change that broke it something the user had asked for, and why did they need the prefixed form back?",
+  "paraphrase": "Looking up which articles depend on a reference document stopped working when the name was given with its folder in front. Had the person themselves requested the behaviour that caused this, and what habit of theirs made it a problem?",
+  "answer": "Yes. Two weeks earlier the user had asked for supersede and uses to stop accepting the sources/ prefix: bare names only, one way to say a thing. They needed it back because they paste paths with tab completion from the checkout, which always start with sources/. The fix strips a leading sources/ so both forms work.",
+  "must_include": [
+   "the refusal of the prefix had been explicitly requested by the user (bare names only, one way to say a thing)",
+   "the user pastes tab-completed paths from the checkout, which always start with sources/"
+  ],
+  "gold_sessions": [
+   "c2fbfc9c-bddb-417b-8af7-e33e507a65ff",
+   "da426f63-09ab-4735-83c0-86ede70a361b"
+  ],
+  "evidence": "c2fbfc9c-bddb-417b-8af7-e33e507a65ff user turn 1 ('stop accepting the sources/ prefix in those two, bare names only, one way to say a thing'); da426f63-09ab-4735-83c0-86ede70a361b user turn 1 (tab completion) and closing summary"
+ },
+ {
+  "id": "s4-q16",
+  "kind": "fix",
+  "question": "`ticket done` and `ticket drop` used to run on tickets that were already Done or Dropped. When was that first noticed, why wasn't it fixed on the spot, and how did it end?",
+  "paraphrase": "Closing or abandoning a work item that had already been closed or abandoned once went through without complaint. In which piece of work did that first come up, why was it left alone then, and what became of it?",
+  "answer": "It was noticed while listing which ticket lifecycle transitions had tests: only claim checked the current status. The assistant did not pin the behaviour with tests because it looked like an oversight rather than a design, and left it as a decision for the user. When the remaining transition tests were written later, both commands were made to refuse a Done or Dropped ticket, in a commit of their own.",
+  "must_include": [
+   "first noticed during the review of which ticket transitions had tests",
+   "left as an open decision for the user, not pinned with tests, because it looked like an oversight rather than a design",
+   "later fixed: done and drop refuse a Done or Dropped ticket"
+  ],
+  "gold_sessions": [
+   "8d252967-6293-474c-9422-1a5f0e1596e9",
+   "70a4f981-8302-44a1-932b-f44a3ba9e060"
+  ],
+  "evidence": "8d252967-6293-474c-9422-1a5f0e1596e9 closing summary, 'Open questions' section; 70a4f981-8302-44a1-932b-f44a3ba9e060 closing summary (commit a8333ca)"
+ },
+ {
+  "id": "s4-q17",
+  "kind": "user-said",
+  "question": "What rule did the user set about fixture projects for the wiki and source tests in test/run.sh, and why?",
+  "paraphrase": "For the automated checks that cover the knowledge base and the reference documents, what standing instruction governs the scratch setup they run in, and what reason was given?",
+  "answer": "Wiki and source tests use the kb fixture project that test/run.sh already builds; never set up another fixture project, because the suite is slow enough.",
+  "must_include": [
+   "use the existing kb fixture project and never set up another one",
+   "because the test suite is already slow"
+  ],
+  "gold_sessions": [
+   "0dcbca48-1236-43d8-bda0-5e3fc8f500d6"
+  ],
+  "evidence": "0dcbca48-1236-43d8-bda0-5e3fc8f500d6 user turn 1"
+ },
+ {
+  "id": "s4-q18",
+  "kind": "user-said",
+  "question": "What rule did the user give about `--project P` and the working directory, and what did trying the source and wiki subcommands from another directory turn up?",
+  "paraphrase": "There is a standing requirement about naming the target workspace explicitly while standing somewhere else on disk. What exactly does it demand, and what did the audit of the reference-document and knowledge-base commands find?",
+  "answer": "With --project a command must work from any directory, and each new command gets a test that runs it from /. Every source and wiki subcommand gave the same results from / as from the project root, so nothing was fixed and nothing was committed.",
+  "must_include": [
+   "with --project a command must work from any directory",
+   "each new command gets a test that runs it from /",
+   "nothing needed fixing, so no commit was made"
+  ],
+  "gold_sessions": [
+   "8998f867-0370-403b-839d-597fd9f14f90"
+  ],
+  "evidence": "8998f867-0370-403b-839d-597fd9f14f90 user turn 1; closing summary ('Nothing needed fixing, so I didn't commit anything')"
+ },
+ {
+  "id": "s4-q19",
+  "kind": "user-said",
+  "question": "What did the user want done with the uncommitted test/run.sh change left over from the interrupted ticket transition tests, and why?",
+  "paraphrase": "A piece of work on the work-item state checks was cut short, leaving edits that were never recorded. What did the person instruct about those leftovers, and what was their reason?",
+  "answer": "Show the diff stat, then throw the change away with git checkout and write the remaining tests fresh, because they don't trust half-written tests they haven't seen. The stat was one file with 10 insertions, and it was discarded unread.",
+  "must_include": [
+   "show the diff stat, then discard the change with git checkout and write the tests fresh",
+   "the user does not trust half-written tests they have not seen"
+  ],
+  "gold_sessions": [
+   "70a4f981-8302-44a1-932b-f44a3ba9e060"
+  ],
+  "evidence": "70a4f981-8302-44a1-932b-f44a3ba9e060 user turn 1; closing summary ('Diff stat before discarding')"
+ },
+ {
+  "id": "s4-q20",
+  "kind": "user-said",
+  "question": "When the user asked for the `ctx ticket claim` wait on an unreachable remote to be capped, what did they say to do if capping it meant changing vendor code, and did it come to that?",
+  "paraphrase": "Taking a work item talks to the shared server and could stall when that server was down. In asking for a bounded wait, what condition did the person attach about the bundled third-party code, and was that condition triggered?",
+  "answer": "They said to stop and tell them instead of changing vendor code. It did not come to that: the cap was done in ctx itself, by running the sync as a child process with a 10-second alarm, so vendor/ was not touched.",
+  "must_include": [
+   "if it needed a vendor code change, stop and tell the user instead",
+   "vendor code did not have to be changed"
+  ],
+  "gold_sessions": [
+   "4bade29e-50f3-4a18-988f-882f0b31d9d1"
+  ],
+  "evidence": "4bade29e-50f3-4a18-988f-882f0b31d9d1 user turn 2 ('if capping it means changing vendor code, stop and tell me instead'); closing summary ('I didn't touch vendor/')"
+ },
+ {
+  "id": "s4-q21",
+  "kind": "user-said",
+  "question": "Short ticket id prefixes at first worked only in `ticket show`. Whose call was that, why did the user want prefixes at all, and what leftover did the assistant flag once claim, done, drop and --blocked-by took them too?",
+  "paraphrase": "Abbreviated work-item identifiers were first accepted by just one viewing command. Who decided that, what was the person's motive for abbreviations, and what unused remnant was pointed out after the other commands accepted them as well?",
+  "answer": "It was the user's call: they wanted prefixes because they type ids from memory off the offer list, and said 'only for show today'. When the other commands were switched over weeks later, the assistant noted that every caller of ticket_resolve now passes strict, so its non-strict branch is dead code, left in to keep the commit small.",
+  "must_include": [
+   "the user limited it to show at first",
+   "the user types ids from memory off the offer list",
+   "the non-strict branch of ticket_resolve became dead code and was left in"
+  ],
+  "gold_sessions": [
+   "92b1c313-6bbe-4744-8ac4-d078d8f88f6f",
+   "5f5f6966-85e6-4d1e-9e3d-c0a70c81965e"
+  ],
+  "evidence": "92b1c313-6bbe-4744-8ac4-d078d8f88f6f user turn 2 ('I type them from memory off the offer list... only for show today'); 5f5f6966-85e6-4d1e-9e3d-c0a70c81965e last paragraph of the closing summary"
+ },
+ {
+  "id": "s4-q22",
+  "kind": "status",
+  "question": "The session that was writing the remaining untested ticket transition tests was cut off. What had it committed by then, and what was it in the middle of?",
+  "paraphrase": "Work on covering the rest of the work-item state changes ended abruptly. What had been recorded at that point, and what was half done?",
+  "answer": "It had committed one batch: tests for done and drop on claimed tickets. It was then writing failing tests that done and drop refuse an already Done or Dropped ticket, ahead of fixing that bug; that edit to test/run.sh was left uncommitted.",
+  "must_include": [
+   "committed: tests for finishing and dropping claimed tickets",
+   "in progress and uncommitted: tests that done and drop refuse an already Done or Dropped ticket, written ahead of the fix"
+  ],
+  "gold_sessions": [
+   "adf80ea9-be7d-4e3b-86c6-2e1350daeedd"
+  ],
+  "evidence": "adf80ea9-be7d-4e3b-86c6-2e1350daeedd commit 27a43fc near the end; last assistant message ('Next, the fix... I'll write the failing test first') and the unfinished edit after it"
+ },
+ {
+  "id": "s4-q23",
+  "kind": "status",
+  "question": "The run-through of the howto's 'Set up a project' and 'Work with tickets' sections was meant to produce one commit per section. Why is there only one?",
+  "paraphrase": "Two chapters of the user guide, on getting started and on work items, were to be exercised command by command with a separate recorded change for each. Only a single change exists. Why?",
+  "answer": "Only 'Set up a project' needed fixing. Every command in 'Work with tickets' ran as written, so there was nothing to change and no commit was made for that section.",
+  "must_include": [
+   "no command in 'Work with tickets' failed as written, so there was nothing to commit for it"
+  ],
+  "gold_sessions": [
+   "15ea6b80-28cb-491c-89cf-d4f614163ade"
+  ],
+  "evidence": "15ea6b80-28cb-491c-89cf-d4f614163ade final assistant message ('Not committed, so the second commit doesn't exist')"
+ },
+ {
+  "id": "s4-q24",
+  "kind": "status",
+  "question": "In the wrap-up audit of the ticket, source and wiki additions against the usage text, the howto and the wiki skill, which gap was found but deliberately left unfixed, and why?",
+  "paraphrase": "At the closing review of everything added to the work-item, reference-document and knowledge-base commands, one documentation hole was noted and knowingly not filled. Which one, and on what grounds?",
+  "answer": "That source check and wiki check exit 2 when they cannot run: the howto only says they exit 1 on a problem, and neither it nor the wiki skill mentions exit 2. It was left because it is a behaviour note rather than a flag.",
+  "must_include": [
+   "the checkers' exit code 2 (could not run) is not mentioned in the howto or the wiki skill",
+   "it was left because it is a behaviour note, not a flag"
+  ],
+  "gold_sessions": [
+   "ec6b083d-28cd-4f2f-92df-fe76a79cd230"
+  ],
+  "evidence": "ec6b083d-28cd-4f2f-92df-fe76a79cd230 closing summary: last table row and the 'Left unfixed' bullet"
+ },
+ {
+  "id": "s4-q25",
+  "kind": "status",
+  "question": "Across the two passes that ran the howto's 'Add sources', 'Retire a source' and 'Keep a wiki' command blocks against a scratch project, how many doc fixes were needed, and did the second pass commit anything?",
+  "paraphrase": "The user guide's chapters on reference documents and the knowledge base were exercised in two sittings. In total what had to be corrected, and what did the later sitting produce?",
+  "answer": "One, found in the first pass: the 'Retire a source' block superseded the same source three times and only the first works. The second pass ran the blocks through the end of 'Keep a wiki', found the howto matched the real behaviour everywhere, and made no commit.",
+  "must_include": [
+   "one fix in total, to the 'Retire a source' example, made in the first pass",
+   "the second pass found nothing to fix and made no commit"
+  ],
+  "gold_sessions": [
+   "487e730f-434b-4c8c-906c-e1d9654d99ef",
+   "6039ac25-6fc8-45ad-9fb2-18a5097d8cea"
+  ],
+  "evidence": "487e730f-434b-4c8c-906c-e1d9654d99ef closing summary ('Only one thing needed fixing', ed47c35); 6039ac25-6fc8-45ad-9fb2-18a5097d8cea closing summary ('I made no commit because nothing in the repo changed')"
+ },
+ {
+  "id": "s4-q26",
+  "kind": "status",
+  "question": "Which `ctx wiki check` output breaks the rule that checker messages start with the page name, in how many sessions did the assistant raise it, and was it fixed?",
+  "paraphrase": "One line printed by the knowledge-base verification command does not keep to the house style of leading with the article's title. Which line, on how many occasions was this pointed out, and what came of it?",
+  "answer": "The `orphan: <page>` line. The assistant raised it in three sessions: when the checker exit codes were added, and in both run-throughs of the howto's source and wiki blocks. Each time it was left as a separate change awaiting a go-ahead, and it was never fixed.",
+  "must_include": [
+   "the `orphan: <page>` line",
+   "raised in three separate sessions",
+   "never fixed"
+  ],
+  "gold_sessions": [
+   "471114b6-5826-4ac9-91c4-8249b48cc7a7",
+   "487e730f-434b-4c8c-906c-e1d9654d99ef",
+   "6039ac25-6fc8-45ad-9fb2-18a5097d8cea"
+  ],
+  "evidence": "471114b6-5826-4ac9-91c4-8249b48cc7a7 last paragraph of the closing summary; 487e730f-434b-4c8c-906c-e1d9654d99ef 'Things I noticed but left alone', Orphan line; 6039ac25-6fc8-45ad-9fb2-18a5097d8cea 'One thing in the code, not the howto' and the closing question"
+ },
+ {
+  "id": "s4-q27",
+  "kind": "status",
+  "question": "Has the five-ticket cap of `ctx ticket offer` ever been pinned by a test or checked by hand?",
+  "paraphrase": "The start-of-session hint that lists pending work stops after a handful of entries. Has that ceiling been verified at any point, automatically or manually?",
+  "answer": "No. When offer was moved onto the query shared with ready, no test was added and nothing checks that offer stops at five; a test was only offered as a follow-up. The later manual run-through of the howto's ticket section also listed the cap as not tested.",
+  "must_include": [
+   "no test checks that offer stops at five; none was added with the refactor",
+   "the later manual run-through of the howto did not check it either"
+  ],
+  "gold_sessions": [
+   "155883d1-1a71-4fb6-bc83-35e158f6b45d",
+   "15ea6b80-28cb-491c-89cf-d4f614163ade"
+  ],
+  "evidence": "155883d1-1a71-4fb6-bc83-35e158f6b45d closing summary, Tests bullet and last line; 15ea6b80-28cb-491c-89cf-d4f614163ade final assistant message, 'Not covered' list"
+ },
+ {
+  "id": "s4-q28",
+  "kind": "status",
+  "question": "The gate's refusal for citing a superseded source could not be exercised in either pass of verifying skill/ctx-wiki/SKILL.md. What got in the way each time, and was the refusal ever seen firing?",
+  "paraphrase": "While the agent-facing instructions for the knowledge base were being compared with real behaviour over two sittings, one rejection, for leaning on a replaced reference, could not be triggered. What blocked it on each occasion, and was it observed anywhere afterwards?",
+  "answer": "In the first pass, source supersede failed in the scratch setup because it needs a registered project root. In the second, supersede only takes effect once sources/SUPERSEDED.jsonl is committed, which the scratch repo was not set up for. It was finally seen weeks later in the howto run-through: a page citing the superseded spec.pdf was refused with 'cites a superseded source'.",
+  "must_include": [
+   "first pass: source supersede would not run in the scratch project (it needs a registered project root)",
+   "second pass: supersession only takes effect once SUPERSEDED.jsonl is committed, which was not set up",
+   "it was later observed during the howto run-through, where a page citing a superseded source was refused"
+  ],
+  "gold_sessions": [
+   "b0bf927d-efcd-4573-a2fe-5fa29fa5f3c9",
+   "ec0c090b-ca61-49ed-91f0-b65ba3c213db",
+   "487e730f-434b-4c8c-906c-e1d9654d99ef"
+  ],
+  "evidence": "b0bf927d-efcd-4573-a2fe-5fa29fa5f3c9 'Not verified' paragraphs in both assistant summaries; ec0c090b-ca61-49ed-91f0-b65ba3c213db closing summary, 'Not verified' list; 487e730f-434b-4c8c-906c-e1d9654d99ef closing summary ('Citing a superseded source is refused') and the answer to user turn 2"
+ },
+ {
+  "id": "s5-q01",
+  "kind": "user-said",
+  "question": "How did the 'vendor/ is read-only' rule get into CLAUDE.md: was it in the original request, and how was it committed?",
+  "paraphrase": "The ban on touching the bundled third-party code: did the first ask for the assistant's instruction sheet include it, and how was it folded into the saved history?",
+  "answer": "No. It was a follow-up instruction given after the file had been committed, and the user said to amend, so the existing commit was amended instead of a new one being made.",
+  "must_include": [
+   "it was a follow-up instruction, not part of the original request",
+   "the existing commit was amended rather than a new commit made"
+  ],
+  "gold_sessions": [
+   "70488c57-fb04-4449-b240-055c2d541552"
+  ],
+  "evidence": "70488c57-fb04-4449-b240-055c2d541552 user turn 1 (no vendor rule), user turn 2 ('add: vendor/ is read-only. amend.'), closing summary"
+ },
+ {
+  "id": "s5-q02",
+  "kind": "fix",
+  "question": "Before the fix for a missing bench/results directory, what would running the generator `python3 tools/bench_page.py` (not --check) have done to docs/benchmarks.md?",
+  "paraphrase": "When the folder of measurement outputs is not shipped, what harm would regenerating the published performance page have done before this was corrected?",
+  "answer": "It would have overwritten the committed page, about 570 lines of results, with the 'No results are recorded yet.' stub. After the fix it prints a 'generation skipped' line, exits 0 and leaves the page alone.",
+  "must_include": [
+   "it would have overwritten the committed benchmarks page with the empty 'no results recorded' stub"
+  ],
+  "gold_sessions": [
+   "4649d0d1-3bb7-4cd5-b001-4a9a7065a663"
+  ],
+  "evidence": "4649d0d1-3bb7-4cd5-b001-4a9a7065a663 closing summary after user turn 2, 'Generator: it had a worse version of the same problem'"
+ },
+ {
+  "id": "s5-q03",
+  "kind": "fix",
+  "question": "When the howto headings 'Install from source' and 'From a release archive' were renamed, what else had to be changed that the user had not asked for?",
+  "paraphrase": "Two titles in the usage guide's setup part were reworded. What would that have broken elsewhere, and what was done about it?",
+  "answer": "The README linked to the old heading's anchor (#install-from-source), which the rename would have broken. The assistant pointed it at the new anchor (#build-from-source) in the same commit.",
+  "must_include": [
+   "a README link to the old heading's anchor was updated to the new anchor"
+  ],
+  "gold_sessions": [
+   "16486ae9-44f8-43b9-8696-19e10e4faca9"
+  ],
+  "evidence": "16486ae9-44f8-43b9-8696-19e10e4faca9 assistant message 'The README links to the old anchor' and closing summary 'README link'"
+ },
+ {
+  "id": "s5-q04",
+  "kind": "user-said",
+  "question": "When deciding between a CHANGELOG.md with an Unreleased section and relying on the commit log, what did the assistant recommend, and what reason did the user give for going the other way?",
+  "paraphrase": "There was a choice between keeping a hand-written record of notable changes and simply pointing people at version-control history. Which did the assistant favour, and why did the person overrule it?",
+  "answer": "The assistant recommended relying on the commit log. The user chose the changelog file, saying they read changelogs before upgrading and nobody reads a commit log.",
+  "must_include": [
+   "the assistant recommended relying on the commit log",
+   "the user said they read changelogs before upgrading and nobody reads a commit log"
+  ],
+  "gold_sessions": [
+   "c86b6f4f-7213-4cff-b808-4ac165a43cb3"
+  ],
+  "evidence": "c86b6f4f-7213-4cff-b808-4ac165a43cb3 assistant answer to user turn 1 ('Recommendation: (B)'); user turn 2"
+ },
+ {
+  "id": "s5-q05",
+  "kind": "decision",
+  "question": "test/run.sh was twice put up for restructuring: once split into test/NN-name.sh files, and later run in parallel four sections at a time. Why was each turned down?",
+  "paraphrase": "Two experiments tried to reorganise the big shell file of regression checks, first by breaking it into numbered pieces and later by running pieces concurrently. What reasons did the person give for abandoning each?",
+  "answer": "The split was reverted because the sections lean on one database and one fixture built at the top, so every file would repeat the setup, and one file greps better than twenty. The parallel run (about 30s down to 14s) was rejected as the same wall: the sections share one database, so the suite stays serial.",
+  "must_include": [
+   "the split was rejected because the sections depend on one database and one fixture built at the top, so every file would repeat the setup",
+   "the parallel run was rejected for the same reason: the sections share one database"
+  ],
+  "gold_sessions": [
+   "06980595-866f-4eb0-9fa4-3735209dd4c5",
+   "37736f89-9212-4d2f-ae6c-801b47c6c0e6"
+  ],
+  "evidence": "06980595-866f-4eb0-9fa4-3735209dd4c5 user turn 2 ('revert. the sections lean on one database and one fixture...'); 37736f89-9212-4d2f-ae6c-801b47c6c0e6 user turn 2 ('that's the same wall as the split I rejected')"
+ },
+ {
+  "id": "s5-q06",
+  "kind": "decision",
+  "question": "Why were `make install` and `make uninstall` (with PREFIX and DESTDIR) taken out again after they had been built and tested?",
+  "paraphrase": "A pair of build targets for copying the program into a per-user system location was written and tried in a throwaway area, then removed. What was the argument for removing it?",
+  "answer": "The user said a release is installed as a plugin directory plus a symlink, as the README already says, and a second way to install is a second thing to document and to undo.",
+  "must_include": [
+   "a release is already installed as a plugin directory plus a symlink",
+   "a second way to install is a second thing to document and undo"
+  ],
+  "gold_sessions": [
+   "748f6b67-f5cc-40ec-a00d-d2b6256bc1bf"
+  ],
+  "evidence": "748f6b67-f5cc-40ec-a00d-d2b6256bc1bf user turn 2 ('no, take it out...')"
+ },
+ {
+  "id": "s5-q07",
+  "kind": "status",
+  "question": "After the first day of adding `step` calls to test/run.sh (the first ten sections), where did the assistant say it had stopped and how many sections were left?",
+  "paraphrase": "Naming the parts of the long shell regression file so that errors say where they happened was done in instalments. At the close of the first instalment, what was the next unnamed part and roughly how many remained?",
+  "answer": "It stopped after the tenth label (partial-line-left). The next unlabelled section started at test/run.sh line 162, 'A replaced file is read from the start without storing a turn twice', and about 49 sections were left out of about 59.",
+  "must_include": [
+   "the next unlabelled section was the one about a replaced file being read from the start (test/run.sh line 162)",
+   "about 49 sections were left"
+  ],
+  "gold_sessions": [
+   "0d192624-5bec-40b6-bf57-4cf9e1da509d"
+  ],
+  "evidence": "0d192624-5bec-40b6-bf57-4cf9e1da509d closing summary: 'Sections left: about 49', 'Where I stopped: ... test/run.sh:162'"
+ },
+ {
+  "id": "s5-q08",
+  "kind": "status",
+  "question": "The second session adding `step` calls down test/run.sh ended without a commit. What state was the work in, and what did the pickup session find?",
+  "paraphrase": "One sitting meant to finish naming every part of the long shell regression file was cut short. How far had the edits got, why was nothing saved to history, and what did the following sitting find?",
+  "answer": "The calls had already been inserted all the way to the bottom (58 in total), but the `make test` run went past the command timeout and was killed, so nothing was verified or committed. The pickup session ran `make test`, it passed, there was nothing left to add, and it committed the changes as they were.",
+  "must_include": [
+   "the step calls had already been inserted down to the end of the file but were uncommitted",
+   "the test run timed out and was killed, so the work was unverified when the session ended",
+   "the pickup found the tests passed with nothing left to add, and committed"
+  ],
+  "gold_sessions": [
+   "e68f8a99-ad07-4642-973b-3764d03ef02e",
+   "7fa1ec91-75da-4f17-b3df-bbd4d26105f8"
+  ],
+  "evidence": "e68f8a99-ad07-4642-973b-3764d03ef02e last tool calls: 58 step lines, make test 'did not complete within its 120s timeout', final 'Exit code 137', no commit; 7fa1ec91-75da-4f17-b3df-bbd4d26105f8 assistant messages 'The existing edits pass and already reach the last section' and closing summary"
+ },
+ {
+  "id": "s5-q09",
+  "kind": "failure",
+  "question": "macOS's BSD sed tripped up the assistant's edits to test/run.sh twice: when inserting the first `step` calls and when adding `$LINENO` to the `fail` calls. What went wrong each time, and what was used instead?",
+  "paraphrase": "On two occasions the Mac's stock stream editor refused or silently skipped bulk edits to the shell regression file. What were the two edits, and which tool took over each time?",
+  "answer": "For the step calls, sed rejected the one-line insert commands ('command i expects \\ followed by text'), so the inserts were redone with a Python script matching each section's comment. For the line numbers, BSD sed does not support `\\b`, so the call sites were not changed, and they were redone with perl.",
+  "must_include": [
+   "inserting the step calls: the one-line insert (i) commands were rejected and the work was redone in Python",
+   "adding the line number to the fail calls: the \\b word boundary is unsupported so nothing matched, and it was redone with perl"
+  ],
+  "gold_sessions": [
+   "0d192624-5bec-40b6-bf57-4cf9e1da509d",
+   "1288e5d2-97eb-43a9-b90e-fc06f4c4e26c"
+  ],
+  "evidence": "0d192624-5bec-40b6-bf57-4cf9e1da509d sed error and assistant message 'BSD sed rejected the inserts, so I'm redoing them in Python'; 1288e5d2-97eb-43a9-b90e-fc06f4c4e26c assistant message 'BSD sed doesn't support \\b ... I'll redo them with perl'"
+ },
+ {
+  "id": "s5-q10",
+  "kind": "user-said",
+  "question": "`set -e` was dropped from test/run.sh and later restored. Why had the user asked for it to be dropped, and what did the user see that led to it being restored?",
+  "paraphrase": "The abort-on-error option in the shell file that exercises the built program was removed and later put back. What was the person's reason for removing it, and what experiment of theirs showed that this had been a mistake?",
+  "answer": "The user asked for it to go because it makes the script die without saying anything when a setup command fails, and fail() covers the checks. Later the user broke `ctx init` on purpose and saw the suite carry on and report an unrelated FAIL forty lines later instead of stopping at the failing command.",
+  "must_include": [
+   "the user wanted -e removed because it makes the script die silently when a setup command fails (fail() covers the checks)",
+   "the user deliberately broke ctx init and saw the suite carry on and report an unrelated failure further down"
+  ],
+  "gold_sessions": [
+   "1288e5d2-97eb-43a9-b90e-fc06f4c4e26c",
+   "d74a72e4-05a2-4b3d-af29-f1fe8ba4ba34"
+  ],
+  "evidence": "1288e5d2-97eb-43a9-b90e-fc06f4c4e26c user turn 1; d74a72e4-05a2-4b3d-af29-f1fe8ba4ba34 user turn 1"
+ },
+ {
+  "id": "s5-q11",
+  "kind": "failure",
+  "question": "The POSIX sh guard added to `make test` greps for `local`, `[[`, process substitution and `echo -e`. Why does it not look for arrays, and what guards against them instead?",
+  "paraphrase": "The portability lint on the shell regression file leaves out one of the five things the person outlawed. Which one, why was it left out, and what is the only safeguard left for it?",
+  "answer": "Arrays are not checked: the array pattern was too noisy, matching Python inside the heredocs in test/run.sh, so it was dropped after the first attempt failed the build. Only `sh -n` guards against them, and it catches only array syntax the shell itself rejects.",
+  "must_include": [
+   "arrays are not checked because the pattern gave false positives on the Python embedded in the test script",
+   "only the sh -n syntax check covers arrays"
+  ],
+  "gold_sessions": [
+   "ac8a6386-91e7-49aa-9211-ea024b263ec1"
+  ],
+  "evidence": "ac8a6386-91e7-49aa-9211-ea024b263ec1 failed 'make test' runs after the first guard, and closing summary 'It does not detect arrays, because that pattern was too noisy against the Python heredocs'"
+ },
+ {
+  "id": "s5-q12",
+  "kind": "user-said",
+  "question": "The CHANGELOG has a line about the CI timeout going from 45 to 20 minutes. Does that match what the user said when the timeout was lowered, and how did the line get there?",
+  "paraphrase": "The record of notable changes mentions the shortened limit on the automated pipeline job. Was that in line with the person's wishes when the limit was changed, and when was the entry actually written?",
+  "answer": "No. When the timeout was lowered the user said the changelog did not need it because it is not user-visible, and none was added. The line was added later, as one of eight, when the assistant went through the commit log for missing changelog lines; it noted then that the developer-facing lines could be dropped.",
+  "must_include": [
+   "the user said the timeout change needed no changelog line because it is not user-visible",
+   "the line was added later, during the pass over the commit log for missing changelog lines"
+  ],
+  "gold_sessions": [
+   "3dba6f58-12db-4a01-9747-9b13203a8db1",
+   "37d331a3-5dd2-4cf0-a84c-88b1da29b14f"
+  ],
+  "evidence": "3dba6f58-12db-4a01-9747-9b13203a8db1 user turn 2 ('changelog doesn't need this one, it isn't user-visible') and closing summary; 37d331a3-5dd2-4cf0-a84c-88b1da29b14f closing summary, 'CI: the test timeout drops from 45 to 20 minutes (84183ee)'"
+ },
+ {
+  "id": "s5-q13",
+  "kind": "failure",
+  "question": "What broke when the two-line feeds/finds comments were first written into the fuzz harnesses, and what caught it?",
+  "paraphrase": "The first try at giving each randomized-input test program a short explanatory preamble left several of them uncompilable. What was the mistake, and what revealed it?",
+  "answer": "The first line of the new comments ended with a stray `*/`, which closed the comment early and left the second line as bare text. The `cc -fsyntax-only` check failed on those harnesses, and the assistant removed the stray `*/` from the first lines.",
+  "must_include": [
+   "a stray */ at the end of the first line closed the comment early",
+   "the cc -fsyntax-only check failed with errors"
+  ],
+  "gold_sessions": [
+   "f66837f3-36b3-44f8-8e31-ae1bdf440c77"
+  ],
+  "evidence": "f66837f3-36b3-44f8-8e31-ae1bdf440c77 tool output '3 errors generated. FAIL fuzz/fuzz_wiki.c' and assistant message 'My first lines closed the comment early with a stray */'"
+ },
+ {
+  "id": "s5-q14",
+  "kind": "decision",
+  "question": "What did the `-O3 -flto` experiment show against -O2, and why was it not adopted as the default CFLAGS?",
+  "paraphrase": "A more aggressive optimisation level with whole-program linking was tried as the standard setting for building. What were the size and speed results, and what reason did the person give for keeping the old setting?",
+  "answer": "The binary was about 3% smaller (3,004,752 against 3,109,248 bytes), the build about 50% slower (roughly 57s against 37s), and `make test` no faster (about 29s against 26s). The user reverted, saying nothing in the suite is CPU bound enough to notice and LTO makes every link slow.",
+  "must_include": [
+   "the binary was only slightly smaller (about 3%)",
+   "the build was clearly slower and the tests were not faster",
+   "the user's reason: nothing in the suite is CPU-bound enough to notice, and LTO makes every link slow"
+  ],
+  "gold_sessions": [
+   "a449088b-d458-4efe-b53f-2ee44ac98519"
+  ],
+  "evidence": "a449088b-d458-4efe-b53f-2ee44ac98519 results table in the answer to user turn 1; user turn 2"
+ },
+ {
+  "id": "s5-q15",
+  "kind": "decision",
+  "question": "Why is tools/check_docs.sh a sh script with grep and not a Python script?",
+  "paraphrase": "The checker that compares what the long user manual tells readers to type against what the program itself offers: why was it written in the shell language and not in the higher-level scripting language?",
+  "answer": "The user chose sh because Python in this repository is only for the bench tools, and the test path should run on a box with nothing but a compiler. The assistant had recommended sh as well.",
+  "must_include": [
+   "Python here is only for the bench tools",
+   "the test path should run on a machine with nothing but a compiler"
+  ],
+  "gold_sessions": [
+   "edfcb8ac-b0a7-45a7-9e44-2efa4f4f51b2"
+  ],
+  "evidence": "edfcb8ac-b0a7-45a7-9e44-2efa4f4f51b2 user turn 2 ('B, sh. python here is only for the bench tools...')"
+ },
+ {
+  "id": "s5-q16",
+  "kind": "failure",
+  "question": "The docs style the user set had four rules. Which of them did the docs/howto.md pass actually work from, and why not the others?",
+  "paraphrase": "The person laid down writing conventions for the written documentation and had them used on the front page first. When the long user manual was reworked later, which of those conventions were in play, and how did the assistant know what they were?",
+  "answer": "The rules were: headings in sentence case, no future tense ('will'), commands and file names in backticks, lines wrapped at 100. The style was not saved anywhere, so in the howto session the assistant took it from the README commit's changelog line, which only mentions backticks and wrapping at 100. Sentence-case headings and the future-tense rule were not part of that pass.",
+  "must_include": [
+   "the four rules: sentence-case headings, no future tense, backticks for commands and file names, lines wrapped at 100",
+   "the howto pass worked only from backticks and wrapping at 100",
+   "because the assistant took the style from the README commit's changelog line, the style not being written down anywhere else"
+  ],
+  "gold_sessions": [
+   "2b15dead-b583-41df-8fd6-1a77ab098fef",
+   "e4ff9c50-1b8a-40fd-b3ae-ea3df3ca5529"
+  ],
+  "evidence": "2b15dead-b583-41df-8fd6-1a77ab098fef user turn 1 and closing line 'I haven't saved the style as a memory'; e4ff9c50-1b8a-40fd-b3ae-ea3df3ca5529 closing summary 'Style rules: I took \"the docs style\" from the README commit, since no style guide exists in the repo'"
+ },
+ {
+  "id": "s5-q17",
+  "kind": "status",
+  "question": "When the user stopped the docs/howto.md style pass part-way, which section was left edited but uncommitted, and what happened to it in the next session?",
+  "paraphrase": "The person broke off the rework of the long user manual part-way through. Which part was caught half-finished, and how was it dealt with on resumption?",
+  "answer": "'Pick up after a compaction' was reflowed in the working tree with its changelog line appended, but not committed; five sections were committed before it and 'Set up a project' was next. The next session ran `make test` and committed it as it stood, then carried on as far as 'Keep a wiki'.",
+  "must_include": [
+   "'Pick up after a compaction' was edited but not committed",
+   "the next session ran the tests and committed it as it stood before continuing"
+  ],
+  "gold_sessions": [
+   "e4ff9c50-1b8a-40fd-b3ae-ea3df3ca5529",
+   "f021231e-1aaf-4be2-a5b8-4312811f7243"
+  ],
+  "evidence": "e4ff9c50-1b8a-40fd-b3ae-ea3df3ca5529 closing summary after the interruption ('Uncommitted: \"Pick up after a compaction\"', 'Next: \"Set up a project\"'); f021231e-1aaf-4be2-a5b8-4312811f7243 first commit and closing summary item 1"
+ },
+ {
+  "id": "s5-q18",
+  "kind": "failure",
+  "question": "What did the rewrap script get wrong in the 'Add sources' section of docs/howto.md, and how was that corrected?",
+  "paraphrase": "While reflowing paragraphs in the usage guide's part about registering reference documents, the helper introduced a formatting defect. What was it, and how was it put right?",
+  "answer": "It split an inline code span, the `--risk ...` one, across two lines. The assistant changed the wrapper to keep backticked spans whole, redid the section and amended that section's commit.",
+  "must_include": [
+   "it split an inline code span (the --risk one) across two lines",
+   "the wrapper was changed to keep code spans whole and the section's commit was amended"
+  ],
+  "gold_sessions": [
+   "f021231e-1aaf-4be2-a5b8-4312811f7243"
+  ],
+  "evidence": "f021231e-1aaf-4be2-a5b8-4312811f7243 tool call patching rewrap.py with the backtick protection, and closing summary 'The wrapper I used split a --risk ... code span across two lines'"
+ },
+ {
+  "id": "s5-q19",
+  "kind": "fix",
+  "question": "The Linux release binary failed to start with libz.so.1 missing. How had the change that caused it come about, and what was done with its CHANGELOG entry when it was put right?",
+  "paraphrase": "A packaged build for one operating system stopped starting in bare containers because a compression component had stopped being built in. Who had asked for the change behind that, having acknowledged what, and how was the record of notable changes adjusted at the repair?",
+  "answer": "The user had told the assistant to delete DIST_LDLIBS and have dist link with LDLIBS like everything else, adding that they had seen the comment and to do it anyway. When the static link was restored, the changelog line that had announced dynamic zlib was rewritten to say zlib is linked statically again; no second entry was added.",
+  "must_include": [
+   "the user explicitly asked for the simplification (dist links with LDLIBS, DIST_LDLIBS deleted), saying they had seen the comment and to do it anyway",
+   "the existing changelog entry was rewritten instead of a second one being added"
+  ],
+  "gold_sessions": [
+   "a86d260e-7fdf-4583-b102-652c6353264c",
+   "38a6aa6e-3d6a-4e12-96d1-2fc4df60cefd"
+  ],
+  "evidence": "a86d260e-7fdf-4583-b102-652c6353264c user turn 1 ('yes I've seen the comment, do it anyway'); 38a6aa6e-3d6a-4e12-96d1-2fc4df60cefd closing summary 'I rewrote the CHANGELOG entry ... instead of adding a second entry'"
+ },
+ {
+  "id": "s5-q20",
+  "kind": "status",
+  "question": "After the rule that every script prints errors to stderr prefixed with its own name was set, which existing scripts did the assistant say did not follow it, and were they changed?",
+  "paraphrase": "A convention was introduced for how shell programs here should label their complaints. Which already-written programs were reported as not conforming, and was anything done about them at that point?",
+  "answer": "It listed bench/run.sh, which prints errors with no prefix; test/run.sh, whose FAIL lines are not prefixed `run.sh:`; and tools/check_docs.sh and tools/filc.sh, which use `check_docs:` and `filc:` without the .sh extension. Nothing was changed: the assistant saved the rule and asked whether to fix all of them or only some.",
+  "must_include": [
+   "bench/run.sh prints errors with no prefix",
+   "tools/check_docs.sh and tools/filc.sh use prefixes without the .sh extension",
+   "no script was changed; the assistant asked whether to fix them"
+  ],
+  "gold_sessions": [
+   "9723c783-43f8-41a0-a3f0-16947f90178f"
+  ],
+  "evidence": "9723c783-43f8-41a0-a3f0-16947f90178f closing message after user turn 3 ('I haven't changed any scripts yet ... Several existing scripts don't')"
+ },
+ {
+  "id": "s5-q21",
+  "kind": "user-said",
+  "question": "For tools/dist-linux.sh, what reason did the user give for choosing a `--dry-run` flag over a DRY_RUN=1 environment variable?",
+  "paraphrase": "The helper that produces release bundles inside a container could have offered its preview-only mode in two ways. What was the person's stated reason for the one they picked?",
+  "answer": "A flag shows up in the usage line, whereas an environment variable set once and forgotten is still set.",
+  "must_include": [
+   "a flag shows up in the usage line",
+   "an environment variable set once and forgotten stays set"
+  ],
+  "gold_sessions": [
+   "aef00f76-98e1-4488-a8c2-f5633736cc11"
+  ],
+  "evidence": "aef00f76-98e1-4488-a8c2-f5633736cc11 user turn 2 ('A, the flag. a flag shows up in the usage line...')"
+ },
+ {
+  "id": "s5-q22",
+  "kind": "decision",
+  "question": "What did the experiment that cached build/sqlite3.o and build/libfossil.o in ~/.cache/ctx-build achieve, and why was it reverted?",
+  "paraphrase": "An experiment kept the two slowest compiled units in the user's home area so that full rebuilds could reuse them. How much faster was a rebuild, and why did the person discard the idea?",
+  "answer": "A clean build with a warm cache took 2.9s against 52s cold. The user reverted it because a build that writes outside the tree surprises people and `make clean` is rare; the cache directory was removed too.",
+  "must_include": [
+   "a clean build fell from about 52 seconds to about 3 seconds with a warm cache",
+   "reverted because a build that writes outside the source tree surprises people, and clean builds are rare"
+  ],
+  "gold_sessions": [
+   "6e85d440-5e55-4c4e-a4c4-47893ef3ebf1"
+  ],
+  "evidence": "6e85d440-5e55-4c4e-a4c4-47893ef3ebf1 answer to user turn 1 ('2.9s, against 52s'); user turn 2"
+ },
+ {
+  "id": "s5-q23",
+  "kind": "failure",
+  "question": "What problems showed up when the awk rules that turn schema/*.sql into C headers were replaced with `xxd -i`, and what did the user decide?",
+  "paraphrase": "A trial swapped the hand-rolled conversion of the embedded database definitions into C strings for a standard hex-dump utility. What went wrong at compile time, and on what grounds did the person keep the old way?",
+  "answer": "The build and tests passed, but the build gained six -Wpointer-sign warnings because xxd emits unsigned char arrays where the code expects const char *; it also needed a NUL appended by hand and a recent xxd for -n. The user reverted: xxd ships with vim and is not on minimal images, and the awk output is readable in a debugger.",
+  "must_include": [
+   "the build gained new warnings (six -Wpointer-sign) because xxd emits unsigned char arrays",
+   "the user reverted because xxd ships with vim and is not on minimal images, and the awk output is readable in a debugger"
+  ],
+  "gold_sessions": [
+   "6ecd6e61-e2d9-4780-8e76-07a273faff11"
+  ],
+  "evidence": "6ecd6e61-e2d9-4780-8e76-07a273faff11 answer to user turn 1 ('Warnings', 'NUL terminator'); user turn 2"
+ },
+ {
+  "id": "s5-q24",
+  "kind": "fix",
+  "question": "How was the 40-line cap on the extract diff in test/run.sh exercised, given that the suite normally passes, and what did it print?",
+  "paraphrase": "The shell regression file now cuts short an overlong dump of mismatches. Since that branch never runs while everything is green, how did the assistant trigger it, and what was reported about the remainder?",
+  "answer": "The assistant temporarily appended 100 lines to test/expected.txt and ran the script. It printed the first 40 diff lines, then 'run.sh: ... 61 more diff lines not shown' and the usual FAIL [extract] line; the file was restored afterwards.",
+  "must_include": [
+   "100 lines were temporarily appended to test/expected.txt to force a long diff",
+   "the output said 61 more diff lines were not shown"
+  ],
+  "gold_sessions": [
+   "56defed2-84ce-4833-982b-a8a5f5875eef"
+  ],
+  "evidence": "56defed2-84ce-4833-982b-a8a5f5875eef tool call with 'seq 1 100 >> test/expected.txt' and closing summary"
+ },
+ {
+  "id": "s5-q25",
+  "kind": "status",
+  "question": "Over the two sessions that checked the README's 'Building and checks' and 'Releases' sections against the Makefile and tools/, which claim was never verified, and why?",
+  "paraphrase": "The front page's parts on compiling and on packaging were audited line by line over two sittings. One assertion there was left unconfirmed both times: which one, and what stood in the way?",
+  "answer": "The 'glibc 2.34 or later' claim for the Linux build. Verifying it needs a docker run of tools/dist-linux.sh, which the assistant may not run unless asked; the second session, which rechecked both sections in full and changed nothing, only noted that the figure matches the script's header comment.",
+  "must_include": [
+   "the 'glibc 2.34 or later' claim",
+   "checking it needs a docker run of tools/dist-linux.sh, which the assistant is not allowed to run unless asked"
+  ],
+  "gold_sessions": [
+   "d2c5ae4a-020a-4a35-bd2e-a043c70a1a43",
+   "07373c3e-adcf-490c-b8ae-3b912dcf20a3"
+  ],
+  "evidence": "d2c5ae4a-020a-4a35-bd2e-a043c70a1a43 closing summaries after both user turns ('Not verified: \"glibc 2.34 or later\"'); 07373c3e-adcf-490c-b8ae-3b912dcf20a3 closing summary ('the glibc 2.34 floor is the one stated in the script's header comment', nothing to change)"
+ },
+ {
+  "id": "s5-q26",
+  "kind": "decision",
+  "question": "For the TEST_TIMEOUT feature, why was a watchdog inside test/run.sh chosen over wrapping the call in the Makefile with timeout(1)?",
+  "paraphrase": "To stop a hung regression run after a time limit there were two designs: the checks policing themselves, or an external time-limiting utility invoked from the build file. What settled it?",
+  "answer": "macOS has no timeout(1), and only the script knows which step is running, so only it can say where the suite hung. The assistant recommended the same option for those reasons.",
+  "must_include": [
+   "macOS has no timeout(1)",
+   "the script knows the current step"
+  ],
+  "gold_sessions": [
+   "aeafdcb8-7871-4127-8150-d08034c6155f"
+  ],
+  "evidence": "aeafdcb8-7871-4127-8150-d08034c6155f assistant answer to user turn 1; user turn 2 ('A, inside the script. macOS has no timeout(1), and the script knows the current step')"
+ },
+ {
+  "id": "s5-q27",
+  "kind": "fix",
+  "question": "While the watchdog was being tested, `TEST_TIMEOUT=abc sh test/run.sh` printed something extra after the error. What was it, and how was it removed?",
+  "paraphrase": "When the time-limit setting for the regression run was given a non-numeric value, the error output had a superfluous second line. What was that line, and what change got rid of it?",
+  "answer": "After the 'TEST_TIMEOUT must be a positive whole number of seconds' error, the exit cleanup also printed a stray 'FAIL [start]: command failed (exit 2)' line. The assistant set REPORTED=1 before that exit, so the cleanup treats the error as already reported.",
+  "must_include": [
+   "a stray 'FAIL [start]: command failed (exit 2)' line from the exit cleanup",
+   "fixed by marking the error as already reported (REPORTED=1) before exiting"
+  ],
+  "gold_sessions": [
+   "aeafdcb8-7871-4127-8150-d08034c6155f"
+  ],
+  "evidence": "aeafdcb8-7871-4127-8150-d08034c6155f tool output showing the FAIL [start] line, assistant message 'Next I'll fix the stray FAIL line on a bad TEST_TIMEOUT', and the following edit"
+ },
+ {
+  "id": "s5-q28",
+  "kind": "failure",
+  "question": "When tools/check_links.sh was wired into `make check`, was the rule about pasting `make -n` output before committing a Makefile change followed?",
+  "paraphrase": "There is a standing requirement to show a dry run of the affected build targets before saving any build-file change. Was it honoured when the hyperlink checker was hooked into the full verification target?",
+  "answer": "No. The assistant ran `make -n check` only after editing and showed the output in its final message, after the commit; it said itself that the output was not pasted before the commit as the rule asks.",
+  "must_include": [
+   "no: the make -n output was shown only after the commit, not before it",
+   "the assistant pointed this out itself"
+  ],
+  "gold_sessions": [
+   "0957ed69-7895-49b4-bcdf-26b7b662d7a5"
+  ],
+  "evidence": "0957ed69-7895-49b4-bcdf-26b7b662d7a5 last paragraph of the closing summary ('I ran that only after editing, so it wasn't pasted before the commit as your memory rule asks')"
+ }
+]
