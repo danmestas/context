@@ -166,6 +166,9 @@ def route():
     return {k: VIA[k] for k in sorted(VIA) if k.startswith("ANTHROPIC_DEFAULT_") or k == "ANTHROPIC_BASE_URL"} or None
 
 
+DOCS_NOTE = ("This repository's design documents, decision records and guides are indexed. To find what was decided and why, "
+             "search them with `ctx search`, using two or three exact names or rare words, then read around a hit with "
+             "`ctx turn ID 1 2` or open the file it names.")
 MCP_NOTE = ("Past sessions of this project are archived, tool output included. Before guessing at history, search them "
             "with the ctx search tool, using two or three exact names or error words, then read around a hit with the ctx turn tool.")
 
@@ -330,11 +333,11 @@ def cmd_run(a):
                         else glob.glob(os.path.expanduser(f"~/.claude/projects/{slug(project['sessions'])}*")))
                 prompt += "\n\nTranscripts of past coding sessions on this project are JSONL files in:\n" + "\n".join(dirs)
                 allow += ["Bash(jq*)", "Bash(python3*)"]
-            if cond in "CIHRJ":
+            if cond in "CIHRJN":
                 allow.append("Bash(ctx *)")
             if cond in "SWF":  # same tools; only the wiki differs: W in the index, F as files, S neither
                 allow += ["Bash(ctx search *)", "Bash(ctx turn *)"]
-            db = w.without_wiki() if cond in "SF" else None
+            db = w.without_wiki() if cond in "SF" else docs_db.get((cond, q["project"]))
             cmd = claude(prompt, a.model, "stream-json", "Bash,Read,Grep,Glob,Skill", allow, dirs)
             if cond in "IJ":  # what the UserPromptSubmit hook would add for this prompt
                 hook = subprocess.run([f"{w.bin}/ctx", "inject"], input=json.dumps({"session_id": "eval", "cwd": cwd, "prompt": prompt}),
@@ -348,6 +351,8 @@ def cmd_run(a):
                 extra = json.loads(hook)["hookSpecificOutput"]["additionalContext"] if hook.strip() else ""
                 if extra:
                     cmd += ["--append-system-prompt", extra]
+            if cond == "N":  # the skill, and a note that this repository's documents are indexed
+                cmd += ["--append-system-prompt", DOCS_NOTE]
             if cond == "M":  # ctx as a Model Context Protocol server: its two tools and a note, no skill and no command
                 conf = f"{w.dir}/mcp.json"
                 cmd += ["--mcp-config", conf, "--append-system-prompt", MCP_NOTE]
@@ -360,7 +365,7 @@ def cmd_run(a):
                     cmd[cmd.index("--append-system-prompt") + 1] += "\n\n" + extra
                 elif extra:
                     cmd += ["--append-system-prompt", extra]
-            p = spawn(cmd, cwd, w.env(cond in "CSWFIHRJ", db), a.deadline)
+            p = spawn(cmd, cwd, w.env(cond in "CSWFIHRJN", db), a.deadline)
             r = digest(p.stdout, cond, own)
             r.update(qid=q["id"], cond=cond, project=q["project"], kind=q["kind"], injected=cond in "IHRJ" and "--append-system-prompt" in cmd)
             return r
@@ -370,10 +375,25 @@ def cmd_run(a):
                 cwd = w.repo(cond, q["project"], bank["projects"][q["project"]]["repo"])
                 if cond == "F":
                     w.wiki_files(cwd)
-                if cond in "CSWFIHRJ":
+                if cond in "CSWFIHRJN":
                     os.makedirs(f"{cwd}/.claude/skills/ctx", exist_ok=True)
                     with open(f"{cwd}/.claude/skills/ctx/SKILL.md", "w") as f:
                         f.write(skill)
+        docs_db = {}  # a project that lists "docs" folders has them indexed, in its own copy of the archive
+        for cond in conds:
+            for name in {q["project"] for q in qs}:
+                folders = bank["projects"][name].get("docs")
+                if not folders or cond not in "CIHRJN":
+                    continue
+                cwd = w.repo(cond, name, bank["projects"][name]["repo"])
+                path = f"{w.dir}/snap-{cond}-{re.sub(r'[^A-Za-z0-9]', '-', name)}.sqlite"
+                shutil.copy(w.snap, path)
+                for folder in folders:
+                    p = subprocess.run([f"{w.bin}/ctx", "docs", "add", f"{cwd}/{folder}"], env=dict(os.environ, CTX_DB=path),
+                                       cwd=cwd, capture_output=True, text=True)
+                    if p.returncode:
+                        sys.exit(f"cannot index {folder}: {p.stderr}")
+                docs_db[(cond, name)] = path
         if "M" in conds:
             with open(f"{w.dir}/mcp.json", "w") as f:
                 json.dump({"mcpServers": {"ctx": {"command": f"{w.bin}/ctx", "args": ["mcp"], "env": {"CTX_DB": w.snap}}}}, f)
@@ -625,7 +645,7 @@ def main():
     p.set_defaults(fn=cmd_author)
     p = sub.add_parser("run", help="answer questions in fresh isolated processes")
     p.add_argument("--set", choices=("dev", "holdout", "all"), default="dev")
-    p.add_argument("--cond", default="C", help="A repo only, B grep over transcripts, C the skill, I the skill plus injection, H the skill plus the SessionStart hook, J the skill, the SessionStart hook and injection, M ctx as an MCP server with a note and no skill, R the skill plus the recall hook; for documents, S sources only, W wiki in the index, F wiki as files")
+    p.add_argument("--cond", default="C", help="A repo only, B grep over transcripts, C the skill, I the skill plus injection, H the skill plus the SessionStart hook, J the skill, the SessionStart hook and injection, N the skill and a note that the documents are indexed, M ctx as an MCP server with a note and no skill, R the skill plus the recall hook; for documents, S sources only, W wiki in the index, F wiki as files")
     p.add_argument("--skill", default=DEFAULT_SKILL)
     p.add_argument("--only", help="comma-separated question ids")
     p.add_argument("--kind", help="comma-separated question kinds; code questions are answerable from the code alone")

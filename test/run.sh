@@ -1323,6 +1323,24 @@ rm "$T/repo/docs/notes.txt"
 [ "$(dq numbat)" = 0 ] || fail "the periodic scan drops a deleted document"
 "$CTX" rebuild >/dev/null
 [ "$(dq wombat)" = 1 ] || fail "a rebuild reads the documents again"
+# ctx docs check finds what one document says about another that the other does not bear out.
+mkdir -p "$T/repo/docs/rfcs"
+printf '# ADR-001: Queues\n\n**Status:** Accepted (2026-01-02)\n\nBuilds on ADR-002 (Proposed) and on ADR-003.\nSee [the ledger](0007-ledger.md) and [gone](missing.md) and [web](https://example.com/x.md).\n' > "$T/repo/docs/adr/adr-001-queues.md"
+printf '# ADR-002: Leases\n\nStatus: accepted\n\nADR-001 is Accepted. ADR-002 was Proposed before. RFC 9 is unrelated here.\n' > "$T/repo/docs/adr/adr-002-leases.md"
+printf '# RFC 4\n\n**Status:** Draft\n\nPer RFC-0004 itself and RFC 5 (Accepted).\n' > "$T/repo/docs/rfcs/rfc-0004-wire.md"
+printf '# RFC 5\n\n**Status**: Withdrawn\n' > "$T/repo/docs/rfcs/rfc-0005-old.md"
+"$CTX" docs scan >/dev/null
+if "$CTX" docs check > "$T/dcheck.txt"; then fail "docs check exits 1 when it finds something"; fi
+grep -q 'adr-001-queues.md:5: ADR-002 is called Proposed here; its own status is accepted$' "$T/dcheck.txt" || fail "a status another document does not have: $(cat "$T/dcheck.txt")"
+grep -q 'adr-001-queues.md:5: ADR-003 is named here, and no document has that number$' "$T/dcheck.txt" || fail "a number no document has: $(cat "$T/dcheck.txt")"
+grep -q 'adr-001-queues.md:6: links to missing.md, which is not there$' "$T/dcheck.txt" || fail "a link to a file that is not there: $(cat "$T/dcheck.txt")"
+grep -q 'rfc-0004-wire.md:5: RFC-005 is called Accepted here; its own status is Withdrawn$' "$T/dcheck.txt" || fail "RFCs are checked like ADRs: $(cat "$T/dcheck.txt")"
+[ "$(wc -l < "$T/dcheck.txt" | tr -d ' ')" = 5 ] && tail -1 "$T/dcheck.txt" | grep -q '^4 findings in 5 documents$' || fail "nothing else is reported: a document on itself, a number beyond the series, a web link, a correct status: $(cat "$T/dcheck.txt")"
+printf '# ADR-001: Queues\n\n**Status:** Accepted\n\nBuilds on ADR-002 (Accepted) and ADR-007. ADR-002 rejected a second queue.\n' > "$T/repo/docs/adr/adr-001-queues.md"
+printf '# RFC 4\n\n**Status:** Draft\n\nReplaces RFC 5, which was Accepted once.\n' > "$T/repo/docs/rfcs/rfc-0004-wire.md"
+"$CTX" docs scan >/dev/null
+"$CTX" docs check | grep -q '^0 findings in 5 documents$' || fail "docs check exits 0 with nothing to report: $("$CTX" docs check)"
+rm -r "$T/repo/docs/rfcs" "$T/repo/docs/adr/adr-002-leases.md" && "$CTX" docs scan >/dev/null
 if "$CTX" docs add "$T/repo/nothere" 2>/dev/null; then fail "a directory that does not exist is refused"; fi
 "$CTX" docs remove "$T/repo/docs" | grep -q 'no longer indexed' || fail "docs remove"
 [ "$(dq wombat)" = 0 ] && [ -z "$("$CTX" docs)" ] || fail "a removed directory leaves nothing behind"

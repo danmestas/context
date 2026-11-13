@@ -172,6 +172,7 @@ ctx docs add ~/code/myproj/rfcs --project myproj
 ctx docs                                         # each directory, its project, how many documents
 ctx docs scan                                    # read again now; the periodic scan also does this
 ctx docs remove ~/code/myproj/docs               # stop, and take its documents out of the index
+ctx docs check [--project P]                     # what one document says of another that is not so
 ```
 
 It reads text files ending in `.md`, `.markdown`, `.txt`, `.rst`, `.adoc`, `.org`
@@ -191,6 +192,26 @@ A hit names the file and the heading it was found under, so the file can be open
 `ctx turn 749 1 2` reads the section with those around it. When the same text
 is in two files, such as a page and a built copy of the site, search shows it
 once.
+
+`ctx docs check` reads the indexed documents for what one says about another
+that the other does not bear out. It knows numbered decision records and RFCs by
+their file names (`adr-011-retries.md`, `rfc-0004-wire.md`, or `0007-ledger.md`
+in a folder named `adr`, `rfcs` or `decisions`) and by the `Status:` line near
+the top of each. It reports:
+
+- a status given to another record that is not that record's own, as in
+  `ADR-026 (Proposed)` when ADR-026 says Accepted;
+- a number no document in the series has, up to the series' highest;
+- a link to a Markdown file that is not there.
+
+```
+docs/adr-002-agent-loop.md:3: ADR-026 is called Proposed here; its own status is Accepted
+docs/adr-006-queues.md:63: ADR-008 is named here, and no document has that number
+2 findings in 170 documents
+```
+
+It calls no model and exits 1 when it finds anything, so it can run in a
+repository's CI. It does not find two documents that disagree in their prose.
 
 This is for documents kept in an ordinary directory. A project's `sources/` are
 different: copied in, pinned to a version and citable from the wiki; see

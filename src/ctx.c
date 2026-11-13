@@ -3632,7 +3632,173 @@ static long docs_scan(sqlite3 *db, const char *only, long *changed) {
   return count;
 }
 
-/* ctx docs [add DIR [--project P] | remove DIR | scan] */
+/* ctx docs check: what one document says about another that the other does not bear out.
+ * Numbered decision records and RFCs (adr-011-..., rfc-0004-...) are known by their file names
+ * and their own Status line. It reports a status given to another record that is not its own,
+ * a number no document has, and a link to a Markdown file that is not there. No model is called. */
+static const char *const doc_states[] = {"Proposed", "Accepted", "Superseded", "Draft", "Rejected", "Deprecated", "Implemented", "Withdrawn", NULL};
+
+static const char *state_at(const char *p) { /* a status word starting here, or NULL */
+  for (int i = 0; doc_states[i]; i++) {
+    size_t n = strlen(doc_states[i]);
+    if (!strncasecmp(p, doc_states[i], n) && !isalpha((unsigned char)p[n])) return doc_states[i];
+  }
+  return NULL;
+}
+
+/* "ADR-011", "ADR 11", "RFC-0004" at p: sets the series and number, returns the length, or 0. */
+static size_t record_ref(const char *p, char series[4], long *number) {
+  if (strncmp(p, "ADR", 3) && strncmp(p, "RFC", 3)) return 0;
+  const char *d = p + 3;
+  if (*d == '-' || *d == ' ') d++;
+  if (!isdigit((unsigned char)*d)) return 0;
+  char *end;
+  *number = strtol(d, &end, 10);
+  memcpy(series, p, 3);
+  series[3] = 0;
+  return (size_t)(end - p);
+}
+
+static int docs_check(sqlite3 *db, const char *project) {
+  db_exec(db, "CREATE TEMP TABLE IF NOT EXISTS record(project, series, number, name, state, PRIMARY KEY (project, series, number)); DELETE FROM temp.record");
+  sqlite3_stmt *q = db_prepare(db, "SELECT project, name FROM ctx_doc WHERE kind = 'doc' AND (?1 IS NULL OR project = ?1) ORDER BY name");
+  if (project) sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  char **names = NULL, **projects = NULL;
+  size_t n = 0;
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    names = realloc(names, (n + 1) * sizeof *names);
+    projects = realloc(projects, (n + 1) * sizeof *projects);
+    if (!names || !projects) die("out of memory");
+    projects[n] = dup_text(sqlite3_column_text(q, 0));
+    names[n++] = dup_text(sqlite3_column_text(q, 1));
+  }
+  sqlite3_finalize(q);
+  char **texts = calloc(n ? n : 1, sizeof *texts);
+  if (!texts) die("out of memory");
+  sqlite3_stmt *ins = db_prepare(db, "INSERT OR IGNORE INTO temp.record VALUES (?1, ?2, ?3, ?4, ?5)");
+  for (size_t i = 0; i < n; i++) { /* first, what each numbered record says of itself */
+    size_t len = 0;
+    texts[i] = slurp(names[i], &len);
+    if (!texts[i]) continue;
+    const char *base = strrchr(names[i], '/');
+    base = base ? base + 1 : names[i];
+    char up[4] = {(char)toupper((unsigned char)base[0]), (char)toupper((unsigned char)base[1]), (char)toupper((unsigned char)base[2]), 0};
+    const char *d = base + 3;
+    if (isdigit((unsigned char)base[0]) && base - names[i] >= 5) { /* 0007-ledger.md in a folder named adr, rfcs, decisions */
+      const char *dir = base - 2;
+      while (dir > names[i] && dir[-1] != '/') dir--;
+      snprintf(up, sizeof up, "%s", !strncasecmp(dir, "adr", 3) || !strncasecmp(dir, "decision", 8) ? "ADR" : !strncasecmp(dir, "rfc", 3) ? "RFC" : "");
+      d = base;
+    }
+    if (strcmp(up, "ADR") && strcmp(up, "RFC")) continue;
+    if (*d == '-' || *d == '_') d++;
+    if (!isdigit((unsigned char)*d)) continue;
+    const char *state = NULL, *s = texts[i];
+    for (int line = 0; s && *s && line < 40 && !state; line++) { /* its Status line, near the top */
+      const char *e = strchr(s, '\n');
+      const char *at = s;
+      while (*at == '*' || *at == ' ' || *at == '-' || *at == '|') at++;
+      if (!strncasecmp(at, "Status", 6)) {
+        at += 6;
+        while (*at == '*' || *at == ':' || *at == ' ' || *at == '|') at++;
+        state = state_at(at);
+        if (state) { /* kept as written */
+          sqlite3_bind_text(ins, 5, at, (int)strlen(state), SQLITE_TRANSIENT);
+        }
+      }
+      s = e ? e + 1 : NULL;
+    }
+    sqlite3_bind_text(ins, 1, projects[i], -1, SQLITE_STATIC);
+    sqlite3_bind_text(ins, 2, up, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(ins, 3, strtol(d, NULL, 10));
+    sqlite3_bind_text(ins, 4, names[i], -1, SQLITE_STATIC);
+    if (!state) sqlite3_bind_null(ins, 5);
+    sqlite3_step(ins);
+    sqlite3_reset(ins);
+    sqlite3_clear_bindings(ins);
+  }
+  sqlite3_finalize(ins);
+  sqlite3_stmt *look = db_prepare(db, "SELECT name, state, (SELECT coalesce(max(r.number), 0) FROM temp.record r WHERE r.project = ?1 AND r.series = ?2)"
+                                      " FROM (SELECT 1) LEFT JOIN temp.record t ON t.project = ?1 AND t.series = ?2 AND t.number = ?3");
+  long found = 0;
+  for (size_t i = 0; i < n; i++) {
+    if (!texts[i]) continue;
+    int line = 1, fenced = 0;
+    for (const char *s = texts[i]; *s; line++) {
+      const char *e = strchr(s, '\n');
+      size_t len = e ? (size_t)(e - s) : strlen(s);
+      if (len >= 3 && !strncmp(s, "```", 3)) fenced = !fenced;
+      long seen[16];
+      int nseen = 0;
+      for (size_t k = 0; !fenced && k < len; k++) {
+        char series[4];
+        long number;
+        size_t ref = record_ref(s + k, series, &number);
+        if (ref && (k == 0 || !isalnum((unsigned char)s[k - 1]))) {
+          sqlite3_bind_text(look, 1, projects[i], -1, SQLITE_STATIC);
+          sqlite3_bind_text(look, 2, series, -1, SQLITE_STATIC);
+          sqlite3_bind_int64(look, 3, number);
+          if (sqlite3_step(look) == SQLITE_ROW) {
+            const char *target = (const char *)sqlite3_column_text(look, 0), *own = (const char *)sqlite3_column_text(look, 1);
+            long last = sqlite3_column_int64(look, 2); /* the highest number the series has */
+            int again = 0;
+            long key = number * 2 + (series[0] == 'R');
+            for (int j = 0; j < nseen; j++) again |= seen[j] == key;
+            if (!target && number <= last && !again) { /* a higher number is someone else's series, or not written yet */
+              printf("%s:%d: %s-%03ld is named here, and no document has that number\n", names[i], line, series, number);
+              found++;
+              if (nseen < 16) seen[nseen++] = key;
+            } else if (target && strcmp(target, names[i]) && own) {
+              size_t at = k + ref; /* "(Proposed)", "is Proposed", ": Proposed" straight after the number */
+              int marked = 0; /* a bracket, colon or dash, or "is": "ADR-030 rejected it" is a verb, not a status */
+              while (at < len && at < k + ref + 14 && !isalpha((unsigned char)s[at])) marked |= s[at++] != ' ';
+              if (at + 3 < len && !strncmp(s + at, "is ", 3)) {
+                at += 3;
+                marked = 1;
+              }
+              const char *said = marked && at < len ? state_at(s + at) : NULL;
+              if (said && strcasecmp(said, own)) {
+                printf("%s:%d: %s-%03ld is called %s here; its own status is %s\n", names[i], line, series, number, said, own);
+                found++;
+              }
+            }
+          }
+          sqlite3_reset(look);
+          k += ref - 1;
+        } else if (s[k] == ']' && k + 1 < len && s[k + 1] == '(') { /* a relative link to a Markdown file */
+          const char *start = s + k + 2, *close = memchr(start, ')', len - k - 2);
+          size_t tl = close ? (size_t)(close - start) : 0;
+          const char *hash = tl ? memchr(start, '#', tl) : NULL;
+          if (hash) tl = (size_t)(hash - start);
+          if (tl > 3 && tl < 600 && !memchr(start, ':', tl) && !memchr(start, ' ', tl) && !strncmp(start + tl - 3, ".md", 3) && start[0] != '/') {
+            char path[5400];
+            const char *slash = strrchr(names[i], '/');
+            snprintf(path, sizeof path, "%.*s/%.*s", (int)(slash - names[i]), names[i], (int)tl, start);
+            struct stat st;
+            if (stat(path, &st)) {
+              printf("%s:%d: links to %.*s, which is not there\n", names[i], line, (int)tl, start);
+              found++;
+            }
+          }
+        }
+      }
+      s = e ? e + 1 : s + len;
+    }
+  }
+  sqlite3_finalize(look);
+  printf("%ld findings in %zu documents\n", found, n);
+  for (size_t i = 0; i < n; i++) {
+    free(names[i]);
+    free(projects[i]);
+    free(texts[i]);
+  }
+  free(names);
+  free(projects);
+  free(texts);
+  return found ? 1 : 0;
+}
+
+/* ctx docs [add DIR [--project P] | remove DIR | scan | check [--project P]] */
 static int cmd_docs(int argc, char **argv) {
   sqlite3 *db = ctx_open();
   long changed = 0;
@@ -3641,6 +3807,10 @@ static int cmd_docs(int argc, char **argv) {
                                      " AND substr(d.name, 1, length(r.dir) + 1) = r.dir || '/') FROM ctx_docs_dir r ORDER BY 1");
     while (sqlite3_step(q) == SQLITE_ROW) printf("%s %s %d\n", sqlite3_column_text(q, 0), sqlite3_column_text(q, 1), sqlite3_column_int(q, 2));
     sqlite3_finalize(q);
+  } else if ((argc == 1 || (argc == 3 && !strcmp(argv[1], "--project"))) && !strcmp(argv[0], "check")) {
+    int bad = docs_check(db, argc == 3 ? argv[2] : NULL);
+    sqlite3_close(db);
+    return bad;
   } else if (argc == 1 && !strcmp(argv[0], "scan")) {
     long count = docs_scan(db, NULL, &changed);
     printf("%ld documents, %ld changed\n", count, changed);
@@ -3670,7 +3840,7 @@ static int cmd_docs(int argc, char **argv) {
     docs_drop(db, real, 1);
     printf("%s is no longer indexed\n", argv[1]);
   } else {
-    die("usage: ctx docs [add DIR [--project P] | remove DIR | scan]");
+    die("usage: ctx docs [add DIR [--project P] | remove DIR | scan | check [--project P]]");
   }
   sqlite3_close(db);
   return 0;
@@ -7308,7 +7478,7 @@ static int usage(void) {
         "       ctx project add NAME [--root DIR] [--import FILE | --clone URL] [--remote URL] | list | pull NAME [--from URL]\n"
         "       ctx source add FILE --origin WHERE --class CLASS [--as PATH] | supersede OLD | uses PATH | check\n"
         "       ctx index [--project P]\n"
-        "       ctx docs [add DIR [--project P] | remove DIR | scan]\n"
+        "       ctx docs [add DIR [--project P] | remove DIR | scan | check [--project P]]\n"
         "       ctx wiki save NAME FILE --model M [--ticket ID] | check | why PAGE | repin | retire PAGE --reason WHY | restore PAGE\n"
         "       ctx remote NAME URL\n"
         "       ctx sync [NAME]\n"
