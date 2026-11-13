@@ -1,0 +1,51 @@
+{
+ "name": "shipyard2-vector-answers",
+ "title": "209 sessions: do agents answer better with vector search?",
+ "section": "Agent behaviour",
+ "order": 8,
+ "date": "2026-11-13",
+ "good_until": "2027-05-12",
+ "commit": "6abc4db74538",
+ "command": "eval/skill_eval.py with a stand-in for `ctx search` (and, for one arm, `ctx inject`) backed by Voyage-code-4 vectors; all arms graded together, once per wording",
+ "conditions": {
+  "corpus": "the second shipyard corpus: 209 sessions, 139 questions, each asked plainly in the session's own terms and paraphrased",
+  "arms": "keywords: ctx as installed. Vectors: `ctx search` returns the nearest turns by meaning. Vectors first: the nearest turns, then keyword matches, with the skill reworded to invite full questions. Injection: ctx as installed, plus the five turns nearest the prompt added to it before the agent starts",
+  "stand-in": "the vector arms are not in ctx; a wrapper answered search from vectors made by a hosted model, on this public corpus only",
+  "models": "Claude Sonnet answers; each wording graded blind in one pass over every arm"
+ },
+ "summary": "Neural embeddings find the right session for a reworded question three to four times as often as keywords do. This asks whether an agent then answers better, in three ways of using them.",
+ "baseline": "ctx as installed, keyword search: 115.0 of 139 in the session's own terms, 112.5 paraphrased",
+ "bar": "a difference counts only if a sign test on the paired questions gives p below 0.05 (set in bench/head-to-head.md), with no more wrong answers",
+ "verdict": "fail",
+ "meaning": "No. None of the three vector arms differs from keyword search on answers, in either wording, and two of them give more wrong answers. An agent does not stop at one search: with keywords it rewords and tries again, and ends where a single good vector search would have put it, at the same cost. Injection made agents search less (79 and 107 of 139 against 120 and 131) and say they did not know less often, but be wrong more often. ctx does not use embeddings for session search. The test has limits: every question has a findable answer, the corpus is 209 sessions, and one model answered.",
+ "metrics": [
+  {
+   "label": "Keywords (ctx as installed)",
+   "value": "115.0 and 112.5 of 139",
+   "note": "own terms and paraphrased; 2 and 3 wrong"
+  },
+  {
+   "label": "Vectors",
+   "value": "110.5 and 114.5",
+   "note": "better 13 worse 21, p = 0.23; better 15 worse 12, p = 0.70; 5 and 7 wrong"
+  },
+  {
+   "label": "Vectors first, skill reworded",
+   "value": "115.0 and 113.5",
+   "note": "better 13 worse 12; better 19 worse 19; 4 and 4 wrong"
+  },
+  {
+   "label": "Injection of the five nearest turns",
+   "value": "115.5 and 113.5",
+   "note": "better 18 worse 18; better 22 worse 22; 8 and 7 wrong"
+  },
+  {
+   "label": "Cost of 139 answers, every arm",
+   "value": "$12 in own terms, $13.50 to $14.20 paraphrased"
+  },
+  {
+   "label": "Searches per question, median",
+   "value": "2 to 3 in every search arm; 1 to 2 with injection"
+  }
+ ]
+}

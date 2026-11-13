@@ -23,10 +23,12 @@ This page lists what ctx has been measured to do. Every figure comes from a resu
 | Coding sessions: other tools on the same questions | No bar | In the session's own terms every tool that ran properly is level with ctx; only TraceDecay was worse (p = 0.008). Paraphrased, the three tools using embeddings are clearly better than ctx: cass found 23 of 30, episodic-memory 20 and agentmemory 17, against ctx's 5 (each p below 0.001). That is the real gap in ctx's search. It costs them indexing time: one to nineteen minutes for 32 sessions, against seconds for keyword indexes. cass with keywords alone scored 1 of 30 because its default search needs every word of the question to match; that is its default, not its ceiling. This measures finding the session only. In the separate answer test, paraphrasing barely changed what agents got right, because agents rewrite their searches. |
 | Would small embeddings close the paraphrase gap? | Failed its bar | A real gain, but short of the bar. Fusing the 30 MB model with keyword search finds 13 of 30 paraphrased questions instead of 5 (better on 9, worse on 1, p = 0.02) and loses nothing in the session's own terms. That is about half of what the neural tools gain, for almost no indexing cost. The smaller model does less and the larger one no better. ctx does not use embeddings as a result: the bar was not met, and in the answer test paraphrasing did not make agents answer worse, so the gain here may not reach the answers. |
 | Small embeddings on 209 sessions | Failed its bar | The gain does not hold. Fused search found 126 and 25 of 139 against 125 and 23 for keywords alone, which is no difference (p = 0.77 on paraphrased questions). The improvement on the small corpus came from its size: with few sessions a rough sense of topic is enough to pick one, and with many sessions on one codebase it is not. ctx does not use embeddings. Tools that run a neural model were not tried at this size. |
+| 209 sessions: neural embeddings and other tools at finding the session | No bar | For one search on a reworded question, neural embeddings are far better than keywords, and the model is what decides by how much. Small models from 2019 to 2022, which the other tools use, find 37 to 55 of the 139 paraphrased questions; current models find 62 to 87; ctx's keywords find 23. In the session's own terms the best models also edge ahead, 134 against 125. What unit of text is embedded matters little. Blending a strong model's ranking with the keyword ranking at equal weight throws away most of its gain on paraphrased questions. None of this is in ctx: whether it changes what an agent answers is the next result. |
 | Coding sessions: do agents answer better with ctx? | No bar | Plain transcript files with a hint where they are scored highest. ctx as installed is level with them by the test set beforehand (better on 2 questions, worse on 6, p = 0.29) but three points lower, and ctx without its note is significantly worse (p = 0.04). The whole gap is use: the agent searched with ctx on 24 of 30 questions with the note and 19 without, and where it did search, its answers were as good as the transcript arm's. What ctx buys is cost: about a third fewer tokens, less than half the time, and two or three tool calls where grep needs seven to nine. Paraphrasing the question made almost no difference to any arm, because agents rewrite their own searches. With only the repository the agent could answer 6 of 30, so the questions do need session history. |
 | 209 coding sessions: do agents answer better with ctx? | No bar | Level on accuracy by the bar, and much cheaper. In the session's own terms ctx scored 116.5 against 111.5 (better on 24 questions, worse on 15, p = 0.20); paraphrased, 112.0 against 100.5 (better 26, worse 16, p = 0.16). Neither difference is significant on its own. Both times ctx cost about half as much, took a third of the time and a quarter of the tool calls, and gave fewer wrong answers. Paraphrase hurt the transcript arm more than ctx: its score fell by 11 and ctx's by 4.5, although a single ctx search finds the right session for only 23 of the 139 paraphrased questions. Agents make up for that by searching again with other words, three searches at the median. |
 | Coding sessions: adding snippets or a reminder to the prompt | Failed its bar | Neither helps, and both arms scored below ctx as installed, significantly so on paraphrased questions. The reason is that they almost never act: snippets were added for 4 and 3 of 30 questions and the reminder for 1 and 0, so these arms are in effect the skill alone. On the few questions where snippets were added, the answers were right. The session-start note remains the one thing shown to make agents search, and both hooks stay off by default. |
 | 209 coding sessions: ctx as tools over MCP, against the skill | Passed its bar | The two are level, so the tools are a sound way in for clients without a shell. Over MCP the agent scored 121.5 against 116.5 in the session's own terms (better on 16 questions, worse on 8, p = 0.15) and 116.0 against 114.0 paraphrased (18 and 17). It used slightly fewer tokens, took a second or two less per question, and ran into far fewer refused commands, since a tool call has no shell pipeline for a permission rule to reject. It gave 6 wrong answers against 3 in the session's own terms and 4 against 4 paraphrased. A two-line tool description and one sentence did the work of the whole skill here, on questions that are all about past work. |
+| 209 sessions: do agents answer better with vector search? | Failed its bar | No. None of the three vector arms differs from keyword search on answers, in either wording, and two of them give more wrong answers. An agent does not stop at one search: with keywords it rewords and tries again, and ends where a single good vector search would have put it, at the same cost. Injection made agents search less (79 and 107 of 139 against 120 and 131) and say they did not know less often, but be wrong more often. ctx does not use embeddings for session search. The test has limits: every question has a findable answer, the corpus is 209 sessions, and one model answered. |
 | Answering questions about past work | Passed its bar | Telling the agent at session start that an archive exists is worth about 7 questions in 90 and costs no extra tokens. The difference is borderline by a sign test (p = 0.052), so it is kept as likely but not proven. |
 | Reaching for the archive unprompted | Failed its bar | Rewording the triggers made no real difference (one question in 23), so the wording was not changed. Fresh agents already search about four times in five without being told. |
 | A reminder when a prompt refers to earlier work | Failed its bar | The reminder changed nothing because agents already searched every time. The hook exists but is off by default. This test cannot show what happens deep in a long session, where the reminder might matter more. |
@@ -308,6 +310,40 @@ bench/vectors.py --models DIR --model potion-base-8M --data CORPUS --whole
 
 [Result file](../bench/results/vectors-static-209.json)
 
+### 209 sessions: neural embeddings and other tools at finding the session
+
+A small static embedding model added nothing at this size. This asks the same of real neural models: the two session-search tools that use one, and ten hosted models scanned exactly with no keyword search at all.
+
+- **Compared with:** ctx's keyword search: 125 of 139 in the session's own terms, 23 paraphrased
+- **Bar:** a difference counts only if a sign test on the paired questions gives p below 0.05 (set in bench/head-to-head.md). **Not judged.**
+- **What it means:** For one search on a reworded question, neural embeddings are far better than keywords, and the model is what decides by how much. Small models from 2019 to 2022, which the other tools use, find 37 to 55 of the 139 paraphrased questions; current models find 62 to 87; ctx's keywords find 23. In the session's own terms the best models also edge ahead, 134 against 125. What unit of text is embedded matters little. Blending a strong model's ranking with the keyword ranking at equal weight throws away most of its gain on paraphrased questions. None of this is in ctx: whether it changes what an agent answers is the next result.
+
+| Measure | Result |
+| --- | --- |
+| ctx keywords | 125 and 23 of 139 (own terms and paraphrased) |
+| episodic-memory | 125 and 49 (alone right on 34 paraphrased questions against ctx's 8, p = 0.0001) |
+| cass, hybrid | 116 and 43 (alone right on 26 paraphrased against 6, p = 0.0005) |
+| Voyage-4-lite, vectors alone | 134 and 82 (132 and 87 embedding whole exchanges) |
+| Voyage-code-4, vectors alone | 126 and 83 |
+| Qwen3-embedding-4B and 8B, vectors alone | 131 and 76; 129 and 80 |
+| Perplexity pplx-embed 0.6B, vectors alone | 132 and 72 |
+| OpenAI text-embedding-3-small, vectors alone | 132 and 63 |
+| MiniLM-L6, GTE-base, E5-base, MPNet, vectors alone | 119 to 124 and 37 to 48 |
+| Voyage-code-4 blended with keywords at equal weight | 131 and 48 (against 126 and 83 alone) |
+
+Measured 2026-11-13; check-in 6abc4db74538; good until 2027-05-12.
+
+- corpus: the second shipyard corpus, 209 sessions and 139 questions, none used for tuning
+- tools: cass 0.11.0 with its MiniLM model and episodic-memory 1.6.0, each run in a container with no network during queries
+- hosted models: windows of 1,200 characters of what people and agents wrote, tool output left out, embedded through OpenRouter; only this public corpus was sent
+- scoring: every session holding the answer among the first five returned; no model judges anything
+
+```sh
+bench/shipyard2/results/README.md for the two tools; hosted models: each window of what people and agents wrote embedded through a hosted API, exact scan, first five distinct sessions
+```
+
+[Result file](../bench/results/shipyard2-neural-retrieval.json)
+
 ## Agent behaviour
 
 ### Coding sessions: do agents answer better with ctx?
@@ -432,6 +468,36 @@ eval/skill_eval.py --bank BANK run --set all --ask plain --cond H,M && eval/skil
 ```
 
 [Result file](../bench/results/shipyard2-mcp.json)
+
+### 209 sessions: do agents answer better with vector search?
+
+Neural embeddings find the right session for a reworded question three to four times as often as keywords do. This asks whether an agent then answers better, in three ways of using them.
+
+- **Compared with:** ctx as installed, keyword search: 115.0 of 139 in the session's own terms, 112.5 paraphrased
+- **Bar:** a difference counts only if a sign test on the paired questions gives p below 0.05 (set in bench/head-to-head.md), with no more wrong answers. **Failed.**
+- **What it means:** No. None of the three vector arms differs from keyword search on answers, in either wording, and two of them give more wrong answers. An agent does not stop at one search: with keywords it rewords and tries again, and ends where a single good vector search would have put it, at the same cost. Injection made agents search less (79 and 107 of 139 against 120 and 131) and say they did not know less often, but be wrong more often. ctx does not use embeddings for session search. The test has limits: every question has a findable answer, the corpus is 209 sessions, and one model answered.
+
+| Measure | Result |
+| --- | --- |
+| Keywords (ctx as installed) | 115.0 and 112.5 of 139 (own terms and paraphrased; 2 and 3 wrong) |
+| Vectors | 110.5 and 114.5 (better 13 worse 21, p = 0.23; better 15 worse 12, p = 0.70; 5 and 7 wrong) |
+| Vectors first, skill reworded | 115.0 and 113.5 (better 13 worse 12; better 19 worse 19; 4 and 4 wrong) |
+| Injection of the five nearest turns | 115.5 and 113.5 (better 18 worse 18; better 22 worse 22; 8 and 7 wrong) |
+| Cost of 139 answers, every arm | $12 in own terms, $13.50 to $14.20 paraphrased |
+| Searches per question, median | 2 to 3 in every search arm; 1 to 2 with injection |
+
+Measured 2026-11-13; check-in 6abc4db74538; good until 2027-05-12.
+
+- corpus: the second shipyard corpus: 209 sessions, 139 questions, each asked plainly in the session's own terms and paraphrased
+- arms: keywords: ctx as installed. Vectors: `ctx search` returns the nearest turns by meaning. Vectors first: the nearest turns, then keyword matches, with the skill reworded to invite full questions. Injection: ctx as installed, plus the five turns nearest the prompt added to it before the agent starts
+- stand-in: the vector arms are not in ctx; a wrapper answered search from vectors made by a hosted model, on this public corpus only
+- models: Claude Sonnet answers; each wording graded blind in one pass over every arm
+
+```sh
+eval/skill_eval.py with a stand-in for `ctx search` (and, for one arm, `ctx inject`) backed by Voyage-code-4 vectors; all arms graded together, once per wording
+```
+
+[Result file](../bench/results/shipyard2-vector-answers.json)
 
 ### Answering questions about past work
 
