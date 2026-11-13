@@ -1,0 +1,63 @@
+{
+ "name": "shipyard2-mcp",
+ "title": "209 coding sessions: ctx as tools over MCP, against the skill",
+ "section": "Agent behaviour",
+ "order": 7,
+ "date": "2026-11-13",
+ "good_until": "2027-05-12",
+ "commit": "a9ff52ecda29",
+ "command": "eval/skill_eval.py --bank BANK run --set all --ask plain --cond H,M && eval/skill_eval.py grade RUNS, once per wording",
+ "conditions": {
+  "corpus": "the second shipyard corpus: 209 sessions, 139 questions, each asked plainly in the session's own terms and paraphrased",
+  "arms": "the skill: ctx as installed, with its skill, the session-start note and the ctx command; MCP: `ctx mcp` registered as a server with its two tools and a one-sentence note, no skill and no ctx command",
+  "models": "Claude Sonnet answers; each wording graded blind in one pass over both arms"
+ },
+ "summary": "`ctx mcp` offers search and turn as tools to clients that cannot run commands. This asks whether an agent given only those tools does as well as one given the skill and the command line.",
+ "baseline": "ctx as installed, with the skill: 116.5 of 139 in the session's own terms, 114.0 paraphrased",
+ "bar": "the tools must score level with the skill or better (a paired sign test, p below 0.05 to count as a difference) and use no more tokens; set before the run",
+ "verdict": "pass",
+ "meaning": "The two are level, so the tools are a sound way in for clients without a shell. Over MCP the agent scored 121.5 against 116.5 in the session's own terms (better on 16 questions, worse on 8, p = 0.15) and 116.0 against 114.0 paraphrased (18 and 17). It used slightly fewer tokens, took a second or two less per question, and ran into far fewer refused commands, since a tool call has no shell pipeline for a permission rule to reject. It gave 6 wrong answers against 3 in the session's own terms and 4 against 4 paraphrased. A two-line tool description and one sentence did the work of the whole skill here, on questions that are all about past work.",
+ "metrics": [
+  {
+   "label": "Own terms: skill",
+   "value": "116.5 of 139",
+   "note": "3 wrong"
+  },
+  {
+   "label": "Own terms: MCP tools",
+   "value": "121.5 of 139",
+   "note": "6 wrong; better on 16, worse on 8, p = 0.15"
+  },
+  {
+   "label": "Paraphrased: skill",
+   "value": "114.0 of 139",
+   "note": "4 wrong"
+  },
+  {
+   "label": "Paraphrased: MCP tools",
+   "value": "116.0 of 139",
+   "note": "4 wrong; better on 18, worse on 17"
+  },
+  {
+   "label": "New tokens, MCP against skill",
+   "value": "2.70 M against 2.70 M; 2.97 M against 3.11 M",
+   "note": "own terms; paraphrased"
+  },
+  {
+   "label": "Cost of 139 answers, MCP against skill",
+   "value": "$12.01 against $12.21; $13.47 against $14.19"
+  },
+  {
+   "label": "Median time per question",
+   "value": "5 to 6 s against 7 s"
+  },
+  {
+   "label": "Questions on which the agent searched",
+   "value": "125 and 129 of 139 against 120 and 131"
+  },
+  {
+   "label": "Commands or calls refused by permissions",
+   "value": "2 and 4 against 12 and 13"
+  }
+ ]
+}

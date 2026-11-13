@@ -26,6 +26,7 @@ This page lists what ctx has been measured to do. Every figure comes from a resu
 | Coding sessions: do agents answer better with ctx? | No bar | Plain transcript files with a hint where they are scored highest. ctx as installed is level with them by the test set beforehand (better on 2 questions, worse on 6, p = 0.29) but three points lower, and ctx without its note is significantly worse (p = 0.04). The whole gap is use: the agent searched with ctx on 24 of 30 questions with the note and 19 without, and where it did search, its answers were as good as the transcript arm's. What ctx buys is cost: about a third fewer tokens, less than half the time, and two or three tool calls where grep needs seven to nine. Paraphrasing the question made almost no difference to any arm, because agents rewrite their own searches. With only the repository the agent could answer 6 of 30, so the questions do need session history. |
 | 209 coding sessions: do agents answer better with ctx? | No bar | Level on accuracy by the bar, and much cheaper. In the session's own terms ctx scored 116.5 against 111.5 (better on 24 questions, worse on 15, p = 0.20); paraphrased, 112.0 against 100.5 (better 26, worse 16, p = 0.16). Neither difference is significant on its own. Both times ctx cost about half as much, took a third of the time and a quarter of the tool calls, and gave fewer wrong answers. Paraphrase hurt the transcript arm more than ctx: its score fell by 11 and ctx's by 4.5, although a single ctx search finds the right session for only 23 of the 139 paraphrased questions. Agents make up for that by searching again with other words, three searches at the median. |
 | Coding sessions: adding snippets or a reminder to the prompt | Failed its bar | Neither helps, and both arms scored below ctx as installed, significantly so on paraphrased questions. The reason is that they almost never act: snippets were added for 4 and 3 of 30 questions and the reminder for 1 and 0, so these arms are in effect the skill alone. On the few questions where snippets were added, the answers were right. The session-start note remains the one thing shown to make agents search, and both hooks stay off by default. |
+| 209 coding sessions: ctx as tools over MCP, against the skill | Passed its bar | The two are level, so the tools are a sound way in for clients without a shell. Over MCP the agent scored 121.5 against 116.5 in the session's own terms (better on 16 questions, worse on 8, p = 0.15) and 116.0 against 114.0 paraphrased (18 and 17). It used slightly fewer tokens, took a second or two less per question, and ran into far fewer refused commands, since a tool call has no shell pipeline for a permission rule to reject. It gave 6 wrong answers against 3 in the session's own terms and 4 against 4 paraphrased. A two-line tool description and one sentence did the work of the whole skill here, on questions that are all about past work. |
 | Answering questions about past work | Passed its bar | Telling the agent at session start that an archive exists is worth about 7 questions in 90 and costs no extra tokens. The difference is borderline by a sign test (p = 0.052), so it is kept as likely but not proven. |
 | Reaching for the archive unprompted | Failed its bar | Rewording the triggers made no real difference (one question in 23), so the wording was not changed. Fresh agents already search about four times in five without being told. |
 | A reminder when a prompt refers to earlier work | Failed its bar | The reminder changed nothing because agents already searched every time. The hook exists but is off by default. This test cannot show what happens deep in a long session, where the reminder might matter more. |
@@ -399,6 +400,38 @@ eval/skill_eval.py --bank BANK run --set all --only HELD_OUT --ask plain --cond 
 ```
 
 [Result file](../bench/results/shipyard-delivery.json)
+
+### 209 coding sessions: ctx as tools over MCP, against the skill
+
+`ctx mcp` offers search and turn as tools to clients that cannot run commands. This asks whether an agent given only those tools does as well as one given the skill and the command line.
+
+- **Compared with:** ctx as installed, with the skill: 116.5 of 139 in the session's own terms, 114.0 paraphrased
+- **Bar:** the tools must score level with the skill or better (a paired sign test, p below 0.05 to count as a difference) and use no more tokens; set before the run. **Passed.**
+- **What it means:** The two are level, so the tools are a sound way in for clients without a shell. Over MCP the agent scored 121.5 against 116.5 in the session's own terms (better on 16 questions, worse on 8, p = 0.15) and 116.0 against 114.0 paraphrased (18 and 17). It used slightly fewer tokens, took a second or two less per question, and ran into far fewer refused commands, since a tool call has no shell pipeline for a permission rule to reject. It gave 6 wrong answers against 3 in the session's own terms and 4 against 4 paraphrased. A two-line tool description and one sentence did the work of the whole skill here, on questions that are all about past work.
+
+| Measure | Result |
+| --- | --- |
+| Own terms: skill | 116.5 of 139 (3 wrong) |
+| Own terms: MCP tools | 121.5 of 139 (6 wrong; better on 16, worse on 8, p = 0.15) |
+| Paraphrased: skill | 114.0 of 139 (4 wrong) |
+| Paraphrased: MCP tools | 116.0 of 139 (4 wrong; better on 18, worse on 17) |
+| New tokens, MCP against skill | 2.70 M against 2.70 M; 2.97 M against 3.11 M (own terms; paraphrased) |
+| Cost of 139 answers, MCP against skill | $12.01 against $12.21; $13.47 against $14.19 |
+| Median time per question | 5 to 6 s against 7 s |
+| Questions on which the agent searched | 125 and 129 of 139 against 120 and 131 |
+| Commands or calls refused by permissions | 2 and 4 against 12 and 13 |
+
+Measured 2026-11-13; check-in a9ff52ecda29; good until 2027-05-12.
+
+- corpus: the second shipyard corpus: 209 sessions, 139 questions, each asked plainly in the session's own terms and paraphrased
+- arms: the skill: ctx as installed, with its skill, the session-start note and the ctx command; MCP: `ctx mcp` registered as a server with its two tools and a one-sentence note, no skill and no ctx command
+- models: Claude Sonnet answers; each wording graded blind in one pass over both arms
+
+```sh
+eval/skill_eval.py --bank BANK run --set all --ask plain --cond H,M && eval/skill_eval.py grade RUNS, once per wording
+```
+
+[Result file](../bench/results/shipyard2-mcp.json)
 
 ### Answering questions about past work
 

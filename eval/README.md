@@ -44,6 +44,11 @@ questions need no bookkeeping.
   default, `teammate`, frames it as a question about past work. `compare`
   refuses runs with different `--ask` values. Condition B still lists its
   transcript folders in the prompt.
+- Condition **M** offers ctx only as a Model Context Protocol server: `ctx mcp`
+  with its two tools and a one-sentence note, with no skill and no `ctx` command.
+  Its tool calls count as reaching ctx.
+- Condition **J** is H plus what the UserPromptSubmit injection hook would add,
+  joined into one note.
 - Condition **R** is C plus what the UserPromptSubmit recall hook would add: it
   runs `ctx recall` on the question text and appends the output to the system
   prompt. I and H are the same idea with `ctx inject` and the SessionStart hook.

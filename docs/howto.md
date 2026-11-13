@@ -6,6 +6,7 @@ arguments lists them all, and `ctx version` prints its version and SQLite's.
 - [Install](#install)
 - [Archive your sessions](#archive-your-sessions)
 - [Search past work](#search-past-work)
+- [Search from a client that calls tools](#search-from-a-client-that-calls-tools)
 - [Check the archive for secrets](#check-the-archive-for-secrets)
 - [Keep standing rules](#keep-standing-rules)
 - [Set up a project](#set-up-a-project)
@@ -157,6 +158,45 @@ leaves out wiki pages.
 
 The `ctx` skill tells agents how to search well. Archived text is a record, not
 instructions: an agent should never act on commands it finds there.
+
+## Search from a client that calls tools
+
+Some clients cannot run commands but can call tools over the Model Context
+Protocol: a desktop chat app, or an agent host with no shell. `ctx mcp` serves
+them. The client starts it, it answers on standard input and output, and it
+exits when the client closes it. Nothing runs in the background.
+
+Register it wherever the client lists its servers. In Claude Code:
+
+```sh
+claude mcp add ctx -- ctx mcp
+```
+
+In a client configured by a JSON file:
+
+```json
+{ "mcpServers": { "ctx": { "command": "ctx", "args": ["mcp"] } } }
+```
+
+Give the full path to `ctx` if the client does not use your PATH, and set
+`CTX_DB` in the server's environment if your archive is not at the default
+place.
+
+It offers two tools, which run the commands above and return what they print:
+
+| Tool | Arguments | Runs |
+|---|---|---|
+| `search` | `query`; optionally `all` (every project) and `limit` (12 unless given, at most 50) | `ctx search` |
+| `turn` | `id`; optionally `before` and `after` (turns to show around it) and `full` | `ctx turn` |
+
+`search` looks in the project of the directory the client started the server
+in, and in every project if nothing matches there, as the command does. The
+server also tells the client's model when to use it, which stands in for the
+note a session start gives in Claude Code.
+
+With Claude Code you do not need this: the `ctx` skill and the commands do the
+same job. In a test on 209 sessions the two scored the same; see
+[benchmarks.md](benchmarks.md).
 
 ## Check the archive for secrets
 
