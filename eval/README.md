@@ -50,6 +50,13 @@ questions need no bookkeeping.
 - A project in the bank may list `docs`: folders, relative to its repo, that are
   indexed with `ctx docs add` for every condition that has ctx. Condition **N** is
   C plus a one-sentence note that the repository's documents are indexed.
+- Condition **P** is H plus a command run after every Grep or Bash call, as a
+  PostToolUse hook would be; the command comes from `SKILL_EVAL_POSTTOOL`.
+- Condition **Q** is the repo alone with `ctx` on the PATH, no skill and no note,
+  plus the same command as P: what a hook does for an agent that was told nothing.
+- Condition **G** is the repo alone with `ctx` on the PATH, plus a command run
+  before every Grep, Glob or Bash call, as a PreToolUse hook would be; the command
+  comes from `SKILL_EVAL_PRETOOL` and may turn a call back.
 - Condition **J** is H plus what the UserPromptSubmit injection hook would add,
   joined into one note.
 - Condition **R** is C plus what the UserPromptSubmit recall hook would add: it

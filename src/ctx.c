@@ -1444,7 +1444,7 @@ static void call_end(void) {
 
 /* Starts the log entry when this invocation is a hook or a search. */
 static void call_begin(int argc, char **argv) {
-  static const char *const one[] = {"hook", "inject", "recall", "search", "turn", NULL};
+  static const char *const one[] = {"hook", "inject", "recall", "gate", "search", "turn", NULL};
   static const char *const two[][3] = {{"rules", "offer", "rules-offer"}, {"ticket", "offer", "ticket-offer"},
                                         {"artifacts", "keep", "artifacts-keep"}, {NULL, NULL, NULL}};
   if (argc < 2) return;
@@ -2124,6 +2124,20 @@ static int cmd_scan(const char *root_arg) {
   artifacts_file(db);
   long rules = rules_import(db), doc_changes = 0;
   docs_scan(db, NULL, &doc_changes);
+  { /* forget which sessions were told about the archive once they are a month old */
+    char *dir = sidecar(".noted");
+    DIR *nd = opendir(dir);
+    struct dirent *ne;
+    time_t old = time(NULL) - 30 * 86400;
+    while (nd && (ne = readdir(nd))) {
+      char file[4700];
+      struct stat ns;
+      snprintf(file, sizeof file, "%s/%s", dir, ne->d_name);
+      if (ne->d_name[0] != '.' && !stat(file, &ns) && S_ISREG(ns.st_mode) && ns.st_mtime < old) unlink(file);
+    }
+    if (nd) closedir(nd);
+    free(dir);
+  }
   sqlite3_close(db);
   printf("%ld transcripts read\n", ran);
   if (doc_changes) printf("%ld documents changed\n", doc_changes);
@@ -5407,6 +5421,120 @@ static int cmd_mcp(void) {
   return 0;
 }
 
+/* A session that has been told the archive exists is remembered by an empty file beside the
+ * database, named for the session. No database write, so a hook stays quick and cannot block. */
+static char *noted_path(const char *session) {
+  char id[128];
+  size_t n = 0;
+  for (const char *c = session; *c && n < sizeof id - 1; c++)
+    if (isalnum((unsigned char)*c) || *c == '-' || *c == '_') id[n++] = *c;
+  id[n] = 0;
+  if (!n) return NULL;
+  char *dir = sidecar(".noted");
+  mkdir(dir, 0700);
+  size_t len = strlen(dir) + n + 2;
+  char *p = malloc(len);
+  if (!p) die("out of memory");
+  snprintf(p, len, "%s/%s", dir, id);
+  free(dir);
+  return p;
+}
+
+/* Marks the session as told. Returns 1 if this call was the first to mark it. */
+static int noted_mark(const char *session) {
+  char *p = noted_path(session);
+  if (!p) return 0;
+  int fd = open(p, O_WRONLY | O_CREAT | O_EXCL, 0600);
+  free(p);
+  if (fd < 0) return 0;
+  close(fd);
+  return 1;
+}
+
+/* Whether a shell command starts a search: grep, rg, find and the like at the start of the
+ * line or after ; & | (, and git log or git grep. A ctx command is never one. */
+static int search_command(const char *cmd) {
+  static const char *const names[] = {"grep", "rg", "ag", "ack", "find", "fd", "git log", "git grep", NULL};
+  if (strstr(cmd, "ctx ")) return 0;
+  int at_start = 1;
+  for (const char *c = cmd; *c; c++) {
+    if (at_start && !c_space((unsigned char)*c)) {
+      for (int i = 0; names[i]; i++) {
+        size_t n = strlen(names[i]);
+        if (!strncmp(c, names[i], n) && (c[n] == ' ' || c[n] == '\t')) return 1;
+      }
+      at_start = 0;
+    }
+    if (*c == ';' || *c == '&' || *c == '|' || *c == '(') at_start = 1;
+  }
+  return 0;
+}
+
+/* ctx gate: a PreToolUse hook. In a session that was never told the archive exists, the first
+ * search is turned back once with that note; run again, it goes through. It says nothing in a
+ * project with no archived sessions, and on any failure it lets the call pass. */
+static int cmd_gate(void) {
+  buf in = {0};
+  char chunk[4096];
+  size_t got;
+  while (in.n < (1 << 20) && (got = fread(chunk, 1, sizeof chunk, stdin)) > 0) buf_add(&in, chunk, got);
+  if (!in.p) return 0;
+  char *path = db_path();
+  struct stat st;
+  sqlite3 *db = NULL;
+  if (stat(path, &st) || sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+    free(path);
+    free(in.p);
+    return 0;
+  }
+  free(path);
+  sqlite3_busy_timeout(db, 200);
+  sqlite3_stmt *q = NULL;
+  char tool[64] = "", session[128] = "", *cwd = NULL, *cmd = NULL;
+  if (sqlite3_prepare_v2(db, "SELECT coalesce(json_extract(?1, '$.tool_name'), ''), coalesce(json_extract(?1, '$.session_id'), ''),"
+                             " json_extract(?1, '$.cwd'), json_extract(?1, '$.tool_input.command') WHERE json_valid(?1)", -1, &q, NULL) == SQLITE_OK) {
+    sqlite3_bind_text(q, 1, in.p, (int)in.n, SQLITE_STATIC);
+    if (sqlite3_step(q) == SQLITE_ROW) {
+      snprintf(tool, sizeof tool, "%s", sqlite3_column_text(q, 0));
+      snprintf(session, sizeof session, "%s", sqlite3_column_text(q, 1));
+      if (sqlite3_column_text(q, 2)) cwd = dup_text(sqlite3_column_text(q, 2));
+      if (sqlite3_column_text(q, 3)) cmd = dup_text(sqlite3_column_text(q, 3));
+    }
+    sqlite3_finalize(q);
+  }
+  free(in.p);
+  int search = !strcmp(tool, "Grep") || !strcmp(tool, "Glob") || (!strcmp(tool, "Bash") && cmd && search_command(cmd));
+  char *mark = search ? noted_path(session) : NULL;
+  if (mark && stat(mark, &st)) { /* a search, in a session not yet told */
+    char here[4096];
+    char *project = project_for(db, cwd ? cwd : getcwd(here, sizeof here));
+    int sessions = 0;
+    if (sqlite3_prepare_v2(db, "SELECT count(*) FROM ctx_doc WHERE kind = 'session' AND project = ?1", -1, &q, NULL) == SQLITE_OK) {
+      sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+      if (sqlite3_step(q) == SQLITE_ROW) sessions = sqlite3_column_int(q, 0);
+      sqlite3_finalize(q);
+    }
+    if (sessions && noted_mark(session) && /* marked first: whatever happens next, it is not turned back twice */
+        sqlite3_prepare_v2(db, "SELECT json_object('hookSpecificOutput', json_object('hookEventName', 'PreToolUse', 'permissionDecision', 'deny',"
+                               " 'permissionDecisionReason', 'Before this search: past sessions of ' || ?1 || ' are archived (' || ?2 || ' session days),"
+                               " tool output included. If you are looking for why something was decided, what was tried, what the user said or what"
+                               " happened earlier, search them first: `ctx search WORDS` with two or three exact names or error words, then"
+                               " `ctx turn ID 2 5` to read around a hit. If you are looking for code, run this search again; it will go through."
+                               " This notice appears once.'))", -1, &q, NULL) == SQLITE_OK) {
+      sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+      sqlite3_bind_int(q, 2, sessions);
+      if (sqlite3_step(q) == SQLITE_ROW) puts((const char *)sqlite3_column_text(q, 0));
+      sqlite3_finalize(q);
+    }
+    free(project);
+  }
+  free(mark);
+  free(cwd);
+  free(cmd);
+  sqlite3_close(db);
+  return 0;
+}
+
 static int cmd_inject(void) {
   buf in = {0};
   char chunk[4096];
@@ -6645,7 +6773,10 @@ static int rules_offer(void) {
                                " history, search them: `ctx search WORDS` with two or three exact names or error words, then `ctx turn ID 2 5` to read"
                                " around a hit.')) FROM ctx_doc WHERE kind = 'session' AND project = ?1 HAVING count(*) > 0", -1, &q, NULL) == SQLITE_OK) {
       sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
-      if (sqlite3_step(q) == SQLITE_ROW) puts((const char *)sqlite3_column_text(q, 0));
+      if (sqlite3_step(q) == SQLITE_ROW) {
+        puts((const char *)sqlite3_column_text(q, 0));
+        noted_mark(session); /* told: ctx gate leaves this session alone */
+      }
       sqlite3_finalize(q);
     }
     free(project);
@@ -6719,6 +6850,7 @@ static int rules_offer(void) {
                " search them: `ctx search WORDS` with two or three exact names or error words, then `ctx turn ID 2 5` to read around a hit.",
                all.n ? "\n\n" : "", project, sessions);
       buf_str(&all, line);
+      noted_mark(session); /* told: ctx gate leaves this session alone */
     }
     if (n) {
       buf_str(&all, sessions ? "\n\n" : "");
@@ -7488,6 +7620,7 @@ static int usage(void) {
         "       ctx rebuild\n"
         "       ctx inject\n"
         "       ctx recall\n"
+        "       ctx gate\n"
         "       ctx stats [--weeks N] | --hooks [--days N]\n"
         "       ctx status\n"
         "       ctx remember TEXT [--project P] [--until DATE] [--from TURN]\n"
@@ -7521,6 +7654,7 @@ int main(int argc, char **argv) {
   if (argc == 2 && !strcmp(argv[1], "rebuild")) return cmd_rebuild();
   if (argc == 2 && !strcmp(argv[1], "inject")) return cmd_inject();
   if (argc == 2 && !strcmp(argv[1], "recall")) return cmd_recall();
+  if (argc == 2 && !strcmp(argv[1], "gate")) return cmd_gate();
   if (argc == 2 && !strcmp(argv[1], "mcp")) return cmd_mcp();
   if ((argc == 2 || argc == 3) && !strcmp(argv[1], "scan")) return cmd_scan(argc == 3 ? argv[2] : NULL);
   if (argc >= 2 && !strcmp(argv[1], "audit")) return cmd_audit(argc - 2, argv + 2);
