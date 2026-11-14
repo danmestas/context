@@ -668,6 +668,24 @@ would trigger it.
 A subagent starts without the session-start note, so `ctx rules offer` also answers
 the `SubagentStart` event with that one line (about 45 tokens) and nothing else.
 
+`ctx gate` is a `PreToolUse` hook for sessions the note never reached: one that
+started before ctx was installed, or under a client that runs no session-start
+hook. In such a session the first search (Grep, Glob, or a shell `grep`, `rg`,
+`find`, `git log` and the like) is turned back once with the same note, and a line
+saying that a search for code will go through if run again. After that it says
+nothing. It also says nothing in a session that got the note, in a project with no
+archived sessions, or when anything goes wrong.
+
+```json
+"PreToolUse": [{ "matcher": "Grep|Glob|Bash", "hooks": [{ "type": "command", "command": "ctx gate", "timeout": 3 }] }]
+```
+
+It is not installed by default, because it refuses a tool call, if only once.
+On 139 questions put to an agent told nothing about ctx, it raised the score from
+22.5 to 85.5; the note itself gives about 117, and with the note in place a
+gentler hook that only added lines after a search changed nothing. See
+[benchmarks.md](benchmarks.md).
+
 Two measurements shaped this. Asked plainly, with no hint that a question is about
 past work, fresh agents with the skill searched the archive on 18 of 23 held-out
 questions; rewording the skill's triggers made it 19, so the wording stayed. And a

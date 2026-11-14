@@ -333,7 +333,7 @@ def cmd_run(a):
                         else glob.glob(os.path.expanduser(f"~/.claude/projects/{slug(project['sessions'])}*")))
                 prompt += "\n\nTranscripts of past coding sessions on this project are JSONL files in:\n" + "\n".join(dirs)
                 allow += ["Bash(jq*)", "Bash(python3*)"]
-            if cond in "CIHRJN":
+            if cond in "CIHRJNPQG":
                 allow.append("Bash(ctx *)")
             if cond in "SWF":  # same tools; only the wiki differs: W in the index, F as files, S neither
                 allow += ["Bash(ctx search *)", "Bash(ctx turn *)"]
@@ -351,13 +351,21 @@ def cmd_run(a):
                 extra = json.loads(hook)["hookSpecificOutput"]["additionalContext"] if hook.strip() else ""
                 if extra:
                     cmd += ["--append-system-prompt", extra]
+            if cond in "PQ":  # P: H, Q: the repo alone with ctx on the PATH but no skill or note; plus a command run after each Grep or Bash call, as a PostToolUse hook would be
+                hook = os.environ.get("SKILL_EVAL_POSTTOOL") or sys.exit("condition P needs SKILL_EVAL_POSTTOOL, the hook command")
+                cmd[cmd.index("--settings") + 1] = json.dumps({"permissions": {"blockReadsOutsideWorkingDirectories": True}, "hooks": {
+                    "PostToolUse": [{"matcher": "Grep|Bash", "hooks": [{"type": "command", "command": hook, "timeout": 10}]}]}})
+            if cond == "G":  # the repo alone with ctx on the PATH, plus a command run before each search, as a PreToolUse hook would be
+                hook = os.environ.get("SKILL_EVAL_PRETOOL") or sys.exit("condition G needs SKILL_EVAL_PRETOOL, the hook command")
+                cmd[cmd.index("--settings") + 1] = json.dumps({"permissions": {"blockReadsOutsideWorkingDirectories": True}, "hooks": {
+                    "PreToolUse": [{"matcher": "Grep|Glob|Bash", "hooks": [{"type": "command", "command": hook, "timeout": 10}]}]}})
             if cond == "N":  # the skill, and a note that this repository's documents are indexed
                 cmd += ["--append-system-prompt", DOCS_NOTE]
             if cond == "M":  # ctx as a Model Context Protocol server: its two tools and a note, no skill and no command
                 conf = f"{w.dir}/mcp.json"
                 cmd += ["--mcp-config", conf, "--append-system-prompt", MCP_NOTE]
                 cmd[cmd.index("--allowedTools") + 1:cmd.index("--allowedTools") + 1] = ["mcp__ctx__search", "mcp__ctx__turn"]
-            if cond in "HJ":  # what the SessionStart hook would add for this project
+            if cond in "HJP":  # what the SessionStart hook would add for this project
                 hook = subprocess.run([f"{w.bin}/ctx", "rules", "offer"], env=w.env(True), cwd=cwd,
                                       capture_output=True, text=True, timeout=30).stdout
                 extra = json.loads(hook)["hookSpecificOutput"]["additionalContext"] if hook.strip() else ""
@@ -365,9 +373,9 @@ def cmd_run(a):
                     cmd[cmd.index("--append-system-prompt") + 1] += "\n\n" + extra
                 elif extra:
                     cmd += ["--append-system-prompt", extra]
-            p = spawn(cmd, cwd, w.env(cond in "CSWFIHRJN", db), a.deadline)
+            p = spawn(cmd, cwd, w.env(cond in "CSWFIHRJNPQG", db), a.deadline)
             r = digest(p.stdout, cond, own)
-            r.update(qid=q["id"], cond=cond, project=q["project"], kind=q["kind"], injected=cond in "IHRJ" and "--append-system-prompt" in cmd)
+            r.update(qid=q["id"], cond=cond, project=q["project"], kind=q["kind"], injected=cond in "IHRJP" and "--append-system-prompt" in cmd)
             return r
 
         for q in qs:  # copies are made up front so parallel jobs never race
@@ -375,7 +383,7 @@ def cmd_run(a):
                 cwd = w.repo(cond, q["project"], bank["projects"][q["project"]]["repo"])
                 if cond == "F":
                     w.wiki_files(cwd)
-                if cond in "CSWFIHRJN":
+                if cond in "CSWFIHRJNP":
                     os.makedirs(f"{cwd}/.claude/skills/ctx", exist_ok=True)
                     with open(f"{cwd}/.claude/skills/ctx/SKILL.md", "w") as f:
                         f.write(skill)
@@ -645,7 +653,7 @@ def main():
     p.set_defaults(fn=cmd_author)
     p = sub.add_parser("run", help="answer questions in fresh isolated processes")
     p.add_argument("--set", choices=("dev", "holdout", "all"), default="dev")
-    p.add_argument("--cond", default="C", help="A repo only, B grep over transcripts, C the skill, I the skill plus injection, H the skill plus the SessionStart hook, J the skill, the SessionStart hook and injection, N the skill and a note that the documents are indexed, M ctx as an MCP server with a note and no skill, R the skill plus the recall hook; for documents, S sources only, W wiki in the index, F wiki as files")
+    p.add_argument("--cond", default="C", help="A repo only, B grep over transcripts, C the skill, I the skill plus injection, H the skill plus the SessionStart hook, J the skill, the SessionStart hook and injection, N the skill and a note that the documents are indexed, P H plus a PostToolUse command from SKILL_EVAL_POSTTOOL, Q the repo alone plus that command, G the repo alone plus a PreToolUse command from SKILL_EVAL_PRETOOL, M ctx as an MCP server with a note and no skill, R the skill plus the recall hook; for documents, S sources only, W wiki in the index, F wiki as files")
     p.add_argument("--skill", default=DEFAULT_SKILL)
     p.add_argument("--only", help="comma-separated question ids")
     p.add_argument("--kind", help="comma-separated question kinds; code questions are answerable from the code alone")

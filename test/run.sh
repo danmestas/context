@@ -1344,6 +1344,33 @@ rm -r "$T/repo/docs/rfcs" "$T/repo/docs/adr/adr-002-leases.md" && "$CTX" docs sc
 if "$CTX" docs add "$T/repo/nothere" 2>/dev/null; then fail "a directory that does not exist is refused"; fi
 "$CTX" docs remove "$T/repo/docs" | grep -q 'no longer indexed' || fail "docs remove"
 [ "$(dq wombat)" = 0 ] && [ -z "$("$CTX" docs)" ] || fail "a removed directory leaves nothing behind"
+# ctx gate, a PreToolUse hook: in a session that never got the archive note, the first search
+# is turned back once with it. It never blocks twice, and says nothing where it has nothing to offer.
+export CTX_DB="$T/gate.sqlite"
+"$CTX" init >/dev/null
+mkdir -p "$T/gw/proj" "$T/gw/empty"
+GP=$(cd "$T/gw/proj" && pwd -P); GE=$(cd "$T/gw/empty" && pwd -P)
+printf '{"uuid":"g-1","timestamp":"2026-05-01T10:00:00Z","cwd":"%s","message":{"role":"user","content":"why the heron cache was dropped"}}\n' "$GP" > "$T/9a9a9a9a-g.jsonl"
+"$CTX" archive "$T/9a9a9a9a-g.jsonl" >/dev/null
+gate() { printf '{"hook_event_name":"PreToolUse","session_id":"%s","cwd":"%s","tool_name":"%s","tool_input":%s}' "$1" "$2" "$3" "$4" | (cd "$2" && "$CTX" gate); }
+gate s-one "$GP" Grep '{"pattern":"heron"}' > "$T/gate.txt"
+grep -q '"permissionDecision":"deny"' "$T/gate.txt" && grep -q 'ctx search' "$T/gate.txt" && grep -q 'run this search again' "$T/gate.txt" || fail "the first search in a session without the note is turned back with it: $(cat "$T/gate.txt")"
+[ -z "$(gate s-one "$GP" Grep '{"pattern":"heron"}')" ] || fail "the gate turns a session back once only"
+[ -z "$(gate s-one "$GP" Bash '{"command":"rg heron ."}')" ] || fail "once covers every kind of search"
+[ -z "$(gate s-two "$GP" Bash '{"command":"ls -la && make test"}')" ] || fail "a command that is not a search passes"
+[ -z "$(gate s-two "$GP" Bash '{"command":"ctx search heron | grep cache"}')" ] || fail "a ctx command passes"
+[ -z "$(gate s-two "$GP" Read '{"file_path":"/x"}')" ] || fail "other tools pass"
+gate s-two "$GP" Bash '{"command":"cd src && grep -rn heron ."}' | grep -q '"deny"' || fail "a search after && in a shell command counts"
+gate s-three "$GP" Glob '{"pattern":"**/*.md"}' | grep -q '"deny"' || fail "Glob counts as a search"
+gate s-four "$GP" Bash '{"command":"git log --oneline -5"}' | grep -q '"deny"' || fail "git log counts as a search"
+[ -z "$(gate s-five "$GE" Grep '{"pattern":"heron"}')" ] || fail "a project with no archived sessions is never gated"
+printf '{"hook_event_name":"SessionStart","source":"startup","session_id":"s-six","cwd":"%s"}' "$GP" | (cd "$GP" && "$CTX" rules offer) | grep -q 'are archived' || fail "the note is offered"
+[ -z "$(gate s-six "$GP" Grep '{"pattern":"heron"}')" ] || fail "a session that got the note is not gated"
+printf '{"hook_event_name":"SubagentStart","session_id":"s-seven","cwd":"%s"}' "$GP" | (cd "$GP" && "$CTX" rules offer) | grep -q 'are archived' || fail "a subagent is offered the note"
+[ -z "$(gate s-seven "$GP" Grep '{"pattern":"heron"}')" ] || fail "nor is a session whose subagent got it"
+[ -z "$(printf 'not json' | (cd "$GP" && "$CTX" gate))" ] || fail "the gate says nothing on input it cannot read"
+[ -z "$(gate "" "$GP" Grep '{"pattern":"heron"}')" ] || fail "with no session to remember, the gate does not act"
+[ -z "$(CTX_DB="$T/nogate.sqlite" gate s-eight "$GP" Grep '{"pattern":"heron"}')" ] && [ ! -e "$T/nogate.sqlite" ] || fail "no archive, no gate"
 # A working directory can be kept out of the archive, and a session can be forgotten.
 export CTX_DB="$T/excl.sqlite"
 "$CTX" init >/dev/null

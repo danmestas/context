@@ -1,0 +1,56 @@
+{
+ "name": "shipyard2-reach",
+ "title": "209 sessions: what gets an agent to look in the archive",
+ "section": "Agent behaviour",
+ "order": 9,
+ "date": "2026-11-13",
+ "good_until": "2027-05-12",
+ "commit": "6d76fed1687c",
+ "command": "eval/skill_eval.py --bank BANK run --set all --ask plain --cond A,Q,G,H,P with SKILL_EVAL_POSTTOOL and SKILL_EVAL_PRETOOL set to the hook commands",
+ "conditions": {
+  "corpus": "the second shipyard corpus: 209 sessions, 139 questions in the session's own terms, each about past work",
+  "arms": "told nothing: the repository and ordinary tools, with ctx on the PATH but no skill and no note. Hint: the same, and after each search up to three turns from past sessions that share its rare words are added. Gate: the same, and the first search is turned back once with the archive note. As installed: the skill and the session-start note. As installed plus the hint.",
+  "stand-ins": "the hint was a script outside ctx; the gate was a script of the same behaviour as `ctx gate`",
+  "models": "Claude Sonnet answers; arms graded blind in one pass"
+ },
+ "summary": "ctx only helps if the agent looks. This measures how much each way of prompting it to look is worth, from saying nothing to the note ctx gives at session start.",
+ "baseline": "an agent told nothing: 22.5 of 139, and it said it did not know on 99 questions",
+ "bar": "a difference counts only if a sign test on the paired questions gives p below 0.05 (set in bench/head-to-head.md)",
+ "verdict": "pass",
+ "meaning": "Telling the agent at the start is what matters: the skill and note take the score from 22.5 to about 117. An agent told nothing makes two tool calls, finds nothing in the repository and gives up. Turning its first search back once with the note recovers most of that, 85.5, and where it then searched ctx it scored 79 of 90; it cannot help in the 39 runs where the agent never searched at all. Adding lines after a search is worth little, 30.0, because it waits for a rare word and fired in 30 of 139 runs. With the note already in place the hint changed nothing (117.0 against 117.5; 111.5 against 113.0 paraphrased). So `ctx gate` exists as a fallback for sessions the note did not reach, and is off unless installed.",
+ "metrics": [
+  {
+   "label": "Told nothing",
+   "value": "22.5 of 139",
+   "note": "99 did not know; searched ctx on 1"
+  },
+  {
+   "label": "Hint after a search",
+   "value": "30.0",
+   "note": "better on 18, worse on 6 than told nothing, p = 0.02; searched ctx on 10"
+  },
+  {
+   "label": "Gate: first search turned back once",
+   "value": "85.5",
+   "note": "better on 73, worse on 4, p below 0.0001; searched ctx on 90; 3 wrong"
+  },
+  {
+   "label": "As installed: skill and note",
+   "value": "118.5",
+   "note": "searched ctx on 120; 2 wrong"
+  },
+  {
+   "label": "As installed plus the hint",
+   "value": "117.0 against 117.5",
+   "note": "own terms; 111.5 against 113.0 paraphrased; the hint fired 14 times in 278 runs"
+  },
+  {
+   "label": "Gate against as installed",
+   "value": "better on 8, worse on 45"
+  },
+  {
+   "label": "Cost of 139 answers",
+   "value": "$10 told nothing, $11.25 gate, $12.21 as installed"
+  }
+ ]
+}

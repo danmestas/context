@@ -29,6 +29,7 @@ This page lists what ctx has been measured to do. Every figure comes from a resu
 | Coding sessions: adding snippets or a reminder to the prompt | Failed its bar | Neither helps, and both arms scored below ctx as installed, significantly so on paraphrased questions. The reason is that they almost never act: snippets were added for 4 and 3 of 30 questions and the reminder for 1 and 0, so these arms are in effect the skill alone. On the few questions where snippets were added, the answers were right. The session-start note remains the one thing shown to make agents search, and both hooks stay off by default. |
 | 209 coding sessions: ctx as tools over MCP, against the skill | Passed its bar | The two are level, so the tools are a sound way in for clients without a shell. Over MCP the agent scored 121.5 against 116.5 in the session's own terms (better on 16 questions, worse on 8, p = 0.15) and 116.0 against 114.0 paraphrased (18 and 17). It used slightly fewer tokens, took a second or two less per question, and ran into far fewer refused commands, since a tool call has no shell pipeline for a permission rule to reject. It gave 6 wrong answers against 3 in the session's own terms and 4 against 4 paraphrased. A two-line tool description and one sentence did the work of the whole skill here, on questions that are all about past work. |
 | 209 sessions: do agents answer better with vector search? | Failed its bar | No. None of the three vector arms differs from keyword search on answers, in either wording, and two of them give more wrong answers. An agent does not stop at one search: with keywords it rewords and tries again, and ends where a single good vector search would have put it, at the same cost. Injection made agents search less (79 and 107 of 139 against 120 and 131) and say they did not know less often, but be wrong more often. ctx does not use embeddings for session search. The test has limits: every question has a findable answer, the corpus is 209 sessions, and one model answered. |
+| 209 sessions: what gets an agent to look in the archive | Passed its bar | Telling the agent at the start is what matters: the skill and note take the score from 22.5 to about 117. An agent told nothing makes two tool calls, finds nothing in the repository and gives up. Turning its first search back once with the note recovers most of that, 85.5, and where it then searched ctx it scored 79 of 90; it cannot help in the 39 runs where the agent never searched at all. Adding lines after a search is worth little, 30.0, because it waits for a rare word and fired in 30 of 139 runs. With the note already in place the hint changed nothing (117.0 against 117.5; 111.5 against 113.0 paraphrased). So `ctx gate` exists as a fallback for sessions the note did not reach, and is off unless installed. |
 | Answering questions about past work | Passed its bar | Telling the agent at session start that an archive exists is worth about 7 questions in 90 and costs no extra tokens. The difference is borderline by a sign test (p = 0.052), so it is kept as likely but not proven. |
 | Reaching for the archive unprompted | Failed its bar | Rewording the triggers made no real difference (one question in 23), so the wording was not changed. Fresh agents already search about four times in five without being told. |
 | A reminder when a prompt refers to earlier work | Failed its bar | The reminder changed nothing because agents already searched every time. The hook exists but is off by default. This test cannot show what happens deep in a long session, where the reminder might matter more. |
@@ -498,6 +499,37 @@ eval/skill_eval.py with a stand-in for `ctx search` (and, for one arm, `ctx inje
 ```
 
 [Result file](../bench/results/shipyard2-vector-answers.json)
+
+### 209 sessions: what gets an agent to look in the archive
+
+ctx only helps if the agent looks. This measures how much each way of prompting it to look is worth, from saying nothing to the note ctx gives at session start.
+
+- **Compared with:** an agent told nothing: 22.5 of 139, and it said it did not know on 99 questions
+- **Bar:** a difference counts only if a sign test on the paired questions gives p below 0.05 (set in bench/head-to-head.md). **Passed.**
+- **What it means:** Telling the agent at the start is what matters: the skill and note take the score from 22.5 to about 117. An agent told nothing makes two tool calls, finds nothing in the repository and gives up. Turning its first search back once with the note recovers most of that, 85.5, and where it then searched ctx it scored 79 of 90; it cannot help in the 39 runs where the agent never searched at all. Adding lines after a search is worth little, 30.0, because it waits for a rare word and fired in 30 of 139 runs. With the note already in place the hint changed nothing (117.0 against 117.5; 111.5 against 113.0 paraphrased). So `ctx gate` exists as a fallback for sessions the note did not reach, and is off unless installed.
+
+| Measure | Result |
+| --- | --- |
+| Told nothing | 22.5 of 139 (99 did not know; searched ctx on 1) |
+| Hint after a search | 30.0 (better on 18, worse on 6 than told nothing, p = 0.02; searched ctx on 10) |
+| Gate: first search turned back once | 85.5 (better on 73, worse on 4, p below 0.0001; searched ctx on 90; 3 wrong) |
+| As installed: skill and note | 118.5 (searched ctx on 120; 2 wrong) |
+| As installed plus the hint | 117.0 against 117.5 (own terms; 111.5 against 113.0 paraphrased; the hint fired 14 times in 278 runs) |
+| Gate against as installed | better on 8, worse on 45 |
+| Cost of 139 answers | $10 told nothing, $11.25 gate, $12.21 as installed |
+
+Measured 2026-11-13; check-in 6d76fed1687c; good until 2027-05-12.
+
+- corpus: the second shipyard corpus: 209 sessions, 139 questions in the session's own terms, each about past work
+- arms: told nothing: the repository and ordinary tools, with ctx on the PATH but no skill and no note. Hint: the same, and after each search up to three turns from past sessions that share its rare words are added. Gate: the same, and the first search is turned back once with the archive note. As installed: the skill and the session-start note. As installed plus the hint.
+- stand-ins: the hint was a script outside ctx; the gate was a script of the same behaviour as `ctx gate`
+- models: Claude Sonnet answers; arms graded blind in one pass
+
+```sh
+eval/skill_eval.py --bank BANK run --set all --ask plain --cond A,Q,G,H,P with SKILL_EVAL_POSTTOOL and SKILL_EVAL_PRETOOL set to the hook commands
+```
+
+[Result file](../bench/results/shipyard2-reach.json)
 
 ### Answering questions about past work
 
