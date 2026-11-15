@@ -55,6 +55,8 @@ def main():
         ("After a compaction: the brief", ["rules", "offer"], hook(source="compact")),
         ("Subagent start: archive note", ["rules", "offer"], hook(hook_event_name="SubagentStart")),
         ("Prompt submitted: recall check", ["recall"], json.dumps({"prompt": "do you remember the timeout fix"})),
+        ("Before a search: the gate, session told", ["gate"], hook(hook_event_name="PreToolUse", tool_name="Grep", tool_input={"pattern": "timeout"})),
+        ("Before a command that is not a search: the gate", ["gate"], hook(hook_event_name="PreToolUse", tool_name="Bash", tool_input={"command": "make test"})),
         ("Status line", ["status"], ""),
         ("Search, two words", ["search", "timeout", "error"], ""),
         ("Read a turn with its neighbours", ["turn", turn, "2", "5"], ""),

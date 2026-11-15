@@ -1369,6 +1369,7 @@ printf '{"hook_event_name":"SessionStart","source":"startup","session_id":"s-six
 printf '{"hook_event_name":"SubagentStart","session_id":"s-seven","cwd":"%s"}' "$GP" | (cd "$GP" && "$CTX" rules offer) | grep -q 'are archived' || fail "a subagent is offered the note"
 [ -z "$(gate s-seven "$GP" Grep '{"pattern":"heron"}')" ] || fail "nor is a session whose subagent got it"
 [ -z "$(printf 'not json' | (cd "$GP" && "$CTX" gate))" ] || fail "the gate says nothing on input it cannot read"
+"$CTX" stats --hooks | grep -q '^gate turned back 4 sessions$' || fail "the hook report counts the sessions the gate turned back, not those that got the note: $("$CTX" stats --hooks)"
 [ -z "$(gate "" "$GP" Grep '{"pattern":"heron"}')" ] || fail "with no session to remember, the gate does not act"
 [ -z "$(CTX_DB="$T/nogate.sqlite" gate s-eight "$GP" Grep '{"pattern":"heron"}')" ] && [ ! -e "$T/nogate.sqlite" ] || fail "no archive, no gate"
 # A working directory can be kept out of the archive, and a session can be forgotten.

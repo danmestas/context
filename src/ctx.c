@@ -1536,6 +1536,22 @@ static int stats_hooks(int days) {
            st[k].n ? st[k].ms[st[k].n * 95 / 100] : 0, st[k].n ? st[k].ms[st[k].n - 1] : 0, cut, st[k].over);
     free(st[k].ms);
   }
+  char *dir = sidecar(".noted"); /* sessions the gate turned back: its marks are the ones with something in them */
+  DIR *d = opendir(dir);
+  struct dirent *e;
+  long turned = 0;
+  time_t since = time(NULL) - (time_t)days * 86400;
+  while (d && (e = readdir(d))) {
+    char file[4700];
+    struct stat fs;
+    snprintf(file, sizeof file, "%s/%s", dir, e->d_name);
+    if (e->d_name[0] != '.' && !stat(file, &fs) && S_ISREG(fs.st_mode) && fs.st_size > 0 && fs.st_mtime >= since) turned++;
+  }
+  if (d) {
+    closedir(d);
+    printf("gate turned back %ld session%s\n", turned, turned == 1 ? "" : "s");
+  }
+  free(dir);
   return 0;
 }
 
@@ -5440,13 +5456,15 @@ static char *noted_path(const char *session) {
   return p;
 }
 
-/* Marks the session as told. Returns 1 if this call was the first to mark it. */
-static int noted_mark(const char *session) {
+/* Marks the session as told. Returns 1 if this call was the first to mark it. A mark the
+ * gate made holds a word, so the hook report can count the sessions it turned back. */
+static int noted_mark(const char *session, int by_gate) {
   char *p = noted_path(session);
   if (!p) return 0;
   int fd = open(p, O_WRONLY | O_CREAT | O_EXCL, 0600);
   free(p);
   if (fd < 0) return 0;
+  if (by_gate && write(fd, "gate\n", 5) < 0) {}
   close(fd);
   return 1;
 }
@@ -5514,7 +5532,7 @@ static int cmd_gate(void) {
       if (sqlite3_step(q) == SQLITE_ROW) sessions = sqlite3_column_int(q, 0);
       sqlite3_finalize(q);
     }
-    if (sessions && noted_mark(session) && /* marked first: whatever happens next, it is not turned back twice */
+    if (sessions && noted_mark(session, 1) && /* marked first: whatever happens next, it is not turned back twice */
         sqlite3_prepare_v2(db, "SELECT json_object('hookSpecificOutput', json_object('hookEventName', 'PreToolUse', 'permissionDecision', 'deny',"
                                " 'permissionDecisionReason', 'Before this search: past sessions of ' || ?1 || ' are archived (' || ?2 || ' session days),"
                                " tool output included. If you are looking for why something was decided, what was tried, what the user said or what"
@@ -6695,8 +6713,10 @@ static void session_brief(sqlite3 *db, const char *session, buf *all) {
   }
   /* the last landing the person reported */
   if (sqlite3_prepare_v2(db,
-          "SELECT substr(c.at, 1, 16) FROM ctx_chunk c JOIN ctx_doc d ON d.id = c.doc_id JOIN ctx_capture_day cd ON cd.technote = d.name"
-          " WHERE cd.session = ?1 AND c.heading = 'user' AND (lower(trim(c.body)) LIKE 'landed%' OR lower(c.body) LIKE '%merge on green%')"
+          /* the session's documents are found first and checked against the index, so no other session's text is read */
+          "SELECT substr(c.at, 1, 16) FROM ctx_chunk c WHERE c.heading = 'user' AND c.doc_id IN (SELECT d.id FROM ctx_capture_day cd"
+          " JOIN ctx_doc d ON d.kind = 'session' AND d.name = cd.technote WHERE cd.session = ?1)"
+          " AND (lower(trim(c.body)) LIKE 'landed%' OR lower(c.body) LIKE '%merge on green%')"
           " ORDER BY c.at DESC LIMIT 1", -1, &q, NULL) == SQLITE_OK) {
     sqlite3_bind_text(q, 1, session, -1, SQLITE_STATIC);
     if (sqlite3_step(q) == SQLITE_ROW && b.n < BRIEF_MAX) {
@@ -6775,7 +6795,7 @@ static int rules_offer(void) {
       sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
       if (sqlite3_step(q) == SQLITE_ROW) {
         puts((const char *)sqlite3_column_text(q, 0));
-        noted_mark(session); /* told: ctx gate leaves this session alone */
+        noted_mark(session, 0); /* told: ctx gate leaves this session alone */
       }
       sqlite3_finalize(q);
     }
@@ -6850,7 +6870,7 @@ static int rules_offer(void) {
                " search them: `ctx search WORDS` with two or three exact names or error words, then `ctx turn ID 2 5` to read around a hit.",
                all.n ? "\n\n" : "", project, sessions);
       buf_str(&all, line);
-      noted_mark(session); /* told: ctx gate leaves this session alone */
+      noted_mark(session, 0); /* told: ctx gate leaves this session alone */
     }
     if (n) {
       buf_str(&all, sessions ? "\n\n" : "");
