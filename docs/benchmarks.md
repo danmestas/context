@@ -38,8 +38,8 @@ This page lists what ctx has been measured to do. Every figure comes from a resu
 | Which kinds of rule go stale | No bar | Status notes go stale within weeks and rules in a person's own words rarely do, so ctx fades by kind. Fading by age would have silenced about a quarter of rules that were still true. |
 | Holding back a question the archive may answer | Failed its bar | The idea failed clearly. Three in four firings were irrelevant and one in twelve pointed at a conflicting answer, so the hook was removed before it shipped. |
 | Matching answers to the questions agents asked | Passed its bar | The record of questions and answers is consistent on a real archive. This checks that answers are attached to the right question, not that they were read correctly word for word. |
+| Hooks and commands on a real archive | Passed its bar | Every hook takes 4 to 30 ms at the median and none came near the bar; the slowest single run was the compaction brief at 62 ms. The brief used to take 0.4 to 1.2 s on its first run: to find the last landing the person reported it read the text of every typed turn in the archive. It now finds the session's own documents first and reads only their turns. The gate adds about 5 ms to a search or shell command, most of which is the cost of starting a process. The two listing commands are typed by a person, not run by a hook, and are slower. |
 | Hooks and commands on a real archive, machine heavily loaded | Failed its bar | At the median every hook takes under 50 ms even with the machine running at three times its capacity. The run failed its bar because the first compaction brief took 1.2 s. A second run on a quiet machine gave the same first-run figure, so that cost belongs to the brief and not to the load. |
-| Hooks and commands on a real archive, machine not busy | Failed its bar | With the machine quiet every hook takes 5 to 35 ms at the median. The compaction brief still failed the bar, at 1.2 s on its first run and about 35 ms after that. The same first-run figure appeared under heavy load, so it is not caused by load: the first brief after a while reads index pages that are no longer in memory. It is inside the 3-second limit, and it is the real cost after a compaction. |
 | Background work | No bar | Background work costs a few seconds of processor time an hour. The rebuild is a one-off of a few minutes when the index format changes. |
 | Fuzzing and sanitizers | No bar | Fuzzing found a real bug this week, in a rule that could match across a line break. It did not let a secret through. The failing input is now replayed on every check. |
 
@@ -517,6 +517,8 @@ ctx only helps if the agent looks. This measures how much each way of prompting 
 | As installed plus the hint | 117.0 against 117.5 (own terms; 111.5 against 113.0 paraphrased; the hint fired 14 times in 278 runs) |
 | Gate against as installed | better on 8, worse on 45 |
 | Cost of 139 answers | $10 told nothing, $11.25 gate, $12.21 as installed |
+| What the gate costs where no history is needed | one more tool call, 1.4 s and 0.6 cents, once a session (60 questions about a repository's own documents, each a fresh session without the note: score 46.0 against 44.5 without the gate, new tokens up 3.5%; 3 of 60 went on to search ctx) |
+| Time the gate adds to a search or shell command | about 5 ms (on a 1.3 GB archive; see the hooks result) |
 
 Measured 2026-11-13; check-in 6d76fed1687c; good until 2027-05-12.
 
@@ -524,6 +526,7 @@ Measured 2026-11-13; check-in 6d76fed1687c; good until 2027-05-12.
 - arms: told nothing: the repository and ordinary tools, with ctx on the PATH but no skill and no note. Hint: the same, and after each search up to three turns from past sessions that share its rare words are added. Gate: the same, and the first search is turned back once with the archive note. As installed: the skill and the session-start note. As installed plus the hint.
 - stand-ins: the hint was a script outside ctx; the gate was a script of the same behaviour as `ctx gate`
 - models: Claude Sonnet answers; arms graded blind in one pass
+- overhead: the gate's cost was measured with `ctx gate` itself on 60 questions about a private repository's documents, which need nothing from past sessions
 
 ```sh
 eval/skill_eval.py --bank BANK run --set all --ask plain --cond A,Q,G,H,P with SKILL_EVAL_POSTTOOL and SKILL_EVAL_PRETOOL set to the hook commands
@@ -737,6 +740,41 @@ ctx decisions --all
 
 ## Speed
 
+### Hooks and commands on a real archive
+
+How long an agent session waits for ctx. Hooks run on every session start, compaction and subagent start, so they are held to a 3-second limit and should take a small fraction of it.
+
+- **Compared with:** the 3-second limit Claude Code gives a hook, and the 1-second bar set here
+- **Bar:** every hook's slowest run under 1,000 ms. **Passed.**
+- **What it means:** Every hook takes 4 to 30 ms at the median and none came near the bar; the slowest single run was the compaction brief at 62 ms. The brief used to take 0.4 to 1.2 s on its first run: to find the last landing the person reported it read the text of every typed turn in the archive. It now finds the session's own documents first and reads only their turns. The gate adds about 5 ms to a search or shell command, most of which is the cost of starting a process. The two listing commands are typed by a person, not run by a hook, and are slower.
+
+| Measure | Result |
+| --- | --- |
+| Session start: rules and archive note | 5 ms (slowest 6 ms) |
+| Session start: open tickets | 5 ms (slowest 6 ms) |
+| After a compaction: the brief | 29 ms (slowest 62 ms) |
+| Subagent start: archive note | 6 ms (slowest 6 ms) |
+| Prompt submitted: recall check | 4 ms (slowest 4 ms) |
+| Before a search: the gate, session told | 5 ms (slowest 5 ms) |
+| Before a command that is not a search: the gate | 5 ms (slowest 5 ms) |
+| Status line | 6 ms (slowest 7 ms) |
+| Search, two words | 85 ms (slowest 223 ms) |
+| Read a turn with its neighbours | 5 ms (slowest 11 ms) |
+| List decisions | 278 ms (slowest 1190 ms) |
+| List published pages | 334 ms (slowest 622 ms) |
+
+Measured 2026-11-15; check-in eb38a24c3045; good until 2027-02-13.
+
+- archive: 1.3 GB, about 490,000 turns
+- machine: 14 cores, load average 9 while measuring
+- runs: 7 each; the median is reported
+
+```sh
+bench/speed.py --runs 7
+```
+
+[Result file](../bench/results/speed-quiet.json)
+
 ### Hooks and commands on a real archive, machine heavily loaded
 
 How long an agent session waits for ctx. Hooks run on every session start, compaction and subagent start, so they are held to a 3-second limit and should take a small fraction of it.
@@ -769,39 +807,6 @@ bench/speed.py --runs 7
 ```
 
 [Result file](../bench/results/speed.json)
-
-### Hooks and commands on a real archive, machine not busy
-
-How long an agent session waits for ctx. Hooks run on every session start, compaction and subagent start, so they are held to a 3-second limit and should take a small fraction of it.
-
-- **Compared with:** the 3-second limit Claude Code gives a hook, and the 1-second bar set here
-- **Bar:** every hook's slowest run under 1,000 ms. **Failed.**
-- **What it means:** With the machine quiet every hook takes 5 to 35 ms at the median. The compaction brief still failed the bar, at 1.2 s on its first run and about 35 ms after that. The same first-run figure appeared under heavy load, so it is not caused by load: the first brief after a while reads index pages that are no longer in memory. It is inside the 3-second limit, and it is the real cost after a compaction.
-
-| Measure | Result |
-| --- | --- |
-| Session start: rules and archive note | 8 ms (slowest 12 ms) |
-| Session start: open tickets | 7 ms (slowest 8 ms) |
-| After a compaction: the brief | 35 ms (slowest 1237 ms) |
-| Subagent start: archive note | 6 ms (slowest 7 ms) |
-| Prompt submitted: recall check | 5 ms (slowest 5 ms) |
-| Status line | 5 ms (slowest 5 ms) |
-| Search, two words | 99 ms (slowest 339 ms) |
-| Read a turn with its neighbours | 7 ms (slowest 8 ms) |
-| List decisions | 531 ms (slowest 3740 ms) |
-| List published pages | 383 ms (slowest 746 ms) |
-
-Measured 2026-11-12; check-in 7150d2056fec; good until 2027-02-10.
-
-- archive: 1.3 GB, about 470,000 turns
-- machine: 14 cores, load average 9 while measuring
-- runs: 7 each; the median is reported
-
-```sh
-bench/speed.py --runs 7
-```
-
-[Result file](../bench/results/speed-quiet.json)
 
 ### Background work
 

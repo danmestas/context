@@ -11,7 +11,8 @@
   "corpus": "the second shipyard corpus: 209 sessions, 139 questions in the session's own terms, each about past work",
   "arms": "told nothing: the repository and ordinary tools, with ctx on the PATH but no skill and no note. Hint: the same, and after each search up to three turns from past sessions that share its rare words are added. Gate: the same, and the first search is turned back once with the archive note. As installed: the skill and the session-start note. As installed plus the hint.",
   "stand-ins": "the hint was a script outside ctx; the gate was a script of the same behaviour as `ctx gate`",
-  "models": "Claude Sonnet answers; arms graded blind in one pass"
+  "models": "Claude Sonnet answers; arms graded blind in one pass",
+  "overhead": "the gate's cost was measured with `ctx gate` itself on 60 questions about a private repository's documents, which need nothing from past sessions"
  },
  "summary": "ctx only helps if the agent looks. This measures how much each way of prompting it to look is worth, from saying nothing to the note ctx gives at session start.",
  "baseline": "an agent told nothing: 22.5 of 139, and it said it did not know on 99 questions",
@@ -51,6 +52,16 @@
   {
    "label": "Cost of 139 answers",
    "value": "$10 told nothing, $11.25 gate, $12.21 as installed"
+  },
+  {
+   "label": "What the gate costs where no history is needed",
+   "value": "one more tool call, 1.4 s and 0.6 cents, once a session",
+   "note": "60 questions about a repository's own documents, each a fresh session without the note: score 46.0 against 44.5 without the gate, new tokens up 3.5%; 3 of 60 went on to search ctx"
+  },
+  {
+   "label": "Time the gate adds to a search or shell command",
+   "value": "about 5 ms",
+   "note": "on a 1.3 GB archive; see the hooks result"
   }
  ]
 }

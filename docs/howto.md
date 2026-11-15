@@ -680,6 +680,8 @@ archived sessions, or when anything goes wrong.
 "PreToolUse": [{ "matcher": "Grep|Glob|Bash", "hooks": [{ "type": "command", "command": "ctx gate", "timeout": 3 }] }]
 ```
 
+`ctx stats --hooks` ends with how many sessions it turned back in the period.
+
 It is not installed by default, because it refuses a tool call, if only once.
 On 139 questions put to an agent told nothing about ctx, it raised the score from
 22.5 to 85.5; the note itself gives about 117, and with the note in place a
