@@ -147,3 +147,28 @@ CREATE TABLE IF NOT EXISTS ctx_docs_dir(
   dir     TEXT PRIMARY KEY,
   project TEXT NOT NULL
 ) STRICT, WITHOUT ROWID;
+
+-- Pairs of document sections a model has screened for conflict, by the hash of each section's
+-- text, and the conflicts a judge confirmed with words quoted from both.
+CREATE TABLE IF NOT EXISTS ctx_doc_pair(
+  a     TEXT NOT NULL,
+  b     TEXT NOT NULL,
+  times INTEGER NOT NULL,
+  PRIMARY KEY (a, b)
+) STRICT, WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS ctx_doc_conflict(
+  a         TEXT NOT NULL,
+  b         TEXT NOT NULL,
+  project   TEXT NOT NULL,
+  a_doc     TEXT NOT NULL,
+  a_heading TEXT NOT NULL,
+  a_quote   TEXT NOT NULL,
+  b_doc     TEXT NOT NULL,
+  b_heading TEXT NOT NULL,
+  b_quote   TEXT NOT NULL,
+  about     TEXT NOT NULL,
+  current   TEXT,          -- A, B or unknown: the judge's guess at which side is current
+  why       TEXT,
+  found     TEXT NOT NULL,
+  PRIMARY KEY (a, b)
+) STRICT, WITHOUT ROWID;

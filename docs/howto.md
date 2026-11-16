@@ -213,6 +213,41 @@ docs/adr-006-queues.md:63: ADR-008 is named here, and no document has that numbe
 It calls no model and exits 1 when it finds anything, so it can run in a
 repository's CI. It does not find two documents that disagree in their prose.
 
+`ctx docs conflicts` does that, with two model commands: the one set by `ctx
+rules classifier` screens, and the one set by `ctx rules judge-with` confirms.
+
+```sh
+ctx docs conflicts --run [--project P] [--limit N]   # screen up to N pairs (600 unless given)
+ctx docs conflicts [--project P]                      # the conflicts found so far
+```
+
+A run pairs each section with the sections of other documents that share its
+rarest words. The small model reads the pairs three at a time and flags any that
+cannot both be true; the larger one judges each flagged pair and must quote both
+passages. A conflict is kept only if both quotes are in the text, so neither
+model can invent one.
+
+```
+2. idempotency race handling
+   A docs/guide/idempotency.md § Keys: "the check and the write are not one atomic step" (likely current)
+   B docs/design/features.md § Idempotency: "KV Create is atomic"
+```
+
+- Runs add up. Pairs are remembered by the hash of their text and screened twice,
+  because one screening misses some at random; `--run` again continues where the
+  last stopped, and a section you edit is screened afresh. `--again` screens
+  everything once more.
+- A conflict leaves the list when either quoted passage is no longer in its file.
+  That is how a fix is noticed.
+- "Likely current" is the judge's guess from the wording. Nothing is checked
+  against the code.
+- It is never complete: on 170 documents, three runs found 52 conflicts between
+  them and only 10 in all three. Read it as a list to work through, not a check
+  that passes.
+- On those 170 documents a full double screening is about 9,000 pairs, an hour
+  and a few dollars of model use. Their text goes to whatever the two commands
+  call.
+
 This is for documents kept in an ordinary directory. A project's `sources/` are
 different: copied in, pinned to a version and citable from the wiki; see
 [Add sources](#add-sources).
