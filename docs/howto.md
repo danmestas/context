@@ -255,6 +255,20 @@ contradicted in five places appears once, with every passage beneath it.
   the same documents it changed no scores and cost one more command (13% more,
   1.6 s); about one answer in five then mentioned a dispute that did not bear on
   the question, and a sentence asking it not to made no difference.
+- `ctx docs nudge` is a `PostToolUse` hook that speaks up at the moment it helps:
+  when an agent reads or edits a document with a conflict on record, it is shown
+  that file's disputed passages and what the other document says, once a file a
+  session. It never blocks. It is not installed by default:
+
+  ```json
+  "PostToolUse": [{ "matcher": "Read|Edit|Write|MultiEdit", "hooks": [{ "type": "command", "command": "ctx docs nudge", "timeout": 3 }] }]
+  ```
+
+  In a test of 46 small edits to documents holding a stale passage, agents given
+  only the session-start line never noticed the conflict in the file they were
+  editing. With this hook they noticed 44 times: 6 fixed the passage, 38 said it
+  was disputed, none changed the wrong document, and all still did the edit asked
+  for, at 14% more cost.
 - On those 170 documents a full double screening is about 9,000 pairs, an hour
   and a few dollars of model use. Their text goes to whatever the two commands
   call.

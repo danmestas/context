@@ -1381,6 +1381,19 @@ mkdir -p "$T/demo"
 printf '{"hook_event_name":"SessionStart","source":"startup","session_id":"dc-1","cwd":"%s"}' "$T/demo" | (cd "$T/demo" && "$CTX" rules offer) > "$T/dn.txt"
 grep -q '1 pair of passages recorded where this project.s documents disagree' "$T/dn.txt" && grep -q 'ctx docs conflicts' "$T/dn.txt" || fail "the session-start note mentions recorded conflicts: $(cat "$T/dn.txt")"
 printf '{"hook_event_name":"SessionStart","source":"startup","session_id":"dc-2","cwd":"%s"}' "$T/gw/empty" | (cd "$T/noscan" && "$CTX" rules offer) | grep -q 'documents disagree' && fail "a project with no recorded conflicts says nothing of them"
+# ctx docs nudge, a PostToolUse hook: when an agent reads or edits a document that has a recorded
+# conflict, it is shown that file's disputed passages, once a file a session. It never blocks.
+RD=$(cd "$T/repo/docs" && pwd -P)
+nudge() { printf '{"hook_event_name":"PostToolUse","session_id":"%s","cwd":"%s","tool_name":"%s","tool_input":{"file_path":"%s"}}' "$1" "$T/demo" "$2" "$3" | (cd "$T/demo" && "$CTX" docs nudge); }
+nudge n1 Read "$T/repo/docs/adr/ledger-design.md" > "$T/nudge.txt"
+grep -q '"hookEventName":"PostToolUse"' "$T/nudge.txt" && grep -q 'list limit is 50 entries' "$T/nudge.txt" && grep -q 'guide/ledger.md' "$T/nudge.txt" && grep -q 'list limit is 500 entries' "$T/nudge.txt" && grep -q 'likely current: the other document' "$T/nudge.txt" || fail "reading a document with a recorded conflict shows both passages: $(cat "$T/nudge.txt")"
+[ -z "$(nudge n1 Edit "$T/repo/docs/adr/ledger-design.md")" ] || fail "the nudge comes once a file a session"
+nudge n1 Edit "$RD/guide/ledger.md" | grep -q 'likely current: this file' || fail "the other document is nudged too, and told it is the likely current side"
+nudge n2 Write "$T/repo/docs/adr/ledger-design.md" | grep -q 'disagreeing' || fail "another session is nudged afresh"
+[ -z "$(nudge n3 Read "$T/repo/docs/guide/notes.md")" ] || fail "a document with no recorded conflict says nothing"
+[ -z "$(nudge n3 Bash "$T/repo/docs/adr/ledger-design.md")" ] || fail "only reading and editing tools are nudged"
+[ -z "$(printf 'not json' | (cd "$T/demo" && "$CTX" docs nudge))" ] || fail "the nudge says nothing on input it cannot read"
+[ -z "$(CTX_DB="$T/nonudge.sqlite" nudge n4 Read "$T/repo/docs/adr/ledger-design.md")" ] && [ ! -e "$T/nonudge.sqlite" ] || fail "no archive, no nudge"
 # A second passage that disagrees with the same line is the same conflict, shown with it.
 printf '# Ledger questions\n\n## How many\n\nPeople often ask how many postings a single request can return from the pangolin ledger for one tenant, and whether the console and the command line agree. The pangolin ledger list limit is 500 entries for each tenant.\n' > "$T/repo/docs/guide/faq.md"
 "$CTX" docs scan >/dev/null
@@ -1391,6 +1404,7 @@ rm "$T/repo/docs/guide/faq.md" && "$CTX" docs scan >/dev/null
 [ "$("$CTX" docs conflicts | tail -1)" = "1 conflict between documents" ] || fail "a pair whose file is gone leaves the group: $("$CTX" docs conflicts)"
 CTX_CLASSIFY="sh -c 'cat >/dev/null; exit 3'" CTX_JUDGE="$T/confirm.sh" "$CTX" docs conflicts --run --again 2>/dev/null | grep -q '^0 pairs screened, 0 flagged, 0 confirmed; 3 left' || fail "a failed screen call leaves its pairs to be screened"
 sed -i.bak 's/limit is 500 entries/limit is 50 entries/' "$T/repo/docs/guide/ledger.md" && rm "$T/repo/docs/guide/ledger.md.bak" && "$CTX" docs scan >/dev/null
+[ -z "$(nudge n5 Read "$T/repo/docs/adr/ledger-design.md")" ] || fail "a conflict whose words are gone from the file is not nudged"
 [ "$("$CTX" docs conflicts | tail -1)" = "0 conflicts between documents" ] || fail "a conflict leaves the list when a quoted passage is gone: $("$CTX" docs conflicts)"
 rm -r "$T/repo/docs/guide" "$T/repo/docs/adr/ledger-design.md" && "$CTX" docs scan >/dev/null
 if "$CTX" docs add "$T/repo/nothere" 2>/dev/null; then fail "a directory that does not exist is refused"; fi
