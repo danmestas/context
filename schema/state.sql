@@ -172,3 +172,13 @@ CREATE TABLE IF NOT EXISTS ctx_doc_conflict(
   found     TEXT NOT NULL,
   PRIMARY KEY (a, b)
 ) STRICT, WITHOUT ROWID;
+
+-- Conflicts the person set aside, by the same pair of text hashes, with their reason. A pair
+-- whose text changes has new hashes, so a dismissal ends when either passage is edited.
+CREATE TABLE IF NOT EXISTS ctx_doc_dismissed(
+  a      TEXT NOT NULL,
+  b      TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  at     TEXT NOT NULL,
+  PRIMARY KEY (a, b)
+) STRICT, WITHOUT ROWID;

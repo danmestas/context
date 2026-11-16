@@ -128,6 +128,20 @@ later scan does not archive it again and a rebuild does not bring it back. The t
 stays in the private repository's history, which Fossil cannot shed, so this is for
 keeping something out of search, not for destroying a secret.
 
+A whole project can be named instead of a directory or a session:
+
+```sh
+ctx exclude --project myproj            # stop archiving it; what is held stays searchable
+ctx exclude --remove --project myproj
+ctx forget --project myproj             # take every session of it out of the index
+```
+
+`exclude --project` keeps out the transcript folders that project's sessions have
+come from so far, so a session started later in a new directory, such as a fresh
+worktree, is still archived. `forget --project` forgets the sessions held now; it
+does not stop new ones, so use both to be rid of a project. As with one session,
+forgotten text stays in the private repository's history.
+
 ## Search past work
 
 ```sh
@@ -242,6 +256,19 @@ contradicted in five places appears once, with every passage beneath it.
   everything once more.
 - A conflict leaves the list when either quoted passage is no longer in its file.
   That is how a fix is noticed.
+- One that is not a real conflict can be set aside, with the reason kept. Each
+  conflict is listed with a short id:
+
+  ```sh
+  ctx docs conflicts dismiss 3f2a9c1e --reason "the design note is historical"
+  ctx docs conflicts --dismissed          # what was set aside, and why
+  ctx docs conflicts restore 3f2a9c1e
+  ```
+
+  A dismissed conflict is not listed, counted in the session-start note or shown
+  by the nudge, and finding the same pair again does not bring it back. It
+  returns only if one of its passages is edited, because an edited passage is a
+  new pair.
 - "Likely current" is the judge's guess from the wording. Nothing is checked
   against the code.
 - It is never complete: on 170 documents, three runs found 52 conflicts between

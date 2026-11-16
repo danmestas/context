@@ -28,7 +28,7 @@
 #include "ticket_schema.h"
 
 #define CTX_VERSION "0.0.1"
-#define CTX_USER_VERSION 9    /* PRAGMA user_version once initialized */
+#define CTX_USER_VERSION 10    /* PRAGMA user_version once initialized */
 #define CTX_DERIVED_VERSION 7 /* raise when schema/index.sql changes; ctx then rebuilds */
 
 /* A tool's output is kept up to this size at each end; the middle is cut. */
@@ -1222,6 +1222,8 @@ static void require_date(sqlite3 *db, const char *flag, const char *value);
 static void index_prepare(sqlite3 *db);
 static long docs_scan(sqlite3 *db, const char *only, long *changed);
 static int docs_conflicts(sqlite3 *db, const char *project, int run, long limit, int again);
+static long conflicts_act(sqlite3 *db, int dismiss, const char *id, const char *reason);
+static void conflicts_show_dismissed(sqlite3 *db);
 
 static int cmd_search(int argc, char **argv) {
   int all = 0, limit = 12, nwords = 0, history = 0;
@@ -3845,6 +3847,18 @@ static int cmd_docs(int argc, char **argv) {
     int bad = docs_check(db, argc == 3 ? argv[2] : NULL);
     sqlite3_close(db);
     return bad;
+  } else if (argc >= 3 && !strcmp(argv[0], "conflicts") && (!strcmp(argv[1], "dismiss") || !strcmp(argv[1], "restore"))) {
+    /* ctx docs conflicts dismiss ID [--reason TEXT] | restore ID */
+    int dis = !strcmp(argv[1], "dismiss");
+    const char *why = dis && argc == 5 && !strcmp(argv[3], "--reason") ? argv[4] : NULL;
+    if (argc != 3 && !why) die("usage: ctx docs conflicts dismiss ID [--reason TEXT] | restore ID");
+    if (!conflicts_act(db, dis, argv[2], why)) die("no %s conflict has the id %s; ctx docs conflicts%s lists them", dis ? "open" : "dismissed", argv[2], dis ? "" : " --dismissed");
+    sqlite3_close(db);
+    return 0;
+  } else if (argc == 2 && !strcmp(argv[0], "conflicts") && !strcmp(argv[1], "--dismissed")) {
+    conflicts_show_dismissed(db);
+    sqlite3_close(db);
+    return 0;
   } else if (argc >= 1 && !strcmp(argv[0], "conflicts")) {
     const char *project = NULL;
     int run = 0, again = 0;
@@ -6099,8 +6113,37 @@ static int cmd_exclude(int argc, char **argv) {
     sqlite3_close(db);
     return 0;
   }
+  int by_project = argc >= 2 && !strcmp(argv[argc - 2], "--project");
+  if (by_project && (argc == 2 || (argc == 3 && !strcmp(argv[0], "--remove")))) {
+    /* a project is known by the transcript folders its sessions came from; each is kept out by name */
+    const char *name = argv[argc - 1];
+    char like[300];
+    snprintf(like, sizeof like, "project:%s ", name);
+    sqlite3_stmt *q;
+    if (argc == 3) {
+      q = db_prepare(db, "DELETE FROM ctx_exclude WHERE substr(dir, 1, length(?1)) = ?1");
+      sqlite3_bind_text(q, 1, like, -1, SQLITE_STATIC);
+      sqlite3_step(q);
+      sqlite3_finalize(q);
+      if (!sqlite3_changes(db)) die("project %s was not excluded", name);
+      printf("project %s is no longer excluded\n", name);
+    } else {
+      q = db_prepare(db, "INSERT OR REPLACE INTO ctx_exclude(dir, slug) SELECT DISTINCT ?1 || f, f FROM (SELECT replace(rtrim(rtrim(path, replace(path, '/', '')), '/'),"
+                         " rtrim(rtrim(rtrim(path, replace(path, '/', '')), '/'), replace(rtrim(rtrim(path, replace(path, '/', '')), '/'), '/', '')), '') AS f"
+                         " FROM ctx_capture WHERE project = ?2) WHERE f <> ''");
+      sqlite3_bind_text(q, 1, like, -1, SQLITE_STATIC);
+      sqlite3_bind_text(q, 2, name, -1, SQLITE_STATIC);
+      if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+      int n = sqlite3_changes(db);
+      sqlite3_finalize(q);
+      if (!n) die("no archived sessions in a project named %s", name);
+      printf("excluded project %s: %d folder%s of sessions will not be archived from now on; what is held stays\n", name, n, n == 1 ? "" : "s");
+    }
+    sqlite3_close(db);
+    return 0;
+  }
   int remove = argc == 2 && !strcmp(argv[0], "--remove");
-  if (!(argc == 1 && argv[0][0] != '-') && !remove) die("usage: ctx exclude [DIR | --remove DIR]");
+  if (!(argc == 1 && argv[0][0] != '-') && !remove) die("usage: ctx exclude [DIR | --remove DIR | --project P | --remove --project P]");
   const char *given = argv[argc - 1];
   char real[4200], slug[4200];
   if (!realpath(given, real)) { /* gone: resolve the part that still exists and keep the rest as given */
@@ -6140,8 +6183,51 @@ static int cmd_exclude(int argc, char **argv) {
 /* ctx forget [SESSION]: takes a session out of the index and keeps it out: a scan does not
  * archive it again and a rebuild does not bring it back. Its text stays in the private
  * repository's history, which Fossil cannot shed. With no argument it lists what was forgotten. */
+/* Takes one session out of the index and marks it so a scan does not bring it back. Returns the turns removed. */
+static long forget_one(sqlite3 *db, const char *session) {
+  static const char *const steps[] = {
+      "DELETE FROM ctx_decision WHERE doc_id IN (SELECT d.id FROM ctx_capture_day cd JOIN ctx_doc d ON d.kind = 'session' AND d.name = cd.technote WHERE cd.session = ?1)",
+      "DELETE FROM ctx_chunk WHERE doc_id IN (SELECT d.id FROM ctx_capture_day cd JOIN ctx_doc d ON d.kind = 'session' AND d.name = cd.technote WHERE cd.session = ?1)",
+      "DELETE FROM ctx_doc WHERE kind = 'session' AND name IN (SELECT technote FROM ctx_capture_day WHERE session = ?1)",
+      "DELETE FROM ctx_artifact WHERE session = ?1",
+      "INSERT OR REPLACE INTO ctx_forgotten(session, at) VALUES (?1, datetime('now'))", NULL};
+  long turns = 0;
+  db_exec(db, "BEGIN IMMEDIATE");
+  for (int i = 0; steps[i]; i++) {
+    sqlite3_stmt *q = db_prepare(db, steps[i]);
+    sqlite3_bind_text(q, 1, session, -1, SQLITE_STATIC);
+    if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+    if (i == 1) turns = sqlite3_changes(db);
+    sqlite3_finalize(q);
+  }
+  db_exec(db, "COMMIT");
+  return turns;
+}
+
 static int cmd_forget(int argc, char **argv) {
   sqlite3 *db = ctx_open();
+  if (argc == 2 && !strcmp(argv[0], "--project")) { /* every session of a project, as it stands now */
+    sqlite3_stmt *l = db_prepare(db, "SELECT session FROM ctx_capture WHERE project = ?1 AND session NOT IN (SELECT session FROM ctx_forgotten) ORDER BY 1");
+    sqlite3_bind_text(l, 1, argv[1], -1, SQLITE_STATIC);
+    char **ids = NULL;
+    size_t n = 0;
+    while (sqlite3_step(l) == SQLITE_ROW) {
+      ids = realloc(ids, (n + 1) * sizeof *ids);
+      if (!ids) die("out of memory");
+      ids[n++] = dup_text(sqlite3_column_text(l, 0));
+    }
+    sqlite3_finalize(l);
+    if (!n) die("no archived sessions in a project named %s", argv[1]);
+    long turns = 0;
+    for (size_t i = 0; i < n; i++) {
+      turns += forget_one(db, ids[i]);
+      free(ids[i]);
+    }
+    free(ids);
+    printf("forgotten project %s: %zu sessions, %ld turns removed from the index; their text stays in the repository's history\n", argv[1], n, turns);
+    sqlite3_close(db);
+    return 0;
+  }
   if (argc == 0) {
     sqlite3_stmt *q = db_prepare(db, "SELECT session, substr(at, 1, 10) FROM ctx_forgotten ORDER BY at");
     while (sqlite3_step(q) == SQLITE_ROW) printf("%s %s\n", sqlite3_column_text(q, 0), sqlite3_column_text(q, 1));
@@ -6149,7 +6235,7 @@ static int cmd_forget(int argc, char **argv) {
     sqlite3_close(db);
     return 0;
   }
-  if (argc != 1 || argv[0][0] == '-') die("usage: ctx forget [SESSION]");
+  if (argc != 1 || argv[0][0] == '-') die("usage: ctx forget [SESSION | --project P]");
   sqlite3_stmt *q = db_prepare(db, "SELECT session FROM ctx_capture WHERE session = ?1 OR session LIKE ?1 || '%' ORDER BY session = ?1 DESC LIMIT 2");
   sqlite3_bind_text(q, 1, argv[0], -1, SQLITE_STATIC);
   char *session = NULL;
@@ -6162,22 +6248,7 @@ static int cmd_forget(int argc, char **argv) {
   exact = session && !strcmp(session, argv[0]);
   if (!found) die("no archived session matches %s", argv[0]);
   if (found > 1 && !exact) die("more than one session starts with %s; give more of the id", argv[0]);
-  db_exec(db, "BEGIN IMMEDIATE");
-  static const char *const steps[] = {
-      "DELETE FROM ctx_decision WHERE doc_id IN (SELECT d.id FROM ctx_capture_day cd JOIN ctx_doc d ON d.kind = 'session' AND d.name = cd.technote WHERE cd.session = ?1)",
-      "DELETE FROM ctx_chunk WHERE doc_id IN (SELECT d.id FROM ctx_capture_day cd JOIN ctx_doc d ON d.kind = 'session' AND d.name = cd.technote WHERE cd.session = ?1)",
-      "DELETE FROM ctx_doc WHERE kind = 'session' AND name IN (SELECT technote FROM ctx_capture_day WHERE session = ?1)",
-      "DELETE FROM ctx_artifact WHERE session = ?1",
-      "INSERT OR REPLACE INTO ctx_forgotten(session, at) VALUES (?1, datetime('now'))", NULL};
-  long turns = 0;
-  for (int i = 0; steps[i]; i++) {
-    q = db_prepare(db, steps[i]);
-    sqlite3_bind_text(q, 1, session, -1, SQLITE_STATIC);
-    if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
-    if (i == 1) turns = sqlite3_changes(db);
-    sqlite3_finalize(q);
-  }
-  db_exec(db, "COMMIT");
+  long turns = forget_one(db, session);
   printf("forgotten %s: %ld turns removed from the index; its text stays in the repository's history\n", session, turns);
   free(session);
   sqlite3_close(db);
@@ -6878,7 +6949,7 @@ static int rules_offer(void) {
     sqlite3_finalize(q);
   }
   int conflicts = 0; /* pairs of passages in this project's documents that a judge found to disagree */
-  if (sqlite3_prepare_v2(db, "SELECT count(*) FROM ctx_doc_conflict WHERE project = ?1", -1, &q, NULL) == SQLITE_OK) {
+  if (sqlite3_prepare_v2(db, "SELECT count(*) FROM ctx_doc_conflict c WHERE project = ?1 AND NOT EXISTS (SELECT 1 FROM ctx_doc_dismissed x WHERE x.a = c.a AND x.b = c.b)", -1, &q, NULL) == SQLITE_OK) {
     sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
     if (sqlite3_step(q) == SQLITE_ROW) conflicts = sqlite3_column_int(q, 0);
     sqlite3_finalize(q);
@@ -7256,11 +7327,16 @@ static int said_in(const char *text, const char *words) {
 
 /* Lists the kept conflicts. Pairs that share a quoted passage are one disagreement: a stale
  * line contradicted in five places is shown once, with every passage beneath it. */
-static void conflicts_list(sqlite3 *db, const char *project) {
-  typedef struct { char *ka, *kb, *doc[2], *head[2], *quote[2], *about; int cur, group; } row;
-  sqlite3_stmt *q = db_prepare(db, "SELECT a, b, a_doc, a_heading, a_quote, b_doc, b_heading, b_quote, about, coalesce(current, '') FROM ctx_doc_conflict"
-                                   " WHERE ?1 IS NULL OR project = ?1 ORDER BY found, a_doc, b_doc");
+/* With verb NULL it lists: the open conflicts, or the dismissed ones with their reasons. With
+ * "dismiss" or "restore" it acts on the conflict whose short id is target, every pair of it,
+ * and returns how many pairs that was. */
+static long conflicts_list(sqlite3 *db, const char *project, int dismissed, const char *verb, const char *target, const char *reason) {
+  typedef struct { char *ka, *kb, *doc[2], *head[2], *quote[2], *about, *why; int cur, group; } row;
+  sqlite3_stmt *q = db_prepare(db, "SELECT c.a, c.b, a_doc, a_heading, a_quote, b_doc, b_heading, b_quote, about, coalesce(current, ''), x.reason FROM ctx_doc_conflict c"
+                                   " LEFT JOIN ctx_doc_dismissed x ON x.a = c.a AND x.b = c.b"
+                                   " WHERE (?1 IS NULL OR project = ?1) AND (x.a IS NOT NULL) = ?2 ORDER BY found, a_doc, b_doc");
   if (project) sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  sqlite3_bind_int(q, 2, dismissed);
   sqlite3_stmt *drop = db_prepare(db, "DELETE FROM ctx_doc_conflict WHERE a = ?1 AND b = ?2");
   row *r = NULL;
   size_t n = 0;
@@ -7282,6 +7358,7 @@ static void conflicts_list(sqlite3 *db, const char *project) {
       x->quote[k] = dup_text(sqlite3_column_text(q, 4 + 3 * k));
     }
     x->about = dup_text(sqlite3_column_text(q, 8));
+    x->why = sqlite3_column_text(q, 10) ? dup_text(sqlite3_column_text(q, 10)) : NULL;
     x->cur = !strcmp(T(9), "A") ? 0 : !strcmp(T(9), "B") ? 1 : -1;
     x->group = there ? (int)(n - 1) : -1; /* -1: its words are gone from the file, so it is fixed */
 #undef T
@@ -7302,7 +7379,7 @@ static void conflicts_list(sqlite3 *db, const char *project) {
         changed = 1;
       }
   }
-  long groups = 0, pairs = 0;
+  long groups = 0, pairs = 0, acted = 0;
   for (size_t i = 0; i < n; i++) {
     if (r[i].group < 0) {
       sqlite3_bind_text(drop, 1, r[i].ka, -1, SQLITE_STATIC);
@@ -7313,7 +7390,25 @@ static void conflicts_list(sqlite3 *db, const char *project) {
     }
     pairs++;
     if (r[i].group != (int)i) continue; /* printed with its group's first pair */
-    printf("%ld. %s\n", ++groups, r[i].about);
+    if (verb) { /* act on the one named, all its pairs */
+      if (strncmp(r[i].ka, target, 8) || strlen(target) != 8) continue;
+      sqlite3_stmt *w = db_prepare(db, !strcmp(verb, "dismiss") ? "INSERT OR REPLACE INTO ctx_doc_dismissed(a, b, reason, at) VALUES (?1, ?2, ?3, datetime('now'))"
+                                                                 : "DELETE FROM ctx_doc_dismissed WHERE a = ?1 AND b = ?2");
+      for (size_t j = i; j < n; j++) {
+        if (r[j].group != (int)i) continue;
+        sqlite3_bind_text(w, 1, r[j].ka, -1, SQLITE_STATIC);
+        sqlite3_bind_text(w, 2, r[j].kb, -1, SQLITE_STATIC);
+        if (!strcmp(verb, "dismiss")) sqlite3_bind_text(w, 3, reason ? reason : "", -1, SQLITE_STATIC);
+        if (sqlite3_step(w) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+        sqlite3_reset(w);
+        acted++;
+      }
+      sqlite3_finalize(w);
+      printf("%s %ld pair%s of passages: %s\n", !strcmp(verb, "dismiss") ? "dismissed" : "restored", acted, acted == 1 ? "" : "s", r[i].about);
+      continue;
+    }
+    printf("%ld. [%.8s] %s%s%s%s\n", ++groups, r[i].ka, r[i].about, r[i].why && *r[i].why ? "  (dismissed: " : "", r[i].why && *r[i].why ? r[i].why : "",
+           r[i].why && *r[i].why ? ")" : "");
     for (size_t j = i; j < n; j++) {
       if (r[j].group != (int)i) continue;
       for (int k = 0; k < 2; k++) {
@@ -7333,6 +7428,7 @@ static void conflicts_list(sqlite3 *db, const char *project) {
     free(r[i].ka);
     free(r[i].kb);
     free(r[i].about);
+    free(r[i].why);
     for (int k = 0; k < 2; k++) {
       free(r[i].doc[k]);
       free(r[i].head[k]);
@@ -7340,9 +7436,20 @@ static void conflicts_list(sqlite3 *db, const char *project) {
     }
   }
   free(r);
+  if (verb) return acted;
+  q = db_prepare(db, "SELECT count(*) FROM ctx_doc_dismissed x JOIN ctx_doc_conflict c ON c.a = x.a AND c.b = x.b WHERE ?1 IS NULL OR c.project = ?1");
+  if (project) sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  long set_aside = sqlite3_step(q) == SQLITE_ROW ? sqlite3_column_int(q, 0) : 0;
+  sqlite3_finalize(q);
+  if (dismissed) {
+    printf("%ld dismissed conflict%s\n", groups, groups == 1 ? "" : "s");
+    return 0;
+  }
   printf("%ld conflict%s between documents", groups, groups == 1 ? "" : "s");
   if (pairs != groups) printf(" (%ld pairs of passages)", pairs);
+  if (set_aside) printf(" (%ld dismissed)", set_aside);
   putchar('\n');
+  return 0;
 }
 
 /* ctx docs nudge: a PostToolUse hook. When an agent reads or edits a document that has a
@@ -7392,7 +7499,7 @@ static int cmd_docs_nudge(void) {
   if (sqlite3_prepare_v2(db, "SELECT CASE WHEN a_doc = ?1 THEN a_heading ELSE b_heading END, CASE WHEN a_doc = ?1 THEN a_quote ELSE b_quote END,"
                              " CASE WHEN a_doc = ?1 THEN b_doc ELSE a_doc END, CASE WHEN a_doc = ?1 THEN b_quote ELSE a_quote END,"
                              " CASE WHEN current IN ('A', 'B') THEN CASE WHEN (current = 'A') = (a_doc = ?1) THEN 'this file' ELSE 'the other document' END END"
-                             " FROM ctx_doc_conflict WHERE a_doc = ?1 OR b_doc = ?1 ORDER BY found LIMIT 12", -1, &q, NULL) == SQLITE_OK) {
+                             " FROM ctx_doc_conflict c WHERE (a_doc = ?1 OR b_doc = ?1) AND NOT EXISTS (SELECT 1 FROM ctx_doc_dismissed x WHERE x.a = c.a AND x.b = c.b) ORDER BY found LIMIT 12", -1, &q, NULL) == SQLITE_OK) {
     sqlite3_bind_text(q, 1, real, -1, SQLITE_STATIC);
     while (n < 6 && sqlite3_step(q) == SQLITE_ROW) {
 #define T(i) ((const char *)sqlite3_column_text(q, i))
@@ -7447,9 +7554,15 @@ static int cmd_docs_nudge(void) {
   return 0;
 }
 
+static long conflicts_act(sqlite3 *db, int dismiss, const char *id, const char *reason) {
+  return conflicts_list(db, NULL, !dismiss, dismiss ? "dismiss" : "restore", id, reason);
+}
+
+static void conflicts_show_dismissed(sqlite3 *db) { conflicts_list(db, NULL, 1, NULL, NULL, NULL); }
+
 static int docs_conflicts(sqlite3 *db, const char *project, int run, long limit, int again) {
   if (!run) {
-    conflicts_list(db, project);
+    conflicts_list(db, project, 0, NULL, NULL, NULL);
     return 0;
   }
   char *screen = rules_classifier(db), *judge = rules_judge_cmd(db);
@@ -8189,7 +8302,8 @@ static int usage(void) {
         "       ctx source add FILE --origin WHERE --class CLASS [--as PATH] | supersede OLD | uses PATH | check\n"
         "       ctx index [--project P]\n"
         "       ctx docs [add DIR [--project P] | remove DIR | scan | check [--project P]]\n"
-        "       ctx docs conflicts [--project P] [--run [--limit N] [--again]]\n"
+        "       ctx docs conflicts [--project P] [--run [--limit N] [--again] | --dismissed]\n"
+        "       ctx docs conflicts dismiss ID [--reason TEXT] | restore ID\n"
         "       ctx docs nudge\n"
         "       ctx wiki save NAME FILE --model M [--ticket ID] | check | why PAGE | repin | retire PAGE --reason WHY | restore PAGE\n"
         "       ctx remote NAME URL\n"
@@ -8205,8 +8319,8 @@ static int usage(void) {
         "       ctx status\n"
         "       ctx remember TEXT [--project P] [--until DATE] [--from TURN]\n"
         "       ctx decisions [--open] [--all] [--limit N]\n"
-        "       ctx exclude [DIR | --remove DIR]\n"
-        "       ctx forget [SESSION]\n"
+        "       ctx exclude [DIR | --remove DIR | --project P | --remove --project P]\n"
+        "       ctx forget [SESSION | --project P]\n"
         "       ctx artifacts [--all] [--limit N] [WORDS...] | show URL | keep\n"
         "       ctx rules [--all] [--project P] | import | retire KEY --reason WHY [--by KEY] | offer\n"
         "       ctx rules proposed [--all] | accept N [--text TEXT] [--until DATE] | reject N\n"
