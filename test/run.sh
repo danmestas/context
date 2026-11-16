@@ -1371,7 +1371,7 @@ export SCREEN_LOG="$T/screen.log"
 CTX_CLASSIFY="$T/screen.sh" CTX_JUDGE="$T/confirm.sh" "$CTX" docs conflicts --run > "$T/dc.txt" 2>&1 || fail "conflicts --run: $(cat "$T/dc.txt")"
 grep -q '^3 pairs screened, 3 flagged, 1 confirmed; 3 left to screen again$' "$T/dc.txt" || fail "a run reports what it did: $(cat "$T/dc.txt")"
 "$CTX" docs conflicts > "$T/dl.txt"
-grep -q '^1\. ledger list limit$' "$T/dl.txt" && grep -q 'ledger-design.md § Limits: "list limit is 50 entries"' "$T/dl.txt" && grep -q 'guide/ledger.md § Listing: "list limit is 500 entries" (likely current)' "$T/dl.txt" && tail -1 "$T/dl.txt" | grep -q '^1 conflict between documents$' || fail "a conflict is kept with both quotes, and one whose quotes are not in the text is not: $(cat "$T/dl.txt")"
+grep -q '^1\. \[[0-9a-f]*\] ledger list limit$' "$T/dl.txt" && grep -q 'ledger-design.md § Limits: "list limit is 50 entries"' "$T/dl.txt" && grep -q 'guide/ledger.md § Listing: "list limit is 500 entries" (likely current)' "$T/dl.txt" && tail -1 "$T/dl.txt" | grep -q '^1 conflict between documents$' || fail "a conflict is kept with both quotes, and one whose quotes are not in the text is not: $(cat "$T/dl.txt")"
 CTX_CLASSIFY="$T/screen.sh" CTX_JUDGE="$T/confirm.sh" "$CTX" docs conflicts --run | grep -q '^3 pairs screened, 3 flagged, 1 confirmed; 0 left to screen again$' || fail "each pair is screened twice"
 CTX_CLASSIFY="$T/screen.sh" CTX_JUDGE="$T/confirm.sh" "$CTX" docs conflicts --run | grep -q '^0 pairs screened' || fail "and not a third time"
 [ "$(wc -l < "$T/screen.log" | tr -d ' ')" = 2 ] || fail "three pairs go to the screen in one call: $(wc -l < "$T/screen.log")"
@@ -1394,6 +1394,20 @@ nudge n2 Write "$T/repo/docs/adr/ledger-design.md" | grep -q 'disagreeing' || fa
 [ -z "$(nudge n3 Bash "$T/repo/docs/adr/ledger-design.md")" ] || fail "only reading and editing tools are nudged"
 [ -z "$(printf 'not json' | (cd "$T/demo" && "$CTX" docs nudge))" ] || fail "the nudge says nothing on input it cannot read"
 [ -z "$(CTX_DB="$T/nonudge.sqlite" nudge n4 Read "$T/repo/docs/adr/ledger-design.md")" ] && [ ! -e "$T/nonudge.sqlite" ] || fail "no archive, no nudge"
+# A conflict can be dismissed with a reason. It stays dismissed, is not counted or nudged, and
+# returns only if one of its passages changes, since a changed passage is a new pair.
+CID=$("$CTX" docs conflicts | sed -n 's/^1\. \[\([0-9a-f]*\)\] .*/\1/p')
+[ ${#CID} = 8 ] || fail "each conflict is listed with a short id: $("$CTX" docs conflicts | head -1)"
+if "$CTX" docs conflicts dismiss zzzzzzzz 2>/dev/null; then fail "an unknown conflict id is refused"; fi
+"$CTX" docs conflicts dismiss "$CID" --reason "the design note is historical" | grep -q '^dismissed 1 pair of passages' || fail "docs conflicts dismiss"
+[ "$("$CTX" docs conflicts | tail -1)" = "0 conflicts between documents (1 dismissed)" ] || fail "a dismissed conflict leaves the list: $("$CTX" docs conflicts | tail -1)"
+"$CTX" docs conflicts --dismissed | grep -q 'the design note is historical' || fail "dismissed conflicts can be listed with their reasons"
+[ -z "$(nudge n6 Read "$T/repo/docs/adr/ledger-design.md")" ] || fail "a dismissed conflict is not nudged"
+printf '{"hook_event_name":"SessionStart","source":"startup","session_id":"dc-3","cwd":"%s"}' "$T/demo" | (cd "$T/demo" && "$CTX" rules offer) | grep -q 'documents disagree' && fail "nor counted in the session-start note"
+CTX_CLASSIFY="$T/screen.sh" CTX_JUDGE="$T/confirm.sh" "$CTX" docs conflicts --run --again >/dev/null
+[ "$("$CTX" docs conflicts | tail -1)" = "0 conflicts between documents (1 dismissed)" ] || fail "finding the same pair again does not bring a dismissed conflict back"
+"$CTX" docs conflicts restore "$CID" | grep -q '^restored 1 pair' || fail "docs conflicts restore"
+[ "$("$CTX" docs conflicts | tail -1)" = "1 conflict between documents" ] || fail "a restored conflict is listed again"
 # A second passage that disagrees with the same line is the same conflict, shown with it.
 printf '# Ledger questions\n\n## How many\n\nPeople often ask how many postings a single request can return from the pangolin ledger for one tenant, and whether the console and the command line agree. The pangolin ledger list limit is 500 entries for each tenant.\n' > "$T/repo/docs/guide/faq.md"
 "$CTX" docs scan >/dev/null
@@ -1410,6 +1424,29 @@ rm -r "$T/repo/docs/guide" "$T/repo/docs/adr/ledger-design.md" && "$CTX" docs sc
 if "$CTX" docs add "$T/repo/nothere" 2>/dev/null; then fail "a directory that does not exist is refused"; fi
 "$CTX" docs remove "$T/repo/docs" | grep -q 'no longer indexed' || fail "docs remove"
 [ "$(dq wombat)" = 0 ] && [ -z "$("$CTX" docs)" ] || fail "a removed directory leaves nothing behind"
+# A whole project can be kept out or forgotten by name.
+export CTX_DB="$T/byproj.sqlite"
+"$CTX" init >/dev/null
+BP="$T/bp"; mkdir -p "$BP/-w-alpha" "$BP/-w-alpha-wt" "$BP/-w-beta"
+mk() { printf '{"uuid":"%s","timestamp":"2026-03-0%sT10:00:00Z","cwd":"%s","message":{"role":"user","content":"the %s ibex migration"}}\n' "$1" "$2" "$3" "$4" > "$5"; }
+mk p1 1 /w/alpha first "$BP/-w-alpha/11110000-0000-0000-0000-00000000000a.jsonl"
+mk p2 2 /w/alpha second "$BP/-w-alpha/22220000-0000-0000-0000-00000000000b.jsonl"
+mk p3 3 /w/beta third "$BP/-w-beta/33330000-0000-0000-0000-00000000000c.jsonl"
+"$CTX" scan "$BP" >/dev/null
+[ "$("$CTX" search --all ibex | grep -c '^#')" = 3 ] || fail "three sessions archived in two projects"
+if "$CTX" exclude --project nosuch 2>/dev/null; then fail "an unknown project is refused"; fi
+"$CTX" exclude --project alpha | grep -q '^excluded project alpha: 1 folder' || fail "exclude --project: $("$CTX" exclude --project alpha 2>&1)"
+"$CTX" exclude | grep -q 'project:alpha' || fail "an excluded project is listed"
+mk p4 4 /w/alpha fourth "$BP/-w-alpha/44440000-0000-0000-0000-00000000000d.jsonl"
+mk p5 5 /w/beta fifth "$BP/-w-beta/55550000-0000-0000-0000-00000000000e.jsonl"
+"$CTX" scan "$BP" >/dev/null
+[ "$("$CTX" search --all ibex | grep -c '^#')" = 4 ] || fail "an excluded project keeps what it had and takes in nothing new: $("$CTX" search --all ibex | grep -c '^#')"
+"$CTX" exclude --remove --project alpha | grep -q 'no longer excluded' || fail "exclude --remove --project"
+"$CTX" forget --project alpha | grep -q '^forgotten project alpha: 2 sessions, 2 turns' || fail "forget --project: $("$CTX" forget --project alpha 2>&1)"
+[ "$("$CTX" search --all ibex | grep -c '^#')" = 2 ] || fail "a forgotten project is out of search, and others are untouched"
+"$CTX" scan "$BP" >/dev/null
+[ "$("$CTX" search --all ibex | grep -c '^#')" = 3 ] || fail "a session of that project never seen before is still archived; forgetting is not excluding"
+if "$CTX" forget --project nosuch 2>/dev/null; then fail "forgetting an unknown project is refused"; fi
 # ctx gate, a PreToolUse hook: in a session that never got the archive note, the first search
 # is turned back once with it. It never blocks twice, and says nothing where it has nothing to offer.
 export CTX_DB="$T/gate.sqlite"
@@ -1479,7 +1516,7 @@ CLAUDE_CONFIG_DIR="$XC" "$CTX" scan >/dev/null
 "$CTX" forget 5e550000-0000-0000-0000-00000000000 2>/dev/null && fail "an ambiguous prefix is refused"
 export CTX_DB="$T/rebuild.sqlite"
 "$CTX" init >/dev/null
-[ "$("$CTX" sql "PRAGMA user_version")" = 9 ] || fail "a new file is at the current version"
+[ "$("$CTX" sql "PRAGMA user_version")" = 10 ] || fail "a new file is at the current version"
 [ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 7 ] || fail "derived version recorded"
 printf '{"uuid":"rb-1","timestamp":"2026-09-01T10:00:00Z","cwd":"/w/rb","message":{"role":"user","content":"the capybara rollout"}}\n{"uuid":"rb-2","timestamp":"2026-09-01T10:00:05Z","cwd":"/w/rb","message":{"role":"assistant","content":"rolled out the capybara"}}\n' > "$T/ab12cd99-rb.jsonl"
 "$CTX" archive "$T/ab12cd99-rb.jsonl" >/dev/null
@@ -1501,7 +1538,7 @@ grep -q 'rebuilding it once' "$T/rb.err" || fail "an old index is rebuilt on ope
 "$CTX" sql "DROP TABLE ctx_meta" >/dev/null; "$CTX" sql "PRAGMA user_version = 1" >/dev/null
 "$CTX" search --all capybara 2>"$T/rb3.err" | grep -q capybara || fail "an unversioned file still works"
 [ -s "$T/rb3.err" ] && fail "an unversioned file is upgraded without a rebuild"
-[ "$("$CTX" sql "PRAGMA user_version")" = 9 ] || fail "and is marked current"
+[ "$("$CTX" sql "PRAGMA user_version")" = 10 ] || fail "and is marked current"
 
 # The skill eval harness works end to end with a stand-in for the model.
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"
