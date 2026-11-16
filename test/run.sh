@@ -1376,6 +1376,14 @@ CTX_CLASSIFY="$T/screen.sh" CTX_JUDGE="$T/confirm.sh" "$CTX" docs conflicts --ru
 CTX_CLASSIFY="$T/screen.sh" CTX_JUDGE="$T/confirm.sh" "$CTX" docs conflicts --run | grep -q '^0 pairs screened' || fail "and not a third time"
 [ "$(wc -l < "$T/screen.log" | tr -d ' ')" = 2 ] || fail "three pairs go to the screen in one call: $(wc -l < "$T/screen.log")"
 [ "$("$CTX" docs conflicts | tail -1)" = "1 conflict between documents" ] || fail "finding it again does not list it twice"
+# A second passage that disagrees with the same line is the same conflict, shown with it.
+printf '# Ledger questions\n\n## How many\n\nPeople often ask how many postings a single request can return from the pangolin ledger for one tenant, and whether the console and the command line agree. The pangolin ledger list limit is 500 entries for each tenant.\n' > "$T/repo/docs/guide/faq.md"
+"$CTX" docs scan >/dev/null
+CTX_CLASSIFY="$T/screen.sh" CTX_JUDGE="$T/confirm.sh" "$CTX" docs conflicts --run >/dev/null
+"$CTX" docs conflicts > "$T/dg.txt"
+tail -1 "$T/dg.txt" | grep -q '^1 conflict between documents (2 pairs of passages)$' && [ "$(grep -c '§' "$T/dg.txt")" = 3 ] && [ "$(grep -c 'list limit is 50 entries' "$T/dg.txt")" = 1 ] || fail "pairs that share a passage are one conflict, each passage shown once: $(cat "$T/dg.txt")"
+rm "$T/repo/docs/guide/faq.md" && "$CTX" docs scan >/dev/null
+[ "$("$CTX" docs conflicts | tail -1)" = "1 conflict between documents" ] || fail "a pair whose file is gone leaves the group: $("$CTX" docs conflicts)"
 CTX_CLASSIFY="sh -c 'cat >/dev/null; exit 3'" CTX_JUDGE="$T/confirm.sh" "$CTX" docs conflicts --run --again 2>/dev/null | grep -q '^0 pairs screened, 0 flagged, 0 confirmed; 3 left' || fail "a failed screen call leaves its pairs to be screened"
 sed -i.bak 's/limit is 500 entries/limit is 50 entries/' "$T/repo/docs/guide/ledger.md" && rm "$T/repo/docs/guide/ledger.md.bak" && "$CTX" docs scan >/dev/null
 [ "$("$CTX" docs conflicts | tail -1)" = "0 conflicts between documents" ] || fail "a conflict leaves the list when a quoted passage is gone: $("$CTX" docs conflicts)"

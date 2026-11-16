@@ -7239,42 +7239,95 @@ static int said_in(const char *text, const char *words) {
   return yes;
 }
 
+/* Lists the kept conflicts. Pairs that share a quoted passage are one disagreement: a stale
+ * line contradicted in five places is shown once, with every passage beneath it. */
 static void conflicts_list(sqlite3 *db, const char *project) {
+  typedef struct { char *ka, *kb, *doc[2], *head[2], *quote[2], *about; int cur, group; } row;
   sqlite3_stmt *q = db_prepare(db, "SELECT a, b, a_doc, a_heading, a_quote, b_doc, b_heading, b_quote, about, coalesce(current, '') FROM ctx_doc_conflict"
                                    " WHERE ?1 IS NULL OR project = ?1 ORDER BY found, a_doc, b_doc");
   if (project) sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
-  buf gone = {0}; /* the keys of conflicts whose words are no longer in their files */
-  long n = 0;
+  sqlite3_stmt *drop = db_prepare(db, "DELETE FROM ctx_doc_conflict WHERE a = ?1 AND b = ?2");
+  row *r = NULL;
+  size_t n = 0;
   while (sqlite3_step(q) == SQLITE_ROW) {
 #define T(i) ((const char *)sqlite3_column_text(q, i))
     size_t len = 0;
     char *fa = slurp(T(2), &len), *fb = slurp(T(5), &len);
-    if (!fa || !fb || !said_in(fa, T(4)) || !said_in(fb, T(7))) {
-      buf_str(&gone, T(0));
-      buf_add(&gone, "", 1);
-      buf_str(&gone, T(1));
-      buf_add(&gone, "", 1);
-    } else {
-      printf("%ld. %s\n   A %s § %s: \"%s\"%s\n   B %s § %s: \"%s\"%s\n", ++n, T(8), T(2), T(3), T(4), !strcmp(T(9), "A") ? " (likely current)" : "",
-             T(5), T(6), T(7), !strcmp(T(9), "B") ? " (likely current)" : "");
-    }
+    int there = fa && fb && said_in(fa, T(4)) && said_in(fb, T(7));
     free(fa);
     free(fb);
+    r = realloc(r, (n + 1) * sizeof *r);
+    if (!r) die("out of memory");
+    row *x = &r[n++];
+    x->ka = dup_text(sqlite3_column_text(q, 0));
+    x->kb = dup_text(sqlite3_column_text(q, 1));
+    for (int k = 0; k < 2; k++) {
+      x->doc[k] = dup_text(sqlite3_column_text(q, 2 + 3 * k));
+      x->head[k] = dup_text(sqlite3_column_text(q, 3 + 3 * k));
+      x->quote[k] = dup_text(sqlite3_column_text(q, 4 + 3 * k));
+    }
+    x->about = dup_text(sqlite3_column_text(q, 8));
+    x->cur = !strcmp(T(9), "A") ? 0 : !strcmp(T(9), "B") ? 1 : -1;
+    x->group = there ? (int)(n - 1) : -1; /* -1: its words are gone from the file, so it is fixed */
 #undef T
   }
   sqlite3_finalize(q);
-  q = db_prepare(db, "DELETE FROM ctx_doc_conflict WHERE a = ?1 AND b = ?2");
-  for (const char *k = gone.p; k && k < gone.p + gone.n;) {
-    const char *second = k + strlen(k) + 1;
-    sqlite3_bind_text(q, 1, k, -1, SQLITE_STATIC);
-    sqlite3_bind_text(q, 2, second, -1, SQLITE_STATIC);
-    sqlite3_step(q);
-    sqlite3_reset(q);
-    k = second + strlen(second) + 1;
+  for (int changed = 1; changed;) { /* pairs that share a passage take the lowest group among them */
+    changed = 0;
+    for (size_t i = 0; i < n; i++)
+      for (size_t j = 0; j < i; j++) {
+        if (r[i].group < 0 || r[j].group < 0 || r[i].group == r[j].group) continue;
+        int share = 0;
+        for (int k = 0; k < 2; k++)
+          for (int m = 0; m < 2; m++) share |= !strcmp(r[i].doc[k], r[j].doc[m]) && !strcmp(r[i].quote[k], r[j].quote[m]);
+        if (!share) continue;
+        int low = r[i].group < r[j].group ? r[i].group : r[j].group, high = r[i].group < r[j].group ? r[j].group : r[i].group;
+        for (size_t k = 0; k < n; k++)
+          if (r[k].group == high) r[k].group = low;
+        changed = 1;
+      }
   }
-  sqlite3_finalize(q);
-  free(gone.p);
-  printf("%ld conflict%s between documents\n", n, n == 1 ? "" : "s");
+  long groups = 0, pairs = 0;
+  for (size_t i = 0; i < n; i++) {
+    if (r[i].group < 0) {
+      sqlite3_bind_text(drop, 1, r[i].ka, -1, SQLITE_STATIC);
+      sqlite3_bind_text(drop, 2, r[i].kb, -1, SQLITE_STATIC);
+      sqlite3_step(drop);
+      sqlite3_reset(drop);
+      continue;
+    }
+    pairs++;
+    if (r[i].group != (int)i) continue; /* printed with its group's first pair */
+    printf("%ld. %s\n", ++groups, r[i].about);
+    for (size_t j = i; j < n; j++) {
+      if (r[j].group != (int)i) continue;
+      for (int k = 0; k < 2; k++) {
+        int shown = 0, current = 0;
+        for (size_t e = i; e < n; e++) /* each passage once; current if any pair it is in says so */
+          for (int m = 0; m < 2; m++) {
+            if (r[e].group != (int)i || strcmp(r[e].doc[m], r[j].doc[k]) || strcmp(r[e].quote[m], r[j].quote[k])) continue;
+            shown |= e < j || (e == j && m < k);
+            current |= r[e].cur == m;
+          }
+        if (!shown) printf("   %s § %s: \"%s\"%s\n", r[j].doc[k], r[j].head[k], r[j].quote[k], current ? " (likely current)" : "");
+      }
+    }
+  }
+  sqlite3_finalize(drop);
+  for (size_t i = 0; i < n; i++) {
+    free(r[i].ka);
+    free(r[i].kb);
+    free(r[i].about);
+    for (int k = 0; k < 2; k++) {
+      free(r[i].doc[k]);
+      free(r[i].head[k]);
+      free(r[i].quote[k]);
+    }
+  }
+  free(r);
+  printf("%ld conflict%s between documents", groups, groups == 1 ? "" : "s");
+  if (pairs != groups) printf(" (%ld pairs of passages)", pairs);
+  putchar('\n');
 }
 
 static int docs_conflicts(sqlite3 *db, const char *project, int run, long limit, int again) {
