@@ -6874,9 +6874,15 @@ static int rules_offer(void) {
     if (sqlite3_step(q) == SQLITE_ROW) { due = sqlite3_column_int(q, 0); review_now = due > 0 && sqlite3_column_int(q, 1); }
     sqlite3_finalize(q);
   }
+  int conflicts = 0; /* pairs of passages in this project's documents that a judge found to disagree */
+  if (sqlite3_prepare_v2(db, "SELECT count(*) FROM ctx_doc_conflict WHERE project = ?1", -1, &q, NULL) == SQLITE_OK) {
+    sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+    if (sqlite3_step(q) == SQLITE_ROW) conflicts = sqlite3_column_int(q, 0);
+    sqlite3_finalize(q);
+  }
   buf brief = {0};
   if (*session && (!strcmp(source, "compact") || !strcmp(source, "resume"))) session_brief(db, session, &brief);
-  if (sessions || n || waiting || *ask_key || review_now || brief.n) {
+  if (sessions || n || waiting || *ask_key || review_now || brief.n || conflicts) {
     buf all = {0};
     char line[1600];
     if (brief.n) buf_add(&all, brief.p, brief.n); /* first: it is what the person will ask about */
@@ -6887,8 +6893,14 @@ static int rules_offer(void) {
       buf_str(&all, line);
       noted_mark(session, 0); /* told: ctx gate leaves this session alone */
     }
+    if (conflicts) {
+      snprintf(line, sizeof line, "%sctx has %d pair%s of passages recorded where this project's documents disagree. Before relying on a figure,"
+               " default, name or behaviour taken from the documents, run `ctx docs conflicts` to see whether it is disputed, and say so if it is.",
+               all.n ? "\n\n" : "", conflicts, conflicts == 1 ? "" : "s");
+      buf_str(&all, line);
+    }
     if (n) {
-      buf_str(&all, sessions ? "\n\n" : "");
+      buf_str(&all, all.n ? "\n\n" : "");
       buf_str(&all, "Standing rules the user gave for this project that are not in your loaded memory. A newer instruction from"
                     " the user overrides them; `ctx rules` lists them all.");
       buf_add(&all, text.p, text.n);
