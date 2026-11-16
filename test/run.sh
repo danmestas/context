@@ -1341,6 +1341,45 @@ printf '# RFC 4\n\n**Status:** Draft\n\nReplaces RFC 5, which was Accepted once.
 "$CTX" docs scan >/dev/null
 "$CTX" docs check | grep -q '^0 findings in 5 documents$' || fail "docs check exits 0 with nothing to report: $("$CTX" docs check)"
 rm -r "$T/repo/docs/rfcs" "$T/repo/docs/adr/adr-002-leases.md" && "$CTX" docs scan >/dev/null
+# ctx docs conflicts: a small model screens pairs of sections that share rare words, a larger one
+# confirms a conflict with words quoted from both, and only quotes found in the text count.
+mkdir -p "$T/repo/docs/guide"
+PAD='The pangolin ledger keeps every posting in order and replays them after a restart so that balances can be rebuilt from nothing. Operators read it through the console and through the command line alike.'
+printf '# Ledger design\n\n## Limits\n\n%s The pangolin ledger list limit is 50 entries for each tenant.\n' "$PAD" > "$T/repo/docs/adr/ledger-design.md"
+printf '# Ledger guide\n\n## Listing\n\n%s The pangolin ledger list limit is 500 entries for each tenant.\n' "$PAD" > "$T/repo/docs/guide/ledger.md"
+printf '# Ledger notes\n\n## Background\n\n%s The pangolin ledger was first sketched for the tenant billing work.\n' "$PAD" > "$T/repo/docs/guide/notes.md"
+"$CTX" docs scan >/dev/null
+if "$CTX" docs conflicts --run 2>"$T/dc.err"; then fail "conflicts need both model commands"; fi
+grep -q 'rules classifier' "$T/dc.err" && grep -q 'rules judge-with' "$T/dc.err" || fail "and say how to set them: $(cat "$T/dc.err")"
+cat > "$T/screen.sh" <<'EOS'
+#!/bin/sh
+echo run >> "$SCREEN_LOG"; cat >/dev/null; echo 'Pairs [1, 2, 3] look incompatible.'
+EOS
+cat > "$T/confirm.sh" <<'EOS'
+#!/bin/sh
+# answers as a judge would: each quote from its own passage, whichever is A
+python3 -c '
+import sys, json
+t = sys.stdin.read(); a = t[t.index("\nA ("):t.index("\nB (")]
+big, small = "list limit is 500 entries", "list limit is 50 entries"
+first_is_big = big in a
+print("Here:", json.dumps({"contradiction": True, "about": "ledger list limit", "quote_a": big if first_is_big else small,
+      "quote_b": small if first_is_big else big, "which_is_likely_current": "A" if first_is_big else "B", "why": "Two different limits."}))'
+EOS
+chmod +x "$T/screen.sh" "$T/confirm.sh"
+export SCREEN_LOG="$T/screen.log"
+CTX_CLASSIFY="$T/screen.sh" CTX_JUDGE="$T/confirm.sh" "$CTX" docs conflicts --run > "$T/dc.txt" 2>&1 || fail "conflicts --run: $(cat "$T/dc.txt")"
+grep -q '^3 pairs screened, 3 flagged, 1 confirmed; 3 left to screen again$' "$T/dc.txt" || fail "a run reports what it did: $(cat "$T/dc.txt")"
+"$CTX" docs conflicts > "$T/dl.txt"
+grep -q '^1\. ledger list limit$' "$T/dl.txt" && grep -q 'ledger-design.md § Limits: "list limit is 50 entries"' "$T/dl.txt" && grep -q 'guide/ledger.md § Listing: "list limit is 500 entries" (likely current)' "$T/dl.txt" && tail -1 "$T/dl.txt" | grep -q '^1 conflict between documents$' || fail "a conflict is kept with both quotes, and one whose quotes are not in the text is not: $(cat "$T/dl.txt")"
+CTX_CLASSIFY="$T/screen.sh" CTX_JUDGE="$T/confirm.sh" "$CTX" docs conflicts --run | grep -q '^3 pairs screened, 3 flagged, 1 confirmed; 0 left to screen again$' || fail "each pair is screened twice"
+CTX_CLASSIFY="$T/screen.sh" CTX_JUDGE="$T/confirm.sh" "$CTX" docs conflicts --run | grep -q '^0 pairs screened' || fail "and not a third time"
+[ "$(wc -l < "$T/screen.log" | tr -d ' ')" = 2 ] || fail "three pairs go to the screen in one call: $(wc -l < "$T/screen.log")"
+[ "$("$CTX" docs conflicts | tail -1)" = "1 conflict between documents" ] || fail "finding it again does not list it twice"
+CTX_CLASSIFY="sh -c 'cat >/dev/null; exit 3'" CTX_JUDGE="$T/confirm.sh" "$CTX" docs conflicts --run --again 2>/dev/null | grep -q '^0 pairs screened, 0 flagged, 0 confirmed; 3 left' || fail "a failed screen call leaves its pairs to be screened"
+sed -i.bak 's/limit is 500 entries/limit is 50 entries/' "$T/repo/docs/guide/ledger.md" && rm "$T/repo/docs/guide/ledger.md.bak" && "$CTX" docs scan >/dev/null
+[ "$("$CTX" docs conflicts | tail -1)" = "0 conflicts between documents" ] || fail "a conflict leaves the list when a quoted passage is gone: $("$CTX" docs conflicts)"
+rm -r "$T/repo/docs/guide" "$T/repo/docs/adr/ledger-design.md" && "$CTX" docs scan >/dev/null
 if "$CTX" docs add "$T/repo/nothere" 2>/dev/null; then fail "a directory that does not exist is refused"; fi
 "$CTX" docs remove "$T/repo/docs" | grep -q 'no longer indexed' || fail "docs remove"
 [ "$(dq wombat)" = 0 ] && [ -z "$("$CTX" docs)" ] || fail "a removed directory leaves nothing behind"
@@ -1413,7 +1452,7 @@ CLAUDE_CONFIG_DIR="$XC" "$CTX" scan >/dev/null
 "$CTX" forget 5e550000-0000-0000-0000-00000000000 2>/dev/null && fail "an ambiguous prefix is refused"
 export CTX_DB="$T/rebuild.sqlite"
 "$CTX" init >/dev/null
-[ "$("$CTX" sql "PRAGMA user_version")" = 8 ] || fail "a new file is at the current version"
+[ "$("$CTX" sql "PRAGMA user_version")" = 9 ] || fail "a new file is at the current version"
 [ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 7 ] || fail "derived version recorded"
 printf '{"uuid":"rb-1","timestamp":"2026-09-01T10:00:00Z","cwd":"/w/rb","message":{"role":"user","content":"the capybara rollout"}}\n{"uuid":"rb-2","timestamp":"2026-09-01T10:00:05Z","cwd":"/w/rb","message":{"role":"assistant","content":"rolled out the capybara"}}\n' > "$T/ab12cd99-rb.jsonl"
 "$CTX" archive "$T/ab12cd99-rb.jsonl" >/dev/null
@@ -1435,7 +1474,7 @@ grep -q 'rebuilding it once' "$T/rb.err" || fail "an old index is rebuilt on ope
 "$CTX" sql "DROP TABLE ctx_meta" >/dev/null; "$CTX" sql "PRAGMA user_version = 1" >/dev/null
 "$CTX" search --all capybara 2>"$T/rb3.err" | grep -q capybara || fail "an unversioned file still works"
 [ -s "$T/rb3.err" ] && fail "an unversioned file is upgraded without a rebuild"
-[ "$("$CTX" sql "PRAGMA user_version")" = 8 ] || fail "and is marked current"
+[ "$("$CTX" sql "PRAGMA user_version")" = 9 ] || fail "and is marked current"
 
 # The skill eval harness works end to end with a stand-in for the model.
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"
