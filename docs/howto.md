@@ -229,9 +229,12 @@ model can invent one.
 
 ```
 2. idempotency race handling
-   A docs/guide/idempotency.md § Keys: "the check and the write are not one atomic step" (likely current)
-   B docs/design/features.md § Idempotency: "KV Create is atomic"
+   docs/guide/idempotency.md § Keys: "the check and the write are not one atomic step" (likely current)
+   docs/design/features.md § Idempotency: "KV Create is atomic"
 ```
+
+Pairs that share a quoted passage are listed as one conflict: a stale line
+contradicted in five places appears once, with every passage beneath it.
 
 - Runs add up. Pairs are remembered by the hash of their text and screened twice,
   because one screening misses some at random; `--run` again continues where the
