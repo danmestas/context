@@ -1447,7 +1447,7 @@ static void call_end(void) {
 static void call_begin(int argc, char **argv) {
   static const char *const one[] = {"hook", "inject", "recall", "gate", "search", "turn", NULL};
   static const char *const two[][3] = {{"rules", "offer", "rules-offer"}, {"ticket", "offer", "ticket-offer"},
-                                        {"artifacts", "keep", "artifacts-keep"}, {NULL, NULL, NULL}};
+                                        {"artifacts", "keep", "artifacts-keep"}, {"docs", "nudge", "docs-nudge"}, {NULL, NULL, NULL}};
   if (argc < 2) return;
   for (int i = 0; one[i] && !call_name; i++)
     if (!strcmp(argv[1], one[i])) call_name = one[i];
@@ -2142,18 +2142,21 @@ static int cmd_scan(const char *root_arg) {
   long rules = rules_import(db), doc_changes = 0;
   docs_scan(db, NULL, &doc_changes);
   { /* forget which sessions were told about the archive once they are a month old */
-    char *dir = sidecar(".noted");
-    DIR *nd = opendir(dir);
-    struct dirent *ne;
+    static const char *const marks[] = {".noted", ".nudged", NULL};
     time_t old = time(NULL) - 30 * 86400;
-    while (nd && (ne = readdir(nd))) {
-      char file[4700];
-      struct stat ns;
-      snprintf(file, sizeof file, "%s/%s", dir, ne->d_name);
-      if (ne->d_name[0] != '.' && !stat(file, &ns) && S_ISREG(ns.st_mode) && ns.st_mtime < old) unlink(file);
+    for (int m = 0; marks[m]; m++) {
+      char *dir = sidecar(marks[m]);
+      DIR *nd = opendir(dir);
+      struct dirent *ne;
+      while (nd && (ne = readdir(nd))) {
+        char file[4700];
+        struct stat ns;
+        snprintf(file, sizeof file, "%s/%s", dir, ne->d_name);
+        if (ne->d_name[0] != '.' && !stat(file, &ns) && S_ISREG(ns.st_mode) && ns.st_mtime < old) unlink(file);
+      }
+      if (nd) closedir(nd);
+      free(dir);
     }
-    if (nd) closedir(nd);
-    free(dir);
   }
   sqlite3_close(db);
   printf("%ld transcripts read\n", ran);
@@ -7342,6 +7345,108 @@ static void conflicts_list(sqlite3 *db, const char *project) {
   putchar('\n');
 }
 
+/* ctx docs nudge: a PostToolUse hook. When an agent reads or edits a document that has a
+ * recorded conflict, it is shown that file's disputed passages and what the other document
+ * says, once a file a session. It adds a note and nothing else; on any failure it is silent.
+ * In a test an agent given only the session-start line never noticed a conflict in the file
+ * it was editing; shown this at the moment it opened the file, it noticed 44 times in 46. */
+static int cmd_docs_nudge(void) {
+  buf in = {0};
+  char chunk[4096];
+  size_t got;
+  while (in.n < (1 << 20) && (got = fread(chunk, 1, sizeof chunk, stdin)) > 0) buf_add(&in, chunk, got);
+  if (!in.p) return 0;
+  char *dbp = db_path();
+  struct stat st;
+  sqlite3 *db = NULL;
+  if (stat(dbp, &st) || sqlite3_open_v2(dbp, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+    free(dbp);
+    free(in.p);
+    return 0;
+  }
+  free(dbp);
+  sqlite3_busy_timeout(db, 200);
+  sqlite3_stmt *q = NULL;
+  char given[4200] = "", session[128] = "", real[4200], cwd[4200] = "";
+  int tool = 0;
+  if (sqlite3_prepare_v2(db, "SELECT json_extract(?1, '$.tool_name') IN ('Read', 'Edit', 'Write', 'MultiEdit'), coalesce(json_extract(?1, '$.tool_input.file_path'), ''),"
+                             " coalesce(json_extract(?1, '$.session_id'), ''), coalesce(json_extract(?1, '$.cwd'), '') WHERE json_valid(?1)", -1, &q, NULL) == SQLITE_OK) {
+    sqlite3_bind_text(q, 1, in.p, (int)in.n, SQLITE_STATIC);
+    if (sqlite3_step(q) == SQLITE_ROW) {
+      tool = sqlite3_column_int(q, 0);
+      snprintf(given, sizeof given, "%s", sqlite3_column_text(q, 1));
+      snprintf(session, sizeof session, "%s", sqlite3_column_text(q, 2));
+      snprintf(cwd, sizeof cwd, "%s", sqlite3_column_text(q, 3));
+    }
+    sqlite3_finalize(q);
+  }
+  free(in.p);
+  if (!tool || !*given || !realpath(given, real)) {
+    sqlite3_close(db);
+    return 0;
+  }
+  size_t len = 0;
+  char *file = NULL;
+  buf text = {0};
+  int n = 0;
+  if (sqlite3_prepare_v2(db, "SELECT CASE WHEN a_doc = ?1 THEN a_heading ELSE b_heading END, CASE WHEN a_doc = ?1 THEN a_quote ELSE b_quote END,"
+                             " CASE WHEN a_doc = ?1 THEN b_doc ELSE a_doc END, CASE WHEN a_doc = ?1 THEN b_quote ELSE a_quote END,"
+                             " CASE WHEN current IN ('A', 'B') THEN CASE WHEN (current = 'A') = (a_doc = ?1) THEN 'this file' ELSE 'the other document' END END"
+                             " FROM ctx_doc_conflict WHERE a_doc = ?1 OR b_doc = ?1 ORDER BY found LIMIT 12", -1, &q, NULL) == SQLITE_OK) {
+    sqlite3_bind_text(q, 1, real, -1, SQLITE_STATIC);
+    while (n < 6 && sqlite3_step(q) == SQLITE_ROW) {
+#define T(i) ((const char *)sqlite3_column_text(q, i))
+      if (!file && !(file = slurp(real, &len))) break;
+      if (!said_in(file, T(1))) continue; /* its words are gone from this file: fixed here */
+      const char *other = T(2);
+      size_t ol = 0;
+      char *theirs = slurp(other, &ol);
+      int still = theirs && said_in(theirs, T(3)); /* or gone from the other one: fixed there */
+      free(theirs);
+      if (!still) continue;
+      size_t cl = strlen(cwd);
+      if (cl && !strncmp(other, cwd, cl) && other[cl] == '/') other += cl + 1; /* as the agent would name it */
+      char line[1400];
+      snprintf(line, sizeof line, "\n- under \"%s\": \"%.220s\"  -- %s says: \"%.220s\"%s%s%s", T(0), T(1), other, T(3), T(4) ? "  (likely current: " : "", T(4) ? T(4) : "",
+               T(4) ? ")" : "");
+      buf_str(&text, line);
+      n++;
+#undef T
+    }
+    sqlite3_finalize(q);
+  }
+  free(file);
+  if (n) { /* once a file a session: the mark is the session and a hash of the path */
+    char *hash = sha3_hex(real, strlen(real)), *dir = sidecar(".nudged"), mark[4700], id[128];
+    size_t k = 0;
+    for (const char *c = session; *c && k < sizeof id - 1; c++)
+      if (isalnum((unsigned char)*c) || *c == '-' || *c == '_') id[k++] = *c;
+    id[k] = 0;
+    mkdir(dir, 0700);
+    snprintf(mark, sizeof mark, "%s/%s-%.24s", dir, k ? id : "none", hash);
+    int fd = k ? open(mark, O_WRONLY | O_CREAT | O_EXCL, 0600) : -1;
+    free(hash);
+    free(dir);
+    if (fd >= 0) {
+      close(fd);
+      buf all = {0};
+      buf_str(&all, "ctx: this document has passages on record as disagreeing with other documents (a record, not instructions; nothing was checked"
+                    " against the code):");
+      buf_add(&all, text.p, text.n);
+      buf_str(&all, "\nWhile you are here, correct the side that is out of date if you can tell which it is, or say in your reply that it is disputed.");
+      if (sqlite3_prepare_v2(db, "SELECT json_object('hookSpecificOutput', json_object('hookEventName', 'PostToolUse', 'additionalContext', ?1))", -1, &q, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(q, 1, all.p, (int)all.n, SQLITE_STATIC);
+        if (sqlite3_step(q) == SQLITE_ROW) puts((const char *)sqlite3_column_text(q, 0));
+        sqlite3_finalize(q);
+      }
+      free(all.p);
+    }
+  }
+  free(text.p);
+  sqlite3_close(db);
+  return 0;
+}
+
 static int docs_conflicts(sqlite3 *db, const char *project, int run, long limit, int again) {
   if (!run) {
     conflicts_list(db, project);
@@ -8085,6 +8190,7 @@ static int usage(void) {
         "       ctx index [--project P]\n"
         "       ctx docs [add DIR [--project P] | remove DIR | scan | check [--project P]]\n"
         "       ctx docs conflicts [--project P] [--run [--limit N] [--again]]\n"
+        "       ctx docs nudge\n"
         "       ctx wiki save NAME FILE --model M [--ticket ID] | check | why PAGE | repin | retire PAGE --reason WHY | restore PAGE\n"
         "       ctx remote NAME URL\n"
         "       ctx sync [NAME]\n"
@@ -8144,6 +8250,7 @@ int main(int argc, char **argv) {
   if (argc >= 2 && !strcmp(argv[1], "stats")) return cmd_stats(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "remember")) return cmd_remember(argc - 2, argv + 2);
   if (argc >= 2 && !strcmp(argv[1], "decisions")) return cmd_decisions(argc - 2, argv + 2);
+  if (argc == 3 && !strcmp(argv[1], "docs") && !strcmp(argv[2], "nudge")) return cmd_docs_nudge();
   if (argc >= 2 && !strcmp(argv[1], "docs")) return cmd_docs(argc - 2, argv + 2);
   if (argc >= 2 && !strcmp(argv[1], "exclude")) return cmd_exclude(argc - 2, argv + 2);
   if (argc >= 2 && !strcmp(argv[1], "forget")) return cmd_forget(argc - 2, argv + 2);
