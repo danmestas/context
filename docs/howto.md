@@ -19,6 +19,7 @@ arguments lists them all, and `ctx version` prints its version and SQLite's.
 - [Add past sessions to prompts](#add-past-sessions-to-prompts)
 - [Rebuild and upgrade](#rebuild-and-upgrade)
 - [Measure and improve the skill](#measure-and-improve-the-skill)
+- [Decide what is waiting on you](#decide-what-is-waiting-on-you)
 - [Query the database directly](#query-the-database-directly)
 - [Environment](#environment)
 
@@ -827,6 +828,55 @@ ctx status                 # one line for a status bar: ctx 14 searches · hooks
 `ctx status` reads only the log, in about 10 ms. It adds a warning when hooks were cut
 off in the last day, when the slowest took over a second, or when the hourly scan is late. To
 show it in Claude Code's status line, have your status line script print its output.
+
+## Decide what is waiting on you
+
+ctx collects things only you can settle: rules it proposed from what you typed,
+documents that disagree, projects it holds, and the hooks it runs. `ctx page`
+puts them on one page, with the evidence beside each, and `ctx page apply` does
+what you chose.
+
+```sh
+ctx page                        # writes <database>.page.html and prints its path
+ctx page --out decisions.html   # or somewhere else
+ctx page apply choices.txt      # shows what the list would do; changes nothing
+ctx page apply choices.txt --yes
+```
+
+The page is one file with no network use and no model calls, and it is private to
+you (mode 0600). Open it in a browser. Each row has three choices: proposed rules
+are Accept, Later or Not a rule; conflicts are Fix, Not a conflict or Later;
+projects are Keep, Stop archiving or Forget; hooks are Keep, Later or Remove.
+**Use suggestions** takes the suggestion on every row in a section that has one,
+and the reason is written in the row. Nothing is chosen for you. Your choices
+become a list of commands at the foot of the page; copy it into a file.
+
+`ctx page apply` reads that file, or standard input. Without `--yes` it prints one
+line for each action and a count for each kind, and changes nothing. With `--yes`
+it runs each as ctx itself, prints each result, and stops at the first failure,
+saying how many ran. Only the forms the page writes are accepted; one other line
+refuses the whole file before anything runs, and names the line. Arguments are read
+with shell single-quote rules and are never passed to a shell.
+
+- Accept and Not a rule are `ctx rules accept N [--text 'TEXT']` and `ctx rules reject N`.
+- Fix files a ticket (`ctx ticket new ... --type Bug --project NAME --body '...'`) listing the passages.
+- Not a conflict is `ctx docs conflicts dismiss ID`, so the pair is not raised again unless a passage changes.
+- Stop archiving is `ctx exclude --project NAME`; what is held stays searchable.
+- Forget is `ctx forget --project NAME`; the project's sessions leave search for good.
+- Remove, for a hook, is only a `#` comment naming the entry to remove. ctx does not
+  edit your Claude Code settings.
+
+What the numbers mean, and where they stop:
+
+- A conflict's dates are the modification times of its files on disk, in local time, not
+  commits; copying or checking out a file resets its date.
+- A rule's "said much the same" counts your other typed messages in the same project
+  that share at least three and 60% of the proposal's words of four letters or more,
+  without a short list of common ones. It cannot see a repeat in different words.
+- Counts for hooks start when the call log did (see "See how ctx is doing") and cover seven days.
+- "Searched" counts `ctx search` and `ctx turn` commands run in the project's own
+  sessions in the last 30 days. It misses searches made from another project, and a
+  project with none is not necessarily one you can do without. The page never suggests Forget.
 
 ## Query the database directly
 

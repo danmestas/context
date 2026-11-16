@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ctx decisions</title>
+<style>
+:root {
+  /* Layout: one column to 1080px; each section is a list of one-line rows with a three-way control; a summary bar stays at the foot */
+  --bg:#f7f8f7; --surface:#eef1ef; --fg:#1a1e1c; --muted:#5d6863; --line:#d3dad6; --accent:#1f5f8a;
+  --yes:#23724a; --no:#a8321f; --mid:#8a6410; --yes-bg:#dff1e6; --no-bg:#f8e1dc; --mid-bg:#f5ead0;
+  --font-body:"Instrument Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --font-mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:#121514; --surface:#1a1e1c; --fg:#e7eae8; --muted:#98a39e; --line:#303734; --accent:#7fb6de;
+    --yes:#73c797; --no:#f0907f; --mid:#dfb45a; --yes-bg:#173625; --no-bg:#40201a; --mid-bg:#3a2f14;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg:#121514; --surface:#1a1e1c; --fg:#e7eae8; --muted:#98a39e; --line:#303734; --accent:#7fb6de;
+  --yes:#73c797; --no:#f0907f; --mid:#dfb45a; --yes-bg:#173625; --no-bg:#40201a; --mid-bg:#3a2f14;
+  color-scheme:dark;
+}
+* { box-sizing:border-box; }
+html { scroll-padding-bottom:120px; }
+body { margin:0; background:var(--bg); color:var(--fg); font-family:var(--font-body); line-height:1.45; font-size:15px; }
+main { max-width:1080px; margin:0 auto; padding:28px 16px 150px; display:flex; flex-direction:column; gap:30px; }
+.kicker { font-size:.78rem; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); }
+h1 { font-size:clamp(1.5rem,3.4vw,2.1rem); line-height:1.15; margin:6px 0 10px; text-wrap:balance; max-width:22em; }
+h2 { font-size:1.2rem; margin:0; text-wrap:balance; }
+h3 { font-size:.98rem; margin:0 0 4px; }
+p { margin:0; } .lede { color:var(--muted); max-width:68ch; }
+code, .mono { font-family:var(--font-mono); font-size:.86em; }
+button { font:inherit; color:inherit; cursor:pointer; }
+button:focus-visible, input:focus-visible, .row:focus-visible, a:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+a { color:var(--accent); }
+
+.outcome { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:14px; border:1px solid var(--line); border-radius:10px; padding:14px 16px; background:var(--surface); }
+.outcome div { display:flex; flex-direction:column; gap:2px; min-width:0; }
+.outcome b { font-size:1.35rem; font-variant-numeric:tabular-nums; }
+.outcome span { color:var(--muted); font-size:.86rem; }
+
+section.q { display:flex; flex-direction:column; gap:10px; }
+.qhead { display:flex; flex-wrap:wrap; gap:8px 14px; align-items:baseline; }
+.qhead .count { color:var(--muted); font-size:.9rem; }
+.tools { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.tools input { font:inherit; padding:5px 9px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); min-width:0; width:170px; }
+.chip { border:1px solid var(--line); background:transparent; border-radius:999px; padding:3px 11px; font-size:.84rem; }
+.chip[aria-pressed="true"] { background:var(--fg); color:var(--bg); border-color:var(--fg); }
+.chip.act { border-style:dashed; }
+.note { color:var(--muted); font-size:.88rem; max-width:80ch; }
+
+.list { border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+.row { display:grid; grid-template-columns:minmax(0,1.5fr) minmax(0,1.1fr) auto; gap:6px 16px; align-items:center; padding:9px 12px; border-top:1px solid var(--line); }
+.row:first-child { border-top:0; }
+.row.cur { background:var(--surface); }
+.row.done-no .main, .row.done-no .ev { opacity:.55; }
+.main { min-width:0; display:flex; flex-direction:column; gap:1px; }
+.title { font-weight:600; overflow-wrap:anywhere; }
+.meta { color:var(--muted); font-size:.82rem; overflow-wrap:anywhere; }
+.ev { min-width:0; font-size:.86rem; color:var(--muted); display:flex; flex-direction:column; gap:2px; }
+.ev q { quotes:"\201C" "\201D"; color:var(--fg); }
+.why { font-size:.8rem; }
+.why b { font-weight:600; }
+.dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--accent); margin-right:5px; vertical-align:middle; }
+.seg { display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; background:var(--bg); }
+.seg button { border:0; background:transparent; padding:5px 10px; font-size:.84rem; border-left:1px solid var(--line); white-space:nowrap; }
+.seg button:first-child { border-left:0; }
+.seg button[aria-pressed="true"].k0 { background:var(--yes-bg); color:var(--yes); font-weight:600; }
+.seg button[aria-pressed="true"].k1 { background:var(--mid-bg); color:var(--mid); font-weight:600; }
+.seg button[aria-pressed="true"].k2 { background:var(--no-bg); color:var(--no); font-weight:600; }
+.seg button:disabled { opacity:.4; cursor:not-allowed; }
+.seg kbd { font-family:var(--font-mono); font-size:.72em; color:var(--muted); margin-right:4px; }
+.detail { grid-column:1 / -1; border-top:1px dashed var(--line); margin-top:4px; padding-top:8px; display:flex; flex-direction:column; gap:6px; font-size:.88rem; }
+.detail blockquote { margin:0; padding:5px 9px; border-left:3px solid var(--line); font-family:var(--font-mono); font-size:.82rem; overflow-wrap:anywhere; background:var(--bg); }
+.detail .where { color:var(--muted); font-size:.82rem; overflow-wrap:anywhere; }
+.t-yes { color:var(--yes); font-weight:600; } .t-mid { color:var(--mid); font-weight:600; } .t-no { color:var(--no); font-weight:600; }
+.nums { display:flex; flex-wrap:wrap; gap:2px 12px; font-variant-numeric:tabular-nums; }
+.bars { display:inline-flex; align-items:flex-end; gap:2px; height:18px; vertical-align:middle; margin-right:6px; }
+.bars i { display:block; width:5px; background:var(--muted); border-radius:1px; min-height:1px; }
+.group { padding:7px 12px; background:var(--surface); border-top:1px solid var(--line); display:flex; flex-wrap:wrap; gap:4px 12px; align-items:baseline; font-size:.86rem; }
+.group:first-child { border-top:0; } .group b { font-size:.95rem; } .group span { color:var(--muted); }
+.row.g2 { box-shadow:inset 4px 0 0 var(--no); } .row.g1 { box-shadow:inset 4px 0 0 var(--mid); } .row.g0 { box-shadow:inset 4px 0 0 var(--line); }
+.tl { display:block; width:100%; max-width:230px; height:26px; }
+.tl .ax { stroke:var(--line); stroke-width:1; } .tl .sp { stroke:var(--muted); stroke-width:2; }
+.tl .cur { fill:var(--yes); } .tl .oth { fill:var(--mid); } .tl text { fill:var(--muted); font-size:8px; font-family:var(--font-body); }
+.docs { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:12px; }
+.doc { border:1px solid var(--line); border-radius:8px; padding:10px 12px; background:var(--bg); display:flex; flex-direction:column; gap:7px; min-width:0; }
+.dh { display:flex; justify-content:space-between; gap:10px; align-items:baseline; } .dn { font-weight:600; overflow-wrap:anywhere; } .dd { color:var(--muted); font-size:.8rem; white-space:nowrap; }
+.dp { color:var(--muted); font-size:.74rem; font-family:var(--font-mono); overflow-wrap:anywhere; margin-top:-5px; }
+.say { display:flex; flex-direction:column; gap:1px; padding-left:10px; border-left:3px solid var(--mid); }
+.say.cur { border-left-color:var(--yes); } .sq { overflow-wrap:anywhere; } .sh { color:var(--muted); font-size:.76rem; }
+.detail input { font:inherit; width:100%; padding:6px 9px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); }
+.big { display:flex; flex-wrap:wrap; gap:6px 26px; align-items:baseline; }
+.big b { font-size:clamp(1.6rem,4vw,2.4rem); line-height:1; font-variant-numeric:tabular-nums; } .big span { color:var(--muted); font-size:.9rem; }
+.heatwrap { overflow-x:auto; border:1px solid var(--line); border-radius:10px; padding:12px; background:var(--surface); }
+.heat { display:grid; grid-template-columns:minmax(96px,150px) repeat(var(--weeks),minmax(13px,1fr)); gap:2px; min-width:520px; align-items:center; }
+.heat .lab { font-size:.74rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding-right:8px; border:0; background:transparent; text-align:left; color:var(--fg); }
+.heat .lab.gone { text-decoration:line-through; color:var(--no); } .heat .lab.stop { color:var(--mid); }
+.heat .mo { font-size:.68rem; color:var(--muted); grid-row:1; } .heat .c { height:11px; border-radius:2px; background:var(--line); position:relative; }
+.heat .c i { position:absolute; inset:0; border-radius:2px; background:var(--accent); } .heat .c.gone i { background:var(--no); }
+.heat .c u { position:absolute; right:1px; top:1px; width:5px; height:5px; border-radius:50%; background:var(--bg); border:1.5px solid var(--yes); }
+.legend { display:flex; flex-wrap:wrap; gap:6px 16px; align-items:center; font-size:.8rem; color:var(--muted); margin-top:8px; }
+.lg { display:inline-block; vertical-align:middle; margin-right:5px; } .lg.cur, .lg.oth { width:9px; height:9px; border-radius:50%; background:var(--yes); } .lg.oth { background:var(--mid); width:7px; height:7px; } .lg.e2, .lg.e1 { width:4px; height:14px; background:var(--no); } .lg.e1 { background:var(--mid); }
+.legend .sw { display:inline-flex; gap:2px; vertical-align:middle; margin-right:4px; } .legend .sw i { width:11px; height:11px; border-radius:2px; background:var(--accent); display:block; }
+.more { border:0; background:transparent; color:var(--accent); padding:8px 12px; width:100%; text-align:left; border-top:1px solid var(--line); }
+.empty { padding:14px 12px; color:var(--muted); }
+
+.foot { position:fixed; left:0; right:0; bottom:0; background:var(--surface); border-top:1px solid var(--line); }
+.foot .in { max-width:1080px; margin:0 auto; padding:9px 16px; display:flex; flex-wrap:wrap; gap:8px 18px; align-items:center; }
+.foot .sum { flex:1; min-width:220px; font-size:.9rem; }
+.foot button { border:1px solid var(--line); background:var(--bg); border-radius:7px; padding:6px 12px; }
+.foot button.primary { background:var(--accent); color:var(--bg); border-color:var(--accent); font-weight:600; }
+.cmds { display:flex; flex-direction:column; gap:8px; }
+.cmds pre { margin:0; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--surface); font-family:var(--font-mono); font-size:.8rem; overflow-x:auto; white-space:pre; max-height:340px; }
+.prose { display:flex; flex-direction:column; gap:10px; max-width:74ch; }
+.prose ul { margin:0; padding-left:20px; display:flex; flex-direction:column; gap:6px; }
+@media (max-width:760px) {
+  .row { grid-template-columns:minmax(0,1fr); }
+  .seg { justify-self:start; }
+  .tools input { width:130px; }
+}
+@media (prefers-reduced-motion: no-preference) { .row { transition:background-color .12s; } }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <div class="kicker" id="kicker"></div>
+  <h1 id="head"></h1>
+  <p class="lede">ctx is the tool that saves your coding-agent sessions and project documents so they can be searched later. This page lists what it needs you to settle, one row each, with the evidence beside it. This page changes nothing by itself. Nothing is chosen for you: pick row by row, or press <b>Use suggestions</b> in a section to take the suggestion on every row that has one. Your choices become a list of commands at the foot of the page, and <code>ctx page apply</code> runs that list.</p>
+</header>
+
+<section class="outcome" id="outcome" aria-live="polite"></section>
+
+<section class="q" id="s-rules"></section>
+<section class="q" id="s-conf"></section>
+<section class="q" id="s-held"></section>
+<section class="q" id="s-hooks"></section>
+
+<section class="cmds" id="cmds">
+  <h2>The commands for your choices</h2>
+  <p class="note">One line per choice that changes something. Copy them into a file and run <code>ctx page apply FILE</code> to see what would be done; add <code>--yes</code> to do it. Lines beginning with <code>#</code> are left for you: ctx does not edit your Claude Code settings, so removing a hook is yours to do.</p>
+  <pre id="out" tabindex="0"></pre>
+</section>
+
+<section class="prose">
+  <h2>How to read this</h2>
+  <ul>
+    <li><b>Proposed rules</b> are sentences ctx's classifier lifted from things you typed, shown with your own words. Accepting one makes it a standing rule offered to agents at session start. <span data-t="rules"></span> wait for you now; you have accepted <span data-t="accepted"></span> and rejected <span data-t="rejected"></span> so far.</li>
+    <li><b>Document conflicts</b> are passages in your indexed documents that a judge found to disagree, each kept only with words quoted from both. <span data-t="pairs"></span> pairs of passages make <span data-t="conf"></span> conflicts. Nothing was checked against the code, and the list is never complete.</li>
+    <li><b>What ctx holds</b> is every project with archived sessions: <span data-t="held"></span> projects, <span data-t="turns"></span> turns, about <span data-t="mb"></span> MB of text. "Searched" counts <code>ctx search</code> and <code>ctx turn</code> calls made in that project's own sessions in the last 30 days. It misses reads made from another project, and a zero is not proof of no value: an archive is read when something goes wrong.</li>
+    <li><b>Hooks</b> are what ctx runs on its own. Runs and times are the last seven days of its call log, and counts start when the log did. "What it did" is given only where ctx records it.</li>
+    <li><b>The grid</b> is every project by every week since the first session in the archive, <span data-t="weeksn"></span> weeks: darker means more turns archived that week, on a log scale shared by all rows, and a ring marks a week in which an agent read that project back. Click a name to find its row. Choose Forget and its row turns red, so you see what would go before anything does.</li>
+    <li><b>The line beside a conflict</b> runs from <span data-t="from"></span> to <span data-t="to"></span> and puts a dot where each document's file was last modified on disk. That is its modification time, not a commit. <span data-t="gap90"></span> of the <span data-t="conf"></span> conflicts have sides three months or more apart; the older side is usually the stale one, but that is a hint, not a finding.</li>
+    <li><b>"You said much the same"</b> beside a proposed rule counts later messages of yours in the same project that share most of its words. <span data-t="again"></span> of the <span data-t="rules"></span> were repeated at least once; ctx suggests accepting only those repeated twice or more.</li>
+    <li>The four bars beside a project are turns archived in each of the last four weeks, oldest first, scaled to that project's own busiest week.</li>
+    <li>Nothing is chosen for you. A suggestion is applied only when you press <b>Use suggestions</b>, and a dot then marks any row where you chose differently. Suggestions follow fixed rules, stated in each row.</li>
+  </ul>
+</section>
+
+</main>
+
+<div class="foot"><div class="in">
+  <div class="sum" id="sum" aria-live="polite"></div>
+  <span class="note">J K move · 1 2 3 choose · Enter details</span>
+  <button id="jump">Show commands</button>
+  <button class="primary" id="copy">Copy commands</button>
+</div></div>
+
+<script>
+(function () {
+  "use strict";
+  var D = /*DATA*/;
+  var SEC = [
+    { key: "rules", el: "s-rules", title: "Proposed rules", noun: "rule", labels: ["Accept", "Later", "Not a rule"], lead: "Things you typed that read like a standing instruction, grouped by project. Accept: agents in that project are given the rule at every session start. Later: it stays in this list. Not a rule: it is dropped and not proposed again. Click a row to fix the wording first.", page: 12, filter: true },
+    { key: "conf", el: "s-conf", title: "Document conflicts" + (D.tot.cproj ? " in " + D.tot.cproj : ""), noun: "conflict", labels: ["Fix", "Not a conflict", "Later"], lead: "Places where two or more of your documents say things that cannot both be true. Fix: files a ticket for an agent to correct the documents; nothing is edited. Not a conflict: it is set aside with your reason and not raised again unless a quoted passage changes. Later: it stays in this list. Click a row to read the passages.", legend: '<span><i class="lg cur"></i>a document the checking model read as the current one, placed at the date its file was last modified</span><span><i class="lg oth"></i>a document that disagrees with it</span><span><i class="lg e2"></i>red edge: last modified 3 months or more apart</span><span><i class="lg e1"></i>amber edge: 1 to 3 months apart</span>', page: 10, filter: true },
+    { key: "held", el: "s-held", title: "What ctx holds", noun: "project", labels: ["Keep", "Stop archiving", "Forget"], lead: "Every project ctx has saved sessions for. A turn is one message, reply or tool result; a session day is one session on one day. Keep: nothing changes. Stop archiving: what is saved stays searchable, and nothing new is saved. Forget: the project’s sessions are removed from search for good; the saved text stays in ctx’s own history, but nothing will find it.", page: 12, filter: true },
+    { key: "hooks", el: "s-hooks", title: "Hooks ctx runs", noun: "hook", labels: ["Keep", "Later", "Remove"], lead: "What ctx does by itself and ran in the last seven days, with how often, how long it took, and what it did. Keep: nothing changes. Later: decide another time. Remove: ctx cannot do this for you, because hooks live in your Claude Code settings file and ctx does not edit it; the list at the foot names the entry to remove.", page: 20, filter: false }
+  ];
+  var state = {}, view = {}, cursor = null;
+  SEC.forEach(function (s) {
+    state[s.key] = {};
+    D[s.key].forEach(function (it) { state[s.key][it.id] = { c: null, open: false, text: null }; /* nothing is chosen for you: a suggestion is applied only when you ask */ });
+    view[s.key] = { show: "all", text: "", limit: s.page };
+  });
+  function esc(t) { return String(t).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+  function num(n) { return Number(n).toLocaleString("en-US"); }
+  function el(tag, cls, htmlText) { var e = document.createElement(tag); if (cls) e.className = cls; if (htmlText !== undefined) e.innerHTML = htmlText; return e; }
+
+  function evidence(s, it) {
+    if (s.key === "rules") return '<span>You said: <q>' + esc(it.said || "(the turn is no longer in the index)") + '</q></span>';
+    if (s.key === "conf") return timeline(it) + '<span class="nums"><span>' + it.n + ' passages in ' + it.ps.map(function (p) { return p[0]; }).filter(function (v, i, a) { return a.indexOf(v) === i; }).length + ' documents</span></span>';
+    if (s.key === "held") {
+      var m = Math.max.apply(null, it.w.concat([1]));
+      var bars = it.w.map(function (v) { return '<i style="height:' + Math.max(1, Math.round(18 * v / m)) + 'px"></i>'; }).join("");
+      return '<span class="nums"><span><span class="bars" role="img" aria-label="turns in each of the last four weeks: ' + it.w.join(", ") + '">' + bars + '</span>last 4 weeks</span><span>' + num(it.turns) + ' turns in all</span><span>' + it.mb + ' MB</span><span>last active ' + esc(it.last) + '</span><span>' + (it.reads ? 'searched by an agent ' + it.reads + '× in 30 days' : 'not searched by an agent in 30 days') + '</span></span>';
+    }
+    return '<span class="nums"><span>ran ' + num(it.runs) + ' times in 7 days</span><span>usually ' + it.med + ' ms</span><span>slowest ' + num(it.mx) + ' ms</span><span>' + (it.runs * it.med < 1000 ? 'under a second' : Math.round(it.runs * it.med / 1000) + ' seconds') + ' a week in all</span></span><span>' + esc(it.eff) + '</span>';
+  }
+  var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  function nice(d) { return d ? +d.slice(8, 10) + " " + MONTHS[+d.slice(5, 7) - 1] + " " + d.slice(0, 4) : "date unknown"; }
+  function day(d) { return Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10)) / 864e5; }
+  function timeline(it) {
+    var a = day(D.span[0]), b = day(D.span[1]), W = 230, x = function (d) { return 6 + (W - 12) * (day(d) - a) / Math.max(1, b - a); };
+    var dots = it.ps.filter(function (p) { return p[4]; });
+    if (!dots.length) return "";
+    var xs = dots.map(function (p) { return x(p[4]); }), lo = Math.min.apply(null, xs), hi = Math.max.apply(null, xs);
+    /* about four month labels across whatever span the data covers */
+    var y0 = +D.span[0].slice(0, 4), m0 = +D.span[0].slice(5, 7) - 1, count = (+D.span[1].slice(0, 4) * 12 + +D.span[1].slice(5, 7) - 1) - (y0 * 12 + m0) + 1, step = Math.max(1, Math.ceil(count / 4)), months = "";
+    for (var k = 0; k < count; k += step) {
+      var mm = (m0 + k) % 12, d = (y0 + Math.floor((m0 + k) / 12)) + "-" + ("0" + (mm + 1)).slice(-2) + "-01";
+      months += '<text x="' + x(d).toFixed(1) + '" y="25" text-anchor="middle">' + MONTHS[mm] + '</text>';
+    }
+    return '<svg class="tl" viewBox="0 0 ' + W + ' 26" role="img" aria-label="When each document was last changed: from ' + esc(it.old) + ' to ' + esc(it.new) + '"><line class="ax" x1="6" y1="9" x2="' + (W - 6) + '" y2="9"/>' +
+      '<line class="sp" x1="' + lo.toFixed(1) + '" y1="9" x2="' + hi.toFixed(1) + '" y2="9"/>' +
+      dots.map(function (p, i) { return '<circle class="' + (p[3] ? 'cur' : 'oth') + '" cx="' + xs[i].toFixed(1) + '" cy="9" r="' + (p[3] ? 4.5 : 3.5) + '"><title>' + esc(p[0].split("/").pop()) + ' last changed ' + esc(p[4]) + (p[3] ? ' (likely current)' : '') + '</title></circle>'; }).join("") + months + '</svg>';
+  }
+  function ago(d) {
+    var n = Math.round(day(D.tot.today) - day(d));
+    return n <= 0 ? "today" : n < 60 ? n + " days ago" : Math.round(n / 30.4) + " months ago";
+  }
+  function meta(s, it) {
+    if (s.key === "rules") return "#" + it.id + " · " + esc(ago(it.d)) + (it.again ? ' · <span class="t-yes">you said much the same in ' + it.again + ' later message' + (it.again === 1 ? '' : 's') + ' in this project</span>' : '') + (it.quiet ? ' · no work in this project for 30 days' : '');
+    if (s.key === "conf") return (D.tot.cproj ? "" : esc(it.p) + " · ") + (it.gap >= 90 ? '<span class="t-no">its documents were last changed ' + Math.round(it.gap / 30.4) + ' months apart</span>' : it.gap >= 30 ? '<span class="t-mid">its documents were last changed ' + Math.round(it.gap / 7) + ' weeks apart</span>' : it.gap >= 2 ? 'its documents were last changed ' + it.gap + ' days apart' : 'its documents were last changed the same day') + (it.agree ? ' · the newer one is the one read as current' : '');
+    if (s.key === "held") return it.days + " session days · since " + esc(it.first);
+    return 'runs ' + esc(it.ev);
+  }
+  function detail(s, it) {
+    if (s.key === "conf") {
+      /* one block a document, newest first: its name and date once, then what it says in plain words */
+      var clean = function (q) { return q.replace(/[`*]/g, "").replace(/^\s*\|\s*|\s*\|\s*$/g, "").replace(/\s*\|\s*/g, " · ").replace(/\s+/g, " ").trim(); };
+      var docs = [], by = {};
+      it.ps.forEach(function (p) {
+        var d = by[p[0]]; if (!d) { d = by[p[0]] = { path: p[0], date: p[4], says: [], cur: false }; docs.push(d); }
+        var q = clean(p[2]); if (!d.says.some(function (x) { return x.q === q; })) d.says.push({ q: q, head: p[1], cur: p[3] });
+        if (p[3]) d.cur = true;
+      });
+      docs.sort(function (x, y) { return x.date < y.date ? 1 : -1; });
+      return '<div class="docs">' + docs.map(function (d) {
+        var name = d.path.split("/").pop(), dir = d.path.slice(0, d.path.length - name.length);
+        return '<div class="doc"><div class="dh"><span class="dn">' + esc(name) + '</span><span class="dd">' + (d.date ? "changed " + nice(d.date) : "date unknown") + '</span></div><div class="dp">' + esc(dir) + '</div>' +
+          d.says.map(function (x) { return '<div class="say ' + (x.cur ? 'cur' : 'oth') + '"><span class="sq">' + esc(x.q) + '</span><span class="sh">' + (x.cur ? 'read as current · ' : '') + 'under “' + esc(x.head) + '”</span></div>'; }).join("") + '</div>';
+      }).join("") + '</div>';
+    }
+    if (s.key === "rules") return '<label class="where" for="w' + it.id + '">Wording agents would be given. Edit it before accepting if the paraphrase is off:</label><input id="w' + it.id + '" data-word="' + it.id + '" value="' + esc(state.rules[it.id].text === null ? it.t : state.rules[it.id].text) + '">' + '<div class="where">Accepted, agents in <b>' + esc(it.p) + '</b> would be given: <q>' + esc(it.t) + '</q></div><div class="where">Not a rule tells ctx not to propose this sentence again.</div>';
+    if (s.key === "held") return '<div class="where">' + it.days + ' session days from ' + esc(it.first) + ' to ' + esc(it.last) + ' · ' + num(it.turns) + ' turns · ' + it.mb + ' MB of text · turns in the last four weeks: ' + it.w.map(num).join(", ") + '</div><div class="where">Read back counts ctx search and ctx turn calls in this project\'s own sessions in 30 days: ' + it.reads + '.</div>';
+    return '<div class="where">Fires on: ' + esc(it.ev) + ' · 95th percentile ' + it.p95 + ' ms · seven days of the call log</div>';
+  }
+  function visible(s) {
+    var v = view[s.key], t = v.text.toLowerCase();
+    return D[s.key].filter(function (it) {
+      var st = state[s.key][it.id];
+      if (v.show === "open" && st.c !== null) return false;
+      if (v.show === "chosen" && st.c === null) return false;
+      if (t && (it.t + " " + (it.p || "") + " " + (it.said || "") + " " + (it.files || []).join(" ")).toLowerCase().indexOf(t) < 0) return false;
+      return true;
+    });
+  }
+  function heat() {
+    var wrap = el("div"), weeks = D.weeks, mx = 1, turns = 0, mb = 0, reads = 0;
+    D.held.forEach(function (it) { turns += it.turns; mb += it.mb; reads += it.reads; it.hist.forEach(function (h) { if (h[0] > mx) mx = h[0]; }); });
+    wrap.appendChild(el("div", "big", '<div><b>' + num(turns) + '</b> <span>turns saved (messages, replies and tool results)</span></div><div><b>' + D.held.length + '</b> <span>projects</span></div><div><b>' + weeks.length + '</b> <span>weeks</span></div><div><b>' + Math.round(mb) + ' MB</b> <span>of text</span></div><div><b>' + D.held.filter(function (x) { return x.reads; }).length + '</b> <span>projects an agent searched last month</span></div>'));
+    var hw = el("div", "heatwrap"), g = el("div", "heat"); g.style.setProperty("--weeks", weeks.length); g.setAttribute("role", "img"); g.setAttribute("aria-label", "Turns archived for each project in each week since " + weeks[0]);
+    g.appendChild(el("span", "mo", ""));
+    var names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], last = "";
+    weeks.forEach(function (w) { var m = names[+w.slice(5, 7) - 1], lab = m !== last ? m : ""; last = m; g.appendChild(el("span", "mo", lab)); });
+    D.held.forEach(function (it) {
+      var c = state.held[it.id].c, lab = el("button", "lab" + (c === 2 ? " gone" : c === 1 ? " stop" : ""), esc(it.t)); lab.type = "button"; lab.title = it.t + ": " + num(it.turns) + " turns, " + it.mb + " MB. Click to find its row.";
+      lab.addEventListener("click", function () { view.held.text = it.t; view.held.limit = 12; cursor = { sec: "held", id: it.id }; render(s_held); focusCursor(); });
+      g.appendChild(lab);
+      it.hist.forEach(function (h, i) {
+        var cell = el("span", "c" + (c === 2 ? " gone" : ""));
+        if (h[0]) { var f = el("i"); f.style.opacity = (0.16 + 0.84 * Math.log(1 + h[0]) / Math.log(1 + mx)).toFixed(2); cell.appendChild(f); }
+        if (h[1]) cell.appendChild(el("u"));
+        cell.title = it.t + " · week of " + weeks[i] + " · " + num(h[0]) + " turns" + (h[1] ? " · read back " + h[1] + "×" : "");
+        g.appendChild(cell);
+      });
+    });
+    hw.appendChild(el("div", "legend", '<span><span class="sw"><i style="opacity:.16"></i><i style="opacity:.45"></i><i style="opacity:.72"></i><i></i></span>each square is one week: darker means more was saved</span><span>a small ring: an agent searched that project\'s archive that week</span><span>struck through: you chose Forget</span>'));
+    hw.lastChild.style.margin = "0 0 10px";
+    hw.appendChild(g);
+    wrap.appendChild(hw); wrap.style.display = "flex"; wrap.style.flexDirection = "column"; wrap.style.gap = "12px";
+    return wrap;
+  }
+  var s_held = null;
+  function choose(s, it, c) {
+    var st = state[s.key][it.id];
+    st.c = st.c === c ? null : c;
+    render(s); totals();
+  }
+  function render(s) {
+    var host = document.getElementById(s.el), v = view[s.key], items = visible(s), all = D[s.key];
+    var decided = all.filter(function (it) { return state[s.key][it.id].c !== null; }).length;
+    host.innerHTML = "";
+    var head = el("div", "qhead", '<h2>' + esc(s.title) + '</h2><span class="count">' + all.length + ' ' + s.noun + (all.length === 1 ? '' : 's') + ' · ' + decided + ' chosen</span>');
+    host.appendChild(head);
+    host.appendChild(el("p", "note", esc(s.lead)));
+    if (s.legend) host.appendChild(el("div", "legend", s.legend));
+    if (s.key === "held") host.appendChild(heat());
+    var tools = el("div", "tools");
+    [["all", "All"], ["open", "Undecided"], ["chosen", "Chosen"]].forEach(function (f) {
+      var b = el("button", "chip", f[1]); b.type = "button"; b.setAttribute("aria-pressed", String(v.show === f[0]));
+      b.addEventListener("click", function () { v.show = f[0]; v.limit = s.page; render(s); }); tools.appendChild(b);
+    });
+    if (s.filter) {
+      var inp = el("input"); inp.type = "search"; inp.placeholder = "Filter"; inp.value = v.text; inp.setAttribute("aria-label", "Filter " + s.title);
+      inp.addEventListener("input", function () { v.text = inp.value; v.limit = s.page; var pos = inp.selectionStart; render(s); var n = document.getElementById(s.el).querySelector("input"); n.focus(); n.setSelectionRange(pos, pos); });
+      tools.appendChild(inp);
+    }
+    s.labels.forEach(function (lab, c) {
+      if (s.key === "held" && c === 2) return; /* no bulk forget: it is the one that cannot be undone */
+      var b = el("button", "chip act", lab + " all " + items.length + " matching"); b.type = "button";
+      b.addEventListener("click", function () { items.forEach(function (it) { state[s.key][it.id].c = c; }); render(s); totals(); });
+      tools.appendChild(b);
+    });
+    var sug = el("button", "chip act", "Use suggestions"); sug.type = "button";
+    sug.addEventListener("click", function () { items.forEach(function (it) { state[s.key][it.id].c = (it.s === null || it.s === undefined) ? null : it.s; }); render(s); totals(); });
+    tools.appendChild(sug);
+    host.appendChild(tools);
+    var list = el("div", "list");
+    if (!items.length) list.appendChild(el("div", "empty", v.show === "open" ? "Nothing left undecided here." : "Nothing matches."));
+    var lastGroup = null;
+    items.slice(0, v.limit).forEach(function (it) {
+      if (s.key === "rules" && it.p !== lastGroup) {
+        lastGroup = it.p;
+        var mine = items.filter(function (x) { return x.p === it.p; });
+        list.appendChild(el("div", "group", '<b>' + esc(it.p) + '</b><span>' + mine.length + ' proposed · ' + mine.filter(function (x) { return x.again; }).length + ' said more than once' + (it.quiet ? ' · quiet for 30 days' : ' · active this month') + '</span>'));
+      }
+      var st = state[s.key][it.id], has = it.s !== null && it.s !== undefined, changed = st.c !== null && has && st.c !== it.s;
+      var row = el("div", "row" + (st.c === 2 || (s.key === "conf" && st.c === 1) ? " done-no" : "") + (s.key === "conf" ? (it.gap >= 90 ? " g2" : it.gap >= 30 ? " g1" : " g0") : "")); row.tabIndex = 0; row.dataset.sec = s.key; row.dataset.id = it.id;
+      if (cursor && cursor.sec === s.key && String(cursor.id) === String(it.id)) row.classList.add("cur");
+      var main = el("div", "main", '<span class="title">' + (changed ? '<span class="dot" title="Your choice differs from the suggestion"></span>' : '') + esc(it.t) + '</span><span class="meta">' + meta(s, it) + '</span>');
+      var ev = el("div", "ev", evidence(s, it) + '<span class="why">' + (has ? '<b>Suggests ' + esc(s.labels[it.s].toLowerCase()) + ':</b> ' : '<b>No suggestion:</b> ') + esc(it.why) + '</span>');
+      var seg = el("div", "seg"); seg.setAttribute("role", "group"); seg.setAttribute("aria-label", "Choice for " + it.t);
+      s.labels.forEach(function (lab, c) {
+        var b = el("button", "k" + (s.key === "conf" ? [0, 2, 1][c] : c), '<kbd>' + (c + 1) + '</kbd>' + esc(lab)); b.type = "button"; b.setAttribute("aria-pressed", String(st.c === c));
+        if (s.key === "hooks" && it.lock && c === 2) { b.disabled = true; b.title = "Cannot be removed here: everything else depends on it"; }
+        b.addEventListener("click", function (e) { e.stopPropagation(); cursor = { sec: s.key, id: it.id }; choose(s, it, c); });
+        seg.appendChild(b);
+      });
+      row.appendChild(main); row.appendChild(ev); row.appendChild(seg);
+      if (st.open) {
+        var det = el("div", "detail", detail(s, it)); row.appendChild(det);
+        var w = det.querySelector("input[data-word]");
+        if (w) { w.addEventListener("click", function (e) { e.stopPropagation(); }); w.addEventListener("input", function () { st.text = w.value === it.t ? null : w.value; totals(); }); }
+      }
+      row.addEventListener("click", function (e) { if (e.target.closest("button") || e.target.closest("input")) return; cursor = { sec: s.key, id: it.id }; st.open = !st.open; render(s); focusCursor(); });
+      list.appendChild(row);
+    });
+    if (items.length > v.limit) {
+      var more = el("button", "more", "Show " + Math.min(items.length - v.limit, s.page * 3) + " more (" + (items.length - v.limit) + " not shown)"); more.type = "button";
+      more.addEventListener("click", function () { v.limit += s.page * 3; render(s); }); list.appendChild(more);
+    }
+    host.appendChild(list);
+  }
+  function commands() {
+    var out = [], one = function (t) { return String(t).replace(/\s+/g, " ").trim(); }, sq = function (t) { return "'" + one(t).replace(/'/g, "'\\''") + "'"; };
+    D.rules.forEach(function (it) { var c = state.rules[it.id].c; var tx = state.rules[it.id].text; if (c === 0) out.push("ctx rules accept " + it.id + (tx ? " --text " + sq(tx) : "") + "    # " + one(it.p + ": " + (tx || it.t))); if (c === 2) out.push("ctx rules reject " + it.id + "    # " + one(it.p + ": " + it.t)); });
+    D.conf.forEach(function (it) {
+      var c = state.conf[it.id].c;
+      if (c === 0) out.push("ctx ticket new " + sq("Docs: " + it.t) + " --type Bug --project " + sq(it.p) + " --body " + sq(it.ps.map(function (p) { return p[0] + " § " + p[1] + ": \"" + p[2].slice(0, 120) + "\"" + (p[3] ? " (likely current)" : ""); }).join(" | ")));
+      if (c === 1) out.push("ctx docs conflicts dismiss " + it.id + "    # " + one(it.t) + " (" + it.files.join(", ") + ")");
+    });
+    D.held.forEach(function (it) { var c = state.held[it.id].c; if (c === 1) out.push("ctx exclude --project " + sq(it.t) + "    # stop archiving; keeps " + it.mb + " MB"); if (c === 2) out.push("ctx forget --project " + sq(it.t) + "    # removes " + it.turns + " turns, " + it.mb + " MB"); });
+    D.hooks.forEach(function (it) { if (state.hooks[it.id].c === 2) out.push("# ctx cannot do this: in your Claude Code settings, remove the `ctx " + it.id.replace("-", " ") + "` entries (" + one(it.ev) + ")"); });
+    return out;
+  }
+  function totals() {
+    var r = D.rules.reduce(function (a, it) { var c = state.rules[it.id].c; if (c !== null) a[c]++; return a; }, [0, 0, 0]);
+    var cf = D.conf.reduce(function (a, it) { var c = state.conf[it.id].c; if (c !== null) a[c]++; return a; }, [0, 0, 0]);
+    var mb = 0, turns = 0, stop = 0, forget = 0;
+    D.held.forEach(function (it) { var c = state.held[it.id].c; if (c === 1) stop++; if (c === 2) { forget++; mb += it.mb; turns += it.turns; } });
+    var ms = 0, gone = 0; D.hooks.forEach(function (it) { if (state.hooks[it.id].c === 2) { gone++; ms += it.runs * it.med; } });
+    var left = D.rules.length - r[0] - r[2] + D.conf.length - cf[0] - cf[1];
+    document.getElementById("outcome").innerHTML =
+      '<div><b>' + left + '</b><span>still undecided, of ' + (D.rules.length + D.conf.length) + '</span></div>' +
+      '<div><b>' + r[0] + ' / ' + r[2] + '</b><span>rules you chose here to accept / reject</span></div>' +
+      '<div><b>' + cf[0] + ' / ' + cf[1] + '</b><span>conflicts you chose here to fix / dismiss</span></div>' +
+      '<div><b>' + forget + (stop ? ' + ' + stop : '') + '</b><span>projects forgotten' + (stop ? ' + stopped' : '') + ', freeing ' + Math.round(mb) + ' MB and ' + num(turns) + ' turns</span></div>' +
+      '<div><b>' + gone + '</b><span>hooks removed, saving ' + Math.round(ms / 1000) + ' s a week</span></div>';
+    var cmds = commands();
+    document.getElementById("sum").textContent = cmds.length ? cmds.length + " command" + (cmds.length === 1 ? "" : "s") + " ready · " + left + " still waiting on you" : "No choices yet · " + left + " waiting on you";
+    document.getElementById("out").textContent = cmds.length ? cmds.join("\n") : "# nothing chosen yet";
+  }
+  function rowsOnPage() { return Array.prototype.slice.call(document.querySelectorAll(".row")); }
+  function focusCursor() {
+    if (!cursor) return;
+    var r = document.querySelector('.row[data-sec="' + cursor.sec + '"][data-id="' + String(cursor.id).replace(/"/g, '\\"') + '"]');
+    if (r) { r.classList.add("cur"); r.focus({ preventScroll: true }); r.scrollIntoView({ block: "nearest" }); }
+  }
+  document.addEventListener("keydown", function (e) {
+    if (e.target.tagName === "INPUT" || e.metaKey || e.ctrlKey || e.altKey) return;
+    var rows = rowsOnPage(); if (!rows.length) return;
+    var i = cursor ? rows.findIndex(function (r) { return r.dataset.sec === cursor.sec && r.dataset.id === String(cursor.id); }) : -1;
+    var k = e.key.toLowerCase();
+    if (k === "j" || e.key === "ArrowDown" || k === "k" || e.key === "ArrowUp") {
+      e.preventDefault();
+      var n = (k === "j" || e.key === "ArrowDown") ? Math.min(rows.length - 1, i + 1) : Math.max(0, i < 0 ? 0 : i - 1);
+      rows.forEach(function (r) { r.classList.remove("cur"); });
+      cursor = { sec: rows[n].dataset.sec, id: rows[n].dataset.id }; focusCursor(); return;
+    }
+    if (i < 0) return;
+    var s = SEC.filter(function (x) { return x.key === cursor.sec; })[0];
+    var it = D[s.key].filter(function (x) { return String(x.id) === String(cursor.id); })[0];
+    if (k === "1" || k === "2" || k === "3") {
+      var c = Number(k) - 1; if (s.key === "hooks" && it.lock && c === 2) return;
+      e.preventDefault(); choose(s, it, c); focusCursor();
+    } else if (e.key === "Enter") { e.preventDefault(); state[s.key][it.id].open = !state[s.key][it.id].open; render(s); focusCursor(); }
+  });
+  document.getElementById("jump").addEventListener("click", function () { document.getElementById("cmds").scrollIntoView({ behavior: "smooth", block: "start" }); });
+  document.getElementById("copy").addEventListener("click", function () {
+    var b = this, text = commands().join("\n") || "# nothing chosen yet";
+    var fail = function () { var pre = document.getElementById("out"), range = document.createRange(); range.selectNodeContents(pre); var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range); document.getElementById("cmds").scrollIntoView({ block: "start" }); b.textContent = "Selected: press copy"; };
+    try { navigator.clipboard.writeText(text).then(function () { b.textContent = "Copied"; setTimeout(function () { b.textContent = "Copy commands"; }, 1600); }, fail); } catch (err) { fail(); }
+  });
+  s_held = SEC[2];
+  var T = D.tot, lead = T.rules + (T.rules === 1 ? " proposed rule" : " proposed rules") + " and " + T.conf + (T.conf === 1 ? " document conflict" : " document conflicts") + " waiting for you.";
+  document.getElementById("kicker").textContent = "ctx · decisions · your archive as of " + nice(T.today);
+  document.getElementById("head").textContent = T.rules + T.conf === 0 ? "Nothing is waiting for you: no proposed rules and no document conflicts." : "ctx has " + lead + (T.accepted + T.rejected ? " So far you have accepted " + T.accepted + " and rejected " + T.rejected + " of the rules it proposed." : "");
+  var fill = Object.assign({ from: nice(D.span[0]), to: nice(D.span[1]) }, T);
+  Array.prototype.forEach.call(document.querySelectorAll("[data-t]"), function (n) { var v = fill[n.getAttribute("data-t")]; n.textContent = typeof v === "number" ? num(v) : v; });
+  SEC.forEach(render); totals();
+})();
+</script>
+</body>
+</html>

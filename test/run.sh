@@ -1408,6 +1408,12 @@ CTX_CLASSIFY="$T/screen.sh" CTX_JUDGE="$T/confirm.sh" "$CTX" docs conflicts --ru
 [ "$("$CTX" docs conflicts | tail -1)" = "0 conflicts between documents (1 dismissed)" ] || fail "finding the same pair again does not bring a dismissed conflict back"
 "$CTX" docs conflicts restore "$CID" | grep -q '^restored 1 pair' || fail "docs conflicts restore"
 [ "$("$CTX" docs conflicts | tail -1)" = "1 conflict between documents" ] || fail "a restored conflict is listed again"
+# Two conflicts that start in the same section still have different ids, so dismissing one leaves the other.
+"$CTX" sql "INSERT INTO ctx_doc_conflict SELECT a, 'zzzz', project, a_doc, a_heading, 'keeps every posting in order', (SELECT name FROM ctx_doc WHERE kind = 'doc' AND name LIKE '%/guide/notes.md'), 'Background', 'first sketched for the tenant billing work', 'a second thing', 'unknown', '', found FROM ctx_doc_conflict LIMIT 1" >/dev/null
+[ "$("$CTX" docs conflicts | sed -n 's/^[0-9]*\. \[\([0-9a-f]*\)\].*/\1/p' | sort -u | wc -l | tr -d ' ')" = 2 ] || fail "each conflict has its own id: $("$CTX" docs conflicts | grep '^[0-9]')"
+"$CTX" docs conflicts dismiss "$("$CTX" docs conflicts | sed -n 's/^[0-9]*\. \[\([0-9a-f]*\)\] a second thing$/\1/p')" | grep -q '^dismissed 1 pair of passages: a second thing$' || fail "dismissing one conflict leaves another that shares its section"
+[ "$("$CTX" docs conflicts | tail -1)" = "1 conflict between documents (1 dismissed)" ] || fail "only the named conflict was dismissed: $("$CTX" docs conflicts | tail -1)"
+"$CTX" sql "DELETE FROM ctx_doc_dismissed WHERE b = 'zzzz'" >/dev/null; "$CTX" sql "DELETE FROM ctx_doc_conflict WHERE b = 'zzzz'" >/dev/null
 # A second passage that disagrees with the same line is the same conflict, shown with it.
 printf '# Ledger questions\n\n## How many\n\nPeople often ask how many postings a single request can return from the pangolin ledger for one tenant, and whether the console and the command line agree. The pangolin ledger list limit is 500 entries for each tenant.\n' > "$T/repo/docs/guide/faq.md"
 "$CTX" docs scan >/dev/null
@@ -1447,6 +1453,194 @@ mk p5 5 /w/beta fifth "$BP/-w-beta/55550000-0000-0000-0000-00000000000e.jsonl"
 "$CTX" scan "$BP" >/dev/null
 [ "$("$CTX" search --all ibex | grep -c '^#')" = 3 ] || fail "a session of that project never seen before is still archived; forgetting is not excluding"
 if "$CTX" forget --project nosuch 2>/dev/null; then fail "forgetting an unknown project is refused"; fi
+# ctx page: one self-contained HTML page of what waits on the person, built from the archive alone,
+# and ctx page apply, which runs the commands the page produces, nothing else.
+export CTX_DB="$T/page.sqlite"
+"$CTX" init >/dev/null
+mkdir -p "$T/pg"
+python3 - "$T/pg" <<'EOF'
+import datetime, json, sys
+now = datetime.datetime.now(datetime.timezone.utc)
+ago = lambda days: (now - datetime.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+bash = lambda c: [{"type": "tool_use", "name": "Bash", "input": {"command": c}}]
+def session(path, cwd, rows):
+    with open(path, "w") as f:
+        for uuid, when, role, content in rows:
+            f.write(json.dumps({"uuid": uuid, "timestamp": when, "cwd": cwd, "message": {"role": role, "content": content}}) + "\n")
+session(sys.argv[1] + "/aaaa0001-0000-0000-0000-000000000001.jsonl", "/w/alpha", [
+    ("pa-1", ago(3), "user", "migration scripts: rollback support inside transactions, always"),
+    ("pa-2", ago(2), "user", "please make sure migration scripts have rollback support inside transactions"),
+    ("pa-3", ago(1), "user", "again the migration scripts need rollback support inside transactions"),
+    ("pa-4", ago(0), "user", "<note> migration scripts need rollback support inside transactions"),
+    ("pa-5", ago(0), "user", "/fix migration scripts need rollback support inside transactions"),
+    ("pa-6", ago(0), "assistant", "I will make migration scripts need rollback support inside transactions"),
+    ("pa-7", ago(0), "user", "please keep commits small, with clear subject lines"),
+    ("pa-8", ago(0), "user", "keep commits small with clear subject lines"),
+    ("pa-9", ago(0), "user", "tiny commits"),
+    ("pa-10", ago(0), "user", "name your test files after the module under test </script> please"),
+    ("pa-11", ago(0), "assistant", bash("ctx search migration")),
+    ("pa-12", ago(0), "assistant", bash("ctx turn 3 2 5; ctx search rollback")),
+    ("pa-13", ago(0), "assistant", bash("grep -n 'ctx search' README.md")),
+])
+session(sys.argv[1] + "/bbbb0001-0000-0000-0000-000000000002.jsonl", "/w/beta", [
+    ("pb-1", "2026-01-05T10:00:00Z", "user", "only deploy from the release branch after a review"),
+    ("pb-2", "2026-01-06T10:00:00Z", "user", "migration scripts need rollback support inside transactions"),
+])
+EOF
+for f in "$T"/pg/*.jsonl; do "$CTX" archive "$f" >/dev/null; done
+"$CTX" rules suggest pa-1 "Migration scripts need rollback support inside transactions" >/dev/null
+"$CTX" rules suggest pa-7 "Prefer small commits with clear subject lines" >/dev/null
+"$CTX" rules suggest pa-9 "Prefer small commits with clear subject lines please" >/dev/null
+"$CTX" rules suggest pa-10 "Name test files after the module under test" >/dev/null
+"$CTX" rules suggest pb-1 "Deploy only from the release branch after review" >/dev/null
+# Conflicts: one from a model run, three put in by hand (a plan, a file outside any registered directory,
+# and one to be dismissed). File dates are set so the page's dates are known.
+PAD='The pangolin ledger keeps every posting in order and replays them after a restart so that balances can be rebuilt from nothing. Operators read it through the console and through the command line alike.'
+mkdir -p "$T/pg/docs/adr" "$T/pg/docs/guide" "$T/pg/docs/plans" "$T/pg/docs/ops"
+printf '# Ledger design\n\n## Limits\n\n%s The pangolin ledger list limit is 50 entries for each tenant.\n' "$PAD" > "$T/pg/docs/adr/ledger-design.md"
+printf '# Ledger guide\n\n## Listing\n\n%s The pangolin ledger list limit is 500 entries for each tenant.\n' "$PAD" > "$T/pg/docs/guide/ledger.md"
+printf '# Ledger notes\n\n## Background\n\n%s The pangolin ledger was first sketched for the tenant billing work.\n' "$PAD" > "$T/pg/docs/guide/notes.md"
+"$CTX" docs add "$T/pg/docs" --project pgdocs >/dev/null
+CTX_CLASSIFY="$T/screen.sh" CTX_JUDGE="$T/confirm.sh" "$CTX" docs conflicts --run >/dev/null
+printf '# Rollout\n\n## Retries\n\nretries stop after 3 attempts\n' > "$T/pg/docs/plans/rollout.md"
+printf '# Retries\n\n## Limit\n\nretries stop after 5 attempts\n' > "$T/pg/docs/ops/retries.md"
+printf '# Cache\n\n## Lifetime\n\ncache entries live 60 seconds\n' > "$T/pg/outside.md"
+printf '# Cache ops\n\n## Lifetime\n\ncache entries live 90 seconds\n' > "$T/pg/docs/ops/cache.md"
+printf '# Sessions\n\n## Length\n\nsessions last 8 hours\n' > "$T/pg/docs/ops/ttl-a.md"
+printf '# Sessions too\n\n## Length\n\nsessions last 12 hours\n' > "$T/pg/docs/ops/ttl-b.md"
+touch -t 202601150000 "$T/pg/docs/adr/ledger-design.md"
+touch -t 202604200000 "$T/pg/docs/guide/ledger.md"
+touch -t 202603010000 "$T/pg/docs/plans/rollout.md"
+touch -t 202603030000 "$T/pg/docs/ops/retries.md"
+touch -t 202602010000 "$T/pg/outside.md"
+touch -t 202603200000 "$T/pg/docs/ops/cache.md"
+PD=$(cd "$T/pg/docs" && pwd -P); PO=$(cd "$T/pg" && pwd -P)/outside.md
+"$CTX" sql "INSERT INTO ctx_doc_conflict VALUES ('h1', 'h2', 'pgdocs', '$PD/plans/rollout.md', 'Retries', 'retries stop after 3 attempts', '$PD/ops/retries.md', 'Limit', 'retries stop after 5 attempts', 'retry limit', 'B', '', '2026-11-01'),
+  ('h3', 'h4', 'pgdocs', '$PO', 'Lifetime', 'cache entries live 60 seconds', '$PD/ops/cache.md', 'Lifetime', 'cache entries live 90 seconds', 'cache lifetime', 'unknown', '', '2026-11-02'),
+  ('h5', 'h6', 'pgdocs', '$PD/ops/ttl-a.md', 'Length', 'sessions last 8 hours', '$PD/ops/ttl-b.md', 'Length', 'sessions last 12 hours', 'session length', 'A', '', '2026-11-03')" >/dev/null
+"$CTX" docs conflicts dismiss "$("$CTX" docs conflicts | sed -n 's/^[0-9]*\. \[\([0-9a-f]*\)\] session length$/\1/p')" >/dev/null
+NOW=$(date +%s)
+for ms in 2 4 10; do printf 'B %s 50%s gate\nE %s 50%s gate %s\n' $((NOW - 3600)) "$ms" $((NOW - 3600)) "$ms" "$ms" >> "$CTX_DB.calls"; done
+printf 'B %s 601 search\nE %s 601 search 7\n' $((NOW - 3600)) $((NOW - 3600)) >> "$CTX_DB.calls"
+BEFORE=$("$CTX" sql "SELECT (SELECT count(*) FROM ctx_chunk), (SELECT count(*) FROM ctx_doc_conflict), (SELECT count(*) FROM ctx_rule_proposal WHERE status = 'open')")
+PAGE=$("$CTX" page) || fail "ctx page runs"
+[ "$PAGE" = "$CTX_DB.page.html" ] && [ -s "$PAGE" ] || fail "ctx page writes <database>.page.html and prints its path: $PAGE"
+[ "$("$CTX" sql "SELECT (SELECT count(*) FROM ctx_chunk), (SELECT count(*) FROM ctx_doc_conflict), (SELECT count(*) FROM ctx_rule_proposal WHERE status = 'open')")" = "$BEFORE" ] || fail "ctx page only reads the archive"
+python3 - "$PAGE" <<'EOF' || fail "the page is a complete document with nothing to fetch and nothing left to fill in"
+import os, re, sys
+page = open(sys.argv[1], encoding="utf-8").read()
+assert page.lstrip().lower().startswith("<!doctype html>") and page.rstrip().endswith("</html>"), "a complete HTML document"
+assert "{{" not in page, "no placeholder is left"
+assert "/*DATA*/" not in page, "the data marker is replaced"
+assert "http://" not in page and "https://" not in page, "no resource or link is fetched"
+assert page.count("</script>") == 1, "text in the data cannot close the script"
+assert "mock-up" not in page.lower() and "not built yet" not in page.lower(), "it is a real page, not a mock-up"
+assert oct(os.stat(sys.argv[1]).st_mode & 0o777) == "0o600", "the page is private to the person"
+assert re.search(r"var D = \{", page), "the data is one object"
+EOF
+ls "$T" | grep -q 'page.sqlite.page.html.' && fail "the temporary file is renamed, not left behind"
+[ "$("$CTX" page --out "$T/elsewhere.html")" = "$T/elsewhere.html" ] && cmp -s "$T/elsewhere.html" "$PAGE" || fail "--out names the file"
+A_TURNS=$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE project = 'alpha'")
+A_DAYS=$("$CTX" sql "SELECT count(*) FROM ctx_doc WHERE kind = 'session' AND project = 'alpha'")
+python3 - "$PAGE" "$A_TURNS" "$A_DAYS" <<'EOF' || fail "the page's data holds what the archive holds"
+import json, re, sys
+page = open(sys.argv[1], encoding="utf-8").read()
+D = json.loads(re.search(r"var D = (\{.*?\});\n  var SEC", page, re.S).group(1))
+rules = {r["t"]: r for r in D["rules"]}
+assert len(rules) == 5, "five open proposals: %d" % len(rules)
+a, b, c, e, d = (rules[t] for t in ("Migration scripts need rollback support inside transactions", "Prefer small commits with clear subject lines",
+    "Prefer small commits with clear subject lines please", "Name test files after the module under test", "Deploy only from the release branch after review"))
+assert a["again"] == 2, "again counts other turns the person typed in the same project, not the source turn, a harness line, a slash command, a reply or another project: %r" % a["again"]
+assert a["s"] == 0 and "2 more times" in a["why"], "said twice more: suggest accept: %r" % a
+assert b["again"] == 1 and b["s"] is None and "weak evidence" in b["why"], "said once more: no suggestion: %r" % b
+assert c["s"] == 2 and "Near-duplicate of #%d" % b["id"] in c["why"], "a near-duplicate is suggested as not a rule, even when repeated: %r" % c
+assert e["again"] == 0 and e["s"] is None and e["quiet"] is False, "said once in an active project: no suggestion: %r" % e
+assert d["quiet"] is True and d["s"] == 1 and d["again"] == 0, "a project quiet for 30 days: suggest later: %r" % d
+assert "standing" not in a, "the standing field is gone"
+assert a["said"].startswith("migration scripts: rollback") and a["p"] == "alpha", "the person's own words and the project are shown"
+assert "</script>" in e["said"], "text with a closing tag survives in the data"
+assert [r["p"] for r in D["rules"]] == ["alpha"] * 4 + ["beta"], "rules are grouped, the project with most first"
+assert [r["again"] for r in D["rules"][:4]] == sorted((r["again"] for r in D["rules"][:4]), reverse=True), "and the most repeated first"
+conf = {c["t"]: c for c in D["conf"]}
+assert sorted(conf) == ["cache lifetime", "ledger list limit", "retry limit"], "a dismissed conflict is absent: %r" % sorted(conf)
+c1 = conf["ledger list limit"]
+assert c1["n"] == 2 and len(c1["id"]) == 8 and c1["p"] == "pgdocs", "both quotes, the short id and the project: %r" % c1
+byname = {p[0]: p for p in c1["ps"]}
+assert byname["adr/ledger-design.md"][1:] == ["Limits", "list limit is 50 entries", False, "2026-01-15"], "a passage: path inside the registered directory, heading, quote, side, file date: %r" % byname
+assert byname["guide/ledger.md"][3:] == [True, "2026-04-20"], "the likely-current side and its date come from the file"
+assert c1["gap"] == 95 and c1["old"] == "2026-01-15" and c1["new"] == "2026-04-20" and c1["agree"] is True, "the gap is between file dates: %r" % c1
+assert c1["s"] == 0 and "ledger.md" in c1["why"], "the judge's current side is suggested as a fix: %r" % c1
+c2 = conf["retry limit"]
+assert c2["s"] == 1 and "plan" in c2["why"], "a plan is likely change over time: %r" % c2
+c3 = conf["cache lifetime"]
+assert any(p[0].endswith("/outside.md") and p[0].startswith("/") for p in c3["ps"]), "a document outside every registered directory keeps its full path: %r" % c3["ps"]
+assert c3["gap"] == 47 and c3["s"] == 0 and "47 days after outside.md" in c3["why"], "a long gap suggests the newer file: %r" % c3
+assert D["span"] == ["2026-01-01", D["tot"]["today"]], "the line runs from the month of the oldest document to today: %r" % D["span"]
+held = {h["id"]: h for h in D["held"]}
+assert sorted(held) == ["alpha", "beta"], "one entry per project with sessions: %r" % sorted(held)
+al, be = held["alpha"], held["beta"]
+assert al["turns"] == int(sys.argv[2]) and al["days"] == int(sys.argv[3]) and be["turns"] == 2 and be["days"] == 2, "turns and session days: %r %r" % (al, be)
+assert be["first"] == "2026-01-05" and be["last"] == "2026-01-06" and be["reads"] == 0 and "bench" not in be, "dates, no reads, no benchmark guess"
+assert al["reads"] == 3 and sum(h[1] for h in al["hist"]) == 3, "reads are searches and turn reads run in the project's own sessions, not a mention: %r" % al
+assert D["weeks"][0] == "2026-01-05" and be["hist"][0] == [2, 0] and len(al["hist"]) == len(D["weeks"]) == len(be["hist"]), "one cell a week from the first week in the archive"
+assert sum(h[0] for h in al["hist"]) == al["turns"] and al["w"] == [h[0] for h in al["hist"][-4:]], "the grid and the four bars add up"
+assert al["s"] == 0 and "3 times" in al["why"] and be["s"] == 0 and "not proof" in be["why"], "never a suggestion to forget: %r %r" % (al["why"], be["why"])
+hooks = {h["id"]: h for h in D["hooks"]}
+assert list(hooks) == ["gate"], "only hooks in the call log appear: %r" % list(hooks)
+g = hooks["gate"]
+assert (g["runs"], g["med"], g["p95"], g["mx"]) == (3, 4, 10, 10) and g["s"] == 0 and g["t"] == "Remind a session that was never told, once", "a hook's runs and times: %r" % g
+t = D["tot"]
+assert (t["rules"], t["conf"], t["held"], t["turns"]) == (5, 3, 2, al["turns"] + 2), "totals: %r" % t
+EOF
+# ctx page apply: the commands the page produces, run by this program and nothing else.
+RID=$("$CTX" sql "SELECT id FROM ctx_rule_proposal WHERE text LIKE 'Name test files%'")
+CID=$("$CTX" docs conflicts | sed -n 's/^[0-9]*\. \[\([0-9a-f]*\)\] retry limit$/\1/p')
+cat > "$T/page.plan" <<EOF
+# chosen on the page
+ctx rules accept $RID --text 'Name test files after the module'    # alpha: Name test files
+
+ctx docs conflicts dismiss $CID --reason 'a plan changes'
+ctx ticket new 'Docs: it'\\''s a "limit"' --type Bug --project pgdocs --body 'one line'
+ctx exclude --project beta
+# edit your settings: remove the \`ctx gate\` entries
+EOF
+"$CTX" page apply "$T/page.plan" > "$T/plan.txt" || fail "apply without --yes shows the plan: $(cat "$T/plan.txt")"
+grep -q '^4 actions: 1 rule to accept, 1 conflict to dismiss, 1 ticket to file, 1 project to stop archiving$' "$T/plan.txt" && grep -q "^accept rule $RID" "$T/plan.txt" && grep -q "^dismiss conflict $CID" "$T/plan.txt" && grep -q 'beta' "$T/plan.txt" || fail "the plan says what would be done, with counts: $(cat "$T/plan.txt")"
+[ "$("$CTX" rules proposed --all | grep -c "^$RID ")" = 1 ] && [ -z "$("$CTX" exclude)" ] && [ "$("$CTX" docs conflicts | tail -1)" = "3 conflicts between documents (1 dismissed)" ] && [ -z "$("$CTX" ticket ready --all)" ] || fail "without --yes nothing changes"
+"$CTX" page apply --yes < "$T/page.plan" > "$T/plan.txt" || fail "apply --yes runs the plan: $(cat "$T/plan.txt")"
+tail -1 "$T/plan.txt" | grep -q '^4 of 4 actions done$' || fail "apply says how many ran: $(cat "$T/plan.txt")"
+"$CTX" rules proposed --all | grep -q "^$RID " && fail "the accepted proposal leaves the list"
+"$CTX" rules --project alpha | grep -q 'Name test files after the module$' || fail "accept took the reworded text"
+[ "$("$CTX" docs conflicts | tail -1)" = "2 conflicts between documents (2 dismissed)" ] && "$CTX" docs conflicts --dismissed | grep -q 'a plan changes' || fail "the conflict is dismissed with its reason"
+"$CTX" ticket ready --all | grep -q "pgdocs Bug Docs: it's a \"limit\"" || fail "a ticket is filed, its quotes kept: $("$CTX" ticket ready --all)"
+"$CTX" exclude | grep -q 'project:beta' || fail "the project is excluded"
+# Anything else is refused as a whole before anything runs, naming the line.
+RID2=$("$CTX" sql "SELECT id FROM ctx_rule_proposal WHERE status = 'open' AND text LIKE 'Deploy only%'")
+for bad in "ctx rules accept $RID2; rm -rf $T/pg" "echo hello" "ctx sql 'DELETE FROM ctx_chunk'" "ctx rules accept $RID2 extra" "ctx forget --project beta --remove" "ctx rules accept x" "ctx exclude --project \$(touch $T/canary)" "ctx rules reject $RID2 | cat" "ctx docs conflicts dismiss nothex --reason x" "ctx ticket new 'a' --type Bug --project p" "ctx rules reject $RID2 --text 'x'"; do
+  printf 'ctx rules reject %s\n%s\n' "$RID2" "$bad" > "$T/bad.plan"
+  if "$CTX" page apply --yes "$T/bad.plan" 2> "$T/bad.err" >/dev/null; then fail "a line that is not an allowed form is refused: $bad"; fi
+  grep -q 'line 2' "$T/bad.err" || fail "the refusal names the line: $(cat "$T/bad.err")"
+  [ "$("$CTX" rules proposed --all | grep -c "^$RID2 ")" = 1 ] || fail "a refused file runs nothing, not even its good lines: $bad"
+done
+[ ! -e "$T/canary" ] || fail "nothing is passed to a shell"
+# An argument is text. Shell syntax inside quotes is kept as written and never run.
+printf '%s\n' "ctx ticket new 'a; touch $T/canary1; \$(touch $T/canary2) \`touch $T/canary3\` | rm -rf $T/pg' --type Bug --project pgdocs --body 'b \$(touch $T/canary4)'" > "$T/quote.plan"
+"$CTX" page apply --yes "$T/quote.plan" >/dev/null || fail "a quoted argument is accepted"
+[ ! -e "$T/canary1" ] && [ ! -e "$T/canary2" ] && [ ! -e "$T/canary3" ] && [ ! -e "$T/canary4" ] && [ -d "$T/pg" ] || fail "text inside quotes is never run"
+"$CTX" ticket ready --all | grep -q 'a; touch .*canary1; \$(touch .*canary2) `touch .*canary3` | rm -rf' || fail "the quoted text is the ticket's title, as written"
+# The first failure stops the run and says how far it got.
+printf 'ctx rules reject %s\nctx rules reject 999999\nctx exclude --project nosuchproject\n' "$RID2" > "$T/fail.plan"
+if "$CTX" page apply --yes "$T/fail.plan" > "$T/fail.txt" 2>&1; then fail "a failing action fails the run"; fi
+grep -q '1 of 3 actions done' "$T/fail.txt" || fail "the run stops at the first failure and counts what ran: $(cat "$T/fail.txt")"
+"$CTX" page apply "$T/missing.plan" 2>/dev/null && fail "a missing file is an error"
+export CTX_DB="$T/page2.sqlite"
+"$CTX" init >/dev/null
+"$CTX" page >/dev/null && python3 - "$CTX_DB.page.html" <<'EOF' || fail "an empty archive still makes a page"
+import json, re, sys
+page = open(sys.argv[1], encoding="utf-8").read()
+D = json.loads(re.search(r"var D = (\{.*?\});\n  var SEC", page, re.S).group(1))
+assert D["rules"] == [] and D["conf"] == [] and D["held"] == [] and D["hooks"] == [], "nothing to decide"
+EOF
 # ctx gate, a PreToolUse hook: in a session that never got the archive note, the first search
 # is turned back once with it. It never blocks twice, and says nothing where it has nothing to offer.
 export CTX_DB="$T/gate.sqlite"

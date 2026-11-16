@@ -26,6 +26,7 @@
 #include "schema.h"
 #include "state_schema.h"
 #include "ticket_schema.h"
+#include "page.h"
 
 #define CTX_VERSION "0.0.1"
 #define CTX_USER_VERSION 10    /* PRAGMA user_version once initialized */
@@ -1524,6 +1525,25 @@ static size_t calls_read(time_t since, call_stat *out, size_t cap) {
   return names;
 }
 
+/* How many sessions the gate turned back in the last `days`: its marks are the ones with something
+ * in them. -1 when ctx has no marks directory at all. */
+static long gate_turned(int days) {
+  char *dir = sidecar(".noted");
+  DIR *d = opendir(dir);
+  struct dirent *e;
+  long turned = 0;
+  time_t since = time(NULL) - (time_t)days * 86400;
+  while (d && (e = readdir(d))) {
+    char file[4700];
+    struct stat fs;
+    snprintf(file, sizeof file, "%s/%s", dir, e->d_name);
+    if (e->d_name[0] != '.' && !stat(file, &fs) && S_ISREG(fs.st_mode) && fs.st_size > 0 && fs.st_mtime >= since) turned++;
+  }
+  if (d) closedir(d);
+  free(dir);
+  return d ? turned : -1;
+}
+
 /* ctx stats --hooks [--days N]: how long each hook and search took, and how many were cut off. */
 static int stats_hooks(int days) {
   call_stat st[16];
@@ -1539,22 +1559,8 @@ static int stats_hooks(int days) {
            st[k].n ? st[k].ms[st[k].n * 95 / 100] : 0, st[k].n ? st[k].ms[st[k].n - 1] : 0, cut, st[k].over);
     free(st[k].ms);
   }
-  char *dir = sidecar(".noted"); /* sessions the gate turned back: its marks are the ones with something in them */
-  DIR *d = opendir(dir);
-  struct dirent *e;
-  long turned = 0;
-  time_t since = time(NULL) - (time_t)days * 86400;
-  while (d && (e = readdir(d))) {
-    char file[4700];
-    struct stat fs;
-    snprintf(file, sizeof file, "%s/%s", dir, e->d_name);
-    if (e->d_name[0] != '.' && !stat(file, &fs) && S_ISREG(fs.st_mode) && fs.st_size > 0 && fs.st_mtime >= since) turned++;
-  }
-  if (d) {
-    closedir(d);
-    printf("gate turned back %ld session%s\n", turned, turned == 1 ? "" : "s");
-  }
-  free(dir);
+  long turned = gate_turned(days);
+  if (turned >= 0) printf("gate turned back %ld session%s\n", turned, turned == 1 ? "" : "s");
   return 0;
 }
 
@@ -7325,20 +7331,39 @@ static int said_in(const char *text, const char *words) {
   return yes;
 }
 
-/* Lists the kept conflicts. Pairs that share a quoted passage are one disagreement: a stale
- * line contradicted in five places is shown once, with every passage beneath it. */
-/* With verb NULL it lists: the open conflicts, or the dismissed ones with their reasons. With
- * "dismiss" or "restore" it acts on the conflict whose short id is target, every pair of it,
- * and returns how many pairs that was. */
-static long conflicts_list(sqlite3 *db, const char *project, int dismissed, const char *verb, const char *target, const char *reason) {
-  typedef struct { char *ka, *kb, *doc[2], *head[2], *quote[2], *about, *why; int cur, group; } row;
-  sqlite3_stmt *q = db_prepare(db, "SELECT c.a, c.b, a_doc, a_heading, a_quote, b_doc, b_heading, b_quote, about, coalesce(current, ''), x.reason FROM ctx_doc_conflict c"
+/* One kept pair of conflicting passages. group is the first pair of its conflict, or -1 when a
+ * quoted passage is no longer in its file. */
+typedef struct {
+  char *ka, *kb, *doc[2], *head[2], *quote[2], *about, *why, *project;
+  int cur, group;
+} conflict_row;
+
+static void conflicts_free(conflict_row *r, size_t n) {
+  for (size_t i = 0; i < n; i++) {
+    free(r[i].ka);
+    free(r[i].kb);
+    free(r[i].about);
+    free(r[i].why);
+    free(r[i].project);
+    for (int k = 0; k < 2; k++) {
+      free(r[i].doc[k]);
+      free(r[i].head[k]);
+      free(r[i].quote[k]);
+    }
+  }
+  free(r);
+}
+
+/* Reads the open conflicts, or the dismissed ones, and groups them: pairs that share a quoted
+ * passage are one disagreement. It changes nothing; the caller decides what to do with a pair
+ * whose words are gone from its file. */
+static conflict_row *conflicts_load(sqlite3 *db, const char *project, int dismissed, size_t *count) {
+  sqlite3_stmt *q = db_prepare(db, "SELECT c.a, c.b, a_doc, a_heading, a_quote, b_doc, b_heading, b_quote, about, coalesce(current, ''), x.reason, c.project FROM ctx_doc_conflict c"
                                    " LEFT JOIN ctx_doc_dismissed x ON x.a = c.a AND x.b = c.b"
-                                   " WHERE (?1 IS NULL OR project = ?1) AND (x.a IS NOT NULL) = ?2 ORDER BY found, a_doc, b_doc");
+                                   " WHERE (?1 IS NULL OR c.project = ?1) AND (x.a IS NOT NULL) = ?2 ORDER BY found, a_doc, b_doc");
   if (project) sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
   sqlite3_bind_int(q, 2, dismissed);
-  sqlite3_stmt *drop = db_prepare(db, "DELETE FROM ctx_doc_conflict WHERE a = ?1 AND b = ?2");
-  row *r = NULL;
+  conflict_row *r = NULL;
   size_t n = 0;
   while (sqlite3_step(q) == SQLITE_ROW) {
 #define T(i) ((const char *)sqlite3_column_text(q, i))
@@ -7349,7 +7374,7 @@ static long conflicts_list(sqlite3 *db, const char *project, int dismissed, cons
     free(fb);
     r = realloc(r, (n + 1) * sizeof *r);
     if (!r) die("out of memory");
-    row *x = &r[n++];
+    conflict_row *x = &r[n++];
     x->ka = dup_text(sqlite3_column_text(q, 0));
     x->kb = dup_text(sqlite3_column_text(q, 1));
     for (int k = 0; k < 2; k++) {
@@ -7359,6 +7384,7 @@ static long conflicts_list(sqlite3 *db, const char *project, int dismissed, cons
     }
     x->about = dup_text(sqlite3_column_text(q, 8));
     x->why = sqlite3_column_text(q, 10) ? dup_text(sqlite3_column_text(q, 10)) : NULL;
+    x->project = dup_text(sqlite3_column_text(q, 11));
     x->cur = !strcmp(T(9), "A") ? 0 : !strcmp(T(9), "B") ? 1 : -1;
     x->group = there ? (int)(n - 1) : -1; /* -1: its words are gone from the file, so it is fixed */
 #undef T
@@ -7379,6 +7405,29 @@ static long conflicts_list(sqlite3 *db, const char *project, int dismissed, cons
         changed = 1;
       }
   }
+  *count = n;
+  return r;
+}
+
+/* A conflict's short id comes from both passages of its first pair: two conflicts can start in
+ * one section. The caller frees it. */
+static char *conflict_id(const conflict_row *first) {
+  char both[200], *id;
+  snprintf(both, sizeof both, "%.90s|%.90s", first->ka, first->kb);
+  id = sha3_hex(both, strlen(both));
+  id[8] = 0;
+  return id;
+}
+
+/* Lists the kept conflicts. Pairs that share a quoted passage are one disagreement: a stale
+ * line contradicted in five places is shown once, with every passage beneath it. */
+/* With verb NULL it lists: the open conflicts, or the dismissed ones with their reasons. With
+ * "dismiss" or "restore" it acts on the conflict whose short id is target, every pair of it,
+ * and returns how many pairs that was. */
+static long conflicts_list(sqlite3 *db, const char *project, int dismissed, const char *verb, const char *target, const char *reason) {
+  size_t n = 0;
+  conflict_row *r = conflicts_load(db, project, dismissed, &n);
+  sqlite3_stmt *drop = db_prepare(db, "DELETE FROM ctx_doc_conflict WHERE a = ?1 AND b = ?2");
   long groups = 0, pairs = 0, acted = 0;
   for (size_t i = 0; i < n; i++) {
     if (r[i].group < 0) {
@@ -7390,8 +7439,10 @@ static long conflicts_list(sqlite3 *db, const char *project, int dismissed, cons
     }
     pairs++;
     if (r[i].group != (int)i) continue; /* printed with its group's first pair */
+    char *id = conflict_id(&r[i]);
     if (verb) { /* act on the one named, all its pairs */
-      if (strncmp(r[i].ka, target, 8) || strlen(target) != 8) continue;
+      if (strcmp(id, target)) { free(id); continue; }
+      free(id);
       sqlite3_stmt *w = db_prepare(db, !strcmp(verb, "dismiss") ? "INSERT OR REPLACE INTO ctx_doc_dismissed(a, b, reason, at) VALUES (?1, ?2, ?3, datetime('now'))"
                                                                  : "DELETE FROM ctx_doc_dismissed WHERE a = ?1 AND b = ?2");
       for (size_t j = i; j < n; j++) {
@@ -7407,8 +7458,9 @@ static long conflicts_list(sqlite3 *db, const char *project, int dismissed, cons
       printf("%s %ld pair%s of passages: %s\n", !strcmp(verb, "dismiss") ? "dismissed" : "restored", acted, acted == 1 ? "" : "s", r[i].about);
       continue;
     }
-    printf("%ld. [%.8s] %s%s%s%s\n", ++groups, r[i].ka, r[i].about, r[i].why && *r[i].why ? "  (dismissed: " : "", r[i].why && *r[i].why ? r[i].why : "",
+    printf("%ld. [%s] %s%s%s%s\n", ++groups, id, r[i].about, r[i].why && *r[i].why ? "  (dismissed: " : "", r[i].why && *r[i].why ? r[i].why : "",
            r[i].why && *r[i].why ? ")" : "");
+    free(id);
     for (size_t j = i; j < n; j++) {
       if (r[j].group != (int)i) continue;
       for (int k = 0; k < 2; k++) {
@@ -7424,20 +7476,9 @@ static long conflicts_list(sqlite3 *db, const char *project, int dismissed, cons
     }
   }
   sqlite3_finalize(drop);
-  for (size_t i = 0; i < n; i++) {
-    free(r[i].ka);
-    free(r[i].kb);
-    free(r[i].about);
-    free(r[i].why);
-    for (int k = 0; k < 2; k++) {
-      free(r[i].doc[k]);
-      free(r[i].head[k]);
-      free(r[i].quote[k]);
-    }
-  }
-  free(r);
+  conflicts_free(r, n);
   if (verb) return acted;
-  q = db_prepare(db, "SELECT count(*) FROM ctx_doc_dismissed x JOIN ctx_doc_conflict c ON c.a = x.a AND c.b = x.b WHERE ?1 IS NULL OR c.project = ?1");
+  sqlite3_stmt *q = db_prepare(db, "SELECT count(*) FROM ctx_doc_dismissed x JOIN ctx_doc_conflict c ON c.a = x.a AND c.b = x.b WHERE ?1 IS NULL OR c.project = ?1");
   if (project) sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
   long set_aside = sqlite3_step(q) == SQLITE_ROW ? sqlite3_column_int(q, 0) : 0;
   sqlite3_finalize(q);
@@ -8140,6 +8181,1006 @@ static int rules_proposals(sqlite3 *db, int argc, char **argv) {
   return 0;
 }
 
+/* ctx page: one self-contained HTML file of what is waiting on the person (proposed rules,
+ * document conflicts, what the archive holds, what the hooks do), built from the archive and
+ * the call log alone: no network, no model, no git. The page template is compiled in. */
+
+static void buf_fmt(buf *b, const char *fmt, ...) {
+  va_list ap, again;
+  va_start(ap, fmt);
+  va_copy(again, ap);
+  int n = vsnprintf(NULL, 0, fmt, ap);
+  va_end(ap);
+  if (n > 0) {
+    char *tmp = malloc((size_t)n + 1);
+    if (!tmp) die("out of memory");
+    vsnprintf(tmp, (size_t)n + 1, fmt, again);
+    buf_add(b, tmp, (size_t)n);
+    free(tmp);
+  }
+  va_end(again);
+}
+
+/* A JSON string that is safe inside a script element: "</" and "<!" never appear as written, and
+ * bytes that are not UTF-8 become U+FFFD, so the page always parses. */
+static void js_str(buf *b, const char *s) {
+  buf_str(b, "\"");
+  for (const unsigned char *p = (const unsigned char *)s; *p;) {
+    unsigned c = *p;
+    if (c == '"' || c == '\\') {
+      buf_add(b, "\\", 1);
+      buf_add(b, (const char *)p++, 1);
+    } else if (c == '\n') {
+      buf_str(b, "\\n");
+      p++;
+    } else if (c < 0x20) {
+      buf_fmt(b, "\\u%04x", c);
+      p++;
+    } else if (c == '<' && p[1] == '/') {
+      buf_str(b, "<\\/");
+      p += 2;
+    } else if (c == '<' && p[1] == '!') {
+      buf_str(b, "\\u003c");
+      p++;
+    } else if (c < 0x80) {
+      buf_add(b, (const char *)p++, 1);
+    } else {
+      int len = c >= 0xC2 && c <= 0xDF ? 2 : c >= 0xE0 && c <= 0xEF ? 3 : c >= 0xF0 && c <= 0xF4 ? 4 : 0, ok = len > 0;
+      for (int k = 1; ok && k < len; k++) ok = (p[k] & 0xC0) == 0x80;
+      if (!ok) {
+        buf_str(b, "\\ufffd");
+        p++;
+      } else if (len == 3 && c == 0xE2 && p[1] == 0x80 && (p[2] == 0xA8 || p[2] == 0xA9)) { /* line separators end a line in a script */
+        buf_str(b, p[2] == 0xA8 ? "\\u2028" : "\\u2029");
+        p += 3;
+      } else {
+        buf_add(b, (const char *)p, (size_t)len);
+        p += len;
+      }
+    }
+  }
+  buf_str(b, "\"");
+}
+
+/* The text with each run of whitespace as one space, cut to at most max characters. */
+static char *squash(const char *s, size_t max) {
+  char *out = malloc(strlen(s) + 1);
+  if (!out) die("out of memory");
+  size_t o = 0, chars = 0;
+  int space = 0;
+  for (; *s; s++) {
+    unsigned char c = (unsigned char)*s;
+    if (isspace(c)) {
+      space = o > 0;
+      continue;
+    }
+    if (!is_utf8_cont((char)c)) {
+      if (chars + (size_t)space + 1 > max) break;
+      if (space) out[o++] = ' ';
+      chars += (size_t)space + 1;
+      space = 0;
+    }
+    out[o++] = (char)c;
+  }
+  out[o] = 0;
+  return out;
+}
+
+static long day_of(const char *ymd) {
+  int y, m, d;
+  if (sscanf(ymd, "%d-%d-%d", &y, &m, &d) != 3) return 0;
+  struct tm t = {0};
+  t.tm_year = y - 1900;
+  t.tm_mon = m - 1;
+  t.tm_mday = d;
+  return (long)(timegm(&t) / 86400);
+}
+
+static void day_str(long day, char out[11]) {
+  time_t t = (time_t)day * 86400;
+  struct tm tm;
+  gmtime_r(&t, &tm);
+  strftime(out, 11, "%Y-%m-%d", &tm);
+}
+
+/* Words that tell a rule's topic from its phrasing: four or more letters, lower case, and not
+ * among the common ones below. Sorted, for bsearch. */
+static const char *const stop_words[] = {
+    "about", "after", "again", "also", "always", "been", "before", "being", "both", "cannot", "could", "does", "done", "each", "even", "every",
+    "from", "have", "here", "into", "just", "like", "make", "many", "more", "most", "much", "must", "never", "only", "other", "over", "same",
+    "should", "some", "such", "than", "that", "their", "them", "then", "there", "these", "they", "this", "those", "very", "want", "well",
+    "were", "what", "when", "where", "which", "while", "will", "with", "would", "your"};
+
+static int cmp_word(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
+
+typedef struct {
+  char **w; /* sorted, each once */
+  size_t n;
+  char *arena;
+} wordset;
+
+static void words_of(const char *text, wordset *ws) {
+  size_t len = strlen(text);
+  ws->arena = malloc(len + 2);
+  ws->w = malloc((len / 5 + 1) * sizeof *ws->w);
+  if (!ws->arena || !ws->w) die("out of memory");
+  ws->n = 0;
+  char *at = ws->arena;
+  for (const char *c = text; *c;) {
+    if (!isalpha((unsigned char)*c) || (unsigned char)*c >= 0x80) {
+      c++;
+      continue;
+    }
+    char *start = at;
+    for (; isalpha((unsigned char)*c) && (unsigned char)*c < 0x80; c++) *at++ = (char)tolower((unsigned char)*c);
+    *at++ = 0;
+    const char *word = start;
+    if (at - start - 1 < 4 || bsearch(&word, stop_words, sizeof stop_words / sizeof *stop_words, sizeof *stop_words, cmp_word)) at = start;
+    else ws->w[ws->n++] = start;
+  }
+  qsort(ws->w, ws->n, sizeof *ws->w, cmp_word);
+  size_t u = 0;
+  for (size_t i = 0; i < ws->n; i++)
+    if (!u || strcmp(ws->w[u - 1], ws->w[i])) ws->w[u++] = ws->w[i];
+  ws->n = u;
+}
+
+static void words_free(wordset *ws) {
+  free(ws->w);
+  free(ws->arena);
+}
+
+/* How many words two sorted sets share. */
+static size_t words_shared(const wordset *a, const wordset *b) {
+  size_t i = 0, j = 0, both = 0;
+  while (i < a->n && j < b->n) {
+    int c = strcmp(a->w[i], b->w[j]);
+    if (!c) both++;
+    if (c <= 0) i++;
+    if (c >= 0) j++;
+  }
+  return both;
+}
+
+/* What the archive holds for one project: turns, session days, size, and for every week since
+ * the archive began, turns and the reads an agent made of it. */
+typedef struct {
+  char *project, first[11], last[11];
+  long turns, turns30, days, reads, *hist; /* hist: turns and reads for each week, two a week */
+  double bytes;
+} held_row;
+
+typedef struct {
+  held_row *row;
+  size_t n;
+  long weeks;
+  char week0[11];
+} held_set;
+
+static held_row *held_find(held_set *h, const char *project, int make) {
+  for (size_t i = 0; i < h->n; i++)
+    if (!strcmp(h->row[i].project, project)) return &h->row[i];
+  if (!make) return NULL;
+  h->row = realloc(h->row, (h->n + 1) * sizeof *h->row);
+  if (!h->row) die("out of memory");
+  held_row *x = &h->row[h->n++];
+  memset(x, 0, sizeof *x);
+  x->project = dup_text((const unsigned char *)project);
+  return x;
+}
+
+static int held_by_turns(const void *a, const void *b) {
+  const held_row *x = a, *y = b;
+  return x->turns != y->turns ? (x->turns < y->turns) - (x->turns > y->turns) : strcmp(x->project, y->project);
+}
+
+/* Reads the archive's projects. Turns come from the speaker index alone, so no turn's text is read;
+ * reads are found by the full-text index, which narrows 500,000 turns to the few that mention a ctx call. */
+static void held_load(sqlite3 *db, const char *this_week, held_set *h) {
+  typedef struct {
+    size_t row; /* an index: the array of rows moves as it grows */
+    char week[11];
+    long turns;
+  } cell;
+  cell *cells = NULL;
+  size_t nc = 0;
+  sqlite3_stmt *q = db_prepare(db, "SELECT project, date(at, '-6 days', 'weekday 1'), count(*), min(substr(at, 1, 10)), max(substr(at, 1, 10)),"
+                                   " sum(at >= date('now', '-30 days')) FROM ctx_chunk WHERE at IS NOT NULL GROUP BY 1, 2");
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    if (!sqlite3_column_text(q, 0) || !sqlite3_column_text(q, 1)) continue;
+    held_row *x = held_find(h, (const char *)sqlite3_column_text(q, 0), 1);
+    x->turns += sqlite3_column_int64(q, 2);
+    x->turns30 += sqlite3_column_int64(q, 5);
+    const char *lo = (const char *)sqlite3_column_text(q, 3), *hi = (const char *)sqlite3_column_text(q, 4);
+    if (!*x->first || strcmp(lo, x->first) < 0) snprintf(x->first, sizeof x->first, "%s", lo);
+    if (strcmp(hi, x->last) > 0) snprintf(x->last, sizeof x->last, "%s", hi);
+    cells = realloc(cells, (nc + 1) * sizeof *cells);
+    if (!cells) die("out of memory");
+    snprintf(cells[nc].week, sizeof cells[nc].week, "%s", (const char *)sqlite3_column_text(q, 1));
+    cells[nc].turns = sqlite3_column_int64(q, 2);
+    cells[nc++].row = (size_t)(x - h->row);
+  }
+  sqlite3_finalize(q);
+  q = db_prepare(db, "SELECT project, count(*), sum(size) FROM ctx_doc WHERE kind = 'session' GROUP BY project");
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    held_row *x = held_find(h, (const char *)sqlite3_column_text(q, 0), 0);
+    if (!x) continue;
+    x->days = sqlite3_column_int64(q, 1);
+    x->bytes = (double)sqlite3_column_int64(q, 2);
+  }
+  sqlite3_finalize(q);
+  h->weeks = 0;
+  if (nc) {
+    long first = day_of(cells[0].week);
+    for (size_t i = 1; i < nc; i++)
+      if (day_of(cells[i].week) < first) first = day_of(cells[i].week);
+    day_str(first, h->week0);
+    h->weeks = (day_of(this_week) - first) / 7 + 1;
+  }
+  for (size_t i = 0; i < h->n; i++) {
+    h->row[i].hist = calloc((size_t)h->weeks * 2 + 2, sizeof *h->row[i].hist);
+    if (!h->row[i].hist) die("out of memory");
+  }
+  for (size_t i = 0; i < nc; i++) {
+    long w = (day_of(cells[i].week) - day_of(h->week0)) / 7;
+    if (w >= 0 && w < h->weeks) h->row[cells[i].row].hist[w * 2] += cells[i].turns;
+  }
+  free(cells);
+  q = db_prepare(db, "SELECT project, date(at, '-6 days', 'weekday 1'), at >= date('now', '-30 days'), sum(ctx_calls(body, 'search') + ctx_calls(body, 'turn'))"
+                     " FROM ctx_chunk WHERE heading = 'assistant' AND at IS NOT NULL"
+                     " AND id IN (SELECT rowid FROM ctx_chunk_fts WHERE ctx_chunk_fts MATCH 'ctx AND (search OR turn)') GROUP BY 1, 2, 3");
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    held_row *x = sqlite3_column_text(q, 0) && sqlite3_column_text(q, 1) ? held_find(h, (const char *)sqlite3_column_text(q, 0), 0) : NULL;
+    if (!x) continue;
+    long w = (day_of((const char *)sqlite3_column_text(q, 1)) - day_of(h->week0)) / 7, n = sqlite3_column_int64(q, 3);
+    if (w >= 0 && w < h->weeks) x->hist[w * 2 + 1] += n;
+    if (sqlite3_column_int(q, 2)) x->reads += n;
+  }
+  sqlite3_finalize(q);
+  qsort(h->row, h->n, sizeof *h->row, held_by_turns);
+}
+
+static void held_free(held_set *h) {
+  for (size_t i = 0; i < h->n; i++) {
+    free(h->row[i].project);
+    free(h->row[i].hist);
+  }
+  free(h->row);
+}
+
+typedef struct {
+  long id, again, group_size;
+  char *project, date[11], last[11], *text, *said, *turn, why[160];
+  int sug, quiet;
+  wordset ws;
+} proposal;
+
+/* One word of one proposal, kept sorted by word so a turn's words are looked up, not compared with each proposal. */
+typedef struct {
+  const char *w;
+  size_t member;
+} pword;
+typedef struct {
+  char *project;
+  pword *pw;
+  size_t npw, *member, nm;
+} rgroup;
+
+static int by_word(const void *a, const void *b) {
+  const pword *x = a, *y = b;
+  int c = strcmp(x->w, y->w);
+  return c ? c : (x->member > y->member) - (x->member < y->member);
+}
+
+static int proposal_order(const void *a, const void *b) {
+  const proposal *x = a, *y = b;
+  if (x->group_size != y->group_size) return x->group_size < y->group_size ? 1 : -1;
+  int c = strcmp(x->project, y->project);
+  if (c) return c;
+  if (x->again != y->again) return x->again < y->again ? 1 : -1;
+  c = strcmp(x->date, y->date);
+  return c ? c : (x->id > y->id) - (x->id < y->id);
+}
+
+/* The open proposals, each with the person's own words, how often they said much the same again,
+ * and a suggestion by fixed rules. Writes the JSON array; returns how many proposals there were
+ * and, in *repeated, how many were said again. */
+static long page_rules(sqlite3 *db, held_set *held, buf *out, long *repeated) {
+  proposal *p = NULL;
+  size_t n = 0;
+  sqlite3_stmt *q = db_prepare(db, "SELECT p.id, p.project, substr(coalesce(p.at, ''), 1, 10), p.text, c.body, p.turn FROM ctx_rule_proposal p"
+                                   " LEFT JOIN ctx_chunk c ON c.turn = p.turn WHERE p.status = 'open' ORDER BY p.id");
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    p = realloc(p, (n + 1) * sizeof *p);
+    if (!p) die("out of memory");
+    proposal *x = &p[n++];
+    memset(x, 0, sizeof *x);
+    x->id = sqlite3_column_int64(q, 0);
+    x->project = dup_text(sqlite3_column_text(q, 1));
+    snprintf(x->date, sizeof x->date, "%s", (const char *)sqlite3_column_text(q, 2));
+    x->text = squash((const char *)sqlite3_column_text(q, 3), 1000);
+    x->turn = dup_text(sqlite3_column_text(q, 5));
+    char *said = squash(sqlite3_column_text(q, 4) ? (const char *)sqlite3_column_text(q, 4) : "", 261);
+    x->said = squash(said, 260);
+    if (strcmp(said, x->said)) { /* cut: say so */
+      x->said = realloc(x->said, strlen(x->said) + 4);
+      if (!x->said) die("out of memory");
+      strcat(x->said, "\xe2\x80\xa6");
+    }
+    free(said);
+    words_of(x->text, &x->ws);
+  }
+  sqlite3_finalize(q);
+  for (size_t i = 0; i < n; i++)
+    for (size_t j = 0; j < n; j++) p[i].group_size += !strcmp(p[i].project, p[j].project);
+  /* how often the person typed much the same again: one pass over their turns in the projects with proposals */
+  rgroup *g = NULL;
+  size_t ng = 0;
+  for (size_t i = 0; i < n; i++) {
+    size_t k = 0;
+    while (k < ng && strcmp(g[k].project, p[i].project)) k++;
+    if (k == ng) {
+      g = realloc(g, (ng + 1) * sizeof *g);
+      if (!g) die("out of memory");
+      memset(&g[ng], 0, sizeof *g);
+      g[ng++].project = p[i].project;
+    }
+    g[k].member = realloc(g[k].member, (g[k].nm + 1) * sizeof *g[k].member);
+    if (!g[k].member) die("out of memory");
+    g[k].member[g[k].nm++] = i;
+    g[k].pw = realloc(g[k].pw, (g[k].npw + p[i].ws.n) * sizeof *g[k].pw);
+    if (!g[k].pw && p[i].ws.n) die("out of memory");
+    for (size_t w = 0; w < p[i].ws.n; w++) g[k].pw[g[k].npw++] = (pword){p[i].ws.w[w], i};
+  }
+  for (size_t k = 0; k < ng; k++) qsort(g[k].pw, g[k].npw, sizeof *g[k].pw, by_word);
+  size_t *hits = calloc(n + 1, sizeof *hits);
+  if (!hits) die("out of memory");
+  q = db_prepare(db, "SELECT project, substr(at, 1, 10), turn, body FROM ctx_chunk WHERE heading = 'user'"
+                     " AND project IN (SELECT project FROM ctx_rule_proposal WHERE status = 'open') AND substr(body, 1, 1) NOT IN ('<', '/')");
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    size_t k = 0;
+    while (k < ng && strcmp(g[k].project, (const char *)sqlite3_column_text(q, 0))) k++;
+    if (k == ng) continue;
+    wordset ws;
+    words_of((const char *)sqlite3_column_text(q, 3), &ws);
+    for (size_t w = 0; w < ws.n; w++) {
+      size_t lo = 0, hi = g[k].npw;
+      while (lo < hi) { /* first entry for this word */
+        size_t mid = (lo + hi) / 2;
+        if (strcmp(g[k].pw[mid].w, ws.w[w]) < 0) lo = mid + 1;
+        else hi = mid;
+      }
+      for (; lo < g[k].npw && !strcmp(g[k].pw[lo].w, ws.w[w]); lo++) hits[g[k].pw[lo].member]++;
+    }
+    words_free(&ws);
+    const char *turn = (const char *)sqlite3_column_text(q, 2), *at = (const char *)sqlite3_column_text(q, 1);
+    for (size_t m = 0; m < g[k].nm; m++) {
+      proposal *x = &p[g[k].member[m]];
+      size_t shared = hits[g[k].member[m]];
+      hits[g[k].member[m]] = 0;
+      if (shared < 3 || shared * 5 < 3 * x->ws.n || (turn && !strcmp(turn, x->turn))) continue; /* at least 3 words and 60% of its own */
+      x->again++;
+      if (at && strcmp(at, x->last) > 0) snprintf(x->last, sizeof x->last, "%s", at);
+    }
+  }
+  sqlite3_finalize(q);
+  free(hits);
+  for (size_t k = 0; k < ng; k++) {
+    free(g[k].pw);
+    free(g[k].member);
+  }
+  free(g);
+  *repeated = 0;
+  for (size_t i = 0; i < n; i++) {
+    proposal *x = &p[i];
+    const held_row *h = held_find(held, x->project, 0);
+    x->quiet = !h || h->turns30 == 0;
+    long dup = 0;
+    for (size_t j = 0; j < i && !dup; j++) { /* an earlier proposal in the same project with half its words */
+      if (strcmp(p[j].project, x->project) || !x->ws.n) continue;
+      size_t both = words_shared(&x->ws, &p[j].ws);
+      if (both * 2 >= x->ws.n + p[j].ws.n - both) dup = p[j].id;
+    }
+    if (dup) {
+      x->sug = 2;
+      snprintf(x->why, sizeof x->why, "Near-duplicate of #%ld in the same project", dup);
+    } else if (x->again >= 2) {
+      x->sug = 0;
+      snprintf(x->why, sizeof x->why, "You said much the same thing %ld more times, last on %s", x->again, x->last);
+    } else if (x->again == 1) {
+      x->sug = -1;
+      snprintf(x->why, sizeof x->why, "You said much the same thing once more: weak evidence either way");
+    } else if (x->quiet) {
+      x->sug = 1;
+      snprintf(x->why, sizeof x->why, "The project has been quiet for 30 days: nothing to apply it to yet");
+    } else {
+      x->sug = -1;
+      snprintf(x->why, sizeof x->why, "Said once: only you know if it still holds");
+    }
+    *repeated += x->again > 0;
+  }
+  qsort(p, n, sizeof *p, proposal_order);
+  buf_str(out, "[");
+  for (size_t i = 0; i < n; i++) {
+    proposal *x = &p[i];
+    buf_fmt(out, "%s{\"id\":%ld,\"t\":", i ? "," : "", x->id);
+    js_str(out, x->text);
+    buf_str(out, ",\"p\":");
+    js_str(out, x->project);
+    buf_str(out, ",\"d\":");
+    js_str(out, x->date);
+    buf_str(out, ",\"said\":");
+    js_str(out, x->said);
+    buf_fmt(out, ",\"again\":%ld,\"last\":", x->again);
+    js_str(out, x->last);
+    buf_fmt(out, ",\"quiet\":%s,\"s\":", x->quiet ? "true" : "false");
+    if (x->sug < 0) buf_str(out, "null");
+    else buf_fmt(out, "%d", x->sug);
+    buf_str(out, ",\"why\":");
+    js_str(out, x->why);
+    buf_str(out, "}");
+    free(x->project);
+    free(x->text);
+    free(x->said);
+    free(x->turn);
+    words_free(&x->ws);
+  }
+  buf_str(out, "]");
+  free(p);
+  return (long)n;
+}
+
+typedef struct {
+  const char *doc, *raw; /* the file and the quote as stored, which identify the passage */
+  char *head, *quote;    /* as shown */
+  const char *path;      /* inside the registered directory when it is in one */
+  char date[11];         /* when the file was last modified, local time */
+  int cur;
+} passage;
+
+typedef struct {
+  char *json;
+  long n;
+  size_t seq;
+} conf_entry;
+
+typedef struct {
+  long groups, pairs, gap90;
+  char project[200], oldest[11];
+  int mixed;
+} conf_tot;
+
+static int conf_order(const void *a, const void *b) {
+  const conf_entry *x = a, *y = b;
+  return x->n != y->n ? (x->n < y->n) - (x->n > y->n) : (x->seq > y->seq) - (x->seq < y->seq);
+}
+
+static const char *base_name(const char *path) {
+  const char *s = strrchr(path, '/');
+  return s ? s + 1 : path;
+}
+
+/* The open conflicts, grouped as ctx docs conflicts groups them, each passage once with the date its
+ * file was last modified on disk. Nothing is dropped here: a pair whose words left its file is only left out. */
+static void page_conf(sqlite3 *db, buf *out, conf_tot *tot) {
+  size_t n = 0, nd = 0, ne = 0;
+  conflict_row *r = conflicts_load(db, NULL, 0, &n);
+  char **dirs = NULL; /* registered directories, longest first, so a nested one wins */
+  sqlite3_stmt *q = db_prepare(db, "SELECT dir FROM ctx_docs_dir ORDER BY length(dir) DESC");
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    dirs = realloc(dirs, (nd + 1) * sizeof *dirs);
+    if (!dirs) die("out of memory");
+    dirs[nd++] = dup_text(sqlite3_column_text(q, 0));
+  }
+  sqlite3_finalize(q);
+  conf_entry *e = NULL;
+  for (size_t i = 0; i < n; i++) {
+    tot->pairs += r[i].group >= 0;
+    if (r[i].group != (int)i) continue;
+    passage *ps = NULL;
+    size_t np = 0;
+    for (size_t j = i; j < n; j++) {
+      if (r[j].group != (int)i) continue;
+      for (int k = 0; k < 2; k++) {
+        size_t m = 0;
+        while (m < np && (strcmp(ps[m].doc, r[j].doc[k]) || strcmp(ps[m].raw, r[j].quote[k]))) m++;
+        if (m == np) {
+          ps = realloc(ps, (np + 1) * sizeof *ps);
+          if (!ps) die("out of memory");
+          passage *x = &ps[np++];
+          memset(x, 0, sizeof *x);
+          x->doc = r[j].doc[k];
+          x->raw = r[j].quote[k];
+          x->head = squash(r[j].head[k], 1000);
+          x->quote = squash(r[j].quote[k], 300);
+          x->path = x->doc;
+          for (size_t d = 0; d < nd; d++) {
+            size_t l = strlen(dirs[d]);
+            if (!strncmp(x->doc, dirs[d], l) && x->doc[l] == '/') {
+              x->path = x->doc + l + 1;
+              break;
+            }
+          }
+          struct stat st;
+          if (!stat(x->doc, &st)) {
+            struct tm tm;
+            localtime_r(&st.st_mtime, &tm);
+            strftime(x->date, sizeof x->date, "%Y-%m-%d", &tm);
+          }
+        }
+        ps[m].cur |= r[j].cur == k;
+      }
+    }
+    int plan = 0, any_cur = 0;
+    const passage *first_cur = NULL, *newest = NULL, *oldest = NULL;
+    for (size_t m = 0; m < np; m++) {
+      static const char *const drafts[] = {"plan", "mockup", "audit", "proposal", "draft"};
+      for (size_t d = 0; d < sizeof drafts / sizeof *drafts; d++) plan |= strcasestr(ps[m].path, drafts[d]) != NULL;
+      if (ps[m].cur && !first_cur) first_cur = &ps[m];
+      any_cur |= ps[m].cur;
+      if (!ps[m].date[0]) continue;
+      if (!newest || strcmp(ps[m].date, newest->date) > 0) newest = &ps[m];
+      if (!oldest || strcmp(ps[m].date, oldest->date) < 0) oldest = &ps[m];
+      if (!*tot->oldest || strcmp(ps[m].date, tot->oldest) < 0) snprintf(tot->oldest, sizeof tot->oldest, "%s", ps[m].date);
+    }
+    long gap = newest ? day_of(newest->date) - day_of(oldest->date) : 0;
+    int sug = -1;
+    char why[300];
+    if (plan) {
+      sug = 1;
+      snprintf(why, sizeof why, "One side is a plan, mockup, audit, proposal or draft: likely change over time");
+    } else if (np >= 3) {
+      sug = 0;
+      snprintf(why, sizeof why, "One line contradicted in %zu places: a quick fix", np - 1);
+    } else if (first_cur) {
+      sug = 0;
+      snprintf(why, sizeof why, "The judge reads %.200s as current", base_name(first_cur->path));
+    } else {
+      snprintf(why, sizeof why, "No side marked current: needs a look at the code");
+    }
+    if (sug < 0 && gap >= 30) {
+      sug = 0;
+      snprintf(why, sizeof why, "%.120s was last changed %ld days after %.120s", base_name(newest->path), gap, base_name(oldest->path));
+    }
+    tot->gap90 += gap >= 90;
+    if (!*tot->project) snprintf(tot->project, sizeof tot->project, "%s", r[i].project);
+    else tot->mixed |= strcmp(tot->project, r[i].project) != 0;
+    buf j = {0};
+    char *id = conflict_id(&r[i]);
+    buf_str(&j, "{\"id\":");
+    js_str(&j, id);
+    free(id);
+    buf_str(&j, ",\"t\":");
+    char *about = squash(r[i].about, 1000);
+    js_str(&j, about);
+    free(about);
+    buf_str(&j, ",\"p\":");
+    js_str(&j, r[i].project);
+    buf_fmt(&j, ",\"n\":%zu,\"ps\":[", np);
+    for (size_t m = 0; m < np; m++) {
+      buf_str(&j, m ? ",[" : "[");
+      js_str(&j, ps[m].path);
+      buf_str(&j, ",");
+      js_str(&j, ps[m].head);
+      buf_str(&j, ",");
+      js_str(&j, ps[m].quote);
+      buf_fmt(&j, ",%s,", ps[m].cur ? "true" : "false");
+      js_str(&j, ps[m].date);
+      buf_str(&j, "]");
+    }
+    buf_str(&j, "],\"s\":");
+    if (sug < 0) buf_str(&j, "null");
+    else buf_fmt(&j, "%d", sug);
+    buf_str(&j, ",\"why\":");
+    js_str(&j, why);
+    buf_fmt(&j, ",\"gap\":%ld,\"old\":", gap);
+    js_str(&j, oldest ? oldest->date : "");
+    buf_str(&j, ",\"new\":");
+    js_str(&j, newest ? newest->date : "");
+    buf_fmt(&j, ",\"agree\":%s,\"files\":[", any_cur && newest && newest->cur ? "true" : "false");
+    const char **names = malloc(np * sizeof *names); /* the first three file names, sorted, each once */
+    if (!names) die("out of memory");
+    for (size_t m = 0; m < np; m++) names[m] = base_name(ps[m].path);
+    qsort(names, np, sizeof *names, cmp_word);
+    for (size_t m = 0, shown = 0; m < np && shown < 3; m++) {
+      if (m && !strcmp(names[m], names[m - 1])) continue;
+      buf_str(&j, shown++ ? "," : "");
+      js_str(&j, names[m]);
+    }
+    free(names);
+    buf_str(&j, "]}");
+    e = realloc(e, (ne + 1) * sizeof *e);
+    if (!e) die("out of memory");
+    e[ne] = (conf_entry){j.p, (long)np, ne};
+    ne++;
+    for (size_t m = 0; m < np; m++) {
+      free(ps[m].head);
+      free(ps[m].quote);
+    }
+    free(ps);
+  }
+  qsort(e, ne, sizeof *e, conf_order);
+  buf_str(out, "[");
+  for (size_t i = 0; i < ne; i++) {
+    buf_str(out, i ? "," : "");
+    buf_str(out, e[i].json);
+    free(e[i].json);
+  }
+  buf_str(out, "]");
+  free(e);
+  tot->groups = (long)ne;
+  for (size_t d = 0; d < nd; d++) free(dirs[d]);
+  free(dirs);
+  conflicts_free(r, n);
+}
+
+/* What ctx does on its own, in the order a person met it. Each shows only if it ran in the call log. */
+static const struct {
+  const char *id, *title, *runs, *why;
+  int keep, lock;
+} hook_info[] = {
+    {"hook", "Save each message to the archive", "when a reply ends, and when a session starts, ends or is compacted",
+     "Cannot be removed here: everything else on this page depends on it", 1, 1},
+    {"rules-offer", "Tell each new session what ctx has", "when a session or subagent starts, and after a compaction",
+     "In tests, agents answered five times as many questions about past work when told", 1, 0},
+    {"gate", "Remind a session that was never told, once", "before a search, in a session the session-start note did not reach",
+     "In tests it nearly quadrupled right answers where the note was missing", 1, 0},
+    {"artifacts-keep", "Keep a copy of each page you publish", "after a page is published", NULL, 0, 0},
+    {"ticket-offer", "Offer ready tickets when a session starts", "when a session starts", NULL, 0, 0},
+    {"docs-nudge", "Show a document's recorded conflicts when it is opened", "when an agent reads or edits a document", NULL, 0, 0},
+    {"recall", "Point a session at the archive when you refer to earlier work", "when your message opens with a reference to earlier work", NULL, 0, 0},
+    {"inject", "Show matching earlier work with your message", "when you send a message", NULL, 0, 0}};
+
+static void page_hooks(sqlite3 *db, const held_set *held, long conflicts, buf *out) {
+  call_stat st[16];
+  size_t names = calls_read(time(NULL) - 7 * 86400, st, 16);
+  long turns30 = 0, active = 0;
+  for (size_t i = 0; i < held->n; i++) {
+    turns30 += held->row[i].turns30;
+    active += held->row[i].turns30 > 0;
+  }
+  long kept = 0, ready = 0;
+  sqlite3_stmt *q = db_prepare(db, "SELECT (SELECT count(*) FROM ctx_artifact), (SELECT count(*) FROM ctx_ready_ticket)");
+  if (sqlite3_step(q) == SQLITE_ROW) {
+    kept = sqlite3_column_int64(q, 0);
+    ready = sqlite3_column_int64(q, 1);
+  }
+  sqlite3_finalize(q);
+  buf_str(out, "[");
+  int shown = 0;
+  for (size_t h = 0; h < sizeof hook_info / sizeof *hook_info; h++) {
+    const call_stat *c = NULL;
+    for (size_t k = 0; k < names; k++)
+      if (!strcmp(st[k].name, hook_info[h].id)) c = &st[k];
+    if (!c) continue;
+    long cut = c->started > c->ended ? c->started - c->ended : 0, runs = (long)c->n + cut;
+    if (!runs) continue;
+    long med = c->n ? c->ms[c->n / 2] : 0, p95 = c->n ? c->ms[c->n * 95 / 100] : 0, mx = c->n ? c->ms[c->n - 1] : 0;
+    char eff[200] = "", why[300] = "", cost[40];
+    const char *id = hook_info[h].id;
+    long total_ms = runs * med;
+    if (total_ms < 1000) snprintf(cost, sizeof cost, "under a second");
+    else snprintf(cost, sizeof cost, "%ld seconds", total_ms / 1000);
+    if (!strcmp(id, "hook")) snprintf(eff, sizeof eff, "Saved %ld turns from %ld projects in the last 30 days", turns30, active);
+    else if (!strcmp(id, "gate")) {
+      long turned = gate_turned(7);
+      if (turned >= 0) snprintf(eff, sizeof eff, "Stopped the first search in %ld session%s this week to show them the note", turned, turned == 1 ? "" : "s");
+    } else if (!strcmp(id, "artifacts-keep")) snprintf(eff, sizeof eff, "%ld page versions are on record", kept);
+    else if (!strcmp(id, "ticket-offer")) snprintf(eff, sizeof eff, "%ld tickets are ready. ctx does not record whether an offered ticket was taken up", ready);
+    else if (!strcmp(id, "docs-nudge")) snprintf(eff, sizeof eff, "%ld document conflicts are on record", conflicts);
+    if (!strcmp(id, "gate")) snprintf(why, sizeof why, "%s; it costs %s a week in all", hook_info[h].why, cost);
+    else if (hook_info[h].why) snprintf(why, sizeof why, "%s", hook_info[h].why);
+    buf_fmt(out, "%s{\"id\":\"%s\",\"t\":", shown++ ? "," : "", id);
+    js_str(out, hook_info[h].title);
+    buf_str(out, ",\"ev\":");
+    js_str(out, hook_info[h].runs);
+    buf_fmt(out, ",\"runs\":%ld,\"med\":%ld,\"p95\":%ld,\"mx\":%ld,\"eff\":", runs, med, p95, mx);
+    js_str(out, eff);
+    buf_str(out, ",\"s\":");
+    if (hook_info[h].keep) buf_str(out, "0");
+    else buf_str(out, "null");
+    buf_str(out, ",\"why\":");
+    js_str(out, hook_info[h].keep ? why : "ctx has no evidence either way");
+    if (hook_info[h].lock) buf_str(out, ",\"lock\":true");
+    buf_str(out, "}");
+  }
+  buf_str(out, "]");
+  for (size_t k = 0; k < names; k++) free(st[k].ms);
+}
+
+/* Every number and list the page's script reads, as one JSON object. */
+static void page_data(sqlite3 *db, buf *out) {
+  char today[11], this_week[11];
+  sqlite3_stmt *q = db_prepare(db, "SELECT date('now'), date('now', '-6 days', 'weekday 1')");
+  if (sqlite3_step(q) != SQLITE_ROW) die("%s", sqlite3_errmsg(db));
+  snprintf(today, sizeof today, "%s", (const char *)sqlite3_column_text(q, 0));
+  snprintf(this_week, sizeof this_week, "%s", (const char *)sqlite3_column_text(q, 1));
+  sqlite3_finalize(q);
+  held_set held = {0};
+  held_load(db, this_week, &held);
+  buf rules = {0}, conf = {0}, hooks = {0};
+  long repeated = 0, nrules = page_rules(db, &held, &rules, &repeated);
+  conf_tot ct = {0};
+  page_conf(db, &conf, &ct);
+  page_hooks(db, &held, ct.groups, &hooks);
+  long accepted = db_int(db, "SELECT count(*) FROM ctx_rule_proposal WHERE status = 'accepted'");
+  long rejected = db_int(db, "SELECT count(*) FROM ctx_rule_proposal WHERE status = 'rejected'");
+  buf_str(out, "{\"rules\":");
+  buf_str(out, rules.p ? rules.p : "[]");
+  buf_str(out, ",\"conf\":");
+  buf_str(out, conf.p ? conf.p : "[]");
+  buf_str(out, ",\"held\":[");
+  long turns = 0, searched = 0;
+  double bytes = 0;
+  for (size_t i = 0; i < held.n; i++) {
+    const held_row *x = &held.row[i];
+    turns += x->turns;
+    bytes += x->bytes;
+    searched += x->reads > 0;
+    buf_str(out, i ? ",{\"id\":" : "{\"id\":");
+    js_str(out, x->project);
+    buf_str(out, ",\"t\":");
+    js_str(out, x->project);
+    buf_fmt(out, ",\"days\":%ld,\"turns\":%ld,\"mb\":%.1f,\"last\":", x->days, x->turns, x->bytes / 1e6);
+    js_str(out, x->last);
+    buf_str(out, ",\"first\":");
+    js_str(out, x->first);
+    buf_fmt(out, ",\"reads\":%ld,\"w\":[", x->reads);
+    for (long k = held.weeks - 4; k < held.weeks; k++) buf_fmt(out, "%s%ld", k > held.weeks - 4 ? "," : "", k >= 0 ? x->hist[k * 2] : 0);
+    buf_str(out, "],\"s\":0,\"why\":");
+    char why[160];
+    if (x->reads > 0) snprintf(why, sizeof why, "An agent searched it %ld time%s in 30 days", x->reads, x->reads == 1 ? "" : "s");
+    else snprintf(why, sizeof why, "No agent searched it in 30 days: that is not proof it has no value");
+    js_str(out, why);
+    buf_str(out, ",\"hist\":[");
+    for (long k = 0; k < held.weeks; k++) buf_fmt(out, "%s[%ld,%ld]", k ? "," : "", x->hist[k * 2], x->hist[k * 2 + 1]);
+    buf_str(out, "]}");
+  }
+  buf_str(out, "],\"hooks\":");
+  buf_str(out, hooks.p ? hooks.p : "[]");
+  buf_str(out, ",\"weeks\":[");
+  for (long k = 0; k < held.weeks; k++) {
+    char w[11];
+    day_str(day_of(held.week0) + 7 * k, w);
+    buf_fmt(out, "%s\"%s\"", k ? "," : "", w);
+  }
+  buf_fmt(out, "],\"span\":[\"%.8s01\",\"%s\"],\"tot\":{\"today\":\"%s\",\"weeksn\":%ld,\"rules\":%ld,\"again\":%ld,\"accepted\":%ld,\"rejected\":%ld,"
+               "\"conf\":%ld,\"pairs\":%ld,\"gap90\":%ld,\"cproj\":",
+          *ct.oldest ? ct.oldest : today, today, today, held.weeks, nrules, repeated, accepted, rejected, ct.groups, ct.pairs, ct.gap90);
+  js_str(out, ct.mixed ? "" : ct.project);
+  buf_fmt(out, ",\"held\":%zu,\"read\":%ld,\"turns\":%ld,\"mb\":%.0f}}", held.n, searched, turns, bytes / 1e6);
+  free(rules.p);
+  free(conf.p);
+  free(hooks.p);
+  held_free(&held);
+}
+
+/* ctx page [--out FILE]: writes the page to FILE, by default beside the database, and prints where. */
+static int cmd_page_write(int argc, char **argv) {
+  const char *out = NULL;
+  for (int i = 0; i < argc; i++) {
+    if (!strcmp(argv[i], "--out") && i + 1 < argc && !out) out = argv[++i];
+    else die("usage: ctx page [--out FILE] | apply [FILE] [--yes]");
+  }
+  sqlite3 *db = ctx_open();
+  buf data = {0}, html = {0};
+  page_data(db, &data);
+  sqlite3_close(db);
+  const char *mark = strstr(ctx_page, "/*DATA*/");
+  if (!mark) die("the page has no place for its data");
+  buf_add(&html, ctx_page, (size_t)(mark - ctx_page));
+  buf_add(&html, data.p, data.n);
+  buf_str(&html, mark + strlen("/*DATA*/"));
+  char *dflt = out ? NULL : sidecar(".page.html");
+  const char *path = out ? out : dflt;
+  char tmp[4400];
+  snprintf(tmp, sizeof tmp, "%s.tmp%d", path, (int)getpid());
+  int fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0600);
+  FILE *f = fd >= 0 ? fdopen(fd, "wb") : NULL;
+  if (!f || fwrite(html.p, 1, html.n, f) != html.n || fclose(f) || rename(tmp, path)) {
+    unlink(tmp);
+    die("cannot write %s: %s", path, strerror(errno));
+  }
+  puts(path);
+  free(dflt);
+  free(data.p);
+  free(html.p);
+  return 0;
+}
+
+/* ctx page apply: the commands the page produces, each checked against the few forms the page can emit and
+ * then run as this program. A line is split with shell single-quote rules and nothing else, so no argument
+ * is ever seen by a shell. */
+typedef enum { ACT_ACCEPT, ACT_REJECT, ACT_DISMISS, ACT_TICKET, ACT_EXCLUDE, ACT_FORGET, ACT_KINDS } act_kind;
+
+typedef struct {
+  act_kind kind;
+  char **v; /* the words after "ctx", ending in NULL */
+  int n;
+  size_t line;
+} action;
+
+/* Splits a line into words: plain characters, 'quoted text', and \' for a quote. Anything else
+ * unquoted fails, as does a quote left open. Four spaces and # end the line. */
+static int sh_words(const char *s, char ***out, int *count) {
+  char **v = NULL;
+  int n = 0;
+  for (;;) {
+    while (*s == ' ' || *s == '\t') {
+      if (!strncmp(s, "    #", 5)) goto done;
+      s++;
+    }
+    if (!*s) break;
+    buf w = {0};
+    for (; *s && *s != ' ' && *s != '\t'; ) {
+      if (*s == '\'') {
+        for (s++; *s && *s != '\''; s++) buf_add(&w, s, 1);
+        if (!*s) {
+          free(w.p);
+          goto bad;
+        }
+        s++;
+      } else if (*s == '\\' && s[1] == '\'') {
+        buf_add(&w, "'", 1);
+        s += 2;
+      } else if (isalnum((unsigned char)*s) || strchr("._/:=@%+,-", *s)) {
+        buf_add(&w, s++, 1);
+      } else {
+        free(w.p);
+        goto bad;
+      }
+    }
+    v = realloc(v, (size_t)(n + 2) * sizeof *v);
+    if (!v) die("out of memory");
+    v[n++] = w.p ? w.p : dup_text((const unsigned char *)"");
+  }
+done:
+  if (v) v[n] = NULL;
+  *out = v;
+  *count = n;
+  return 0;
+bad:
+  for (int i = 0; i < n; i++) free(v[i]);
+  free(v);
+  return -1;
+}
+
+static int all_of(const char *s, int (*is)(int)) {
+  if (!*s) return 0;
+  for (; *s; s++)
+    if (!is((unsigned char)*s)) return 0;
+  return 1;
+}
+
+static int is_lower_hex(int c) { return isdigit(c) || (c >= 'a' && c <= 'f'); }
+
+/* Which of the six forms the words are, if any. v[0] is "ctx". */
+static int action_kind(char **v, int n, act_kind *kind) {
+  if (n < 3 || strcmp(v[0], "ctx")) return 0;
+  const char *a = v[1], *b = v[2];
+  if (!strcmp(a, "rules") && !strcmp(b, "accept") && (n == 4 || (n == 6 && !strcmp(v[4], "--text") && *v[5])) && all_of(v[3], isdigit)) *kind = ACT_ACCEPT;
+  else if (!strcmp(a, "rules") && !strcmp(b, "reject") && n == 4 && all_of(v[3], isdigit)) *kind = ACT_REJECT;
+  else if (!strcmp(a, "docs") && !strcmp(b, "conflicts") && n >= 5 && !strcmp(v[3], "dismiss") && strlen(v[4]) == 8 && all_of(v[4], is_lower_hex) &&
+           (n == 5 || (n == 7 && !strcmp(v[5], "--reason") && *v[6]))) *kind = ACT_DISMISS;
+  else if (!strcmp(a, "ticket") && !strcmp(b, "new") && n == 10 && *v[3] && !strcmp(v[4], "--type") && !strcmp(v[5], "Bug") && !strcmp(v[6], "--project") &&
+           *v[7] && v[7][0] != '-' && !strcmp(v[8], "--body") && *v[9]) *kind = ACT_TICKET;
+  else if ((!strcmp(a, "exclude") || !strcmp(a, "forget")) && n == 4 && !strcmp(b, "--project") && *v[3] && v[3][0] != '-') *kind = !strcmp(a, "exclude") ? ACT_EXCLUDE : ACT_FORGET;
+  else return 0;
+  return 1;
+}
+
+static void action_say(const action *a, buf *out) {
+  char **v = a->v;
+  switch (a->kind) {
+  case ACT_ACCEPT: buf_fmt(out, "accept rule %s%s%s", v[2], a->n == 5 ? " with the wording: " : "", a->n == 5 ? v[4] : ""); break;
+  case ACT_REJECT: buf_fmt(out, "reject rule %s", v[2]); break;
+  case ACT_DISMISS: buf_fmt(out, "dismiss conflict %s as not a conflict%s%s", v[3], a->n == 6 ? " (reason: " : "", a->n == 6 ? v[5] : ""); if (a->n == 6) buf_str(out, ")"); break;
+  case ACT_TICKET: buf_fmt(out, "file a ticket in project %s: %s", v[6], v[2]); break;
+  case ACT_EXCLUDE: buf_fmt(out, "stop archiving project %s; what is held stays", v[2]); break;
+  default: buf_fmt(out, "forget project %s: its sessions leave search for good", v[2]); break;
+  }
+}
+
+static int cmd_page_apply(int argc, char **argv) {
+  const char *file = NULL;
+  int yes = 0;
+  for (int i = 0; i < argc; i++) {
+    if (!strcmp(argv[i], "--yes")) yes = 1;
+    else if (!file && argv[i][0] != '-') file = argv[i];
+    else die("usage: ctx page apply [FILE] [--yes]");
+  }
+  char *text;
+  if (file) {
+    size_t len = 0;
+    text = slurp(file, &len);
+    if (!text) die("cannot read %s", file);
+  } else {
+    buf in = {0};
+    char chunk[4096];
+    size_t got;
+    while ((got = fread(chunk, 1, sizeof chunk, stdin)) > 0) buf_add(&in, chunk, got);
+    if (!in.p) buf_add(&in, "", 0);
+    text = in.p;
+  }
+  /* every line is checked before any is run */
+  action *act = NULL;
+  size_t na = 0, line = 0;
+  for (char *s = text, *next; *s; s = next) {
+    char *eol = strchr(s, '\n');
+    next = eol ? eol + 1 : s + strlen(s);
+    if (eol) *eol = 0;
+    line++;
+    size_t l = strlen(s);
+    if (l && s[l - 1] == '\r') s[--l] = 0;
+    while (*s == ' ' || *s == '\t') s++;
+    if (!*s || *s == '#') continue;
+    char **v;
+    int n;
+    act_kind kind = ACT_ACCEPT;
+    if (sh_words(s, &v, &n) || !n || !action_kind(v, n, &kind)) {
+      char *shown = squash(s, 80);
+      die("line %zu is not something ctx page apply may run, so nothing was run: %s", line, shown);
+    }
+    act = realloc(act, (na + 1) * sizeof *act);
+    if (!act) die("out of memory");
+    act[na++] = (action){kind, v + 1, n - 1, line};
+  }
+  if (!na) {
+    puts("nothing to do");
+    return 0;
+  }
+  static const char *const noun[ACT_KINDS][3] = {{"rule", "rules", "to accept"}, {"rule", "rules", "to reject"}, {"conflict", "conflicts", "to dismiss"},
+                                                {"ticket", "tickets", "to file"}, {"project", "projects", "to stop archiving"}, {"project", "projects", "to forget"}};
+  size_t count[ACT_KINDS] = {0};
+  buf say = {0};
+  for (size_t i = 0; i < na; i++) {
+    count[act[i].kind]++;
+    if (!yes) {
+      action_say(&act[i], &say);
+      buf_str(&say, "\n");
+    }
+  }
+  if (!yes) {
+    fputs(say.p, stdout);
+    printf("%zu action%s:", na, na == 1 ? "" : "s");
+    for (int k = 0, first = 1; k < ACT_KINDS; k++) {
+      if (!count[k]) continue;
+      printf("%s %zu %s %s", first ? "" : ",", count[k], noun[k][count[k] == 1 ? 0 : 1], noun[k][2]);
+      first = 0;
+    }
+    puts("\nnothing was changed; run again with --yes to do it");
+    return 0;
+  }
+  size_t done = 0;
+  for (; done < na; done++) {
+    buf desc = {0}, result = {0};
+    action_say(&act[done], &desc);
+    char **av = malloc((size_t)(act[done].n + 2) * sizeof *av);
+    if (!av) die("out of memory");
+    av[0] = (char *)self_path;
+    memcpy(av + 1, act[done].v, (size_t)(act[done].n + 1) * sizeof *av);
+    int rc = self_run(av, &result);
+    free(av);
+    printf("%zu. %s\n", done + 1, desc.p);
+    for (char *l = result.p; l && *l;) {
+      char *eol = strchr(l, '\n');
+      printf("   %.*s\n", (int)(eol ? eol - l : (long)strlen(l)), l);
+      l = eol ? eol + 1 : NULL;
+    }
+    if (rc) {
+      printf("action %zu failed (exit %d); %zu of %zu actions done, the rest were not run\n", done + 1, rc, done, na);
+      return 1;
+    }
+  }
+  printf("%zu of %zu actions done\n", done, na);
+  return 0;
+}
+
+static int cmd_page(int argc, char **argv) {
+  if (argc >= 1 && !strcmp(argv[0], "apply")) return cmd_page_apply(argc - 1, argv + 1);
+  return cmd_page_write(argc, argv);
+}
+
 static int cmd_rules(int argc, char **argv) {
   if (argc >= 1 && !strcmp(argv[0], "offer")) return rules_offer();
   sqlite3 *db = ctx_open();
@@ -8319,6 +9360,8 @@ static int usage(void) {
         "       ctx status\n"
         "       ctx remember TEXT [--project P] [--until DATE] [--from TURN]\n"
         "       ctx decisions [--open] [--all] [--limit N]\n"
+        "       ctx page [--out FILE]\n"
+        "       ctx page apply [FILE] [--yes]\n"
         "       ctx exclude [DIR | --remove DIR | --project P | --remove --project P]\n"
         "       ctx forget [SESSION | --project P]\n"
         "       ctx artifacts [--all] [--limit N] [WORDS...] | show URL | keep\n"
@@ -8370,6 +9413,7 @@ int main(int argc, char **argv) {
   if (argc >= 2 && !strcmp(argv[1], "forget")) return cmd_forget(argc - 2, argv + 2);
   if (argc >= 2 && !strcmp(argv[1], "artifacts")) return cmd_artifacts(argc - 2, argv + 2);
   if (argc >= 2 && !strcmp(argv[1], "rules")) return cmd_rules(argc - 2, argv + 2);
+  if (argc >= 2 && !strcmp(argv[1], "page")) return cmd_page(argc - 2, argv + 2);
   return usage();
 }
 #endif
