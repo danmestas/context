@@ -247,6 +247,14 @@ contradicted in five places appears once, with every passage beneath it.
 - It is never complete: on 170 documents, three runs found 52 conflicts between
   them and only 10 in all three. Read it as a list to work through, not a check
   that passes.
+- A project with conflicts on record says so in the note `ctx rules offer` gives
+  at session start: one line with the count, telling the agent to run `ctx docs
+  conflicts` before relying on what a document says. On 46 questions about
+  disputed facts in a private repository, agents pointed out the disagreement in
+  44 answers with that line and in 12 without it. On 60 ordinary questions about
+  the same documents it changed no scores and cost one more command (13% more,
+  1.6 s); about one answer in five then mentioned a dispute that did not bear on
+  the question, and a sentence asking it not to made no difference.
 - On those 170 documents a full double screening is about 9,000 pairs, an hour
   and a few dollars of model use. Their text goes to whatever the two commands
   call.

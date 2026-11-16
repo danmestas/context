@@ -1376,6 +1376,11 @@ CTX_CLASSIFY="$T/screen.sh" CTX_JUDGE="$T/confirm.sh" "$CTX" docs conflicts --ru
 CTX_CLASSIFY="$T/screen.sh" CTX_JUDGE="$T/confirm.sh" "$CTX" docs conflicts --run | grep -q '^0 pairs screened' || fail "and not a third time"
 [ "$(wc -l < "$T/screen.log" | tr -d ' ')" = 2 ] || fail "three pairs go to the screen in one call: $(wc -l < "$T/screen.log")"
 [ "$("$CTX" docs conflicts | tail -1)" = "1 conflict between documents" ] || fail "finding it again does not list it twice"
+# A project with recorded conflicts says so at session start, so an agent checks before relying on a document.
+mkdir -p "$T/demo"
+printf '{"hook_event_name":"SessionStart","source":"startup","session_id":"dc-1","cwd":"%s"}' "$T/demo" | (cd "$T/demo" && "$CTX" rules offer) > "$T/dn.txt"
+grep -q '1 pair of passages recorded where this project.s documents disagree' "$T/dn.txt" && grep -q 'ctx docs conflicts' "$T/dn.txt" || fail "the session-start note mentions recorded conflicts: $(cat "$T/dn.txt")"
+printf '{"hook_event_name":"SessionStart","source":"startup","session_id":"dc-2","cwd":"%s"}' "$T/gw/empty" | (cd "$T/noscan" && "$CTX" rules offer) | grep -q 'documents disagree' && fail "a project with no recorded conflicts says nothing of them"
 # A second passage that disagrees with the same line is the same conflict, shown with it.
 printf '# Ledger questions\n\n## How many\n\nPeople often ask how many postings a single request can return from the pangolin ledger for one tenant, and whether the console and the command line agree. The pangolin ledger list limit is 500 entries for each tenant.\n' > "$T/repo/docs/guide/faq.md"
 "$CTX" docs scan >/dev/null
