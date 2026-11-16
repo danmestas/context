@@ -8437,7 +8437,7 @@ static void held_load(sqlite3 *db, const char *this_week, held_set *h) {
     if (sqlite3_column_int(q, 2)) x->reads += n;
   }
   sqlite3_finalize(q);
-  qsort(h->row, h->n, sizeof *h->row, held_by_turns);
+  if (h->n) qsort(h->row, h->n, sizeof *h->row, held_by_turns); /* an empty archive has no rows, and no array to sort */
 }
 
 static void held_free(held_set *h) {
