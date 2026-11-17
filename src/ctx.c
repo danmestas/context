@@ -7003,7 +7003,10 @@ static int rules_offer(void) {
   static const char tent_head[] = "Things the user said more than once recently, in different sessions. Follow them unless the user says"
                                   " otherwise; each lapses when the user stops saying it:";
   buf tent = {0};
-  if (sqlite3_prepare_v2(db, "SELECT substr(" PROPOSAL_LINE("p.") ", 1, 300), " PROPOSAL_SAID_TIMES("p.") ", " PROPOSAL_LAPSES("p.")
+  /* Evidence is retained for research, but the audit found scope loss in promoted rules.
+   * Automatic delivery stays off unless explicitly enabled in an isolated experiment. */
+  if (db_int(db, "SELECT coalesce((SELECT value = '1' FROM ctx_meta WHERE key = 'tentative_serving'), 0)") &&
+      sqlite3_prepare_v2(db, "SELECT substr(" PROPOSAL_LINE("p.") ", 1, 300), " PROPOSAL_SAID_TIMES("p.") ", " PROPOSAL_LAPSES("p.")
                              " FROM ctx_rule_proposal p WHERE " PROPOSAL_TENTATIVE("p.") " AND p.project = ?1"
                              " ORDER BY " PROPOSAL_LAST_SAID("p.") " DESC LIMIT 5", -1, &q, NULL) == SQLITE_OK) {
     sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);

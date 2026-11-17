@@ -429,8 +429,10 @@ and Haiku agreed with you about 72% of the time.
 
 A proposal you say again, in another session, becomes a tentative rule. `ctx rules`
 lists it after the rules in force, marked `tentative` with how many times you said it
-and when it lapses; `ctx rules proposed` marks it too, and the session-start note gives
-the agent up to five of them to follow unless you say otherwise. It lapses 30 days after
+and when it lapses; `ctx rules proposed` marks it too. These are unreviewed candidates,
+not instructions: automatic session-start delivery is disabled. An independent audit
+found that promotion could drop conditions and confuse related topics with repeated
+instructions. Repeat evidence is kept for further benchmarking. It lapses 30 days after
 you last said it, counted in the archive's own time, so a machine left off lapses
 nothing. Only accepting it makes it permanent; a rejected one is never tentative. The
 classifier does the checking during `ctx rules propose`: it is shown each open proposal

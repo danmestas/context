@@ -519,6 +519,8 @@ K4=$("$CTX" remember "Ship on Fridays only" --from r-3 | cut -d' ' -f1)
 # review until 30 days of the archive's own time after it was last said.
 export CTX_DB="$T/repeats.sqlite"
 "$CTX" init >/dev/null
+# Existing delivery regressions exercise the experimental path explicitly; production defaults off.
+"$CTX" sql "INSERT INTO ctx_meta(key,value) VALUES ('tentative_serving','1')" >/dev/null
 RP="$T/rptcfg/projects/-w-rpt"
 mkdir -p "$RP" "$T/w/rpt"
 rpt() { printf '{"uuid":"%s","timestamp":"%s","cwd":"/w/rpt","message":{"role":"user","content":"%s"}}\n' "$2" "$3" "$4" >> "$RP/e7e7000$1-0000-0000-0000-00000000000$1.jsonl"; }
@@ -633,6 +635,7 @@ export CTX_DB="$T/repeats.sqlite"
 # More than one repeat-check window is covered even as the archive keeps advancing.
 export CTX_DB="$T/repeat-queue.sqlite"
 "$CTX" init >/dev/null
+"$CTX" sql "INSERT INTO ctx_meta(key,value) VALUES ('tentative_serving','1')" >/dev/null
 "$CTX" sql 'DROP TABLE ctx_proposal_attempted' >/dev/null
 "$CTX" sql 'PRAGMA user_version = 12' >/dev/null
 [ "$("$CTX" sql 'SELECT count(*) FROM ctx_proposal_attempted')" = 0 ] || fail "an existing tentative-rule database gains retry scheduling state on upgrade"
@@ -753,6 +756,11 @@ grep -q 'exit 0' "$T/invalid.err" && fail "invalid JSON never claims the classif
 "$CTX" sql "INSERT INTO ctx_proposal_said(id, turn, at) SELECT id, 'rpt-5', '2026-11-09T09:00:00Z' FROM ctx_rule_proposal WHERE turn LIKE 'offer-%'" >/dev/null
 (cd "$T/w/rpt" && "$CTX" rules offer) > "$T/sized-offer.json"
 grep -q 'Short rule after oversized line' "$T/sized-offer.json" || fail "an oversized tentative line does not suppress later shorter rules"
+"$CTX" sql "DELETE FROM ctx_meta WHERE key='tentative_serving'" >/dev/null
+(cd "$T/w/rpt" && "$CTX" rules offer) > "$T/default-offer.json"
+grep -q 'Short rule after oversized line\|said more than once recently' "$T/default-offer.json" && fail "unreviewed repeat instructions are not served by default"
+[ "$("$CTX" sql 'SELECT count(*) FROM ctx_proposal_said')" -gt 0 ] || fail "disabling delivery preserves repeat evidence"
+"$CTX" sql "INSERT INTO ctx_meta(key,value) VALUES ('tentative_serving','1')" >/dev/null
 "$CTX" sql "DELETE FROM ctx_proposal_said WHERE id IN (SELECT id FROM ctx_rule_proposal WHERE turn LIKE 'offer-%')" >/dev/null
 "$CTX" sql "DELETE FROM ctx_proposal_made WHERE id IN (SELECT id FROM ctx_rule_proposal WHERE turn LIKE 'offer-%')" >/dev/null
 "$CTX" sql "DELETE FROM ctx_rule_proposal WHERE turn LIKE 'offer-%'" >/dev/null
