@@ -116,6 +116,29 @@ BEGIN
 END;
 INSERT OR IGNORE INTO ctx_proposal_made(id, made) SELECT id, datetime('now') FROM ctx_rule_proposal;
 
+-- Times the person said an open proposal again, in another session, as a model judged it:
+-- the turn and when. Paid judgements, so state: a rebuild keeps them.
+CREATE TABLE IF NOT EXISTS ctx_proposal_said(
+  id   INTEGER NOT NULL REFERENCES ctx_rule_proposal(id) ON DELETE CASCADE,
+  turn TEXT NOT NULL,                  -- transcript uuid of the repeat
+  at   TEXT,
+  PRIMARY KEY (id, turn)
+) STRICT, WITHOUT ROWID;
+-- The time of the person's newest turn when a proposal was last checked for repeats, so
+-- it is checked again only once newer turns exist.
+CREATE TABLE IF NOT EXISTS ctx_proposal_checked(
+  id   INTEGER PRIMARY KEY REFERENCES ctx_rule_proposal(id) ON DELETE CASCADE,
+  upto TEXT NOT NULL
+) STRICT;
+
+-- Attempt order is separate from completion: an omitted answer stays retryable without
+-- keeping later unchecked proposals outside the bounded queue forever.
+CREATE TABLE IF NOT EXISTS ctx_proposal_attempted(
+  id   INTEGER PRIMARY KEY REFERENCES ctx_rule_proposal(id) ON DELETE CASCADE,
+  upto TEXT NOT NULL,
+  seq  INTEGER NOT NULL
+) STRICT;
+
 -- Turns the rule classifier has already seen, so each is sent once.
 CREATE TABLE IF NOT EXISTS ctx_rule_seen(
   turn TEXT PRIMARY KEY

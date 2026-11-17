@@ -515,6 +515,277 @@ grep -q 'Use strata' "$T/prop2.txt" || fail "a recent proposal stays"
 K4=$("$CTX" remember "Ship on Fridays only" --from r-3 | cut -d' ' -f1)
 "$CTX" sql "SELECT fsl_technote(technote) FROM ctx_rule WHERE key = 'manual:$K4'" | grep -q '^origin: turn:r-3$' || fail "remember --from records the turn"
 
+# A proposal the person said again in another session is a tentative rule: served without
+# review until 30 days of the archive's own time after it was last said.
+export CTX_DB="$T/repeats.sqlite"
+"$CTX" init >/dev/null
+RP="$T/rptcfg/projects/-w-rpt"
+mkdir -p "$RP" "$T/w/rpt"
+rpt() { printf '{"uuid":"%s","timestamp":"%s","cwd":"/w/rpt","message":{"role":"user","content":"%s"}}\n' "$2" "$3" "$4" >> "$RP/e7e7000$1-0000-0000-0000-00000000000$1.jsonl"; }
+rpt 1 rpt-1 2026-10-01T09:00:00Z "always run the grebe linter before committing anything"
+rpt 1 rpt-2 2026-10-01T09:30:00Z "and again, run the grebe linter before committing"
+rpt 2 rpt-3 2026-10-20T09:00:00Z "please run the grebe linter before committing, every single time"
+rpt 2 rpt-4 2026-10-20T09:05:00Z "write the avocet docs in plain words please"
+rpt 3 rpt-5 2026-11-09T09:00:00Z "the avocet docs are written in plain words, always"
+rpt 3 rpt-6 2026-11-10T09:00:00Z "dunlin builds use the release flag from now on"
+rpt 3 rpt-7 2026-11-10T09:10:00Z "dunlin builds use the release flag, as I said"
+rpt 4 rpt-8 2026-07-01T09:00:00Z "keep the bittern fixtures small and checked in"
+rpt 5 rpt-9 2026-07-15T09:00:00Z "the bittern fixtures stay small and checked in"
+for f in "$RP"/*.jsonl; do "$CTX" archive "$f" >/dev/null; done
+"$CTX" rules suggest rpt-1 "Run the grebe linter before every commit" >/dev/null
+"$CTX" rules suggest rpt-5 "Write the avocet docs in plain words" >/dev/null
+"$CTX" rules suggest rpt-6 "Dunlin builds use the release flag" >/dev/null
+"$CTX" rules suggest rpt-8 "Keep the bittern fixtures small and checked in" >/dev/null
+PA=$("$CTX" sql "SELECT id FROM ctx_rule_proposal WHERE turn = 'rpt-1'")
+PR=$("$CTX" sql "SELECT id FROM ctx_rule_proposal WHERE turn = 'rpt-5'")
+"$CTX" rules --project rpt | grep -q '^tentative' && fail "nothing is tentative before a repeat"
+RFAKE="$T/fake-repeats.py"
+cat > "$RFAKE" <<'PY'
+import json, sys
+text = sys.stdin.read()
+with open(sys.argv[1], "a") as log: log.write(text.split("\n", 1)[0] + "\n")
+with open(sys.argv[1] + ".prompts", "a") as log: log.write(text)
+if not text.startswith("ctx repeats v1\n"): print("[]"); sys.exit(0)
+if len(sys.argv) > 2 and sys.argv[2] == "fail": sys.exit(3)
+keys = ["grebe linter before", "avocet docs", "dunlin builds", "bittern fixtures"]
+out = []
+for line in text.splitlines():
+    if not line.startswith("{"): continue
+    p = json.loads(line)
+    key = [k for k in keys if k in p["text"].lower()]
+    said = [c["turn"] for c in p["candidates"] if key and key[0] in c["text"].lower()]
+    out.append({"proposal": p["proposal"], "repeats": said + ["rpt-2", "rpt-7", "rpt-9", "rpt-none"]})
+print("Answer:\n" + json.dumps(out))
+PY
+if CTX_CLASSIFY="python3 $RFAKE $T/rfail.txt fail" "$CTX" rules propose 2>"$T/rfail.err" >/dev/null; then fail "a failing repeat check fails propose"; fi
+grep -q '^ctx repeats v1$' "$T/rfail.txt" || fail "the repeat prompt starts with its own first line: $(cat "$T/rfail.txt")"
+[ "$("$CTX" sql "SELECT (SELECT count(*) FROM ctx_proposal_checked) + (SELECT count(*) FROM ctx_proposal_said)")" = 0 ] || fail "a failed repeat check leaves proposals unchecked"
+"$CTX" sql "UPDATE ctx_proposal_made SET made = datetime('now', '-40 days') WHERE id = $PA" >/dev/null
+"$CTX" rules classifier "python3 $RFAKE $T/rcalls.txt" >/dev/null
+"$CTX" rules propose > "$T/rprop.txt" 2>&1 || fail "propose checks for repeats: $(cat "$T/rprop.txt")"
+[ "$("$CTX" sql "SELECT group_concat(x, ' ') FROM (SELECT p.turn || '>' || s.turn AS x FROM ctx_proposal_said s JOIN ctx_rule_proposal p ON p.id = s.id ORDER BY p.turn, s.turn)")" = "rpt-1>rpt-3 rpt-5>rpt-4 rpt-8>rpt-9" ] \
+  || fail "only another session's turns among the candidates count as repeats: $("$CTX" sql "SELECT id, turn FROM ctx_proposal_said")"
+[ "$("$CTX" sql "SELECT at FROM ctx_proposal_said WHERE turn = 'rpt-3'")" = 2026-10-20T09:00:00Z ] || fail "a repeat records when it was said"
+grep -q '"turn":"rpt-2"' "$T/rcalls.txt.prompts" && fail "a turn in the proposal's own session is never a candidate"
+grep -q '"turn":"rpt-1"' "$T/rcalls.txt.prompts" && fail "the proposal's own turn is never a candidate"
+"$CTX" rules --project rpt > "$T/rrules.txt"
+grep -qx 'tentative  rpt  Run the grebe linter before every commit (said 2 times; lapses 2026-11-19)' "$T/rrules.txt" || fail "a repeated proposal is a tentative rule: $(cat "$T/rrules.txt")"
+grep -q 'avocet docs in plain words (said 2 times; lapses 2026-12-09)' "$T/rrules.txt" || fail "a lapse date counts from the latest saying: $(cat "$T/rrules.txt")"
+grep -q 'Dunlin' "$T/rrules.txt" && fail "a repeat in the same session makes no tentative rule"
+grep -q 'bittern' "$T/rrules.txt" && fail "a repeat last said more than 30 days before the newest turn has lapsed"
+"$CTX" rules --all | grep -q '^tentative  rpt  Run the grebe' || fail "--all lists tentative rules"
+"$CTX" rules proposed --all > "$T/rproposed.txt"
+grep -q "^$PA .*Run the grebe linter before every commit (tentative)$" "$T/rproposed.txt" || fail "a repeat refreshes an expired proposal, marked tentative: $(cat "$T/rproposed.txt")"
+grep -q 'Dunlin.*(tentative)' "$T/rproposed.txt" && fail "only tentative ones are marked"
+(cd "$T/w/rpt" && "$CTX" rules offer) > "$T/roffer.json"
+python3 - "$T/roffer.json" <<'PY' || fail "the session start offers tentative rules: $(cat "$T/roffer.json")"
+import json, sys
+c = json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]
+assert "said more than once" in c, c
+assert "- Run the grebe linter before every commit (said 2 times; lapses 2026-11-19)" in c, c
+assert "bittern" not in c and "- Dunlin" not in c, c
+PY
+"$CTX" rules reject "$PR" >/dev/null
+"$CTX" rules --project rpt | grep -q 'avocet' && fail "a rejected proposal is never tentative"
+"$CTX" rules proposed --all | grep -q 'avocet' && fail "a rejected proposal leaves the list"
+SENT=$(grep -c '^ctx repeats v1$' "$T/rcalls.txt")
+"$CTX" rules propose >/dev/null
+[ "$(grep -c '^ctx repeats v1$' "$T/rcalls.txt")" = "$SENT" ] || fail "a checked proposal is not sent again without a newer turn"
+rpt 6 rpt-10 2026-11-12T09:00:00Z "time to look at the grebe linter output again"
+"$CTX" archive "$RP/e7e70006-0000-0000-0000-000000000006.jsonl" >/dev/null
+"$CTX" rules propose >/dev/null
+[ "$(grep -c '^ctx repeats v1$' "$T/rcalls.txt")" -gt "$SENT" ] || fail "a newer turn sends a checked proposal again"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_proposal_checked WHERE upto = '2026-11-12T09:00:00Z'")" -ge 3 ] || fail "a check records the newest turn it considered: $("$CTX" sql "SELECT * FROM ctx_proposal_checked")"
+"$CTX" rebuild >/dev/null 2>&1
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_proposal_said")" = 3 ] || fail "a rebuild keeps the repeats"
+"$CTX" rules --project rpt | grep -q '^tentative  rpt  Run the grebe' || fail "a tentative rule survives a rebuild"
+# Synced technotes retain identity across days even without local capture mappings.
+rpt 1 rpt-1b 2026-10-02T09:00:00Z "always run the grebe linter before committing anything"
+"$CTX" archive "$RP/e7e70001-0000-0000-0000-000000000001.jsonl" >/dev/null
+"$CTX" sql "SELECT fsl_technote_save('## user 2026-11-11T09:00:00Z rpt-unknown' || char(10) || char(10) || 'always run the grebe linter before committing anything', json_object('comment', 'Unknown origin', 'tags', json_array('session', 'rpt')))" >/dev/null
+"$CTX" remote me "$T/repeat-hub.fossil" >/dev/null
+export CTX_DB="$T/repeat-synced.sqlite"
+"$CTX" init --clone "$T/repeat-hub.fossil" >/dev/null
+[ "$("$CTX" sql 'SELECT count(*) FROM ctx_capture_day')" = 0 ] || fail "synced repeat fixture has no local capture mapping"
+"$CTX" rules suggest rpt-1 "Run the grebe linter before every commit" >/dev/null
+"$CTX" sql "INSERT OR IGNORE INTO ctx_rule_seen SELECT turn FROM ctx_chunk WHERE heading = 'user'" >/dev/null
+CTX_CLASSIFY="python3 $RFAKE $T/synced-calls.txt" "$CTX" rules propose >/dev/null
+[ "$("$CTX" sql 'SELECT group_concat(turn) FROM ctx_proposal_said')" = 'rpt-3' ] || fail "synced sessions admit other sessions but exclude the same session across technote days: $("$CTX" sql 'SELECT * FROM ctx_proposal_said')"
+grep -q '"turn":"rpt-1b"' "$T/synced-calls.txt.prompts" && fail "another day of the same synced session is never a candidate"
+"$CTX" rules suggest rpt-unknown "Run the grebe linter before every commit" >/dev/null
+CTX_CLASSIFY="python3 $RFAKE $T/synced-unknown.txt" "$CTX" rules propose >/dev/null
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_proposal_said s JOIN ctx_rule_proposal p ON p.id = s.id WHERE p.turn = 'rpt-unknown'")" = 0 ] || fail "synced notes without trustworthy session metadata remain fail-closed"
+grep -q '"turn":"rpt-unknown"' "$T/synced-calls.txt.prompts" && fail "unknown synced session identity cannot serve as repeat evidence"
+"$CTX" rebuild >/dev/null 2>&1
+"$CTX" sql 'DELETE FROM ctx_proposal_checked' >/dev/null
+"$CTX" sql 'DELETE FROM ctx_proposal_said' >/dev/null
+CTX_CLASSIFY="python3 $RFAKE $T/synced-rebuilt.txt" "$CTX" rules propose >/dev/null
+[ "$("$CTX" sql 'SELECT group_concat(turn) FROM ctx_proposal_said')" = 'rpt-3' ] || fail "synced cross-day isolation survives rebuilding"
+export CTX_DB="$T/repeats.sqlite"
+"$CTX" sql "DELETE FROM ctx_capture_day WHERE technote IN (SELECT d.name FROM ctx_doc d JOIN ctx_chunk c ON c.doc_id = d.id WHERE c.turn IN ('rpt-1', 'rpt-2', 'rpt-1b'))" >/dev/null
+"$CTX" sql 'DELETE FROM ctx_proposal_checked' >/dev/null
+"$CTX" sql 'DELETE FROM ctx_proposal_said' >/dev/null
+"$CTX" rules propose >/dev/null
+[ "$("$CTX" sql "SELECT group_concat(turn) FROM ctx_proposal_said WHERE id = $PA")" = 'rpt-3' ] || fail "metadata fallback without capture mappings still excludes same-session repetitions"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_proposal_said s JOIN ctx_rule_proposal p ON p.id = s.id WHERE p.turn = 'rpt-8'")" = 1 ] || fail "known cross-session evidence still counts when other session mappings are missing"
+"$CTX" rules classifier --off >/dev/null
+
+# More than one repeat-check window is covered even as the archive keeps advancing.
+export CTX_DB="$T/repeat-queue.sqlite"
+"$CTX" init >/dev/null
+"$CTX" sql 'DROP TABLE ctx_proposal_attempted' >/dev/null
+"$CTX" sql 'PRAGMA user_version = 12' >/dev/null
+[ "$("$CTX" sql 'SELECT count(*) FROM ctx_proposal_attempted')" = 0 ] || fail "an existing tentative-rule database gains retry scheduling state on upgrade"
+python3 - "$RP/e7e70007-0000-0000-0000-000000000007.jsonl" <<'PY'
+import json, sys
+with open(sys.argv[1], "w") as f:
+    for i in range(60):
+        f.write(json.dumps({"uuid": "queue-%d" % i, "timestamp": "2026-11-13T09:00:00Z", "cwd": "/w/rpt", "message": {"role": "user", "content": "always run the grebe linter before committing anything"}}) + "\n")
+PY
+for f in "$RP"/*.jsonl; do "$CTX" archive "$f" >/dev/null; done
+"$CTX" sql "INSERT INTO ctx_rule_proposal(turn, project, at, text) SELECT turn, project, at, body FROM ctx_chunk WHERE turn LIKE 'queue-%'" >/dev/null
+"$CTX" sql "INSERT INTO ctx_rule_seen SELECT turn FROM ctx_chunk WHERE heading = 'user'" >/dev/null
+QFAKE="$T/queue-classifier.py"
+cat > "$QFAKE" <<'PY'
+import json, sys
+text = sys.stdin.read()
+if not text.startswith("ctx repeats v1\n"): print("[]"); sys.exit(0)
+rows = [json.loads(s) for s in text.splitlines() if s.startswith("{")]
+mode = sys.argv[1] if len(sys.argv) > 1 else "all"
+if mode == "invalid": print("[not JSON]"); sys.exit(0)
+if mode == "partial" and rows[0]["proposal"] != 1:
+    print("[]"); sys.exit(0)
+if mode == "partial":
+    first = rows[0]
+    print(json.dumps([{"proposal": first["proposal"], "repeats": [first["candidates"][0]["turn"], "invented"]},
+                      {"proposal": rows[1]["proposal"], "repeats": []},
+                      {"proposal": rows[2]["proposal"], "repeats": [42]},
+                      {"proposal": rows[3]["proposal"]},
+                      {"proposal": rows[4]["proposal"], "repeats": None},
+                      {"proposal": str(rows[5]["proposal"]) + "junk", "repeats": []}, "bad entry"]))
+elif mode == "overflow":
+    print(json.dumps([{"proposal": "9223372036854775808", "repeats": []} for p in rows]))
+elif mode in ("strings", "badids"):
+    with open(sys.argv[2], "a") as f:
+        for p in rows: f.write(str(p["proposal"]) + "\n")
+    out = []
+    for p in rows:
+        ident = str(p["proposal"])
+        if mode == "badids" and p["proposal"] <= 50:
+            ident = ["0" + ident, ident + "junk", "+" + ident, " " + ident, ident + ".0", "9223372036854775808", "18446744073709551616"][p["proposal"] % 7]
+        out.append({"proposal": ident, "repeats": []})
+    print(json.dumps(out))
+elif mode == "omit":
+    with open(sys.argv[2], "a") as f:
+        for p in rows: f.write(str(p["proposal"]) + "\n")
+    print("[]")
+else:
+    print(json.dumps([{"proposal": p["proposal"], "repeats": []} for p in rows if mode != "mixed" or p["proposal"] > 50]))
+PY
+for day in 14 15 16 17; do
+    "$CTX" sql "UPDATE ctx_chunk SET at = '2026-11-${day}T09:00:00Z' WHERE turn = 'rpt-10'" >/dev/null
+    CTX_CLASSIFY="python3 $QFAKE" "$CTX" rules propose >/dev/null
+done
+[ "$("$CTX" sql 'SELECT count(*) FROM ctx_proposal_checked')" = 60 ] || fail "advancing newest never starves proposals past the first fifty"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_proposal_checked WHERE upto < '2026-11-16T09:00:00Z'")" = 0 ] || fail "oldest checked proposals are refreshed before newer checks"
+
+"$CTX" sql 'DELETE FROM ctx_proposal_checked' >/dev/null
+"$CTX" sql 'DELETE FROM ctx_proposal_attempted' >/dev/null
+for pass in 1 2; do CTX_CLASSIFY="python3 $QFAKE strings $T/string-ids.txt" "$CTX" rules propose >/dev/null; done
+[ "$("$CTX" sql 'SELECT count(*) FROM ctx_proposal_checked')" = 60 ] || fail "canonical digit-string proposal IDs complete submitted checks"
+STRING_CALLS=$(wc -l < "$T/string-ids.txt")
+CTX_CLASSIFY="python3 $QFAKE strings $T/string-ids.txt" "$CTX" rules propose >/dev/null
+[ "$(wc -l < "$T/string-ids.txt")" = "$STRING_CALLS" ] || fail "string-ID checks are not resent without newer turns"
+"$CTX" sql "INSERT INTO ctx_rule_proposal(id, turn, project, at, text) SELECT 9223372036854775807, turn, project, at, body FROM ctx_chunk WHERE turn = 'rpt-1'" >/dev/null
+CTX_CLASSIFY="python3 $QFAKE overflow" "$CTX" rules propose >/dev/null
+[ "$("$CTX" sql 'SELECT count(*) FROM ctx_proposal_checked WHERE id = 9223372036854775807')" = 0 ] || fail "an overflowing string ID never clamps to a submitted maximum integer ID"
+CTX_CLASSIFY="python3 $QFAKE strings $T/string-ids.txt" "$CTX" rules propose >/dev/null
+[ "$("$CTX" sql 'SELECT count(*) FROM ctx_proposal_checked WHERE id = 9223372036854775807')" = 1 ] || fail "the maximum canonical integer string is accepted without precision loss"
+for table in ctx_proposal_said ctx_proposal_made ctx_proposal_checked ctx_proposal_attempted ctx_rule_proposal; do
+    "$CTX" sql "DELETE FROM $table WHERE id = 9223372036854775807" >/dev/null
+done
+"$CTX" sql 'DELETE FROM ctx_proposal_checked' >/dev/null
+"$CTX" sql 'DELETE FROM ctx_proposal_attempted' >/dev/null
+for pass in 1 2 3; do CTX_CLASSIFY="python3 $QFAKE badids $T/bad-ids.txt" "$CTX" rules propose >/dev/null; done
+[ "$("$CTX" sql 'SELECT count(*) FROM ctx_proposal_checked WHERE id > 50')" = 10 ] || fail "malformed string IDs do not starve valid IDs beyond the first fifty"
+[ "$("$CTX" sql 'SELECT count(*) FROM ctx_proposal_checked WHERE id <= 50')" = 0 ] || fail "noncanonical, junk and overflowing string IDs never complete a submitted proposal"
+[ "$("$CTX" sql 'SELECT count(*) FROM ctx_proposal_attempted')" = 60 ] || fail "malformed-ID answers still advance retry scheduling"
+
+"$CTX" sql 'DELETE FROM ctx_proposal_checked' >/dev/null
+"$CTX" sql 'DELETE FROM ctx_proposal_said' >/dev/null
+"$CTX" sql 'DELETE FROM ctx_proposal_attempted' >/dev/null
+CTX_CLASSIFY="python3 $QFAKE partial" "$CTX" rules propose >/dev/null
+[ "$("$CTX" sql 'SELECT group_concat(id) FROM (SELECT id FROM ctx_proposal_checked ORDER BY id)')" = '1,2' ] || fail "only well-formed explicit answers complete a repeat check, including an empty negative"
+[ "$("$CTX" sql 'SELECT count(*) FROM ctx_proposal_said WHERE id = 1')" = 1 ] || fail "partial answers record valid evidence but never invented references"
+for pass in 1 2 3; do
+    CTX_CLASSIFY="python3 $QFAKE omit $T/omitted.txt" "$CTX" rules propose >/dev/null
+done
+[ "$(sort -nu "$T/omitted.txt" | wc -l | tr -d ' ')" = 58 ] || fail "permanent omissions remain retryable without starving later proposals"
+CTX_CLASSIFY="python3 $QFAKE" "$CTX" rules propose >/dev/null
+CTX_CLASSIFY="python3 $QFAKE" "$CTX" rules propose >/dev/null
+[ "$("$CTX" sql 'SELECT count(*) FROM ctx_proposal_checked')" = 60 ] || fail "missing and malformed answers can be retried without newer archive turns"
+
+"$CTX" sql 'DELETE FROM ctx_proposal_checked WHERE id <= 50' >/dev/null
+"$CTX" sql 'DELETE FROM ctx_proposal_attempted' >/dev/null
+for day in 18 19 20; do
+    "$CTX" sql "UPDATE ctx_chunk SET at = '2026-11-${day}T09:00:00Z' WHERE turn = 'rpt-10'" >/dev/null
+    CTX_CLASSIFY="python3 $QFAKE mixed" "$CTX" rules propose >/dev/null
+done
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_proposal_checked WHERE id > 50 AND upto >= '2026-11-19T09:00:00Z'")" = 10 ] || fail "permanent omissions do not starve refreshes of previously checked proposals"
+CTX_CLASSIFY="python3 $QFAKE" "$CTX" rules propose >/dev/null
+CTX_CLASSIFY="python3 $QFAKE" "$CTX" rules propose >/dev/null
+
+for day in 21 22 23; do
+    "$CTX" sql "UPDATE ctx_chunk SET at = '2026-11-${day}T09:00:00Z' WHERE turn = 'rpt-10'" >/dev/null
+    CTX_CLASSIFY="python3 $QFAKE mixed" "$CTX" rules propose >/dev/null
+done
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_proposal_checked WHERE id > 50 AND upto >= '2026-11-22T09:00:00Z'")" = 10 ] || fail "omitted refresh answers do not monopolize the oldest-checked queue"
+CTX_CLASSIFY="python3 $QFAKE" "$CTX" rules propose >/dev/null
+CTX_CLASSIFY="python3 $QFAKE" "$CTX" rules propose >/dev/null
+
+"$CTX" sql 'DELETE FROM ctx_proposal_checked' >/dev/null
+if CTX_CLASSIFY="python3 $QFAKE invalid" "$CTX" rules propose >"$T/invalid.out" 2>"$T/invalid.err"; then fail "invalid repeat JSON fails the check"; fi
+grep -q 'invalid JSON' "$T/invalid.err" || fail "invalid JSON is reported distinctly from a failed process"
+grep -q 'exit 0' "$T/invalid.err" && fail "invalid JSON never claims the classifier failed with exit zero"
+[ "$("$CTX" sql 'SELECT count(*) FROM ctx_proposal_checked')" = 0 ] || fail "invalid JSON leaves proposals retryable"
+
+"$CTX" sql "INSERT INTO ctx_rule_proposal(turn, project, at, text) VALUES ('offer-wide-a', 'rpt', '2026-11-16T09:00:00Z', replace(hex(zeroblob(150)), '0', '界')), ('offer-wide-b', 'rpt', '2026-11-15T09:00:00Z', replace(hex(zeroblob(150)), '0', '界')), ('offer-short', 'rpt', '2026-11-14T09:00:00Z', 'Short rule after oversized line')" >/dev/null
+"$CTX" sql "INSERT INTO ctx_proposal_said(id, turn, at) SELECT id, 'rpt-5', '2026-11-09T09:00:00Z' FROM ctx_rule_proposal WHERE turn LIKE 'offer-%'" >/dev/null
+(cd "$T/w/rpt" && "$CTX" rules offer) > "$T/sized-offer.json"
+grep -q 'Short rule after oversized line' "$T/sized-offer.json" || fail "an oversized tentative line does not suppress later shorter rules"
+"$CTX" sql "DELETE FROM ctx_proposal_said WHERE id IN (SELECT id FROM ctx_rule_proposal WHERE turn LIKE 'offer-%')" >/dev/null
+"$CTX" sql "DELETE FROM ctx_proposal_made WHERE id IN (SELECT id FROM ctx_rule_proposal WHERE turn LIKE 'offer-%')" >/dev/null
+"$CTX" sql "DELETE FROM ctx_rule_proposal WHERE turn LIKE 'offer-%'" >/dev/null
+
+# Forgetting repeat evidence revokes tentative status, including in the session offer.
+(cd "$T/w/rpt" && "$CTX" rules offer) > "$T/before-forget.json"
+grep -q 'said more than once' "$T/before-forget.json" || fail "forget regression starts with a tentative rule"
+EVIDENCE_SESSION=$("$CTX" sql 'SELECT cd.session FROM ctx_proposal_said s JOIN ctx_chunk c ON c.turn = s.turn JOIN ctx_doc d ON d.id = c.doc_id JOIN ctx_capture_day cd ON cd.technote = d.name WHERE s.id = 1 LIMIT 1')
+"$CTX" forget "$EVIDENCE_SESSION" >/dev/null
+[ "$("$CTX" sql 'SELECT count(*) FROM ctx_proposal_said WHERE id = 1')" = 0 ] || fail "forgetting evidence removes its repeat judgement"
+"$CTX" rules --project rpt | grep -q '^tentative' && fail "forgotten evidence no longer promotes a proposal"
+(cd "$T/w/rpt" && "$CTX" rules offer) > "$T/after-forget.json"
+grep -q 'said more than once' "$T/after-forget.json" && fail "forgotten evidence no longer injects a tentative instruction"
+"$CTX" rebuild >/dev/null 2>&1
+"$CTX" rules --project rpt | grep -q '^tentative' && fail "rebuilding cannot resurrect forgotten repeat evidence"
+
+# Forgetting a proposal source removes open and tentative text, not accepted rules.
+"$CTX" sql "UPDATE ctx_rule_proposal SET text = 'Explicit accepted sentinel' WHERE id = 60" >/dev/null
+"$CTX" rules accept 60 >/dev/null
+"$CTX" sql "INSERT INTO ctx_proposal_said(id, turn, at) SELECT 1, turn, at FROM ctx_chunk WHERE turn = 'rpt-5'" >/dev/null
+"$CTX" rules --project rpt | grep -q '^tentative' || fail "source forget regression starts with a tentative rule"
+SOURCE_SESSION=$("$CTX" sql "SELECT session FROM ctx_capture WHERE path LIKE '%e7e70007-%'")
+"$CTX" forget "$SOURCE_SESSION" >/dev/null
+[ "$("$CTX" rules proposed --all | wc -l | tr -d ' ')" = 0 ] || fail "forgetting a source hides open and tentative proposals"
+[ "$("$CTX" sql 'SELECT (SELECT count(*) FROM ctx_proposal_said) + (SELECT count(*) FROM ctx_proposal_made) + (SELECT count(*) FROM ctx_proposal_checked) + (SELECT count(*) FROM ctx_proposal_attempted)')" = 0 ] || fail "forget removes proposal metadata even on connections without foreign-key cascades"
+"$CTX" rules --project rpt | grep -q '^tentative' && fail "forgotten source no longer injects tentative rules"
+(cd "$T/w/rpt" && "$CTX" rules offer) > "$T/source-forgotten.json"
+grep -q 'always run the grebe' "$T/source-forgotten.json" && fail "forgotten proposal text never reaches the session offer"
+"$CTX" rules --project rpt | grep -q 'Explicit accepted sentinel' || fail "forget preserves explicitly accepted rules"
+"$CTX" rebuild >/dev/null 2>&1
+[ "$("$CTX" rules proposed --all | wc -l | tr -d ' ')" = 0 ] || fail "rebuilding cannot resurrect forgotten proposals"
+"$CTX" rules --project rpt | grep -q 'Explicit accepted sentinel' || fail "accepted rules survive forgetting and rebuilding"
+
 # Stats count what agents really ran: searches, misses, reads and skill loads, not mentions.
 export CTX_DB="$T/stats.sqlite"
 "$CTX" init >/dev/null
@@ -1747,7 +2018,7 @@ CLAUDE_CONFIG_DIR="$XC" "$CTX" scan >/dev/null
 "$CTX" forget 5e550000-0000-0000-0000-00000000000 2>/dev/null && fail "an ambiguous prefix is refused"
 export CTX_DB="$T/rebuild.sqlite"
 "$CTX" init >/dev/null
-[ "$("$CTX" sql "PRAGMA user_version")" = 11 ] || fail "a new file is at the current version"
+[ "$("$CTX" sql "PRAGMA user_version")" = 13 ] || fail "a new file is at the current version"
 [ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 7 ] || fail "derived version recorded"
 printf '{"uuid":"rb-1","timestamp":"2026-09-01T10:00:00Z","cwd":"/w/rb","message":{"role":"user","content":"the capybara rollout"}}\n{"uuid":"rb-2","timestamp":"2026-09-01T10:00:05Z","cwd":"/w/rb","message":{"role":"assistant","content":"rolled out the capybara"}}\n' > "$T/ab12cd99-rb.jsonl"
 "$CTX" archive "$T/ab12cd99-rb.jsonl" >/dev/null
@@ -1769,7 +2040,7 @@ grep -q 'rebuilding it once' "$T/rb.err" || fail "an old index is rebuilt on ope
 "$CTX" sql "DROP TABLE ctx_meta" >/dev/null; "$CTX" sql "PRAGMA user_version = 1" >/dev/null
 "$CTX" search --all capybara 2>"$T/rb3.err" | grep -q capybara || fail "an unversioned file still works"
 [ -s "$T/rb3.err" ] && fail "an unversioned file is upgraded without a rebuild"
-[ "$("$CTX" sql "PRAGMA user_version")" = 11 ] || fail "and is marked current"
+[ "$("$CTX" sql "PRAGMA user_version")" = 13 ] || fail "and is marked current"
 
 # The skill eval harness works end to end with a stand-in for the model.
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"

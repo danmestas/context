@@ -1,0 +1,38 @@
+{
+ "name": "rule-repeats",
+ "title": "Instructions said more than once",
+ "section": "Rules",
+ "order": 60,
+ "date": "2026-11-17",
+ "good_until": "2027-02-15",
+ "commit": "",
+ "command": "",
+ "conditions": {
+  "source": "the author's own session archive; only counts leave it",
+  "method": "Claude Haiku judged meaning, not wording, against the 10 closest turns by word search in other sessions"
+ },
+ "summary": "Whether a proposed rule the person said again in another session can be served before they review it, and for how long.",
+ "metrics": [
+  {
+   "label": "Open proposals said again in another session",
+   "value": "47 of 84"
+  },
+  {
+   "label": "Rejected proposals said again",
+   "value": "5 of 6",
+   "note": "all last said more than 30 days ago"
+  },
+  {
+   "label": "Accepted proposals said again",
+   "value": "0 of 16"
+  },
+  {
+   "label": "Repeats last said within 30 days",
+   "value": "40, none rejected"
+  }
+ ],
+ "bar": "",
+ "verdict": "none",
+ "baseline": "waiting for the person to review every proposal",
+ "meaning": "A repeat means an instruction is true now, not true forever: 5 of the 6 rejected ones had been repeated, all months earlier. So ctx serves a repeated proposal as a tentative rule that lapses 30 days after it was last said, and only an accepted one is kept."
+}
