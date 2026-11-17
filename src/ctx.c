@@ -8291,6 +8291,11 @@ static const char *const stop_words[] = {
     "should", "some", "such", "than", "that", "their", "them", "then", "there", "these", "they", "this", "those", "very", "want", "well",
     "were", "what", "when", "where", "which", "while", "will", "with", "would", "your"};
 
+/* qsort, for a list that may be empty: an empty one has no array, and qsort may not be handed a null one. */
+static void sort_some(void *base, size_t n, size_t size, int (*cmp)(const void *, const void *)) {
+  if (n) qsort(base, n, size, cmp);
+}
+
 static int cmp_word(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
 
 typedef struct {
@@ -8318,7 +8323,7 @@ static void words_of(const char *text, wordset *ws) {
     if (at - start - 1 < 4 || bsearch(&word, stop_words, sizeof stop_words / sizeof *stop_words, sizeof *stop_words, cmp_word)) at = start;
     else ws->w[ws->n++] = start;
   }
-  qsort(ws->w, ws->n, sizeof *ws->w, cmp_word);
+  sort_some(ws->w, ws->n, sizeof *ws->w, cmp_word);
   size_t u = 0;
   for (size_t i = 0; i < ws->n; i++)
     if (!u || strcmp(ws->w[u - 1], ws->w[i])) ws->w[u++] = ws->w[i];
@@ -8437,7 +8442,7 @@ static void held_load(sqlite3 *db, const char *this_week, held_set *h) {
     if (sqlite3_column_int(q, 2)) x->reads += n;
   }
   sqlite3_finalize(q);
-  if (h->n) qsort(h->row, h->n, sizeof *h->row, held_by_turns); /* an empty archive has no rows, and no array to sort */
+  sort_some(h->row, h->n, sizeof *h->row, held_by_turns);
 }
 
 static void held_free(held_set *h) {
@@ -8532,7 +8537,7 @@ static long page_rules(sqlite3 *db, held_set *held, buf *out, long *repeated) {
     if (!g[k].pw && p[i].ws.n) die("out of memory");
     for (size_t w = 0; w < p[i].ws.n; w++) g[k].pw[g[k].npw++] = (pword){p[i].ws.w[w], i};
   }
-  for (size_t k = 0; k < ng; k++) qsort(g[k].pw, g[k].npw, sizeof *g[k].pw, by_word);
+  for (size_t k = 0; k < ng; k++) sort_some(g[k].pw, g[k].npw, sizeof *g[k].pw, by_word);
   size_t *hits = calloc(n + 1, sizeof *hits);
   if (!hits) die("out of memory");
   q = db_prepare(db, "SELECT project, substr(at, 1, 10), turn, body FROM ctx_chunk WHERE heading = 'user'"
@@ -8599,7 +8604,7 @@ static long page_rules(sqlite3 *db, held_set *held, buf *out, long *repeated) {
     }
     *repeated += x->again > 0;
   }
-  qsort(p, n, sizeof *p, proposal_order);
+  sort_some(p, n, sizeof *p, proposal_order);
   buf_str(out, "[");
   for (size_t i = 0; i < n; i++) {
     proposal *x = &p[i];
@@ -8781,7 +8786,7 @@ static void page_conf(sqlite3 *db, buf *out, conf_tot *tot) {
     const char **names = malloc(np * sizeof *names); /* the first three file names, sorted, each once */
     if (!names) die("out of memory");
     for (size_t m = 0; m < np; m++) names[m] = base_name(ps[m].path);
-    qsort(names, np, sizeof *names, cmp_word);
+    sort_some(names, np, sizeof *names, cmp_word);
     for (size_t m = 0, shown = 0; m < np && shown < 3; m++) {
       if (m && !strcmp(names[m], names[m - 1])) continue;
       buf_str(&j, shown++ ? "," : "");
@@ -8799,7 +8804,7 @@ static void page_conf(sqlite3 *db, buf *out, conf_tot *tot) {
     }
     free(ps);
   }
-  qsort(e, ne, sizeof *e, conf_order);
+  sort_some(e, ne, sizeof *e, conf_order);
   buf_str(out, "[");
   for (size_t i = 0; i < ne; i++) {
     buf_str(out, i ? "," : "");
