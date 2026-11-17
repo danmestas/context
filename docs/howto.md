@@ -838,6 +838,7 @@ what you chose.
 
 ```sh
 ctx page                        # writes <database>.page.html and prints its path
+ctx page --open                 # the same, then opens it in your browser
 ctx page --out decisions.html   # or somewhere else
 ctx page apply choices.txt      # shows what the list would do; changes nothing
 ctx page apply choices.txt --yes
@@ -849,20 +850,23 @@ are Accept, Later or Not a rule; conflicts are Fix, Not a conflict or Later;
 projects are Keep, Stop archiving or Forget; hooks are Keep, Later or Remove.
 **Use suggestions** takes the suggestion on every row in a section that has one,
 and the reason is written in the row. Nothing is chosen for you. Your choices
-become a list of commands at the foot of the page; copy it into a file.
+become a short list at the foot of the page, in words such as `accept rule 12`
+and `stop archiving myproj`; copy it into a file. They are not commands, on
+purpose: pasted into a shell they do nothing, so the one way to act on them is
+`ctx page apply`, which shows its plan first.
 
 `ctx page apply` reads that file, or standard input. Without `--yes` it prints one
 line for each action and a count for each kind, and changes nothing. With `--yes`
 it runs each as ctx itself, prints each result, and stops at the first failure,
-saying how many ran. Only the forms the page writes are accepted; one other line
-refuses the whole file before anything runs, and names the line. Arguments are read
+saying how many ran. Only the choices the page writes are accepted; any other line, a ctx
+command included, refuses the whole file before anything runs, and names the line. Arguments are read
 with shell single-quote rules and are never passed to a shell.
 
-- Accept and Not a rule are `ctx rules accept N [--text 'TEXT']` and `ctx rules reject N`.
-- Fix files a ticket (`ctx ticket new ... --type Bug --project NAME --body '...'`) listing the passages.
-- Not a conflict is `ctx docs conflicts dismiss ID`, so the pair is not raised again unless a passage changes.
-- Stop archiving is `ctx exclude --project NAME`; what is held stays searchable.
-- Forget is `ctx forget --project NAME`; the project's sessions leave search for good.
+- `accept rule N` and `reject rule N` do what `ctx rules accept` and `ctx rules reject` do; `accept rule N as 'TEXT'` takes your wording.
+- `ticket 'TITLE' in NAME saying 'TEXT'` is Fix: it files a ticket listing the passages, and edits no document.
+- `dismiss conflict ID` is Not a conflict, so the pair is not raised again unless a passage changes; `because 'TEXT'` keeps a reason.
+- `stop archiving NAME` is `ctx exclude --project NAME`; what is held stays searchable.
+- `forget NAME` is `ctx forget --project NAME`; the project's sessions leave search for good.
 - Remove, for a hook, is only a `#` comment naming the entry to remove. ctx does not
   edit your Claude Code settings.
 

@@ -1,6 +1,6 @@
 ---
 name: ctx
-description: Search the archive of past coding-agent sessions on this machine with `ctx search` and `ctx turn`. Use when the answer may be in earlier work rather than the code - why something was decided, what was tried and failed, how an error was fixed before, what the user already said or asked for, or where earlier work stopped. Triggers on "why did we", "did we ever", "last time", "what happened with", "remind me", and on any error or subsystem that looks like it has history. Use it even when the code or git log seems to explain things, since they rarely record what failed along the way.
+description: Search the archive of past coding-agent sessions on this machine with `ctx search` and `ctx turn`. Use when the answer may be in earlier work rather than the code - why something was decided, what was tried and failed, how an error was fixed before, what the user already said or asked for, or where earlier work stopped. Triggers on "why did we", "did we ever", "last time", "what happened with", "remind me", and on any error or subsystem that looks like it has history. Use it even when the code or git log seems to explain things, since they rarely record what failed along the way. Also use when the user asks what ctx is waiting on, what needs their decision, or to see or apply their ctx page: `ctx page --open` shows it, and `ctx page apply` acts on the choices they hand back.
 ---
 
 # ctx
@@ -65,6 +65,24 @@ a person asked for, read just their side of a stretch:
 ```sh
 ctx turn ID 0 60 | grep -A3 -- '--- #[0-9]* user'
 ```
+
+## What is waiting on the user
+
+`ctx` also keeps things only the user can settle: rules it proposed from what
+they said, places where a project's documents disagree, what it holds for each
+project, and the hooks it runs.
+
+- When the user asks what ctx is waiting on, what needs their decision, or to see
+  their ctx page, run `ctx page --open`. It writes one page and opens it in their
+  browser. It changes nothing. Say that it is open; do not summarise it for them
+  unless they ask.
+- The page gives them a list of their choices, in lines such as `accept rule 12`
+  or `stop archiving myproj`. These are not commands. When they hand you that
+  list, pass it as it is to `ctx page apply`, as a file or on standard input. That
+  prints a plan and changes nothing. Show them the plan.
+- Run it again with `--yes` only after they have seen the plan and said to
+  go ahead. Never add `--yes` on your own, never write or change lines in the
+  list yourself, and never carry out a choice with some other ctx command.
 
 ## Using what you find
 

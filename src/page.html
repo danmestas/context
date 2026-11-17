@@ -132,7 +132,7 @@ section.q { display:flex; flex-direction:column; gap:10px; }
 <header>
   <div class="kicker" id="kicker"></div>
   <h1 id="head"></h1>
-  <p class="lede">ctx is the tool that saves your coding-agent sessions and project documents so they can be searched later. This page lists what it needs you to settle, one row each, with the evidence beside it. This page changes nothing by itself. Nothing is chosen for you: pick row by row, or press <b>Use suggestions</b> in a section to take the suggestion on every row that has one. Your choices become a list of commands at the foot of the page, and <code>ctx page apply</code> runs that list.</p>
+  <p class="lede">ctx is the tool that saves your coding-agent sessions and project documents so they can be searched later. This page lists what it needs you to settle, one row each, with the evidence beside it. This page changes nothing by itself. Nothing is chosen for you: pick row by row, or press <b>Use suggestions</b> in a section to take the suggestion on every row that has one. Your choices become a short list at the foot of the page, and <code>ctx page apply</code> runs that list.</p>
 </header>
 
 <section class="outcome" id="outcome" aria-live="polite"></section>
@@ -143,7 +143,7 @@ section.q { display:flex; flex-direction:column; gap:10px; }
 <section class="q" id="s-hooks"></section>
 
 <section class="cmds" id="cmds">
-  <h2>The commands for your choices</h2>
+  <h2>Your choices</h2>
   <p class="note">One line per choice that changes something. Copy them into a file and run <code>ctx page apply FILE</code> to see what would be done; add <code>--yes</code> to do it. Lines beginning with <code>#</code> are left for you: ctx does not edit your Claude Code settings, so removing a hook is yours to do.</p>
   <pre id="out" tabindex="0"></pre>
 </section>
@@ -168,8 +168,8 @@ section.q { display:flex; flex-direction:column; gap:10px; }
 <div class="foot"><div class="in">
   <div class="sum" id="sum" aria-live="polite"></div>
   <span class="note">J K move · 1 2 3 choose · Enter details</span>
-  <button id="jump">Show commands</button>
-  <button class="primary" id="copy">Copy commands</button>
+  <button id="jump">Show choices</button>
+  <button class="primary" id="copy">Copy choices</button>
 </div></div>
 
 <script>
@@ -360,14 +360,15 @@ section.q { display:flex; flex-direction:column; gap:10px; }
   }
   function commands() {
     var out = [], one = function (t) { return String(t).replace(/\s+/g, " ").trim(); }, sq = function (t) { return "'" + one(t).replace(/'/g, "'\\''") + "'"; };
-    D.rules.forEach(function (it) { var c = state.rules[it.id].c; var tx = state.rules[it.id].text; if (c === 0) out.push("ctx rules accept " + it.id + (tx ? " --text " + sq(tx) : "") + "    # " + one(it.p + ": " + (tx || it.t))); if (c === 2) out.push("ctx rules reject " + it.id + "    # " + one(it.p + ": " + it.t)); });
+    D.rules.forEach(function (it) { var c = state.rules[it.id].c; var tx = state.rules[it.id].text; if (c === 0) out.push("accept rule " + it.id + (tx ? " as " + sq(tx) : "") + "    # " + one(it.p + ": " + (tx || it.t))); if (c === 2) out.push("reject rule " + it.id + "    # " + one(it.p + ": " + it.t)); });
     D.conf.forEach(function (it) {
       var c = state.conf[it.id].c;
-      if (c === 0) out.push("ctx ticket new " + sq("Docs: " + it.t) + " --type Bug --project " + sq(it.p) + " --body " + sq(it.ps.map(function (p) { return p[0] + " § " + p[1] + ": \"" + p[2].slice(0, 120) + "\"" + (p[3] ? " (likely current)" : ""); }).join(" | ")));
-      if (c === 1) out.push("ctx docs conflicts dismiss " + it.id + "    # " + one(it.t) + " (" + it.files.join(", ") + ")");
+      if (c === 0) out.push("ticket " + sq("Docs: " + it.t) + " in " + sq(it.p) + " saying " + sq(it.ps.map(function (p) { return p[0] + " § " + p[1] + ": \"" + p[2].slice(0, 120) + "\"" + (p[3] ? " (likely current)" : ""); }).join(" | ")));
+      if (c === 1) out.push("dismiss conflict " + it.id + "    # " + one(it.t) + " (" + it.files.join(", ") + ")");
     });
-    D.held.forEach(function (it) { var c = state.held[it.id].c; if (c === 1) out.push("ctx exclude --project " + sq(it.t) + "    # stop archiving; keeps " + it.mb + " MB"); if (c === 2) out.push("ctx forget --project " + sq(it.t) + "    # removes " + it.turns + " turns, " + it.mb + " MB"); });
+    D.held.forEach(function (it) { var c = state.held[it.id].c; if (c === 1) out.push("stop archiving " + sq(it.t) + "    # keeps " + it.mb + " MB"); if (c === 2) out.push("forget " + sq(it.t) + "    # removes " + it.turns + " turns, " + it.mb + " MB"); });
     D.hooks.forEach(function (it) { if (state.hooks[it.id].c === 2) out.push("# ctx cannot do this: in your Claude Code settings, remove the `ctx " + it.id.replace("-", " ") + "` entries (" + one(it.ev) + ")"); });
+    if (out.length) out.unshift("# choices from the ctx page. Apply them with: ctx page apply FILE");
     return out;
   }
   function totals() {
@@ -384,7 +385,7 @@ section.q { display:flex; flex-direction:column; gap:10px; }
       '<div><b>' + forget + (stop ? ' + ' + stop : '') + '</b><span>projects forgotten' + (stop ? ' + stopped' : '') + ', freeing ' + Math.round(mb) + ' MB and ' + num(turns) + ' turns</span></div>' +
       '<div><b>' + gone + '</b><span>hooks removed, saving ' + Math.round(ms / 1000) + ' s a week</span></div>';
     var cmds = commands();
-    document.getElementById("sum").textContent = cmds.length ? cmds.length + " command" + (cmds.length === 1 ? "" : "s") + " ready · " + left + " still waiting on you" : "No choices yet · " + left + " waiting on you";
+    document.getElementById("sum").textContent = cmds.length ? (function (n) { return n + " choice" + (n === 1 ? "" : "s") + " ready"; })(cmds.filter(function (l) { return l.charAt(0) !== "#"; }).length) + " · " + left + " still waiting on you" : "No choices yet · " + left + " waiting on you";
     document.getElementById("out").textContent = cmds.length ? cmds.join("\n") : "# nothing chosen yet";
   }
   function rowsOnPage() { return Array.prototype.slice.call(document.querySelectorAll(".row")); }
@@ -416,7 +417,7 @@ section.q { display:flex; flex-direction:column; gap:10px; }
   document.getElementById("copy").addEventListener("click", function () {
     var b = this, text = commands().join("\n") || "# nothing chosen yet";
     var fail = function () { var pre = document.getElementById("out"), range = document.createRange(); range.selectNodeContents(pre); var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range); document.getElementById("cmds").scrollIntoView({ block: "start" }); b.textContent = "Selected: press copy"; };
-    try { navigator.clipboard.writeText(text).then(function () { b.textContent = "Copied"; setTimeout(function () { b.textContent = "Copy commands"; }, 1600); }, fail); } catch (err) { fail(); }
+    try { navigator.clipboard.writeText(text).then(function () { b.textContent = "Copied"; setTimeout(function () { b.textContent = "Copy choices"; }, 1600); }, fail); } catch (err) { fail(); }
   });
   s_held = SEC[2];
   var T = D.tot, lead = T.rules + (T.rules === 1 ? " proposed rule" : " proposed rules") + " and " + T.conf + (T.conf === 1 ? " document conflict" : " document conflicts") + " waiting for you.";

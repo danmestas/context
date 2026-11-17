@@ -1524,6 +1524,12 @@ for ms in 2 4 10; do printf 'B %s 50%s gate\nE %s 50%s gate %s\n' $((NOW - 3600)
 printf 'B %s 601 search\nE %s 601 search 7\n' $((NOW - 3600)) $((NOW - 3600)) >> "$CTX_DB.calls"
 BEFORE=$("$CTX" sql "SELECT (SELECT count(*) FROM ctx_chunk), (SELECT count(*) FROM ctx_doc_conflict), (SELECT count(*) FROM ctx_rule_proposal WHERE status = 'open')")
 PAGE=$("$CTX" page) || fail "ctx page runs"
+# --open hands the written file to the system's opener, as one argument and through no shell.
+printf '#!/bin/sh\nprintf "%%s\\n" "$#" "$1" > "$OPENED"\n' > "$T/opener.sh"; chmod +x "$T/opener.sh"
+OPENED="$T/opened.txt" CTX_OPENER="$T/opener.sh" "$CTX" page --open --out "$T/a page; touch pwned.html" >/dev/null || fail "ctx page --open runs"
+[ "$(sed -n 1p "$T/opened.txt")" = 1 ] && [ "$(sed -n 2p "$T/opened.txt")" = "$T/a page; touch pwned.html" ] && [ ! -e "$T/pwned.html" ] && [ ! -e pwned.html ] || fail "the opener gets the page's path as one argument: $(cat "$T/opened.txt")"
+if CTX_OPENER="$T/no-such-opener" "$CTX" page --open --out "$T/p2.html" >/dev/null 2>"$T/open.err"; then fail "a missing opener is reported"; fi
+[ -s "$T/p2.html" ] && grep -q 'was written' "$T/open.err" || fail "the page is still written when it cannot be opened: $(cat "$T/open.err")"
 [ "$PAGE" = "$CTX_DB.page.html" ] && [ -s "$PAGE" ] || fail "ctx page writes <database>.page.html and prints its path: $PAGE"
 [ "$("$CTX" sql "SELECT (SELECT count(*) FROM ctx_chunk), (SELECT count(*) FROM ctx_doc_conflict), (SELECT count(*) FROM ctx_rule_proposal WHERE status = 'open')")" = "$BEFORE" ] || fail "ctx page only reads the archive"
 python3 - "$PAGE" <<'EOF' || fail "the page is a complete document with nothing to fetch and nothing left to fill in"
@@ -1592,16 +1598,17 @@ assert (g["runs"], g["med"], g["p95"], g["mx"]) == (3, 4, 10, 10) and g["s"] == 
 t = D["tot"]
 assert (t["rules"], t["conf"], t["held"], t["turns"]) == (5, 3, 2, al["turns"] + 2), "totals: %r" % t
 EOF
-# ctx page apply: the commands the page produces, run by this program and nothing else.
+# ctx page apply: the choices the page produces, in words that are not commands, so the only way to
+# act on them is through apply and its plan.
 RID=$("$CTX" sql "SELECT id FROM ctx_rule_proposal WHERE text LIKE 'Name test files%'")
 CID=$("$CTX" docs conflicts | sed -n 's/^[0-9]*\. \[\([0-9a-f]*\)\] retry limit$/\1/p')
 cat > "$T/page.plan" <<EOF
 # chosen on the page
-ctx rules accept $RID --text 'Name test files after the module'    # alpha: Name test files
+accept rule $RID as 'Name test files after the module'    # alpha: Name test files
 
-ctx docs conflicts dismiss $CID --reason 'a plan changes'
-ctx ticket new 'Docs: it'\\''s a "limit"' --type Bug --project pgdocs --body 'one line'
-ctx exclude --project beta
+dismiss conflict $CID because 'a plan changes'
+ticket 'Docs: it'\\''s a "limit"' in pgdocs saying 'one line'
+stop archiving beta
 # edit your settings: remove the \`ctx gate\` entries
 EOF
 "$CTX" page apply "$T/page.plan" > "$T/plan.txt" || fail "apply without --yes shows the plan: $(cat "$T/plan.txt")"
@@ -1616,23 +1623,27 @@ tail -1 "$T/plan.txt" | grep -q '^4 of 4 actions done$' || fail "apply says how 
 "$CTX" exclude | grep -q 'project:beta' || fail "the project is excluded"
 # Anything else is refused as a whole before anything runs, naming the line.
 RID2=$("$CTX" sql "SELECT id FROM ctx_rule_proposal WHERE status = 'open' AND text LIKE 'Deploy only%'")
-for bad in "ctx rules accept $RID2; rm -rf $T/pg" "echo hello" "ctx sql 'DELETE FROM ctx_chunk'" "ctx rules accept $RID2 extra" "ctx forget --project beta --remove" "ctx rules accept x" "ctx exclude --project \$(touch $T/canary)" "ctx rules reject $RID2 | cat" "ctx docs conflicts dismiss nothex --reason x" "ctx ticket new 'a' --type Bug --project p" "ctx rules reject $RID2 --text 'x'"; do
-  printf 'ctx rules reject %s\n%s\n' "$RID2" "$bad" > "$T/bad.plan"
+for bad in "accept rule $RID2; rm -rf $T/pg" "echo hello" "ctx rules accept $RID2" "ctx sql 'DELETE FROM ctx_chunk'" "accept rule $RID2 extra" "forget beta now" "accept rule x" "stop archiving \$(touch $T/canary)" "reject rule $RID2 | cat" "dismiss conflict nothex because x" "ticket 'a' in pgdocs" "ticket 'a' in -x saying 'b'"; do
+  printf 'reject rule %s\n%s\n' "$RID2" "$bad" > "$T/bad.plan"
   if "$CTX" page apply --yes "$T/bad.plan" 2> "$T/bad.err" >/dev/null; then fail "a line that is not an allowed form is refused: $bad"; fi
   grep -q 'line 2' "$T/bad.err" || fail "the refusal names the line: $(cat "$T/bad.err")"
   [ "$("$CTX" rules proposed --all | grep -c "^$RID2 ")" = 1 ] || fail "a refused file runs nothing, not even its good lines: $bad"
 done
 [ ! -e "$T/canary" ] || fail "nothing is passed to a shell"
 # An argument is text. Shell syntax inside quotes is kept as written and never run.
-printf '%s\n' "ctx ticket new 'a; touch $T/canary1; \$(touch $T/canary2) \`touch $T/canary3\` | rm -rf $T/pg' --type Bug --project pgdocs --body 'b \$(touch $T/canary4)'" > "$T/quote.plan"
+printf '%s\n' "ticket 'a; touch $T/canary1; \$(touch $T/canary2) \`touch $T/canary3\` | rm -rf $T/pg' in pgdocs saying 'b \$(touch $T/canary4)'" > "$T/quote.plan"
 "$CTX" page apply --yes "$T/quote.plan" >/dev/null || fail "a quoted argument is accepted"
 [ ! -e "$T/canary1" ] && [ ! -e "$T/canary2" ] && [ ! -e "$T/canary3" ] && [ ! -e "$T/canary4" ] && [ -d "$T/pg" ] || fail "text inside quotes is never run"
 "$CTX" ticket ready --all | grep -q 'a; touch .*canary1; \$(touch .*canary2) `touch .*canary3` | rm -rf' || fail "the quoted text is the ticket's title, as written"
 # The first failure stops the run and says how far it got.
-printf 'ctx rules reject %s\nctx rules reject 999999\nctx exclude --project nosuchproject\n' "$RID2" > "$T/fail.plan"
+printf 'reject rule %s\nreject rule 999999\nstop archiving nosuchproject\n' "$RID2" > "$T/fail.plan"
 if "$CTX" page apply --yes "$T/fail.plan" > "$T/fail.txt" 2>&1; then fail "a failing action fails the run"; fi
 grep -q '1 of 3 actions done' "$T/fail.txt" || fail "the run stops at the first failure and counts what ran: $(cat "$T/fail.txt")"
 "$CTX" page apply "$T/missing.plan" 2>/dev/null && fail "a missing file is an error"
+# A command line is refused, and the message says what the file should hold instead.
+printf 'ctx rules reject %s\n' "$RID2" > "$T/cmd.plan"
+if "$CTX" page apply "$T/cmd.plan" 2> "$T/cmd.err" >/dev/null; then fail "a ctx command is not a choice"; fi
+grep -q 'choices' "$T/cmd.err" || fail "the refusal explains itself: $(cat "$T/cmd.err")"
 export CTX_DB="$T/page2.sqlite"
 "$CTX" init >/dev/null
 "$CTX" page >/dev/null && python3 - "$CTX_DB.page.html" <<'EOF' || fail "an empty archive still makes a page"
