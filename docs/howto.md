@@ -427,6 +427,18 @@ many expired; `ctx rules accept N` still takes it by number. A queue nobody read
 one, and a model cannot decide for you yet: on 22 proposals you had decided, Claude Sonnet
 and Haiku agreed with you about 72% of the time.
 
+A proposal you say again, in another session, becomes a tentative rule. `ctx rules`
+lists it after the rules in force, marked `tentative` with how many times you said it
+and when it lapses; `ctx rules proposed` marks it too, and the session-start note gives
+the agent up to five of them to follow unless you say otherwise. It lapses 30 days after
+you last said it, counted in the archive's own time, so a machine left off lapses
+nothing. Only accepting it makes it permanent; a rejected one is never tentative. The
+classifier does the checking during `ctx rules propose`: it is shown each open proposal
+with the ten closest turns from your other sessions and says which give the same
+instruction. On the author's archive, 47 of 84 open proposals had been said again. Of
+the 6 rejected, 5 had been said again, all last more than 30 days before; of the 40
+said again within 30 days, none was rejected. A repeat means true now, not true forever.
+
 `eval/rules_bench.py --classify "CMD"` scores a classifier against a labelled set of
 your turns. On 1,000 of them, Haiku found 84% of the standing instructions at 76%
 precision, DeepSeek 80% at 60%; matching words such as "always" found 17%.

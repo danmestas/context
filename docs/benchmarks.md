@@ -40,6 +40,7 @@ This page lists what ctx has been measured to do. Every figure comes from a resu
 | Which kinds of rule go stale | No bar | Status notes go stale within weeks and rules in a person's own words rarely do, so ctx fades by kind. Fading by age would have silenced about a quarter of rules that were still true. |
 | Finding stale memory notes | Failed its bar | Notes rarely go stale because a later session contradicts them; they go stale because the work stops, which no transcript says. Silence catches most of those for nothing, so ctx fades notes of silent projects. It misses the bar on true notes, but a faded note returns with its project's next session. |
 | Duplicate memory notes | No bar | Agents rarely write the same note twice, so ctx does not merge notes. |
+| Instructions said more than once | No bar | A repeat means an instruction is true now, not true forever: 5 of the 6 rejected ones had been repeated, all months earlier. So ctx serves a repeated proposal as a tentative rule that lapses 30 days after it was last said, and only an accepted one is kept. |
 | Holding back a question the archive may answer | Failed its bar | The idea failed clearly. Three in four firings were irrelevant and one in twelve pointed at a conflicting answer, so the hook was removed before it shipped. |
 | Matching answers to the questions agents asked | Passed its bar | The record of questions and answers is consistent on a real archive. This checks that answers are attached to the right question, not that they were read correctly word for word. |
 | Hooks and commands on a real archive | Passed its bar | Every hook takes 4 to 30 ms at the median and none came near the bar; the slowest single run was the compaction brief at 62 ms. The brief used to take 0.4 to 1.2 s on its first run: to find the last landing the person reported it read the text of every typed turn in the archive. It now finds the session's own documents first and reads only their turns. The gate adds about 5 ms to a search or shell command, most of which is the cost of starting a process. The two listing commands are typed by a person, not run by a hook, and are slower. |
@@ -789,6 +790,28 @@ Measured 2026-11-17; good until 2027-02-15.
 - method: no model: overlap of five-character sequences in note text, and of words in each note's one-line description
 
 [Result file](../bench/results/note-duplicates.json)
+
+### Instructions said more than once
+
+Whether a proposed rule the person said again in another session can be served before they review it, and for how long.
+
+- **Compared with:** waiting for the person to review every proposal
+- **Bar:** none; this result describes and was not a test.
+- **What it means:** A repeat means an instruction is true now, not true forever: 5 of the 6 rejected ones had been repeated, all months earlier. So ctx serves a repeated proposal as a tentative rule that lapses 30 days after it was last said, and only an accepted one is kept.
+
+| Measure | Result |
+| --- | --- |
+| Open proposals said again in another session | 47 of 84 |
+| Rejected proposals said again | 5 of 6 (all last said more than 30 days ago) |
+| Accepted proposals said again | 0 of 16 |
+| Repeats last said within 30 days | 40, none rejected |
+
+Measured 2026-11-17; good until 2027-02-15.
+
+- source: the author's own session archive; only counts leave it
+- method: Claude Haiku judged meaning, not wording, against the 10 closest turns by word search in other sessions
+
+[Result file](../bench/results/rule-repeats.json)
 
 ## Records
 
