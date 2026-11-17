@@ -8963,9 +8963,11 @@ static void page_data(sqlite3 *db, buf *out) {
 /* ctx page [--out FILE]: writes the page to FILE, by default beside the database, and prints where. */
 static int cmd_page_write(int argc, char **argv) {
   const char *out = NULL;
+  int show = 0;
   for (int i = 0; i < argc; i++) {
     if (!strcmp(argv[i], "--out") && i + 1 < argc && !out) out = argv[++i];
-    else die("usage: ctx page [--out FILE] | apply [FILE] [--yes]");
+    else if (!strcmp(argv[i], "--open")) show = 1;
+    else die("usage: ctx page [--open] [--out FILE] | apply [FILE] [--yes]");
   }
   sqlite3 *db = ctx_open();
   buf data = {0}, html = {0};
@@ -8987,10 +8989,31 @@ static int cmd_page_write(int argc, char **argv) {
     die("cannot write %s: %s", path, strerror(errno));
   }
   puts(path);
+  int rc = 0;
+  if (show) { /* the system's opener, started directly with the path as its one argument */
+    const char *opener = getenv("CTX_OPENER");
+#ifdef __APPLE__
+    if (!opener || !*opener) opener = "open";
+#else
+    if (!opener || !*opener) opener = "xdg-open";
+#endif
+    fflush(stdout);
+    pid_t pid = fork();
+    if (pid == 0) {
+      execlp(opener, opener, path, (char *)NULL);
+      _exit(127);
+    }
+    int st = 0;
+    while (pid > 0 && waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+    if (pid < 0 || !WIFEXITED(st) || WEXITSTATUS(st)) {
+      fprintf(stderr, "ctx: the page was written but %s could not open it\n", opener);
+      rc = 1;
+    }
+  }
   free(dflt);
   free(data.p);
   free(html.p);
-  return 0;
+  return rc;
 }
 
 /* ctx page apply: the commands the page produces, each checked against the few forms the page can emit and
@@ -9074,6 +9097,40 @@ static int action_kind(char **v, int n, act_kind *kind) {
   return 1;
 }
 
+/* The page writes choices in words, not commands: "accept rule 12", "stop archiving myproj".
+ * Pasted into a shell they do nothing, so the one way to act on them is here, through the plan.
+ * This turns one line's words into the ctx command that carries it out, or returns 0. */
+static int choice_words(char ***words, int *count) {
+  char **v = *words, *c[10] = {"ctx", NULL};
+  int n = *count, m = 0;
+#define IS(i, w) (i < n && !strcmp(v[i], w))
+  if (IS(0, "accept") && IS(1, "rule") && (n == 3 || (n == 5 && IS(3, "as")))) {
+    c[1] = "rules", c[2] = "accept", c[3] = v[2], m = 4;
+    if (n == 5) c[4] = "--text", c[5] = v[4], m = 6;
+  } else if (IS(0, "reject") && IS(1, "rule") && n == 3) {
+    c[1] = "rules", c[2] = "reject", c[3] = v[2], m = 4;
+  } else if (IS(0, "dismiss") && IS(1, "conflict") && (n == 3 || (n == 5 && IS(3, "because")))) {
+    c[1] = "docs", c[2] = "conflicts", c[3] = "dismiss", c[4] = v[2], m = 5;
+    if (n == 5) c[5] = "--reason", c[6] = v[4], m = 7;
+  } else if (IS(0, "ticket") && n == 6 && IS(2, "in") && IS(4, "saying")) {
+    c[1] = "ticket", c[2] = "new", c[3] = v[1], c[4] = "--type", c[5] = "Bug", c[6] = "--project", c[7] = v[3], c[8] = "--body", c[9] = v[5], m = 10;
+  } else if (IS(0, "stop") && IS(1, "archiving") && n == 3) {
+    c[1] = "exclude", c[2] = "--project", c[3] = v[2], m = 4;
+  } else if (IS(0, "forget") && n == 2) {
+    c[1] = "forget", c[2] = "--project", c[3] = v[1], m = 4;
+  }
+#undef IS
+  if (!m) return 0;
+  char **out = calloc((size_t)m + 1, sizeof *out);
+  if (!out) die("out of memory");
+  for (int i = 0; i < m; i++) out[i] = dup_text((const unsigned char *)c[i]);
+  for (int i = 0; i < n; i++) free(v[i]);
+  free(v);
+  *words = out;
+  *count = m;
+  return 1;
+}
+
 static void action_say(const action *a, buf *out) {
   char **v = a->v;
   switch (a->kind) {
@@ -9122,9 +9179,9 @@ static int cmd_page_apply(int argc, char **argv) {
     char **v;
     int n;
     act_kind kind = ACT_ACCEPT;
-    if (sh_words(s, &v, &n) || !n || !action_kind(v, n, &kind)) {
+    if (sh_words(s, &v, &n) || !n || !choice_words(&v, &n) || !action_kind(v, n, &kind)) {
       char *shown = squash(s, 80);
-      die("line %zu is not something ctx page apply may run, so nothing was run: %s", line, shown);
+      die("line %zu is not one of the choices the page writes (such as: accept rule 12), so nothing was done: %s", line, shown);
     }
     act = realloc(act, (na + 1) * sizeof *act);
     if (!act) die("out of memory");
@@ -9365,7 +9422,7 @@ static int usage(void) {
         "       ctx status\n"
         "       ctx remember TEXT [--project P] [--until DATE] [--from TURN]\n"
         "       ctx decisions [--open] [--all] [--limit N]\n"
-        "       ctx page [--out FILE]\n"
+        "       ctx page [--open] [--out FILE]\n"
         "       ctx page apply [FILE] [--yes]\n"
         "       ctx exclude [DIR | --remove DIR | --project P | --remove --project P]\n"
         "       ctx forget [SESSION | --project P]\n"
