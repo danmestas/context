@@ -29,7 +29,7 @@
 #include "page.h"
 
 #define CTX_VERSION "0.0.1"
-#define CTX_USER_VERSION 10    /* PRAGMA user_version once initialized */
+#define CTX_USER_VERSION 11    /* PRAGMA user_version once initialized */
 #define CTX_DERIVED_VERSION 7 /* raise when schema/index.sql changes; ctx then rebuilds */
 
 /* A tool's output is kept up to this size at each end; the middle is cut. */
@@ -6404,6 +6404,9 @@ static int rule_save(sqlite3 *db, const rule_t *r) {
 }
 
 #define FADE_DAYS "30"
+#define PROPOSAL_DAYS "30"
+/* a proposal still waiting: open, and made within PROPOSAL_DAYS */
+#define PROPOSAL_LIVE(t) t "status = 'open' AND " t "id IN (SELECT id FROM ctx_proposal_made WHERE made >= datetime('now', '-" PROPOSAL_DAYS " days'))"
 /* A project counts as silent when its newest turn is this far behind the newest turn in the
  * whole archive. Measured against the archive's own time, so a machine left off fades nothing,
  * and only once the archive itself spans that long. */
@@ -6967,7 +6970,7 @@ static int rules_offer(void) {
     sqlite3_finalize(q);
   }
   int waiting = 0;
-  if (sqlite3_prepare_v2(db, "SELECT count(*) FROM ctx_rule_proposal WHERE status = 'open' AND project = ?1", -1, &q, NULL) == SQLITE_OK) {
+  if (sqlite3_prepare_v2(db, "SELECT count(*) FROM ctx_rule_proposal WHERE " PROPOSAL_LIVE("") " AND project = ?1", -1, &q, NULL) == SQLITE_OK) {
     sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
     if (sqlite3_step(q) == SQLITE_ROW) waiting = sqlite3_column_int(q, 0);
     sqlite3_finalize(q);
@@ -8170,11 +8173,16 @@ static int rules_proposals(sqlite3 *db, int argc, char **argv) {
     int all = argc >= 2 && !strcmp(argv[1], "--all");
     char *proj = all ? NULL : current_project(db);
     sqlite3_stmt *q = db_prepare(db, "SELECT id, project, substr(coalesce(at, ''), 1, 10), replace(substr(text, 1, 160), char(10), ' ')"
-                                     " FROM ctx_rule_proposal WHERE status = 'open' AND (?1 IS NULL OR project = ?1) ORDER BY at");
+                                     " FROM ctx_rule_proposal WHERE " PROPOSAL_LIVE("") " AND (?1 IS NULL OR project = ?1) ORDER BY at");
     sqlite3_bind_text(q, 1, proj, -1, SQLITE_STATIC);
     while (sqlite3_step(q) == SQLITE_ROW)
       printf("%d  %s %s  %s\n", sqlite3_column_int(q, 0), sqlite3_column_text(q, 1), sqlite3_column_text(q, 2), sqlite3_column_text(q, 3));
     sqlite3_finalize(q);
+    q = db_prepare(db, "SELECT count(*) FROM ctx_rule_proposal WHERE status = 'open' AND NOT (" PROPOSAL_LIVE("") ") AND (?1 IS NULL OR project = ?1)");
+    sqlite3_bind_text(q, 1, proj, -1, SQLITE_STATIC);
+    int gone = sqlite3_step(q) == SQLITE_ROW ? sqlite3_column_int(q, 0) : 0;
+    sqlite3_finalize(q);
+    if (gone) printf("%d older proposal%s expired undecided\n", gone, gone == 1 ? "" : "s");
     free(proj);
     return 0;
   }
@@ -8536,7 +8544,7 @@ static long page_rules(sqlite3 *db, held_set *held, buf *out, long *repeated) {
   proposal *p = NULL;
   size_t n = 0;
   sqlite3_stmt *q = db_prepare(db, "SELECT p.id, p.project, substr(coalesce(p.at, ''), 1, 10), p.text, c.body, p.turn FROM ctx_rule_proposal p"
-                                   " LEFT JOIN ctx_chunk c ON c.turn = p.turn WHERE p.status = 'open' ORDER BY p.id");
+                                   " LEFT JOIN ctx_chunk c ON c.turn = p.turn WHERE " PROPOSAL_LIVE("p.") " ORDER BY p.id");
   while (sqlite3_step(q) == SQLITE_ROW) {
     p = realloc(p, (n + 1) * sizeof *p);
     if (!p) die("out of memory");
@@ -8583,7 +8591,7 @@ static long page_rules(sqlite3 *db, held_set *held, buf *out, long *repeated) {
   size_t *hits = calloc(n + 1, sizeof *hits);
   if (!hits) die("out of memory");
   q = db_prepare(db, "SELECT project, substr(at, 1, 10), turn, body FROM ctx_chunk WHERE heading = 'user'"
-                     " AND project IN (SELECT project FROM ctx_rule_proposal WHERE status = 'open') AND substr(body, 1, 1) NOT IN ('<', '/')");
+                     " AND project IN (SELECT project FROM ctx_rule_proposal WHERE " PROPOSAL_LIVE("") ") AND substr(body, 1, 1) NOT IN ('<', '/')");
   while (sqlite3_step(q) == SQLITE_ROW) {
     size_t k = 0;
     while (k < ng && strcmp(g[k].project, (const char *)sqlite3_column_text(q, 0))) k++;

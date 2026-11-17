@@ -498,6 +498,14 @@ grep -q 'Delete everything' "$T/prop.txt" && fail "an answer about a turn outsid
 P1=$(cut -d' ' -f1 "$T/prop.txt")
 "$CTX" rules suggest r-3 "Email goes through resend" | grep -q proposed || fail "suggest records a proposal by hand"
 P2=$("$CTX" rules proposed --all | grep resend | cut -d' ' -f1)
+# A proposal nobody decides on within 30 days of being made leaves the list; it can still be
+# accepted by its number.
+"$CTX" sql "UPDATE ctx_proposal_made SET made = datetime('now', '-31 days') WHERE id = $P2" >/dev/null
+"$CTX" rules proposed --all > "$T/prop2.txt"
+grep -q resend "$T/prop2.txt" && fail "a proposal undecided for 30 days leaves the list: $(cat "$T/prop2.txt")"
+grep -q '^1 older proposal expired undecided$' "$T/prop2.txt" || fail "the list says how many expired: $(cat "$T/prop2.txt")"
+grep -q 'Use strata' "$T/prop2.txt" || fail "a recent proposal stays"
+"$CTX" sql "UPDATE ctx_proposal_made SET made = datetime('now') WHERE id = $P2" >/dev/null
 "$CTX" rules accept "$P1" --until 2099-01-01 | grep -q accepted || fail "accept a proposal"
 "$CTX" rules reject "$P2" | grep -q rejected || fail "reject a proposal"
 [ -z "$("$CTX" rules proposed --all)" ] || fail "decided proposals leave the list"
@@ -1739,7 +1747,7 @@ CLAUDE_CONFIG_DIR="$XC" "$CTX" scan >/dev/null
 "$CTX" forget 5e550000-0000-0000-0000-00000000000 2>/dev/null && fail "an ambiguous prefix is refused"
 export CTX_DB="$T/rebuild.sqlite"
 "$CTX" init >/dev/null
-[ "$("$CTX" sql "PRAGMA user_version")" = 10 ] || fail "a new file is at the current version"
+[ "$("$CTX" sql "PRAGMA user_version")" = 11 ] || fail "a new file is at the current version"
 [ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 7 ] || fail "derived version recorded"
 printf '{"uuid":"rb-1","timestamp":"2026-09-01T10:00:00Z","cwd":"/w/rb","message":{"role":"user","content":"the capybara rollout"}}\n{"uuid":"rb-2","timestamp":"2026-09-01T10:00:05Z","cwd":"/w/rb","message":{"role":"assistant","content":"rolled out the capybara"}}\n' > "$T/ab12cd99-rb.jsonl"
 "$CTX" archive "$T/ab12cd99-rb.jsonl" >/dev/null
@@ -1761,7 +1769,7 @@ grep -q 'rebuilding it once' "$T/rb.err" || fail "an old index is rebuilt on ope
 "$CTX" sql "DROP TABLE ctx_meta" >/dev/null; "$CTX" sql "PRAGMA user_version = 1" >/dev/null
 "$CTX" search --all capybara 2>"$T/rb3.err" | grep -q capybara || fail "an unversioned file still works"
 [ -s "$T/rb3.err" ] && fail "an unversioned file is upgraded without a rebuild"
-[ "$("$CTX" sql "PRAGMA user_version")" = 10 ] || fail "and is marked current"
+[ "$("$CTX" sql "PRAGMA user_version")" = 11 ] || fail "and is marked current"
 
 # The skill eval harness works end to end with a stand-in for the model.
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"

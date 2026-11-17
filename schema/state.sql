@@ -104,6 +104,18 @@ CREATE TABLE IF NOT EXISTS ctx_rule_proposal(
   rule    TEXT                         -- the rule an accepted one became
 ) STRICT;
 
+-- When each proposal was made. One left undecided for 30 days leaves the list: a queue
+-- nobody reads helps no one. Proposals from before this table get their 30 days from now.
+CREATE TABLE IF NOT EXISTS ctx_proposal_made(
+  id   INTEGER PRIMARY KEY REFERENCES ctx_rule_proposal(id) ON DELETE CASCADE,
+  made TEXT NOT NULL
+) STRICT;
+CREATE TRIGGER IF NOT EXISTS ctx_proposal_made_on_insert AFTER INSERT ON ctx_rule_proposal
+BEGIN
+  INSERT OR IGNORE INTO ctx_proposal_made(id, made) VALUES (new.id, datetime('now'));
+END;
+INSERT OR IGNORE INTO ctx_proposal_made(id, made) SELECT id, datetime('now') FROM ctx_rule_proposal;
+
 -- Turns the rule classifier has already seen, so each is sent once.
 CREATE TABLE IF NOT EXISTS ctx_rule_seen(
   turn TEXT PRIMARY KEY
