@@ -1,0 +1,62 @@
+{
+ "name": "session-wiki",
+ "title": "A wiki compiled from past sessions",
+ "section": "Search",
+ "order": 60,
+ "date": "2026-11-17",
+ "good_until": "2027-02-15",
+ "commit": "",
+ "command": "",
+ "conditions": {
+  "corpus": "the second shipyard corpus: 209 sessions, 139 questions, each asked in the sessions' own words and paraphrased",
+  "pages": "compiled by Claude Sonnet from the 167 earliest sessions, one agent per stream; every claim cites a quote that ctx wiki save found word for word in its session. Small: 25 pages. Large: 183 pages",
+  "held back": "the 42 latest sessions, which hold the answers to 38 questions; no page could cite them",
+  "control": "the same pages with their citations reassigned at random, to separate reaching the right session from reaching more sessions",
+  "answers": "ctx as installed, with and without the large wiki; both phrasings; 3 runs each; graded blind in one pass per phrasing"
+ },
+ "summary": "Whether pages compiled from session history help agents answer questions about past work, the consolidation idea in Anthropic's article on agent memory. Retrieval was gated first, with no agent runs; answers were then compared over 1,668 runs.",
+ "metrics": [
+  {
+   "label": "Retrieval, paraphrased: no pages",
+   "value": "25 of 139"
+  },
+  {
+   "label": "Retrieval, paraphrased: small wiki",
+   "value": "29 of 139",
+   "note": "its random-citation control: 30"
+  },
+  {
+   "label": "Retrieval, paraphrased: large wiki",
+   "value": "33 of 139",
+   "note": "its random-citation control: 23; bar 35"
+  },
+  {
+   "label": "Retrieval, own words: no pages, large wiki",
+   "value": "126 and 133 of 139"
+  },
+  {
+   "label": "Answers, paraphrased: no wiki, large wiki",
+   "value": "110.0 and 115.5 of 139",
+   "note": "better on 38, worse on 27, p = 0.22; bar +8"
+  },
+  {
+   "label": "Answers, paraphrased, the 101 questions the pages cover",
+   "value": "78.7 and 84.2",
+   "note": "p = 0.13; on the other 38, 31.3 and 31.3"
+  },
+  {
+   "label": "Answers, own words",
+   "value": "114.8 and 115.3 of 139",
+   "note": "p = 0.89"
+  },
+  {
+   "label": "New tokens with the wiki",
+   "value": "2% fewer",
+   "note": "bar 20% fewer"
+  }
+ ],
+ "bar": "retrieval of paraphrased questions rises to 35 of 139; then answers gain 8 of 139 with no more wrong answers, or match with 20% fewer tokens",
+ "verdict": "fail",
+ "baseline": "ctx as installed, without pages",
+ "meaning": "Small wikis do nothing; a large one lifts retrieval clearly above its control and answers a little, exactly on the questions its pages cover. The gain, about 4% on paraphrased questions, does not clear the bars, so ctx does not compile wikis from sessions."
+}

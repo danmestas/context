@@ -1,0 +1,41 @@
+{
+ "name": "note-staleness",
+ "title": "Finding stale memory notes",
+ "section": "Rules",
+ "order": 40,
+ "date": "2026-11-17",
+ "good_until": "2027-02-15",
+ "commit": "",
+ "command": "",
+ "conditions": {
+  "sample": "80 memory notes agents wrote, labelled by the person: 44 still true, 29 stale, 7 unsure (left out)",
+  "source": "the author's own session archive; only counts leave it",
+  "judge": "Claude Sonnet reads each note beside up to 14 turns from its project and may flag it only with a quote found word for word",
+  "silence": "no model: a note fades while its project has had no session for 90 days of the archive's own time"
+ },
+ "summary": "Whether stale notes can be found by checking them against the sessions, the verification step of the article's dreaming pass, or by noticing that a project has gone quiet.",
+ "metrics": [
+  {
+   "label": "Judge: stale caught, true flagged",
+   "value": "1 of 29, 4 of 44"
+  },
+  {
+   "label": "Silent project: stale caught, true faded",
+   "value": "18 of 29, 3 of 44",
+   "note": "every catch was in a project with no session since the archive began"
+  },
+  {
+   "label": "Stale notes in active projects caught by either",
+   "value": "0 of 11"
+  },
+  {
+   "label": "Applied to the live archive",
+   "value": "109 more notes faded",
+   "note": "on the labels: 12 stale, 1 true; 8 stale and 10 true were already faded by the status-note rule"
+  }
+ ],
+ "bar": "no true note flagged, and at least a quarter of stale notes caught",
+ "verdict": "fail",
+ "baseline": "the person's labels",
+ "meaning": "Notes rarely go stale because a later session contradicts them; they go stale because the work stops, which no transcript says. Silence catches most of those for nothing, so ctx fades notes of silent projects. It misses the bar on true notes, but a faded note returns with its project's next session."
+}

@@ -1,0 +1,29 @@
+{
+ "name": "note-duplicates",
+ "title": "Duplicate memory notes",
+ "section": "Rules",
+ "order": 50,
+ "date": "2026-11-17",
+ "good_until": "2027-02-15",
+ "commit": "",
+ "command": "",
+ "conditions": {
+  "sample": "544 memory notes on disk in 61 project folders",
+  "method": "no model: overlap of five-character sequences in note text, and of words in each note's one-line description"
+ },
+ "summary": "Whether merging duplicate notes, one step of the article's dreaming pass, has anything to do.",
+ "metrics": [
+  {
+   "label": "Near-duplicate pairs by text",
+   "value": "1"
+  },
+  {
+   "label": "Pairs by description, at 30% and 50% word overlap",
+   "value": "19 and 2"
+  }
+ ],
+ "bar": "",
+ "verdict": "none",
+ "baseline": "",
+ "meaning": "Agents rarely write the same note twice, so ctx does not merge notes."
+}
