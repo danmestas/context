@@ -6404,6 +6404,23 @@ static int rule_save(sqlite3 *db, const rule_t *r) {
 }
 
 #define FADE_DAYS "30"
+/* A project counts as silent when its newest turn is this far behind the newest turn in the
+ * whole archive. Measured against the archive's own time, so a machine left off fades nothing,
+ * and only once the archive itself spans that long. */
+#define SILENT_DAYS "90"
+#define ACTIVE_PROJECTS "SELECT p.project FROM (SELECT project, max(at) AS last FROM ctx_chunk WHERE heading = 'user' AND at IS NOT NULL GROUP BY project) p," \
+  " (SELECT max(at) AS newest FROM ctx_chunk WHERE heading = 'user' AND at IS NOT NULL) a" \
+  " WHERE julianday(a.newest) - julianday(p.last) < " SILENT_DAYS
+#define ARCHIVE_WATCHED "SELECT coalesce(julianday(max(at)) - julianday(min(at)) >= " SILENT_DAYS ", 0) FROM ctx_chunk WHERE heading = 'user' AND at IS NOT NULL"
+
+/* Which projects are active, and whether the archive is old enough to say: when this
+ * changes, notes fade or come back, so the rules are indexed again. */
+static char *active_signature(sqlite3 *db) {
+  sqlite3_stmt *q = db_prepare(db, "SELECT (" ARCHIVE_WATCHED ") || ':' || coalesce((SELECT group_concat(project, char(31)) FROM (" ACTIVE_PROJECTS " ORDER BY 1)), '')");
+  char *sig = dup_text(sqlite3_step(q) == SQLITE_ROW ? sqlite3_column_text(q, 0) : (const unsigned char *)"");
+  sqlite3_finalize(q);
+  return sig;
+}
 /* Rebuilds the rule documents from the rule technotes, every machine's. A rule past
  * its until date is expired. Two technotes with one key: the newer wins. */
 static void rules_index(sqlite3 *db) {
@@ -6429,6 +6446,11 @@ static void rules_index(sqlite3 *db) {
   sqlite3_stmt *key = db_prepare(db, "INSERT OR REPLACE INTO ctx_rule(key, technote) VALUES (?1, ?2)");
   sqlite3_stmt *past = db_prepare(db, "SELECT ?1 <> '' AND ?1 < date('now')");
   sqlite3_stmt *faded = db_prepare(db, "SELECT ?1 < date('now', '-" FADE_DAYS " days')");
+  /* notes from projects silent for SILENT_DAYS fade: on 73 notes the person labelled, this caught
+   * 18 of 29 stale ones; a judge reading the sessions caught 1 */
+  db_exec(db, "DROP TABLE IF EXISTS temp.active_project; CREATE TEMP TABLE active_project AS " ACTIVE_PROJECTS);
+  int watched = (int)db_int(db, ARCHIVE_WATCHED);
+  sqlite3_stmt *active = db_prepare(db, "SELECT 1 FROM temp.active_project WHERE project = ?1");
   sqlite3_stmt *older = db_prepare(db, "DELETE FROM ctx_chunk WHERE doc_id IN (SELECT id FROM ctx_doc WHERE kind = 'rule' AND name = ?1)");
   sqlite3_stmt *older_doc = db_prepare(db, "DELETE FROM ctx_doc WHERE kind = 'rule' AND name = ?1");
   while (sqlite3_step(notes) == SQLITE_ROW) {
@@ -6454,6 +6476,13 @@ static void rules_index(sqlite3 *db) {
       sqlite3_bind_text(faded, 1, written, -1, SQLITE_STATIC);
       if (sqlite3_step(faded) == SQLITE_ROW && sqlite3_column_int(faded, 0)) snprintf(status, sizeof status, "faded");
       sqlite3_reset(faded);
+    }
+    /* A memory note an agent wrote fades while its project is silent, and comes back with
+     * the project's next session. Rules in the person's own words never fade this way. */
+    if (!*status && watched && strstr(k, "/memory/") && strcmp(project, "*")) {
+      sqlite3_bind_text(active, 1, project, -1, SQLITE_STATIC);
+      if (sqlite3_step(active) != SQLITE_ROW) snprintf(status, sizeof status, "faded");
+      sqlite3_reset(active);
     }
     const char *body = rule_body(text);
     char title[200];
@@ -6496,6 +6525,13 @@ static void rules_index(sqlite3 *db) {
   sqlite3_finalize(key);
   sqlite3_finalize(past);
   sqlite3_finalize(faded);
+  sqlite3_finalize(active);
+  char *sig = active_signature(db);
+  sqlite3_stmt *keep = db_prepare(db, "INSERT OR REPLACE INTO ctx_meta(key, value) VALUES ('rules_active', ?1)");
+  sqlite3_bind_text(keep, 1, sig, -1, SQLITE_STATIC);
+  sqlite3_step(keep);
+  sqlite3_finalize(keep);
+  free(sig);
   sqlite3_finalize(older);
   sqlite3_finalize(older_doc);
   db_exec(db, "COMMIT");
@@ -6674,7 +6710,13 @@ static long rules_import(sqlite3 *db) {
   }
   sqlite3_finalize(gone);
   db_exec(db, "COMMIT");
-  if (changed) rules_index(db);
+  char *sig = active_signature(db);
+  sqlite3_stmt *was = db_prepare(db, "SELECT coalesce((SELECT value FROM ctx_meta WHERE key = 'rules_active'), '') = ?1");
+  sqlite3_bind_text(was, 1, sig, -1, SQLITE_STATIC);
+  int same = sqlite3_step(was) == SQLITE_ROW && sqlite3_column_int(was, 0);
+  sqlite3_finalize(was);
+  free(sig);
+  if (changed || !same) rules_index(db); /* a project fell silent or woke up */
   return changed;
 }
 

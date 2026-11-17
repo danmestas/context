@@ -234,6 +234,24 @@ CLAUDE_CONFIG_DIR="$RC" "$CTX" rules import >/dev/null
 touch "$RC/projects/-w-rp/memory/backlog.md"
 CLAUDE_CONFIG_DIR="$RC" "$CTX" rules import >/dev/null
 "$CTX" rules --project rp | grep -q 'Backlog after' || fail "editing a status note brings it back"
+# A memory note fades when its project has had no session for 90 days of the archive's own
+# time, so a machine left off does not fade everything; a session brings the note back.
+mkdir -p "$RC/projects/-w-quietp/memory" "$RC/projects/-w-oldp"
+printf '{"uuid":"oldp-1","timestamp":"2026-03-01T10:00:00Z","cwd":"/w/oldp","message":{"role":"user","content":"an early session"}}\n' > "$RC/projects/-w-oldp/d00d00a2-0000-0000-0000-0000000000a2.jsonl"
+"$CTX" archive "$RC/projects/-w-oldp/d00d00a2-0000-0000-0000-0000000000a2.jsonl" >/dev/null
+printf -- '---\nname: osprey\ndescription: Deploy osprey only from the release branch\nmetadata:\n  type: feedback\n---\n\nDeploy osprey only from the release branch.\n' > "$RC/projects/-w-quietp/memory/osprey.md"
+CLAUDE_CONFIG_DIR="$RC" "$CTX" rules import >/dev/null
+"$CTX" rules --all | grep -q '^osprey.md  [^ ]* *faded' || fail "a note from a project with no recent session fades: $("$CTX" rules --all | grep osprey)"
+"$CTX" rules --all | grep '^osprey.md' | grep -q faded || fail "the note is listed as faded, not dropped"
+"$CTX" rules --project rp | grep -q 'Commit messages are short' || fail "a note from an active project does not fade"
+printf '{"uuid":"quiet-1","timestamp":"2026-11-02T10:00:00Z","cwd":"/w/quietp","message":{"role":"user","content":"back on osprey"}}\n' > "$RC/projects/-w-quietp/d00d00a1-0000-0000-0000-0000000000a1.jsonl"
+"$CTX" archive "$RC/projects/-w-quietp/d00d00a1-0000-0000-0000-0000000000a1.jsonl" >/dev/null
+CLAUDE_CONFIG_DIR="$RC" "$CTX" rules import >/dev/null
+"$CTX" rules --project quietp | grep -q 'Deploy osprey' || fail "a session brings the note back: $("$CTX" rules --all --project quietp)"
+FRESH="$T/fresh-rules.sqlite"; CTX_DB="$FRESH" "$CTX" init >/dev/null
+CTX_DB="$FRESH" CLAUDE_CONFIG_DIR="$RC" "$CTX" rules import >/dev/null
+CTX_DB="$FRESH" "$CTX" rules --all | grep '^osprey.md' | grep -q faded && fail "an archive too young to tell silence fades nothing: $(CTX_DB="$FRESH" "$CTX" rules --all | grep osprey)"
+CTX_DB="$FRESH" "$CTX" rules --all | grep -q '^osprey.md' || fail "the young archive still lists the note"
 # A judge flags a rule only with a quote of the person's own words; the agent asks once.
 mkdir -p "$T/w/rp"
 printf '{"uuid":"r-5","timestamp":"2026-11-03T10:00:00Z","cwd":"/w/rp","message":{"role":"user","content":"we no longer keep kestrel commit messages short, write full ones now"}}\n' >> "$RC/projects/-w-rp/d00d0001-0000-0000-0000-000000000001.jsonl"

@@ -438,6 +438,13 @@ note fades 30 days after its file was last written, and editing it brings it bac
 Rules in your own words and corrections stay until you retire them. On 42 rules you
 labelled, 12% of your own rules had gone stale, 44% of corrections and 83% of status
 notes; age-based fading caught more stale rules but quieted a quarter of true ones.
+A memory note an agent wrote also fades while its project is silent: no session for 90
+days, counted in the archive's own time so a machine left off fades nothing, and only once
+the archive spans 90 days. Its project's next session brings it back. On 73 notes you
+labelled, this caught 18 of 29 stale ones; a model reading the sessions caught 1, because
+notes go stale when work stops, which no session says. Rules in your own words never fade
+this way.
+
 A faded rule is listed by `ctx rules --all` and found by `ctx search --history`.
 
 Two checks catch the rest, and both leave the decision to you:

@@ -24,6 +24,8 @@ This page lists what ctx has been measured to do. Every figure comes from a resu
 | Would small embeddings close the paraphrase gap? | Failed its bar | A real gain, but short of the bar. Fusing the 30 MB model with keyword search finds 13 of 30 paraphrased questions instead of 5 (better on 9, worse on 1, p = 0.02) and loses nothing in the session's own terms. That is about half of what the neural tools gain, for almost no indexing cost. The smaller model does less and the larger one no better. ctx does not use embeddings as a result: the bar was not met, and in the answer test paraphrasing did not make agents answer worse, so the gain here may not reach the answers. |
 | Small embeddings on 209 sessions | Failed its bar | The gain does not hold. Fused search found 126 and 25 of 139 against 125 and 23 for keywords alone, which is no difference (p = 0.77 on paraphrased questions). The improvement on the small corpus came from its size: with few sessions a rough sense of topic is enough to pick one, and with many sessions on one codebase it is not. ctx does not use embeddings. Tools that run a neural model were not tried at this size. |
 | 209 sessions: neural embeddings and other tools at finding the session | No bar | For one search on a reworded question, neural embeddings are far better than keywords, and the model is what decides by how much. Small models from 2019 to 2022, which the other tools use, find 37 to 55 of the 139 paraphrased questions; current models find 62 to 87; ctx's keywords find 23. In the session's own terms the best models also edge ahead, 134 against 125. What unit of text is embedded matters little. Blending a strong model's ranking with the keyword ranking at equal weight throws away most of its gain on paraphrased questions. None of this is in ctx: whether it changes what an agent answers is the next result. |
+| A wiki compiled from documents | No bar | At this size the sources already answer nearly everything; the wiki added one answer and cost more tokens. Recorded late, on 2026-11-17, from the run of 2026-11-10. |
+| A wiki compiled from past sessions | Failed its bar | Small wikis do nothing; a large one lifts retrieval clearly above its control and answers a little, exactly on the questions its pages cover. The gain, about 4% on paraphrased questions, does not clear the bars, so ctx does not compile wikis from sessions. |
 | Coding sessions: do agents answer better with ctx? | No bar | Plain transcript files with a hint where they are scored highest. ctx as installed is level with them by the test set beforehand (better on 2 questions, worse on 6, p = 0.29) but three points lower, and ctx without its note is significantly worse (p = 0.04). The whole gap is use: the agent searched with ctx on 24 of 30 questions with the note and 19 without, and where it did search, its answers were as good as the transcript arm's. What ctx buys is cost: about a third fewer tokens, less than half the time, and two or three tool calls where grep needs seven to nine. Paraphrasing the question made almost no difference to any arm, because agents rewrite their own searches. With only the repository the agent could answer 6 of 30, so the questions do need session history. |
 | 209 coding sessions: do agents answer better with ctx? | No bar | Level on accuracy by the bar, and much cheaper. In the session's own terms ctx scored 116.5 against 111.5 (better on 24 questions, worse on 15, p = 0.20); paraphrased, 112.0 against 100.5 (better 26, worse 16, p = 0.16). Neither difference is significant on its own. Both times ctx cost about half as much, took a third of the time and a quarter of the tool calls, and gave fewer wrong answers. Paraphrase hurt the transcript arm more than ctx: its score fell by 11 and ctx's by 4.5, although a single ctx search finds the right session for only 23 of the 139 paraphrased questions. Agents make up for that by searching again with other words, three searches at the median. |
 | Coding sessions: adding snippets or a reminder to the prompt | Failed its bar | Neither helps, and both arms scored below ctx as installed, significantly so on paraphrased questions. The reason is that they almost never act: snippets were added for 4 and 3 of 30 questions and the reminder for 1 and 0, so these arms are in effect the skill alone. On the few questions where snippets were added, the answers were right. The session-start note remains the one thing shown to make agents search, and both hooks stay off by default. |
@@ -36,6 +38,8 @@ This page lists what ctx has been measured to do. Every figure comes from a resu
 | Finding standing instructions in what a person types | No bar | A small model finds about five in six standing instructions; cue words find one in six. About a quarter of what it proposes is not a rule, which is why a person accepts or rejects each proposal. |
 | Flagging rules that have gone stale | Passed its bar | The stronger model never flagged a rule that was still true, so it is the one ctx uses. It finds only a few of the stale rules, because most are never contradicted in conversation; a monthly review covers the rest. |
 | Which kinds of rule go stale | No bar | Status notes go stale within weeks and rules in a person's own words rarely do, so ctx fades by kind. Fading by age would have silenced about a quarter of rules that were still true. |
+| Finding stale memory notes | Failed its bar | Notes rarely go stale because a later session contradicts them; they go stale because the work stops, which no transcript says. Silence catches most of those for nothing, so ctx fades notes of silent projects. It misses the bar on true notes, but a faded note returns with its project's next session. |
+| Duplicate memory notes | No bar | Agents rarely write the same note twice, so ctx does not merge notes. |
 | Holding back a question the archive may answer | Failed its bar | The idea failed clearly. Three in four firings were irrelevant and one in twelve pointed at a conflicting answer, so the hook was removed before it shipped. |
 | Matching answers to the questions agents asked | Passed its bar | The record of questions and answers is consistent on a real archive. This checks that answers are attached to the right question, not that they were read correctly word for word. |
 | Hooks and commands on a real archive | Passed its bar | Every hook takes 4 to 30 ms at the median and none came near the bar; the slowest single run was the compaction brief at 62 ms. The brief used to take 0.4 to 1.2 s on its first run: to find the last landing the person reported it read the text of every typed turn in the archive. It now finds the session's own documents first and reads only their turns. The gate adds about 5 ms to a search or shell command, most of which is the cost of starting a process. The two listing commands are typed by a person, not run by a hook, and are slower. |
@@ -344,6 +348,60 @@ bench/shipyard2/results/README.md for the two tools; hosted models: each window 
 ```
 
 [Result file](../bench/results/shipyard2-neural-retrieval.json)
+
+### A wiki compiled from documents
+
+Whether pages compiled from a project's documents help agents answer questions about those documents.
+
+- **Compared with:** the sources alone
+- **Bar:** none; this result describes and was not a test.
+- **What it means:** At this size the sources already answer nearly everything; the wiki added one answer and cost more tokens. Recorded late, on 2026-11-17, from the run of 2026-11-10.
+
+| Measure | Result |
+| --- | --- |
+| Sources only | 18 of 20 |
+| Wiki searchable | 19 of 20 (4% more tokens) |
+| Wiki as files | 18 of 20 (10% more tokens; one wrong answer) |
+
+Measured 2026-11-10; good until 2027-02-08.
+
+- corpus: 19 specifications from one project and 20 questions about them
+- arms: S, the sources alone; W, the sources plus the compiled wiki in the search index; F, the sources plus the wiki as files
+
+```sh
+eval/skill_eval.py
+```
+
+[Result file](../bench/results/wiki-from-documents.json)
+
+### A wiki compiled from past sessions
+
+Whether pages compiled from session history help agents answer questions about past work, the consolidation idea in Anthropic's article on agent memory. Retrieval was gated first, with no agent runs; answers were then compared over 1,668 runs.
+
+- **Compared with:** ctx as installed, without pages
+- **Bar:** retrieval of paraphrased questions rises to 35 of 139; then answers gain 8 of 139 with no more wrong answers, or match with 20% fewer tokens. **Failed.**
+- **What it means:** Small wikis do nothing; a large one lifts retrieval clearly above its control and answers a little, exactly on the questions its pages cover. The gain, about 4% on paraphrased questions, does not clear the bars, so ctx does not compile wikis from sessions.
+
+| Measure | Result |
+| --- | --- |
+| Retrieval, paraphrased: no pages | 25 of 139 |
+| Retrieval, paraphrased: small wiki | 29 of 139 (its random-citation control: 30) |
+| Retrieval, paraphrased: large wiki | 33 of 139 (its random-citation control: 23; bar 35) |
+| Retrieval, own words: no pages, large wiki | 126 and 133 of 139 |
+| Answers, paraphrased: no wiki, large wiki | 110.0 and 115.5 of 139 (better on 38, worse on 27, p = 0.22; bar +8) |
+| Answers, paraphrased, the 101 questions the pages cover | 78.7 and 84.2 (p = 0.13; on the other 38, 31.3 and 31.3) |
+| Answers, own words | 114.8 and 115.3 of 139 (p = 0.89) |
+| New tokens with the wiki | 2% fewer (bar 20% fewer) |
+
+Measured 2026-11-17; good until 2027-02-15.
+
+- corpus: the second shipyard corpus: 209 sessions, 139 questions, each asked in the sessions' own words and paraphrased
+- pages: compiled by Claude Sonnet from the 167 earliest sessions, one agent per stream; every claim cites a quote that ctx wiki save found word for word in its session. Small: 25 pages. Large: 183 pages
+- held back: the 42 latest sessions, which hold the answers to 38 questions; no page could cite them
+- control: the same pages with their citations reassigned at random, to separate reaching the right session from reaching more sessions
+- answers: ctx as installed, with and without the large wiki; both phrasings; 3 runs each; graded blind in one pass per phrasing
+
+[Result file](../bench/results/session-wiki.json)
 
 ## Agent behaviour
 
@@ -688,6 +746,49 @@ bench/rules/decay.py
 ```
 
 [Result file](../bench/results/rules-decay.json)
+
+### Finding stale memory notes
+
+Whether stale notes can be found by checking them against the sessions, the verification step of the article's dreaming pass, or by noticing that a project has gone quiet.
+
+- **Compared with:** the person's labels
+- **Bar:** no true note flagged, and at least a quarter of stale notes caught. **Failed.**
+- **What it means:** Notes rarely go stale because a later session contradicts them; they go stale because the work stops, which no transcript says. Silence catches most of those for nothing, so ctx fades notes of silent projects. It misses the bar on true notes, but a faded note returns with its project's next session.
+
+| Measure | Result |
+| --- | --- |
+| Judge: stale caught, true flagged | 1 of 29, 4 of 44 |
+| Silent project: stale caught, true faded | 18 of 29, 3 of 44 (every catch was in a project with no session since the archive began) |
+| Stale notes in active projects caught by either | 0 of 11 |
+| Applied to the live archive | 109 more notes faded (on the labels: 12 stale, 1 true; 8 stale and 10 true were already faded by the status-note rule) |
+
+Measured 2026-11-17; good until 2027-02-15.
+
+- sample: 80 memory notes agents wrote, labelled by the person: 44 still true, 29 stale, 7 unsure (left out)
+- source: the author's own session archive; only counts leave it
+- judge: Claude Sonnet reads each note beside up to 14 turns from its project and may flag it only with a quote found word for word
+- silence: no model: a note fades while its project has had no session for 90 days of the archive's own time
+
+[Result file](../bench/results/note-staleness.json)
+
+### Duplicate memory notes
+
+Whether merging duplicate notes, one step of the article's dreaming pass, has anything to do.
+
+- **Bar:** none; this result describes and was not a test.
+- **What it means:** Agents rarely write the same note twice, so ctx does not merge notes.
+
+| Measure | Result |
+| --- | --- |
+| Near-duplicate pairs by text | 1 |
+| Pairs by description, at 30% and 50% word overlap | 19 and 2 |
+
+Measured 2026-11-17; good until 2027-02-15.
+
+- sample: 544 memory notes on disk in 61 project folders
+- method: no model: overlap of five-character sequences in note text, and of words in each note's one-line description
+
+[Result file](../bench/results/note-duplicates.json)
 
 ## Records
 

@@ -1,0 +1,35 @@
+{
+ "name": "wiki-from-documents",
+ "title": "A wiki compiled from documents",
+ "section": "Search",
+ "order": 55,
+ "date": "2026-11-10",
+ "good_until": "2027-02-08",
+ "commit": "",
+ "command": "eval/skill_eval.py",
+ "conditions": {
+  "corpus": "19 specifications from one project and 20 questions about them",
+  "arms": "S, the sources alone; W, the sources plus the compiled wiki in the search index; F, the sources plus the wiki as files"
+ },
+ "summary": "Whether pages compiled from a project's documents help agents answer questions about those documents.",
+ "metrics": [
+  {
+   "label": "Sources only",
+   "value": "18 of 20"
+  },
+  {
+   "label": "Wiki searchable",
+   "value": "19 of 20",
+   "note": "4% more tokens"
+  },
+  {
+   "label": "Wiki as files",
+   "value": "18 of 20",
+   "note": "10% more tokens; one wrong answer"
+  }
+ ],
+ "bar": "",
+ "verdict": "none",
+ "baseline": "the sources alone",
+ "meaning": "At this size the sources already answer nearly everything; the wiki added one answer and cost more tokens. Recorded late, on 2026-11-17, from the run of 2026-11-10."
+}
