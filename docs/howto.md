@@ -421,6 +421,12 @@ ctx remember "..." --from 444886    # a rule that records the turn you said it i
 ctx turn turn:UUID                  # read that turn again later, by the id a rule records
 ```
 
+A proposal waits 30 days from when it was made. One you have not accepted or rejected by
+then leaves the list, the session-start line and the decisions page, and the list says how
+many expired; `ctx rules accept N` still takes it by number. A queue nobody reads helps no
+one, and a model cannot decide for you yet: on 22 proposals you had decided, Claude Sonnet
+and Haiku agreed with you about 72% of the time.
+
 `eval/rules_bench.py --classify "CMD"` scores a classifier against a labelled set of
 your turns. On 1,000 of them, Haiku found 84% of the standing instructions at 76%
 precision, DeepSeek 80% at 60%; matching words such as "always" found 17%.
