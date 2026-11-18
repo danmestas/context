@@ -129,6 +129,7 @@ section.q { display:flex; flex-direction:column; gap:10px; }
 .legend .sw { display:inline-flex; gap:2px; vertical-align:middle; margin-right:4px; } .legend .sw i { width:11px; height:11px; border-radius:2px; background:var(--accent); display:block; }
 .more { border:0; background:transparent; color:var(--accent); padding:8px 12px; width:100%; text-align:left; border-top:1px solid var(--line); }
 .empty { padding:14px 12px; color:var(--muted); }
+.row.line .meta + button.pick { justify-self:end; }
 .undo { font-family:var(--font-mono); font-size:.8rem; white-space:nowrap; color:var(--fg); }
 
 .foot { position:fixed; left:0; right:0; bottom:0; background:var(--surface); border-top:1px solid var(--line); }
@@ -154,6 +155,10 @@ section.q { display:flex; flex-direction:column; gap:10px; }
   <div class="kicker" id="kicker"></div>
   <h1 id="head"></h1>
   <p class="lede" id="batch"></p>
+  <section class="q" id="tickets" hidden>
+    <div class="qhead"><h2>Tickets</h2><span class="count" id="tk-sum"></span></div>
+    <div class="list" id="tk-list"></div>
+  </section>
   <p class="note" id="scope" hidden>Everything: ctx page --all</p>
   <div class="batches" id="batches"></div>
   <details class="sub" id="f-batch" hidden><summary id="f-batch-s"></summary><div class="list" id="s-batch"></div></details>
@@ -203,6 +208,7 @@ section.q { display:flex; flex-direction:column; gap:10px; }
     { key: "hooks", el: "s-hooks", title: "Hooks ctx runs", noun: "hook", labels: ["Keep", "Later", "Remove"], lead: "What ctx does by itself and ran in the last seven days, with how often, how long it took, and what it did. Keep: nothing changes. Later: decide another time. Remove: ctx cannot do this for you, because hooks live in your Claude Code settings file and ctx does not edit it; the list at the foot names the entry to remove.", page: 20, filter: false }
   ];
   var BY = {}; SEC.forEach(function (s) { BY[s.key] = s; });
+  D.tickets = /*TICKETS*/;
   var state = { auto: {} }, view = {}, cursor = null;
   SEC.forEach(function (s) {
     state[s.key] = {};
@@ -384,6 +390,81 @@ section.q { display:flex; flex-direction:column; gap:10px; }
     return row;
   }
   function undo(a) { state.auto[a.id].undo = !state.auto[a.id].undo; renderAuto(); totals(); focusCursor(); }
+
+  /* Tickets: one row a project, open ones first, each opening to its ticket list. A claimed
+   * ticket names the session holding it, with a Copy button for its prod command; one closed
+   * this week shows the result or the reason it was dropped. */
+  function mins(sec) { return sec < 90 ? "just now" : sec < 5400 ? Math.round(sec / 60) + " min ago" : sec < 172800 ? Math.round(sec / 3600) + " h ago" : Math.round(sec / 86400) + " days ago"; }
+  /* times come as UTC ISO strings, so the age is from when the page is read */
+  function agoText(when, none) {
+    var d = when ? new Date(when).getTime() : NaN;
+    return isNaN(d) ? none : mins(Math.max(0, (Date.now() - d) / 1000));
+  }
+  function copyText(t, b) {
+    try { navigator.clipboard.writeText(t).then(function () { b.textContent = "Copied"; setTimeout(function () { b.textContent = "Copy prod"; }, 1600); }, function () { b.textContent = "Copy: " + t; }); } catch (e) { b.textContent = "Copy: " + t; }
+  }
+  var TKOPEN = {};
+  function renderTickets() {
+    var TK = D.tickets, host = document.getElementById("tk-list"), sec = document.getElementById("tickets");
+    if (!TK || !TK.rows.length) { if (sec) sec.hidden = true; return; }
+    if (sec) sec.hidden = false;
+    document.getElementById("tk-sum").textContent = "· " + num(TK.open) + " open tickets across " + num(TK.projects) + " projects · agents closed " + num(TK.closed) + " this week";
+    host.innerHTML = "";
+    TK.rows.forEach(function (r) {
+      var ff = el("details", "fold");
+      var name = D.scope ? esc(r["p"]) : '<a href="file:' + esc(r["link"]) + '">' + esc(r["p"]) + '</a>';
+      ff.appendChild(el("summary", "", "<b>Tickets</b><span>" + name + "</span><span class=\"count\">" + plural(r["open"], "open ticket") + (r["docs"] ? " (" + r["docs"] + " docs)" : "") + " · " + (r["inprog"] ? r["inprog"] + " in progress · " : "") + "closed this week " + r["done"] + " done · " + r["dropped"] + " dropped" + (r["last"] ? " · active " + agoText(r["last"], "") : "") + "</span>"));
+      ff.dataset.fold = "tk:" + r["p"]; /* keeps its open state across a reload, by project, wherever the row moves */
+      var body = el("div", "body"), list = el("div", "list");
+      if (!r["tickets"].length) list.appendChild(el("div", "empty", "No tickets."));
+      r["tickets"].forEach(function (t) {
+        var row = el("div", "row line");
+        var state = t["s"] === "Claimed" ? "claimed" : t["s"] === "Done" ? "done" : t["s"] === "Dropped" ? "dropped" : "open";
+        var meta = t["id"] + " · " + esc(t["ty"]) + " · " + plural(t["age"], "day") + " old · " + state + (t["why"] ? ": " + esc(t["why"]) : "");
+        var main = el("div", "main", '<span class="title">' + esc(t["t"]) + '</span><span class="meta">' + meta + (t["session"] ? ' · held by a session active ' + esc(agoText(t["seen"], "a moment ago")) : "") + '</span>');
+        row.appendChild(main);
+        if (t["s"] === "Claimed" && t["session"]) {
+          var cmd = 'ctx ticket prod ' + t["id"] + ' "…"';
+          var b = el("button", "pick", "Copy prod"); b.type = "button"; b.title = cmd;
+          b.addEventListener("click", function () { copyText(cmd, b); });
+          row.appendChild(b);
+        }
+        list.appendChild(row);
+      });
+      body.appendChild(list);
+      ff.appendChild(body);
+      host.appendChild(ff);
+    });
+  }
+  /* The page refreshes itself only when nothing is chosen and no detail is open, and not while it
+   * is hidden. Folds keep their state across reloads through sessionStorage. */
+  function anyChoice() {
+    var s = SEC.some(function (x) { return D[x.key].some(function (it) { return state[x.key][it.id] && state[x.key][it.id].c !== null; }); });
+    var u = D.auto.some(function (a) { return state.auto[a.id] && state.auto[a.id].undo; });
+    return s || u;
+  }
+  /* Every named fold keeps its open state across a reload, and does so quietly if storage is denied. */
+  function rememberFolds() {
+    Array.prototype.forEach.call(document.querySelectorAll("details.fold"), function (ff) {
+      var name = ff.dataset.fold || ff.id;
+      if (!name) return;
+      var key = "ctx-fold:" + name;
+      try { if (sessionStorage.getItem(key) !== null) ff.open = sessionStorage.getItem(key) === "1"; } catch (e) {}
+      ff.addEventListener("toggle", function () { try { sessionStorage.setItem(key, ff.open ? "1" : "0"); } catch (e) {} });
+    });
+  }
+  /* In use: hidden, something chosen, a row's detail open, a rule's wording or a filter typed
+   * in. A reload then would lose it. */
+  function inUse() {
+    if (document.hidden || anyChoice()) return true;
+    for (var k in state) for (var id in state[k]) { var st = state[k][id]; if (st.open || (st.text !== undefined && st.text !== null)) return true; }
+    for (k in view) if (view[k].text !== "") return true;
+    return false;
+  }
+  function armReload() {
+    setInterval(function () { if (!inUse()) location.reload(); }, 30000);
+  }
+
   function renderAuto() {
     var host = document.getElementById("s-auto"), A = D.auto, added = A.filter(function (a) { return a.v === "serve"; }), gone = A.length - added.length;
     document.getElementById("auto-n").textContent = "· " + num(added.length) + " added · " + num(gone) + " dismissed";
@@ -517,7 +598,7 @@ section.q { display:flex; flex-direction:column; gap:10px; }
     D.auto.forEach(function (a) { if (state.auto[a.id].undo) out.push("undo decision " + a.id + "    # " + one(a.p + ": " + a.t)); });
     D.conf.forEach(function (it) {
       var c = state.conf[it.id].c;
-      if (c === 0) out.push("ticket " + sq("Docs: " + it.t) + " in " + sq(it.p) + " saying " + sq(it.ps.map(function (p) { return p[0] + " § " + p[1] + ": \"" + p[2].slice(0, 120) + "\"" + (p[3] ? " (likely current)" : ""); }).join(" | ")));
+      if (c === 0) out.push("ticket " + sq("Docs: " + it.t) + " in " + sq(it.p) + " saying " + sq(it.ps.map(function (p) { return p[0] + " § " + p[1] + ": \"" + p[2].slice(0, 120) + "\"" + (p[3] ? " (likely current)" : ""); }).join(" | ")) + " for conflict " + it.id);
       if (c === 1) out.push("dismiss conflict " + it.id + "    # " + one(it.t) + " (" + it.files.join(", ") + ")");
     });
     D.held.forEach(function (it) { var c = state.held[it.id].c; if (c === 1) out.push("stop archiving " + sq(it.t) + "    # keeps " + it.mb + " MB"); if (c === 2) out.push("forget " + sq(it.t) + "    # removes " + it.turns + " turns, " + it.mb + " MB"); });
@@ -579,7 +660,7 @@ section.q { display:flex; flex-direction:column; gap:10px; }
   document.getElementById("batch").textContent = D.batch;
   document.getElementById("batch").hidden = !D.batch;
   document.getElementById("status-n").textContent = "· " + plural(D.held.length, "project") + (D.scope ? "" : " · " + plural(D.hooks.length, "hook")) + " · " + plural(D.weeks.length, "week") + "; " + (sugg ? plural(sugg, "change") + " suggested" : "no changes suggested");
-  renderNeed(); renderBatch(); renderAuto(); render(BY.held); totals();
+  renderNeed(); renderBatch(); renderAuto(); render(BY.held); renderTickets(); rememberFolds(); totals(); armReload();
   if (D.scope) document.getElementById("s-hooks").innerHTML = '<p class="note">Hooks run on the whole machine. <code>ctx page --all</code> shows them.</p>';
   else render(BY.hooks);
 })();
