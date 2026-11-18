@@ -173,8 +173,10 @@ grep -q '4 turns in 1 technotes now say tool or meta, not user; 1 request copies
 "$CTX" sql "SELECT fsl_technote('$NOTE')" | grep -q 'a request copy' && fail "a request copy leaves the technote"
 [ "$("$CTX" sql "SELECT group_concat(heading, ' ') FROM (SELECT heading FROM ctx_chunk ORDER BY seq)")" = "user user meta meta meta tool assistant" ] || fail "the index follows: $("$CTX" sql "SELECT group_concat(heading, ' ') FROM ctx_chunk")"
 "$CTX" sql "SELECT fsl_technote('$NOTE')" | grep -c '^## \(tool\|meta\) ' | grep -qx 4 || fail "the technote is corrected, so it syncs"
+"$CTX" sql "INSERT INTO ctx_audit_run(at, scanned, to_id, known, found, open) VALUES ('x', 1, 99, 0, 0, 0)" >/dev/null
 "$CTX" rebuild >/dev/null
 [ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE heading='user'")" = 2 ] || fail "a rebuild keeps the correction"
+[ "$("$CTX" sql "SELECT max(to_id) FROM ctx_audit_run")" = 0 ] || fail "a rebuild makes the next audit scan every turn"
 CLAUDE_CONFIG_DIR="$T/relcfg" "$CTX" scan 2>"$T/rel.err" >/dev/null
 [ ! -s "$T/rel.err" ] || fail "relabel runs once: $(cat "$T/rel.err")"
 
@@ -1254,6 +1256,30 @@ while read -r v; do
   if grep -qF -- "$v" "$T/a1.txt" "$T/a2.txt"; then fail "audit printed a value"; fi
 done < "$T/seed.sql.values"
 if "$CTX" sql "SELECT shape || fingerprint FROM ctx_audit_finding" | grep -qF -f "$T/seed.sql.values"; then fail "audit stored a value"; fi
+# --context shows the words around a finding with every long token as a shape.
+for id in $("$CTX" sql "SELECT id FROM ctx_audit_finding"); do
+  "$CTX" audit --context "$id" > "$T/ctx-$id.txt" || fail "audit --context $id"
+done
+cat "$T"/ctx-*.txt > "$T/ctx-all.txt"
+while read -r v; do
+  if grep -qF -- "$v" "$T/ctx-all.txt"; then fail "audit --context printed a value"; fi
+done < "$T/seed.sql.values"
+grep -q '<<finding len=36' "$T/ctx-all.txt" || fail "audit --context marks the finding"
+grep -q 'a token <<finding' "$T/ctx-all.txt" || fail "audit --context keeps the words around it"
+grep -q 'the value <<finding len=21' "$T/ctx-all.txt" || fail "audit --context finds a known value"
+if "$CTX" audit --context 99999 >/dev/null 2>&1; then fail "audit --context of no finding fails"; fi
+# A rebuild renumbers turns: it resets where audit resumes, and the full scan that follows
+# replaces open findings that name the old turns.
+"$CTX" sql "UPDATE ctx_audit_finding SET chunk = chunk + 1000" >/dev/null
+"$CTX" sql "UPDATE ctx_audit_run SET to_id = 0" >/dev/null
+"$CTX" audit --limit 0 >/dev/null || true
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_audit_finding WHERE rule != 'known' AND chunk > 1000")" = 0 ] || fail "a full scan drops findings of renumbered turns"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_audit_finding WHERE rule != 'known' AND status = 'open'")" -gt 0 ] || fail "a full scan finds them again"
+"$CTX" audit --known --limit 0 < "$T/seed.sql.known" >/dev/null || true
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_audit_finding WHERE chunk > 1000")" = 0 ] || fail "a known scan drops stale known findings"
+for id in $("$CTX" sql "SELECT id FROM ctx_audit_finding"); do
+  "$CTX" audit --context "$id" >/dev/null || fail "audit --context after a rescan"
+done
 # Nothing new is reported twice, and an allowed finding stays quiet.
 out=$("$CTX" audit --limit 0 || true); echo "$out" | head -1 | grep -q '^0 turns scanned, 0 new' || fail "audit resumes where it stopped"
 for id in $("$CTX" sql "SELECT min(id) FROM ctx_audit_finding WHERE status='open' GROUP BY rule, fingerprint"); do "$CTX" audit --allow "$id" "test" >/dev/null; done
