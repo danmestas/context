@@ -399,8 +399,9 @@ static size_t secret_at(const char *s, size_t n, size_t i, size_t *from_out, con
 }
 
 /* Appends s with secrets replaced. */
-static void add_redacted(buf *out, const char *s, size_t n) {
-  size_t i = 0, done = 0;
+/* One pass over the text; returns how many secrets it cut. */
+static size_t redact_pass(buf *out, const char *s, size_t n) {
+  size_t i = 0, done = 0, cut = 0;
   while (i < n) {
     size_t from;
     const char *name;
@@ -409,11 +410,29 @@ static void add_redacted(buf *out, const char *s, size_t n) {
       buf_add(out, s + done, from - done);
       buf_str(out, REDACTED);
       done = i = end;
+      cut++;
     } else {
       i++;
     }
   }
   buf_add(out, s + done, n - done);
+  return cut;
+}
+
+/* Redacts until nothing changes. One cut can change what a later rule sees (a page link's
+ * token is recognised by the text before it), so a single pass could leave a secret that a
+ * second pass would cut. Text with no secret takes one pass. */
+static void add_redacted(buf *out, const char *s, size_t n) {
+  buf cur = {0};
+  size_t cut = redact_pass(&cur, s, n);
+  for (int pass = 1; cut && pass < 8; pass++) {
+    buf next = {0};
+    cut = redact_pass(&next, cur.p ? cur.p : "", cur.n);
+    free(cur.p);
+    cur = next;
+  }
+  if (cur.n) buf_add(out, cur.p, cur.n);
+  free(cur.p);
 }
 
 /* Appends tool output, cutting the middle of anything too long at character
@@ -1479,6 +1498,11 @@ typedef struct {
   size_t n, cap;
 } call_stat;
 
+/* qsort, for a list that may be empty: an empty one has no array, and qsort may not be handed a null one. */
+static void sort_some(void *base, size_t n, size_t size, int (*cmp)(const void *, const void *)) {
+  if (n) qsort(base, n, size, cmp);
+}
+
 static int by_long(const void *a, const void *b) {
   long x = *(const long *)a, y = *(const long *)b;
   return (x > y) - (x < y);
@@ -1527,7 +1551,7 @@ static size_t calls_read(time_t since, call_stat *out, size_t cap) {
     }
     fclose(in);
   }
-  for (size_t k = 0; k < names; k++) qsort(out[k].ms, out[k].n, sizeof *out[k].ms, by_long);
+  for (size_t k = 0; k < names; k++) sort_some(out[k].ms, out[k].n, sizeof *out[k].ms, by_long); /* a hook with starts only has no list */
   return names;
 }
 
@@ -1570,34 +1594,47 @@ static int stats_hooks(int days) {
   return 0;
 }
 
-/* ctx status: one short line for a status bar, from the log alone: searches in the last day, how
- * long hooks take, and a warning when hooks were cut off or the hourly scan is late. */
-static int cmd_status(void) {
+/* What the call log and the scan stamp say about the last day, for both forms of ctx status. */
+typedef struct {
+  long searches, cut, over, worst, median, runs, late_hours;
+} status_facts;
+
+static status_facts status_read(void) {
   time_t now = time(NULL);
   call_stat st[16];
   size_t names = calls_read(now - 86400, st, 16); /* the last day, not since midnight: a hook cut off at 23:58 still matters at 00:01 */
-  long searches = 0, cut = 0, over = 0, worst = 0, all[4096];
+  status_facts f = {0};
+  long all[4096];
   size_t na = 0;
   for (size_t k = 0; k < names; k++) {
-    if (!strcmp(st[k].name, "search")) { searches = (long)st[k].n; free(st[k].ms); continue; }
+    if (!strcmp(st[k].name, "search")) { f.searches = (long)st[k].n; free(st[k].ms); continue; }
     if (!strcmp(st[k].name, "turn")) { free(st[k].ms); continue; }
-    cut += st[k].started > st[k].ended ? st[k].started - st[k].ended : 0;
-    over += st[k].over;
+    f.cut += st[k].started > st[k].ended ? st[k].started - st[k].ended : 0;
+    f.over += st[k].over;
     for (size_t i = 0; i < st[k].n && na < 4096; i++) all[na++] = st[k].ms[i];
-    if (st[k].n && st[k].ms[st[k].n - 1] > worst) worst = st[k].ms[st[k].n - 1];
+    if (st[k].n && st[k].ms[st[k].n - 1] > f.worst) f.worst = st[k].ms[st[k].n - 1];
     free(st[k].ms);
   }
-  qsort(all, na, sizeof *all, by_long);
-  char line[320];
-  int n = snprintf(line, sizeof line, "ctx %ld search%s", searches, searches == 1 ? "" : "es");
-  if (na) n += snprintf(line + n, sizeof line - (size_t)n, " \xc2\xb7 hooks %ld ms", all[na / 2]);
-  if (cut + over) n += snprintf(line + n, sizeof line - (size_t)n, " \xc2\xb7 %ld cut off", cut + over);
-  else if (worst >= 1000) n += snprintf(line + n, sizeof line - (size_t)n, " \xc2\xb7 slowest %.1f s", (double)worst / 1000);
+  sort_some(all, na, sizeof *all, by_long);
+  f.runs = (long)na;
+  f.median = na ? all[na / 2] : 0;
   char *stamp = sidecar(".scan");
   struct stat ss;
-  if (stat(stamp, &ss) == 0 && now - ss.st_mtime > 2 * SCAN_EVERY_SECS)
-    snprintf(line + n, sizeof line - (size_t)n, " \xc2\xb7 scan %ldh late", (long)((now - ss.st_mtime) / 3600));
+  if (stat(stamp, &ss) == 0 && now - ss.st_mtime > 2 * SCAN_EVERY_SECS) f.late_hours = (long)((now - ss.st_mtime) / 3600);
   free(stamp);
+  return f;
+}
+
+/* ctx status: one short line for a status bar, from the log alone: searches in the last day, how
+ * long hooks take, and a warning when hooks were cut off or the hourly scan is late. */
+static int cmd_status(void) {
+  status_facts f = status_read();
+  char line[320];
+  int n = snprintf(line, sizeof line, "ctx %ld search%s", f.searches, f.searches == 1 ? "" : "es");
+  if (f.runs) n += snprintf(line + n, sizeof line - (size_t)n, " \xc2\xb7 hooks %ld ms", f.median);
+  if (f.cut + f.over) n += snprintf(line + n, sizeof line - (size_t)n, " \xc2\xb7 %ld cut off", f.cut + f.over);
+  else if (f.worst >= 1000) n += snprintf(line + n, sizeof line - (size_t)n, " \xc2\xb7 slowest %.1f s", (double)f.worst / 1000);
+  if (f.late_hours) snprintf(line + n, sizeof line - (size_t)n, " \xc2\xb7 scan %ldh late", f.late_hours);
   puts(line);
   return 0;
 }
@@ -4835,7 +4872,7 @@ static size_t queue_build(sqlite3 *db, const char *project, queue_item **out) {
     items[i].mentions = session_mentions(db, items[i].source);
     items[i].score = (1.0 + items[i].claims) * (items[i].risk ? 3.0 : 1.0) * (1.0 + log(1.0 + items[i].mentions));
   }
-  qsort(items, n, sizeof *items, queue_cmp);
+  sort_some(items, n, sizeof *items, queue_cmp);
   *out = items;
   return n;
 }
@@ -9829,11 +9866,6 @@ static const char *const stop_words[] = {
     "should", "some", "such", "than", "that", "their", "them", "then", "there", "these", "they", "this", "those", "very", "want", "well",
     "were", "what", "when", "where", "which", "while", "will", "with", "would", "your"};
 
-/* qsort, for a list that may be empty: an empty one has no array, and qsort may not be handed a null one. */
-static void sort_some(void *base, size_t n, size_t size, int (*cmp)(const void *, const void *)) {
-  if (n) qsort(base, n, size, cmp);
-}
-
 static int cmp_word(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
 
 typedef struct {
@@ -10695,6 +10727,83 @@ static int page_project_known(sqlite3 *db, const char *project) {
                         " OR EXISTS (SELECT 1 FROM ctx_rule_proposal WHERE project = ?1) OR EXISTS (SELECT 1 FROM ctx_doc_conflict WHERE project = ?1)", project) > 0;
 }
 
+/* What needs the person in a project: open proposals the automatic judge has not decided, and
+ * document conflicts, one per disagreement, with no docs ticket. The page's own definitions. */
+static long status_need(sqlite3 *db, const char *project) {
+  long n = page_count(db, "SELECT count(*) FROM ctx_rule_proposal p WHERE " PROPOSAL_LIVE("p.") " AND " PROPOSAL_UNJUDGED("p.")
+                          " AND (?1 IS NULL OR p.project = ?1)", project);
+  size_t rows = 0;
+  conflict_row *r = conflicts_load(db, project, 0, &rows);
+  for (size_t i = 0; i < rows; i++) n += r[i].group == (int)i && !r[i].ticket;
+  conflicts_free(r, rows);
+  return n;
+}
+
+/* ctx status --json: the facts the status line shows for the folder it is run in. Indexed
+ * lookups and one range of today's assistant turns, so it stays fast on a large archive. */
+static int status_json(void) {
+  sqlite3 *db = ctx_open();
+  char *project = current_project(db);
+  if (project && !page_project_known(db, project)) {
+    free(project);
+    project = NULL;
+  }
+  long open = 0, docs = 0, held = 0;
+  sqlite3_stmt *q = tickets_exist(db) ? db_prepare(db,
+      "SELECT count(*), coalesce(sum(substr(t.title, 1, 5) = 'Docs:'), 0),"
+      " coalesce(sum(EXISTS (SELECT 1 FROM ctx_ticket_claim c WHERE c.ticket = t.tkt_uuid AND c.closed_at IS NULL)), 0)"
+      " FROM fslrepo_me_ticket t WHERE t.status IN ('Open', 'Claimed') AND (?1 IS NULL OR t.subsystem = ?1)") : NULL;
+  if (q && project) sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  if (q && sqlite3_step(q) == SQLITE_ROW) {
+    open = sqlite3_column_int64(q, 0);
+    docs = sqlite3_column_int64(q, 1);
+    held = sqlite3_column_int64(q, 2);
+  }
+  sqlite3_finalize(q);
+  long tentative = page_count(db, "SELECT count(*) FROM ctx_proposal_judged j JOIN ctx_rule_proposal p ON p.id = j.id"
+                                  " WHERE j.verdict = 'serve' AND j.undone = 0 AND j.at >= datetime('now', '-7 days')"
+                                  " AND (?1 IS NULL OR p.project = ?1)", project);
+  long need = status_need(db, project);
+  time_t now = time(NULL);
+  struct tm local;
+  localtime_r(&now, &local);
+  local.tm_hour = local.tm_min = local.tm_sec = 0;
+  time_t midnight = mktime(&local); /* turns carry UTC stamps; local midnight, written the same way */
+  char since[32];
+  strftime(since, sizeof since, "%Y-%m-%dT%H:%M:%S", gmtime(&midnight)); /* no Z: a turn stamped with milliseconds still sorts after it */
+  long searches = 0, misses = 0;
+  q = db_prepare(db,
+      "SELECT coalesce(sum(n), 0), coalesce(sum(EXISTS (SELECT 1 FROM ctx_chunk r WHERE r.doc_id = t.doc_id AND r.seq = t.seq + 1"
+      " AND r.body LIKE '%ctx: no matches%')), 0) FROM (SELECT c.doc_id, c.seq, ctx_calls(c.body, 'search') AS n FROM ctx_chunk c"
+      " WHERE c.heading = 'assistant' AND c.at >= ?2 AND (?1 IS NULL OR c.project = ?1 OR (c.project IS NULL AND EXISTS"
+      "  (SELECT 1 FROM ctx_doc d WHERE d.id = c.doc_id AND d.project = ?1))) AND c.body LIKE '%ctx %') t WHERE t.n > 0");
+  if (project) sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 2, since, -1, SQLITE_STATIC);
+  if (sqlite3_step(q) == SQLITE_ROW) {
+    searches = sqlite3_column_int64(q, 0);
+    misses = sqlite3_column_int64(q, 1);
+  }
+  sqlite3_finalize(q);
+  sqlite3_close(db);
+  status_facts f = status_read();
+  char warn[160] = "";
+  int w = 0;
+  if (f.cut + f.over) w += snprintf(warn + w, sizeof warn - (size_t)w, "%ld hook%s cut off", f.cut + f.over, f.cut + f.over == 1 ? "" : "s");
+  else if (f.worst >= 1000) w += snprintf(warn + w, sizeof warn - (size_t)w, "slowest hook %.1f s", (double)f.worst / 1000);
+  if (f.late_hours) snprintf(warn + w, sizeof warn - (size_t)w, "%sscan %ldh late", w ? " \xc2\xb7 " : "", f.late_hours);
+  buf out = {0};
+  buf_str(&out, "{\"project\":");
+  js_str(&out, project ? project : "");
+  buf_fmt(&out, ",\"open\":%ld,\"docs\":%ld,\"held\":%ld,\"need\":%ld,\"tentative\":%ld,\"searches\":%ld,\"misses\":%ld,\"warn\":", open, docs, held, need,
+          tentative, searches, misses);
+  js_str(&out, warn);
+  buf_str(&out, "}\n");
+  fwrite(out.p, 1, out.n, stdout);
+  free(out.p);
+  free(project);
+  return 0;
+}
+
 /* The file name a project's page has, beside the database. The project's name keeps only
  * letters, digits and . _ - so it cannot reach another folder. */
 static void page_suffix(const char *project, char *out, size_t cap) {
@@ -11293,7 +11402,7 @@ static int usage(void) {
         "       ctx recall\n"
         "       ctx gate\n"
         "       ctx stats [--weeks N] | --hooks [--days N]\n"
-        "       ctx status\n"
+        "       ctx status [--json]\n"
         "       ctx remember TEXT [--project P] [--until DATE] [--from TURN]\n"
         "       ctx decisions [--open] [--all] [--limit N]\n"
         "       ctx page [--open] [--out FILE]\n"
@@ -11316,6 +11425,7 @@ int main(int argc, char **argv) {
   self_path = argv[0];
   call_begin(argc, argv);
   if (argc == 2 && !strcmp(argv[1], "status")) return cmd_status();
+  if (argc == 3 && !strcmp(argv[1], "status") && !strcmp(argv[2], "--json")) return status_json();
   if (sqlite3_auto_extension((void (*)(void))fsl_sqlext_init) != SQLITE_OK)
     die("cannot register libfossil");
   if (argc == 2 && !strcmp(argv[1], "version")) return cmd_version();

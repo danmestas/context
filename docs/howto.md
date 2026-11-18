@@ -952,6 +952,13 @@ ctx status                 # one line for a status bar: ctx 14 searches · hooks
 off in the last day, when the slowest took over a second, or when the hourly scan is late. To
 show it in Claude Code's status line, have your status line script print its output.
 
+`ctx status --json` says the same about one project, the one that owns the folder it is run in
+(everything, with `"project": ""`, outside a known project): `open`, `docs` and `held` tickets,
+what `need` you (rule proposals the automatic judge has not decided, plus document conflicts
+with no docs ticket), `tentative` rules the judge added this week, `searches` made and `misses`
+among them since local midnight, and a `warn` string that is empty unless hooks were cut off,
+a hook took over a second, or the scan is late. It uses indexed queries only, about 20 ms on an archive of 400,000 turns.
+
 ## Decide what is waiting on you
 
 ctx collects things only you can settle: rules it proposed from what you typed,
