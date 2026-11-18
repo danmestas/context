@@ -910,11 +910,25 @@ ctx page apply choices.txt --yes
 ```
 
 The page is one file with no network use and no model calls, and it is private to
-you (mode 0600). Open it in a browser. Each row has three choices: proposed rules
-are Accept, Later or Not a rule; conflicts are Fix, Not a conflict or Later;
-projects are Keep, Stop archiving or Forget; hooks are Keep, Later or Remove.
-**Use suggestions** takes the suggestion on every row in a section that has one,
-and the reason is written in the row. Nothing is chosen for you. Your choices
+you (mode 0600). Open it in a browser. The top line says how many things need you,
+or "Nothing urgent.", and names the largest batch ctx suggests, such as "50
+document conflicts in dagnats wait on you; ctx suggests fixing 40." Under it, one
+button per batch (**File 40 docs tickets**, **Dismiss 5**) chooses every conflict
+with that suggestion; pressing it again clears them.
+
+**Needs you** has one line per item with no suggestion: conflicts, and proposed
+rules the automatic judge has not decided. Click a line, or press Enter, to see the
+evidence. Proposed rules are Accept, Later or Not a rule; conflicts are Fix, Not a
+conflict or Later. A proposal the judge decided is never asked about here.
+
+**Decided for you this week** is folded. Open it to review the judge's last seven
+days: rules it added, and proposals it dismissed, grouped by reason (already covered
+by a rule, with the rule's words; session setup; not a rule). Each has **Undo**.
+Decisions you already undid are not listed.
+
+**Status** is folded too: the projects ctx holds (Keep, Stop archiving or Forget),
+the hooks it runs (Keep, Later or Remove) and the weekly grid, with a one-line
+summary of how many changes ctx suggests. Nothing is chosen for you. Your choices
 become a short list at the foot of the page, in words such as `accept rule 12`
 and `stop archiving myproj`; copy it into a file. They are not commands, on
 purpose: pasted into a shell they do nothing, so the one way to act on them is
@@ -932,6 +946,7 @@ with shell single-quote rules and are never passed to a shell.
 - `dismiss conflict ID` is Not a conflict, so the pair is not raised again unless a passage changes; `because 'TEXT'` keeps a reason.
 - `stop archiving NAME` is `ctx exclude --project NAME`; what is held stays searchable.
 - `forget NAME` is `ctx forget --project NAME`; the project's sessions leave search for good.
+- `undo decision N` is `ctx rules undo N`: the automatic judge's decision on proposal N is reversed, and the plan names the proposal.
 - Remove, for a hook, is only a `#` comment naming the entry to remove. ctx does not
   edit your Claude Code settings.
 

@@ -6439,6 +6439,8 @@ static int rule_save(sqlite3 *db, const rule_t *r) {
   " AND j.verdict = 'serve' AND j.undone = 0) AND julianday(" ARCHIVE_NEWEST ") - julianday(" PROPOSAL_LAST_SAID(t) ") < " REPEAT_DAYS ")"
 /* the automatic judge's decisions of the last AUTO_DAYS, for the session start and the page */
 #define AUTO_DAYS "7"
+/* not decided by the automatic judge, or decided and undone: the person's to settle */
+#define PROPOSAL_UNJUDGED(t) "NOT EXISTS (SELECT 1 FROM ctx_proposal_judged j WHERE j.id = " t "id AND j.undone = 0)"
 /* A project counts as silent when its newest turn is this far behind the newest turn in the
  * whole archive. Measured against the archive's own time, so a machine left off fades nothing,
  * and only once the archive itself spans that long. */
@@ -9169,14 +9171,14 @@ static int proposal_order(const void *a, const void *b) {
   return c ? c : (x->id > y->id) - (x->id < y->id);
 }
 
-/* The open proposals, each with the person's own words, how often they said much the same again,
+/* The open proposals the automatic judge has not decided (or whose decision the person undid), each with the person's own words, how often they said much the same again,
  * and a suggestion by fixed rules. Writes the JSON array; returns how many proposals there were
  * and, in *repeated, how many were said again. */
 static long page_rules(sqlite3 *db, held_set *held, buf *out, long *repeated) {
   proposal *p = NULL;
   size_t n = 0;
   sqlite3_stmt *q = db_prepare(db, "SELECT p.id, p.project, substr(coalesce(p.at, ''), 1, 10), p.text, c.body, p.turn FROM ctx_rule_proposal p"
-                                   " LEFT JOIN ctx_chunk c ON c.turn = p.turn WHERE " PROPOSAL_LIVE("p.") " ORDER BY p.id");
+                                   " LEFT JOIN ctx_chunk c ON c.turn = p.turn WHERE " PROPOSAL_LIVE("p.") " AND " PROPOSAL_UNJUDGED("p.") " ORDER BY p.id");
   while (sqlite3_step(q) == SQLITE_ROW) {
     p = realloc(p, (n + 1) * sizeof *p);
     if (!p) die("out of memory");
@@ -9332,7 +9334,7 @@ typedef struct {
 } conf_entry;
 
 typedef struct {
-  long groups, pairs, gap90;
+  long groups, pairs, gap90, fix, dismiss;
   char project[200], oldest[11];
   int mixed;
 } conf_tot;
@@ -9430,6 +9432,8 @@ static void page_conf(sqlite3 *db, buf *out, conf_tot *tot) {
       snprintf(why, sizeof why, "%.120s was last changed %ld days after %.120s", base_name(newest->path), gap, base_name(oldest->path));
     }
     tot->gap90 += gap >= 90;
+    tot->fix += sug == 0;
+    tot->dismiss += sug == 1;
     if (!*tot->project) snprintf(tot->project, sizeof tot->project, "%s", r[i].project);
     else tot->mixed |= strcmp(tot->project, r[i].project) != 0;
     buf j = {0};
@@ -9596,9 +9600,11 @@ static void page_data(sqlite3 *db, buf *out) {
   buf_str(out, "{\"rules\":");
   buf_str(out, rules.p ? rules.p : "[]");
   buf_str(out, ",\"auto\":[");
-  q = db_prepare(db, "SELECT j.id, substr(j.at, 1, 10), j.verdict, p.project, " PROPOSAL_LINE("p.") ", coalesce(j.why, ''), coalesce(j.quote, ''), j.undone"
+  q = db_prepare(db, "SELECT j.id, substr(j.at, 1, 10), j.verdict, p.project, " PROPOSAL_LINE("p.") ", coalesce(j.why, ''), coalesce(j.quote, ''),"
+                     " coalesce((SELECT c.body FROM ctx_chunk c WHERE c.turn = p.turn AND c.heading = 'user' LIMIT 1), ''),"
+                     " (SELECT json_group_array(d) FROM (SELECT substr(coalesce(s.at, ''), 1, 10) AS d FROM ctx_proposal_said s WHERE s.id = p.id ORDER BY s.at))"
                      " FROM ctx_proposal_judged j JOIN ctx_rule_proposal p ON p.id = j.id"
-                     " WHERE j.at >= datetime('now', '-" AUTO_DAYS " days') ORDER BY j.at DESC, j.id DESC");
+                     " WHERE j.undone = 0 AND j.at >= datetime('now', '-" AUTO_DAYS " days') ORDER BY j.at DESC, j.id DESC");
   for (int k = 0; sqlite3_step(q) == SQLITE_ROW; k++) {
     char *t = squash((const char *)sqlite3_column_text(q, 4), 300);
     buf_fmt(out, "%s{\"id\":%lld,\"d\":", k ? "," : "", (long long)sqlite3_column_int64(q, 0));
@@ -9613,7 +9619,13 @@ static void page_data(sqlite3 *db, buf *out) {
     js_str(out, (const char *)sqlite3_column_text(q, 5));
     buf_str(out, ",\"q\":");
     js_str(out, (const char *)sqlite3_column_text(q, 6));
-    buf_fmt(out, ",\"u\":%d}", sqlite3_column_int(q, 7));
+    char *said = squash((const char *)sqlite3_column_text(q, 7), 400);
+    buf_str(out, ",\"said\":");
+    js_str(out, said);
+    buf_str(out, ",\"rep\":");
+    buf_str(out, sqlite3_column_text(q, 8) ? (const char *)sqlite3_column_text(q, 8) : "[]"); /* dates only, made by SQLite */
+    buf_str(out, "}");
+    free(said);
     free(t);
   }
   sqlite3_finalize(q);
@@ -9659,7 +9671,28 @@ static void page_data(sqlite3 *db, buf *out) {
                "\"conf\":%ld,\"pairs\":%ld,\"gap90\":%ld,\"cproj\":",
           *ct.oldest ? ct.oldest : today, today, today, held.weeks, nrules, repeated, accepted, rejected, ct.groups, ct.pairs, ct.gap90);
   js_str(out, ct.mixed ? "" : ct.project);
-  buf_fmt(out, ",\"held\":%zu,\"read\":%ld,\"turns\":%ld,\"mb\":%.0f}}", held.n, searched, turns, bytes / 1e6);
+  buf_fmt(out, ",\"held\":%zu,\"read\":%ld,\"turns\":%ld,\"mb\":%.0f}", held.n, searched, turns, bytes / 1e6);
+  /* The top of the page: what needs the person, then the batch ctx suggests. What needs the person
+   * is what has no suggestion: open proposals the judge left, and conflicts ctx cannot settle. A
+   * conflict with a suggestion waits only for one click on its batch button. */
+  long settled = ct.fix + ct.dismiss, need = nrules + (ct.groups > settled ? ct.groups - settled : 0);
+  char head[80], batch[400] = "";
+  if (!need) snprintf(head, sizeof head, "Nothing urgent.");
+  else snprintf(head, sizeof head, "%ld thing%s need%s you.", need, need == 1 ? "" : "s", need == 1 ? "s" : "");
+  if (settled) {
+    int n = snprintf(batch, sizeof batch, "ctx has a suggestion for %ld document conflict%s%s%.200s:", settled, settled == 1 ? "" : "s",
+                     ct.mixed ? "" : " in ", ct.mixed ? "" : ct.project);
+    if (n > 0 && (size_t)n < sizeof batch && ct.fix) n += snprintf(batch + n, sizeof batch - (size_t)n, " fix %ld", ct.fix);
+    if (n > 0 && (size_t)n < sizeof batch && ct.dismiss) n += snprintf(batch + n, sizeof batch - (size_t)n, "%s dismiss %ld", ct.fix ? "," : "", ct.dismiss);
+    if (n > 0 && (size_t)n + 1 < sizeof batch) strcat(batch, ".");
+  }
+  char *judge = rules_auto_cmd(db);
+  buf_fmt(out, ",\"need\":%ld,\"judge\":%s,\"head\":", need, judge ? "true" : "false");
+  js_str(out, head);
+  buf_str(out, ",\"batch\":");
+  js_str(out, batch);
+  buf_str(out, "}");
+  free(judge);
   free(rules.p);
   free(conf.p);
   free(hooks.p);
@@ -9725,7 +9758,7 @@ static int cmd_page_write(int argc, char **argv) {
 /* ctx page apply: the commands the page produces, each checked against the few forms the page can emit and
  * then run as this program. A line is split with shell single-quote rules and nothing else, so no argument
  * is ever seen by a shell. */
-typedef enum { ACT_ACCEPT, ACT_REJECT, ACT_DISMISS, ACT_TICKET, ACT_EXCLUDE, ACT_FORGET, ACT_KINDS } act_kind;
+typedef enum { ACT_ACCEPT, ACT_REJECT, ACT_DISMISS, ACT_TICKET, ACT_EXCLUDE, ACT_FORGET, ACT_UNDO, ACT_KINDS } act_kind;
 
 typedef struct {
   act_kind kind;
@@ -9788,12 +9821,13 @@ static int all_of(const char *s, int (*is)(int)) {
 
 static int is_lower_hex(int c) { return isdigit(c) || (c >= 'a' && c <= 'f'); }
 
-/* Which of the six forms the words are, if any. v[0] is "ctx". */
+/* Which of the seven forms the words are, if any. v[0] is "ctx". */
 static int action_kind(char **v, int n, act_kind *kind) {
   if (n < 3 || strcmp(v[0], "ctx")) return 0;
   const char *a = v[1], *b = v[2];
   if (!strcmp(a, "rules") && !strcmp(b, "accept") && (n == 4 || (n == 6 && !strcmp(v[4], "--text") && *v[5])) && all_of(v[3], isdigit)) *kind = ACT_ACCEPT;
   else if (!strcmp(a, "rules") && !strcmp(b, "reject") && n == 4 && all_of(v[3], isdigit)) *kind = ACT_REJECT;
+  else if (!strcmp(a, "rules") && !strcmp(b, "undo") && n == 4 && all_of(v[3], isdigit)) *kind = ACT_UNDO;
   else if (!strcmp(a, "docs") && !strcmp(b, "conflicts") && n >= 5 && !strcmp(v[3], "dismiss") && strlen(v[4]) == 8 && all_of(v[4], is_lower_hex) &&
            (n == 5 || (n == 7 && !strcmp(v[5], "--reason") && *v[6]))) *kind = ACT_DISMISS;
   else if (!strcmp(a, "ticket") && !strcmp(b, "new") && n == 10 && *v[3] && !strcmp(v[4], "--type") && !strcmp(v[5], "Bug") && !strcmp(v[6], "--project") &&
@@ -9824,6 +9858,8 @@ static int choice_words(char ***words, int *count) {
     c[1] = "exclude", c[2] = "--project", c[3] = v[2], m = 4;
   } else if (IS(0, "forget") && n == 2) {
     c[1] = "forget", c[2] = "--project", c[3] = v[1], m = 4;
+  } else if (IS(0, "undo") && IS(1, "decision") && n == 3) {
+    c[1] = "rules", c[2] = "undo", c[3] = v[2], m = 4;
   }
 #undef IS
   if (!m) return 0;
@@ -9837,9 +9873,22 @@ static int choice_words(char ***words, int *count) {
   return 1;
 }
 
-static void action_say(const action *a, buf *out) {
+/* For an undo, the proposal and what the judge did with it, from the archive. */
+static void action_say(sqlite3 *db, const action *a, buf *out) {
   char **v = a->v;
   switch (a->kind) {
+  case ACT_UNDO: {
+    sqlite3_stmt *q = db_prepare(db, "SELECT " PROPOSAL_LINE("p.") ", j.verdict, j.undone FROM ctx_proposal_judged j JOIN ctx_rule_proposal p ON p.id = j.id WHERE j.id = ?1");
+    sqlite3_bind_int64(q, 1, atoll(v[2]));
+    buf_fmt(out, "undo the automatic decision on proposal %s: ", v[2]);
+    if (sqlite3_step(q) == SQLITE_ROW) {
+      char *t = squash((const char *)sqlite3_column_text(q, 0), 200);
+      buf_fmt(out, "%s (%s%s)", t, strcmp((const char *)sqlite3_column_text(q, 1), "serve") ? "dismissed" : "added", sqlite3_column_int(q, 2) ? ", already undone" : "");
+      free(t);
+    } else buf_str(out, "no automatic decision is on record");
+    sqlite3_finalize(q);
+    break;
+  }
   case ACT_ACCEPT: buf_fmt(out, "accept rule %s%s%s", v[2], a->n == 5 ? " with the wording: " : "", a->n == 5 ? v[4] : ""); break;
   case ACT_REJECT: buf_fmt(out, "reject rule %s", v[2]); break;
   case ACT_DISMISS: buf_fmt(out, "dismiss conflict %s as not a conflict%s%s", v[3], a->n == 6 ? " (reason: " : "", a->n == 6 ? v[5] : ""); if (a->n == 6) buf_str(out, ")"); break;
@@ -9897,14 +9946,18 @@ static int cmd_page_apply(int argc, char **argv) {
     puts("nothing to do");
     return 0;
   }
+  sqlite3 *db = NULL; /* read only to describe an undo */
+  for (size_t i = 0; i < na && !db; i++)
+    if (act[i].kind == ACT_UNDO) db = ctx_open();
   static const char *const noun[ACT_KINDS][3] = {{"rule", "rules", "to accept"}, {"rule", "rules", "to reject"}, {"conflict", "conflicts", "to dismiss"},
-                                                {"ticket", "tickets", "to file"}, {"project", "projects", "to stop archiving"}, {"project", "projects", "to forget"}};
+                                                {"ticket", "tickets", "to file"}, {"project", "projects", "to stop archiving"}, {"project", "projects", "to forget"},
+                                                {"decision", "decisions", "to undo"}};
   size_t count[ACT_KINDS] = {0};
   buf say = {0};
   for (size_t i = 0; i < na; i++) {
     count[act[i].kind]++;
     if (!yes) {
-      action_say(&act[i], &say);
+      action_say(db, &act[i], &say);
       buf_str(&say, "\n");
     }
   }
@@ -9917,12 +9970,13 @@ static int cmd_page_apply(int argc, char **argv) {
       first = 0;
     }
     puts("\nnothing was changed; run again with --yes to do it");
+    sqlite3_close(db);
     return 0;
   }
   size_t done = 0;
   for (; done < na; done++) {
     buf desc = {0}, result = {0};
-    action_say(&act[done], &desc);
+    action_say(db, &act[done], &desc);
     char **av = malloc((size_t)(act[done].n + 2) * sizeof *av);
     if (!av) die("out of memory");
     av[0] = (char *)self_path;
@@ -9937,10 +9991,12 @@ static int cmd_page_apply(int argc, char **argv) {
     }
     if (rc) {
       printf("action %zu failed (exit %d); %zu of %zu actions done, the rest were not run\n", done + 1, rc, done, na);
+      sqlite3_close(db);
       return 1;
     }
   }
   printf("%zu of %zu actions done\n", done, na);
+  sqlite3_close(db);
   return 0;
 }
 
