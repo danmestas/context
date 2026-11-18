@@ -2019,7 +2019,7 @@ static void relabel_speakers(sqlite3 *db) {
                              changed_turns - dropped, changed_notes, dropped);
 }
 
-#define REDACTION_VERSION "2" /* raise when a rule is added, so what is already stored is redacted again */
+#define REDACTION_VERSION "3" /* raise when a rule is added or redaction changes, so what is already stored is redacted again; 3: redaction repeats until stable */
 
 /* Applies today's redaction rules to what this machine stored under older ones: each turn of
  * its session technotes, then the indexed turns. Once per version. A technote changed here
