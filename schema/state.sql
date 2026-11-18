@@ -218,6 +218,41 @@ CREATE TABLE IF NOT EXISTS ctx_doc_dismissed(
   PRIMARY KEY (a, b)
 ) STRICT, WITHOUT ROWID;
 
+-- One ticket per documentation problem ctx found, keyed by the problem itself so it is
+-- never filed twice, even after the ticket is closed. A conflict's key is its 8-hex id;
+-- a check finding's key names its project, file, kind and detail.
+CREATE TABLE IF NOT EXISTS ctx_docs_ticket(
+  key     TEXT PRIMARY KEY,
+  ticket  TEXT NOT NULL,
+  project TEXT NOT NULL,
+  at      TEXT NOT NULL
+) STRICT, WITHOUT ROWID;
+
+-- Which session holds a ticket: recorded from the hook's session id when a `ctx ticket
+-- claim|done|drop` command passes through ctx gate. seen_at moves whenever that session
+-- runs a hook, so the overview can say how long ago it was last active.
+CREATE TABLE IF NOT EXISTS ctx_ticket_claim(
+  ticket     TEXT PRIMARY KEY,      -- the full ticket uuid
+  session    TEXT NOT NULL,
+  claimed_at TEXT NOT NULL,
+  seen_at    TEXT NOT NULL,
+  closed_at  TEXT,                  -- when the holder finished or dropped it
+  outcome    TEXT                   -- done or dropped, once closed
+) STRICT, WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS ctx_ticket_claim_session ON ctx_ticket_claim(session);
+
+-- Messages from the person to whoever holds a ticket, delivered once by `ctx hook post`
+-- in that session's next hook run.
+CREATE TABLE IF NOT EXISTS ctx_ticket_prod(
+  id           INTEGER PRIMARY KEY,
+  ticket       TEXT NOT NULL,
+  message      TEXT NOT NULL,
+  at           TEXT NOT NULL,
+  delivered_at TEXT,
+  session      TEXT
+) STRICT;
+CREATE INDEX IF NOT EXISTS ctx_ticket_prod_open ON ctx_ticket_prod(delivered_at, ticket);
+
 -- What the automatic judge (`ctx rules auto CMD`) decided about a proposal on the person's
 -- behalf: serve leaves it open and offers it as a tentative rule; covered, setup and not
 -- reject it. undone = 1 once the person reversed it with `ctx rules undo N`; an undone

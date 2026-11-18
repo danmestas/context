@@ -638,7 +638,65 @@ after a claim, so two machines cannot both take the same ticket.
 
 `ctx ticket offer` runs at session start. It prints nothing unless this project
 has ready work, and then lists up to five tickets for the agent, as a record, not
-as instructions.
+as instructions. Docs tickets are offered in a second list, with the instruction
+that fixing them needs no sign-off; see [Docs tickets](#docs-tickets).
+
+`ctx ticket prod ID MESSAGE...` sends a note from you to whoever holds a ticket.
+It says who will get it, `queued for session S (last active T)` or `queued for
+whoever claims it next`; the next `ctx hook post` run in that session delivers
+it once, whole, as `ctx: the user sent a message through ctx about ticket ID
+("TITLE"): "MESSAGE"`. Prods are yours: run inside an agent session (where
+`CLAUDECODE` is set), it refuses.
+
+## Docs tickets
+
+Every documentation problem ctx finds becomes a ticket of its own, filed in the
+project its documents belong to. `ctx docs check` findings and the conflicts
+`ctx docs conflicts --run` confirms are both filed, once each: the same problem
+is never filed again, even after its ticket is closed. Only projects with a
+registered documents directory (`ctx docs add`) are read. A `Docs:` ticket you
+filed by hand with the title ctx would give the problem is taken as its ticket,
+open or closed, and Fix on the decisions page files the conflict's ticket the
+same way, so neither is filed twice. A conflict keeps its ticket when its first
+pair of passages is fixed and the next pair names it.
+
+A docs ticket's title starts `Docs:` and its body quotes each disagreeing
+passage, with the side ctx read as likely current marked. An agent fixes the
+document, or closes the ticket with a reason; it needs no sign-off for that,
+after your request. The session-start offer says so:
+
+```
+ctx: 2 open docs tickets for this project. Fixing them needs no sign-off: ...
+```
+
+A conflict that has a ticket is left off the decisions page: it waits for the
+agent, not for you. `ctx docs conflicts` still lists it, with its ticket id.
+
+Claiming, finishing and dropping are recorded by `ctx hook post`, after the Bash
+call ran: it reads the `ctx ticket claim`, `done` and `drop` commands in it, and
+records them only as the ticket shows them, so a claim that was refused or a
+call that was denied records nothing. Every hook run marks the session holding
+a ticket as active; none of them waits for the archive when another process is
+writing to it. `ctx ticket show ID` says `held by session SESSION since TIME,
+last active TIME`.
+
+`ctx hook post` is a `PostToolUse` hook that records claims, delivers prods to
+the session that holds their ticket, and does everything `ctx docs nudge` does. Install it in
+place of `ctx docs nudge`, with its matcher widened to cover `Bash`:
+
+```json
+"PostToolUse": [{ "matcher": "Read|Edit|Write|MultiEdit|Bash", "hooks": [{ "type": "command", "command": "ctx hook post", "timeout": 3 }] }]
+```
+
+`ctx page --all` puts a Tickets section under its summary: one line of counts,
+and one row a project that has a ticket open or one closed this week. A row
+opens to its ticket list, showing for a claimed ticket the session holding it
+and a Copy button for its prod command, and for one closed this week the result
+or the reason it was dropped. A project's own page shows its list alone. While
+the page is in view and nothing on it is in use (no choice, no open detail, no
+edited wording or filter), it reloads itself every 30 seconds. ctx rewrites the
+tickets in a page file that already exists when a ticket changes; it never
+creates one and never opens a browser.
 
 ## Add sources
 
