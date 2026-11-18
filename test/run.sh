@@ -1805,6 +1805,86 @@ EVE=$(( $(date +%s) - 82800 )) # 23 hours ago: inside the last day at any hour, 
 printf 'B %s 13 rules-offer\n' "$EVE" >> "$CTX_DB.calls"
 "$CTX" status | grep -q '3 cut off' || fail "status counts a hook cut off before midnight: $("$CTX" status)"
 CTX_DB="$T/nocalls.sqlite" "$CTX" recall </dev/null; [ ! -e "$T/nocalls.sqlite.calls" ] || fail "nothing is logged without an archive"
+# ctx status --json: the same facts for one project, from the folder it is run in.
+HUDHERE=$(pwd)
+export CTX_DB="$T/hud.sqlite"
+"$CTX" init >/dev/null
+mkdir -p "$T/hud/heronry/.git" "$T/hud/elsewhere/.git" "$T/hud/heronry/docs" "$T/hud/nowhere"
+python3 - "$T/hud" <<'EOF'
+import datetime, json, sys
+now = datetime.datetime.now(datetime.timezone.utc)
+ago = lambda days: (now - datetime.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+bash = lambda c: [{"type": "tool_use", "name": "Bash", "input": {"command": c}}]
+def session(path, cwd, rows):
+    with open(path, "w") as f:
+        for uuid, when, role, content in rows:
+            f.write(json.dumps({"uuid": uuid, "timestamp": when, "cwd": cwd, "message": {"role": role, "content": content}}) + "\n")
+d = sys.argv[1]
+session(d + "/f00d0001-0000-0000-0000-000000000001.jsonl", d + "/heronry", [
+    ("hr-1", ago(2), "assistant", bash("ctx search osprey")),
+    ("hr-2", ago(0), "user", "always pin the heron feed version in staging"),
+    ("hr-3", ago(0), "user", "never cache the egret index across deploys"),
+    ("hr-4", ago(0), "user", "log every plover retry with its reason"),
+    ("hr-5", ago(0), "assistant", bash("ctx search heron timeout")),
+    ("hr-6", ago(0), "user", [{"type": "tool_result", "content": "ctx: no matches"}]),
+    ("hr-7", ago(0), "assistant", bash("ctx search egret; ctx search plover")),
+    ("hr-8", ago(0), "user", [{"type": "tool_result", "content": "#4 heronry session user"}]),
+    ("hr-9", ago(0), "assistant", bash("grep -n 'ctx search' README.md")),
+])
+session(d + "/f00d0002-0000-0000-0000-000000000002.jsonl", d + "/elsewhere", [
+    ("el-1", ago(0), "assistant", bash("ctx search godwit")),
+    ("el-2", ago(0), "user", "always lint the godwit config before a release"),
+])
+EOF
+for f in "$T"/hud/*.jsonl; do "$CTX" archive "$f" >/dev/null; done
+"$CTX" rules suggest hr-2 "Pin the heron feed version in staging" >/dev/null
+"$CTX" rules suggest hr-3 "Never cache the egret index across deploys" >/dev/null
+"$CTX" rules suggest hr-4 "Log every plover retry with its reason" >/dev/null
+"$CTX" rules suggest el-2 "Lint the godwit config before a release" >/dev/null
+"$CTX" sql "INSERT INTO ctx_proposal_judged(id, verdict, at) SELECT id, 'serve', datetime('now') FROM ctx_rule_proposal WHERE turn = 'hr-2'" >/dev/null
+"$CTX" sql "INSERT INTO ctx_proposal_judged(id, verdict, at) SELECT id, 'serve', datetime('now', '-10 days') FROM ctx_rule_proposal WHERE turn = 'hr-4'" >/dev/null
+"$CTX" sql "INSERT INTO ctx_proposal_judged(id, verdict, at) SELECT id, 'serve', datetime('now') FROM ctx_rule_proposal WHERE turn = 'el-2'" >/dev/null
+cd "$T/hud/heronry"
+printf 'retries stop after 3 attempts\n' > docs/a.md; printf 'retries stop after 5 attempts\n' > docs/b.md
+printf 'cache entries live 60 seconds\n' > docs/c.md; printf 'cache entries live 90 seconds\n' > docs/d.md
+printf 'sessions last 8 hours\n' > docs/e.md; printf 'sessions last 12 hours\n' > docs/f.md
+DD=$(pwd -P)/docs
+"$CTX" sql "INSERT INTO ctx_doc_conflict VALUES
+  ('k1', 'k2', 'heronry', '$DD/a.md', 'A', 'retries stop after 3 attempts', '$DD/b.md', 'B', 'retries stop after 5 attempts', 'retries', 'B', '', '2026-11-01'),
+  ('k3', 'k4', 'heronry', '$DD/c.md', 'C', 'cache entries live 60 seconds', '$DD/d.md', 'D', 'cache entries live 90 seconds', 'cache', 'B', '', '2026-11-02'),
+  ('k5', 'k6', 'heronry', '$DD/e.md', 'E', 'sessions last 8 hours', '$DD/f.md', 'F', 'sessions last 12 hours', 'sessions', 'B', '', '2026-11-03')" >/dev/null
+TK=$("$CTX" ticket new "Docs: reconcile cache lifetime") # filed for the second conflict: it waits for an agent, not the person
+KEY=$(python3 -c "import hashlib; print('conflict:' + hashlib.sha3_256(b'k3|k4').hexdigest()[:8])")
+"$CTX" sql "INSERT INTO ctx_docs_ticket(key, ticket, project, at) VALUES ('$KEY', '$TK', 'heronry', datetime('now'))" >/dev/null
+"$CTX" docs conflicts dismiss "$("$CTX" docs conflicts | sed -n 's/^[0-9]*\. \[\([0-9a-f]*\)\] sessions$/\1/p')" >/dev/null
+"$CTX" ticket new "Docs: fix the retry limit" >/dev/null
+"$CTX" ticket new "Wire up the feed" >/dev/null
+HELD=$("$CTX" ticket new "Pin the staging feed")
+"$CTX" ticket claim "$HELD" --as hudsession >/dev/null
+"$CTX" sql "INSERT INTO ctx_ticket_claim(ticket, session, claimed_at, seen_at) SELECT tkt_uuid, 'hudsession', datetime('now'), datetime('now') FROM fslrepo_me_ticket WHERE tkt_uuid GLOB '$HELD*'" >/dev/null
+DONE=$("$CTX" ticket new "Already finished")
+"$CTX" ticket done "$DONE" >/dev/null
+(cd ../elsewhere && "$CTX" ticket new "Not this project" >/dev/null)
+js() { python3 -c "import json, sys; d = json.loads(sys.stdin.read()); print(d[sys.argv[1]])" "$1"; }
+"$CTX" status --json > "$T/hud.json" || fail "status --json runs"
+[ "$(js project < "$T/hud.json")" = heronry ] || fail "status --json names the project: $(cat "$T/hud.json")"
+[ "$(js open < "$T/hud.json")" = 4 ] || fail "open tickets of this project only: $(cat "$T/hud.json")"
+[ "$(js docs < "$T/hud.json")" = 2 ] || fail "docs tickets: $(cat "$T/hud.json")"
+[ "$(js held < "$T/hud.json")" = 1 ] || fail "held tickets: $(cat "$T/hud.json")"
+[ "$(js need < "$T/hud.json")" = 2 ] || fail "need: a proposal the judge has not decided, and a conflict with no ticket: $(cat "$T/hud.json")"
+[ "$(js tentative < "$T/hud.json")" = 1 ] || fail "tentative: judged serve this week, this project: $(cat "$T/hud.json")"
+[ "$(js searches < "$T/hud.json")" = 3 ] || fail "searches today in this project: $(cat "$T/hud.json")"
+[ "$(js misses < "$T/hud.json")" = 1 ] || fail "misses: $(cat "$T/hud.json")"
+[ -z "$(js warn < "$T/hud.json")" ] || fail "no warning on a quiet machine: $(cat "$T/hud.json")"
+python3 -c "import json, sys; assert list(json.load(open(sys.argv[1]))) == ['project', 'open', 'docs', 'held', 'need', 'tentative', 'searches', 'misses', 'warn']" "$T/hud.json" || fail "status --json keys, in order"
+[ "$(cd ../elsewhere && "$CTX" status --json | js open)" = 1 ] || fail "another folder, another project"
+(cd "$T/hud/nowhere" && "$CTX" status --json > "$T/hud-all.json")
+[ -z "$(js project < "$T/hud-all.json")" ] && [ "$(js open < "$T/hud-all.json")" = 5 ] && [ "$(js searches < "$T/hud-all.json")" = 4 ] || fail "outside a project it covers everything: $(cat "$T/hud-all.json")"
+printf 'B %s 71 rules-offer\nB %s 72 rules-offer\n' $(( $(date +%s) - 300 )) $(( $(date +%s) - 300 )) >> "$CTX_DB.calls"
+[ "$("$CTX" status --json | js warn)" = "2 hooks cut off" ] || fail "warn names hooks cut off: $("$CTX" status --json)"
+"$CTX" status | grep -q '^ctx [0-9]* searches\? · hooks [0-9]* ms · 2 cut off$\|^ctx [0-9]* searches\? · 2 cut off$' || fail "plain status is unchanged: $("$CTX" status)"
+cd "$HUDHERE"
+
 # Documents in a directory on disk are indexed where they sit: no copies, no model.
 export CTX_DB="$T/docs.sqlite"
 "$CTX" init >/dev/null
