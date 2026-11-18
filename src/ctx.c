@@ -1498,6 +1498,11 @@ typedef struct {
   size_t n, cap;
 } call_stat;
 
+/* qsort, for a list that may be empty: an empty one has no array, and qsort may not be handed a null one. */
+static void sort_some(void *base, size_t n, size_t size, int (*cmp)(const void *, const void *)) {
+  if (n) qsort(base, n, size, cmp);
+}
+
 static int by_long(const void *a, const void *b) {
   long x = *(const long *)a, y = *(const long *)b;
   return (x > y) - (x < y);
@@ -1546,7 +1551,7 @@ static size_t calls_read(time_t since, call_stat *out, size_t cap) {
     }
     fclose(in);
   }
-  for (size_t k = 0; k < names; k++) qsort(out[k].ms, out[k].n, sizeof *out[k].ms, by_long);
+  for (size_t k = 0; k < names; k++) sort_some(out[k].ms, out[k].n, sizeof *out[k].ms, by_long); /* a hook with starts only has no list */
   return names;
 }
 
@@ -1610,7 +1615,7 @@ static status_facts status_read(void) {
     if (st[k].n && st[k].ms[st[k].n - 1] > f.worst) f.worst = st[k].ms[st[k].n - 1];
     free(st[k].ms);
   }
-  qsort(all, na, sizeof *all, by_long);
+  sort_some(all, na, sizeof *all, by_long);
   f.runs = (long)na;
   f.median = na ? all[na / 2] : 0;
   char *stamp = sidecar(".scan");
@@ -4867,7 +4872,7 @@ static size_t queue_build(sqlite3 *db, const char *project, queue_item **out) {
     items[i].mentions = session_mentions(db, items[i].source);
     items[i].score = (1.0 + items[i].claims) * (items[i].risk ? 3.0 : 1.0) * (1.0 + log(1.0 + items[i].mentions));
   }
-  qsort(items, n, sizeof *items, queue_cmp);
+  sort_some(items, n, sizeof *items, queue_cmp);
   *out = items;
   return n;
 }
@@ -9860,11 +9865,6 @@ static const char *const stop_words[] = {
     "from", "have", "here", "into", "just", "like", "make", "many", "more", "most", "much", "must", "never", "only", "other", "over", "same",
     "should", "some", "such", "than", "that", "their", "them", "then", "there", "these", "they", "this", "those", "very", "want", "well",
     "were", "what", "when", "where", "which", "while", "will", "with", "would", "your"};
-
-/* qsort, for a list that may be empty: an empty one has no array, and qsort may not be handed a null one. */
-static void sort_some(void *base, size_t n, size_t size, int (*cmp)(const void *, const void *)) {
-  if (n) qsort(base, n, size, cmp);
-}
 
 static int cmp_word(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
 
