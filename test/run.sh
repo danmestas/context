@@ -2089,6 +2089,54 @@ for h in ("Needs you", "Decided for you this week", "Status"):
 for gone in ("How to read this", 'id="outcome"'):
     assert gone not in page, "the old intro, summary strip and explainer are gone: %s" % gone
 EOF
+# The page follows the project it is run in: its own proposals, conflicts and decisions, no hooks.
+mkdir -p "$T/beta" "$T/nowhere"
+"$CTX" sql "INSERT INTO ctx_rule_proposal(turn, project, at, text) VALUES ('pjs-a', 'alpha', '2026-11-12T09:00:00Z', 'Pin the pjs alpha fixtures'), ('pjs-b', 'beta', '2026-11-12T09:00:00Z', 'Pin the pjs beta fixtures')" >/dev/null
+"$CTX" sql "INSERT INTO ctx_proposal_judged(id, verdict, why, quote, model, at) SELECT id, 'serve', 'fits', '', 'm', datetime('now') FROM ctx_rule_proposal WHERE turn LIKE 'pjs-%'" >/dev/null
+pjs() { python3 - "$1" <<'PY'
+import json, re, sys
+page = open(sys.argv[1], encoding="utf-8").read()
+print(json.dumps(json.loads(re.search(r"var D = (\{.*?\});\n  var SEC", page, re.S).group(1))))
+PY
+}
+PA=$(cd "$T/alpha" && "$CTX" page) || fail "ctx page runs in a project's folder"
+PB=$(cd "$T/beta" && "$CTX" page) || fail "ctx page runs in another project's folder"
+PALL=$(cd "$T/alpha" && "$CTX" page --all) || fail "ctx page --all runs"
+PNO=$(cd "$T/nowhere" && "$CTX" page) || fail "ctx page runs outside any project"
+PPG=$(cd "$T/nowhere" && "$CTX" page --project pgdocs) || fail "ctx page --project runs from anywhere"
+PNONE=$("$CTX" page --project 'no/such proj') || fail "ctx page --project runs for a project with nothing waiting"
+[ "$PA" = "$CTX_DB.page-alpha.html" ] && [ "$PB" = "$CTX_DB.page-beta.html" ] && [ "$PALL" = "$CTX_DB.page.html" ] && [ "$PNO" = "$CTX_DB.page.html" ] && [ "$PPG" = "$CTX_DB.page-pgdocs.html" ] && [ "$PNONE" = "$CTX_DB.page-no_such_proj.html" ] || fail "output paths: $PA $PB $PALL $PNO $PPG $PNONE"
+for f in "$PA" "$PB" "$PALL" "$PNO" "$PPG" "$PNONE"; do pjs "$f" > "$f.json"; done
+python3 - "$PA" "$PB" "$PALL" "$PNO" "$PPG" "$PNONE" <<'PY' || fail "the page's data follows the project"
+import json, sys
+L = lambda i: json.load(open(sys.argv[i] + ".json"))
+a, b, al, no, pg, none = (L(i) for i in range(1, 7))
+assert a["scope"] == "alpha" and [r["p"] for r in a["rules"]] == ["alpha"] * 4, "a project page names it and holds only its proposals: %r" % a["scope"]
+assert a["conf"] == [] and a["hooks"] == [] and [h["id"] for h in a["held"]] == ["alpha"], "no other project's conflicts, hooks or held entry"
+assert [x["p"] for x in a["auto"]] == ["alpha"] and a["auto"][0]["t"] == "Pin the pjs alpha fixtures", "only its own automatic decisions: %r" % a["auto"]
+assert a["head"] == "4 things need you." and a["tot"]["rules"] == 4 and a["tot"]["conf"] == 0 and a["batch"] == "", "the sentence counts the scope shown: %r" % a["head"]
+assert a["tot"]["held"] == 1 and len(a["weeks"]) and sum(h[0] for h in a["held"][0]["hist"]) == a["held"][0]["turns"], "the chart covers the project only"
+assert b["scope"] == "beta" and [r["p"] for r in b["rules"]] == ["beta"] and [x["p"] for x in b["auto"]] == ["beta"] and b["head"] == "1 thing needs you.", b["head"]
+assert al["scope"] == "" and len(al["rules"]) == 5 and len(al["conf"]) == 3 and [h["id"] for h in al["hooks"]] == ["gate"], "--all holds everything"
+assert sorted(x["p"] for x in al["auto"]) == ["alpha", "beta"] and sorted(h["id"] for h in al["held"]) == ["alpha", "beta"]
+assert no["scope"] == "" and len(no["rules"]) == 5 and len(no["conf"]) == 3 and no["hooks"] and no["head"] == "5 things need you.", "outside a project the page is global"
+assert pg["scope"] == "pgdocs" and pg["rules"] == [] and len(pg["conf"]) == 3 and pg["hooks"] == [] and pg["held"] == [], "--project names a project from anywhere"
+assert pg["head"] == "Nothing urgent.", pg["head"]
+assert pg["batch"].startswith("ctx has a suggestion for 3 document conflicts in pgdocs"), pg["batch"]
+assert none["scope"] == "no/such proj" and none["head"] == "Nothing urgent." and none["rules"] == [] and none["conf"] == [] and none["auto"] == [], none["head"]
+PY
+python3 - "$PA" "$PALL" <<'PY' || fail "a project page links to the global page and keeps its headings"
+import sys
+for p in sys.argv[1:3]:
+    page = open(p, encoding="utf-8").read()
+    assert "Everything: ctx page --all" in page and 'id="scope"' in page and ">Needs you<" in page and ">Status<" in page
+PY
+if "$CTX" page --all --project alpha >/dev/null 2>&1; then fail "--all and --project do not combine"; fi
+OPENED="$T/opened.txt" CTX_OPENER="$T/opener.sh" "$CTX" page --project beta --open --out "$T/beta-page.html" >/dev/null || fail "--open and --out combine with --project"
+[ "$(sed -n 2p "$T/opened.txt")" = "$T/beta-page.html" ] && grep -q '"scope":"beta"' "$T/beta-page.html" || fail "the project page is written where --out says and opened"
+"$CTX" sql "DELETE FROM ctx_proposal_judged WHERE id IN (SELECT id FROM ctx_rule_proposal WHERE turn LIKE 'pjs-%'); DELETE FROM ctx_rule_proposal WHERE turn LIKE 'pjs-%'" >/dev/null
+rm -f "$CTX_DB".page-*.html* "$CTX_DB.page.html.json"
+"$CTX" page >/dev/null
 # ctx page apply: the choices the page produces, in words that are not commands, so the only way to
 # act on them is through apply and its plan.
 RID=$("$CTX" sql "SELECT id FROM ctx_rule_proposal WHERE text LIKE 'Name test files%'")

@@ -154,6 +154,7 @@ section.q { display:flex; flex-direction:column; gap:10px; }
   <div class="kicker" id="kicker"></div>
   <h1 id="head"></h1>
   <p class="lede" id="batch"></p>
+  <p class="note" id="scope" hidden>Everything: ctx page --all</p>
   <div class="batches" id="batches"></div>
   <details class="sub" id="f-batch" hidden><summary id="f-batch-s"></summary><div class="list" id="s-batch"></div></details>
 </header>
@@ -572,12 +573,15 @@ section.q { display:flex; flex-direction:column; gap:10px; }
     try { navigator.clipboard.writeText(text).then(function () { b.textContent = "Copied"; setTimeout(function () { b.textContent = "Copy choices"; }, 1600); }, fail); } catch (err) { fail(); }
   });
   var T = D.tot, sugg = D.held.filter(change).length + D.hooks.filter(change).length;
-  document.getElementById("kicker").textContent = "ctx · decisions · your archive as of " + nice(T.today);
+  document.getElementById("kicker").textContent = "ctx · " + (D.scope || "decisions") + " · your archive as of " + nice(T.today);
+  document.getElementById("scope").hidden = !D.scope;
   document.getElementById("head").textContent = D.head;
   document.getElementById("batch").textContent = D.batch;
   document.getElementById("batch").hidden = !D.batch;
-  document.getElementById("status-n").textContent = "· " + plural(D.held.length, "project") + " · " + plural(D.hooks.length, "hook") + " · " + plural(D.weeks.length, "week") + "; " + (sugg ? plural(sugg, "change") + " suggested" : "no changes suggested");
-  renderNeed(); renderBatch(); renderAuto(); render(BY.held); render(BY.hooks); totals();
+  document.getElementById("status-n").textContent = "· " + plural(D.held.length, "project") + (D.scope ? "" : " · " + plural(D.hooks.length, "hook")) + " · " + plural(D.weeks.length, "week") + "; " + (sugg ? plural(sugg, "change") + " suggested" : "no changes suggested");
+  renderNeed(); renderBatch(); renderAuto(); render(BY.held); totals();
+  if (D.scope) document.getElementById("s-hooks").innerHTML = '<p class="note">Hooks run on the whole machine. <code>ctx page --all</code> shows them.</p>';
+  else render(BY.hooks);
 })();
 </script>
 </body>
