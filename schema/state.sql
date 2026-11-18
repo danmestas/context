@@ -217,3 +217,17 @@ CREATE TABLE IF NOT EXISTS ctx_doc_dismissed(
   at     TEXT NOT NULL,
   PRIMARY KEY (a, b)
 ) STRICT, WITHOUT ROWID;
+
+-- What the automatic judge (`ctx rules auto CMD`) decided about a proposal on the person's
+-- behalf: serve leaves it open and offers it as a tentative rule; covered, setup and not
+-- reject it. undone = 1 once the person reversed it with `ctx rules undo N`; an undone
+-- proposal is never judged again. Paid judgements, so state: a rebuild keeps them.
+CREATE TABLE IF NOT EXISTS ctx_proposal_judged(
+  id      INTEGER PRIMARY KEY REFERENCES ctx_rule_proposal(id) ON DELETE CASCADE,
+  verdict TEXT NOT NULL CHECK (verdict IN ('serve', 'covered', 'setup', 'not')),
+  why     TEXT,
+  quote   TEXT,               -- for covered: the words of a rule or the global instructions
+  model   TEXT,               -- the command that answered
+  at      TEXT NOT NULL,
+  undone  INTEGER NOT NULL DEFAULT 0
+) STRICT;

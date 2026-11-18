@@ -519,8 +519,6 @@ K4=$("$CTX" remember "Ship on Fridays only" --from r-3 | cut -d' ' -f1)
 # review until 30 days of the archive's own time after it was last said.
 export CTX_DB="$T/repeats.sqlite"
 "$CTX" init >/dev/null
-# Existing delivery regressions exercise the experimental path explicitly; production defaults off.
-"$CTX" sql "INSERT INTO ctx_meta(key,value) VALUES ('tentative_serving','1')" >/dev/null
 RP="$T/rptcfg/projects/-w-rpt"
 mkdir -p "$RP" "$T/w/rpt"
 rpt() { printf '{"uuid":"%s","timestamp":"%s","cwd":"/w/rpt","message":{"role":"user","content":"%s"}}\n' "$2" "$3" "$4" >> "$RP/e7e7000$1-0000-0000-0000-00000000000$1.jsonl"; }
@@ -579,12 +577,16 @@ grep -q 'bittern' "$T/rrules.txt" && fail "a repeat last said more than 30 days 
 "$CTX" rules proposed --all > "$T/rproposed.txt"
 grep -q "^$PA .*Run the grebe linter before every commit (tentative)$" "$T/rproposed.txt" || fail "a repeat refreshes an expired proposal, marked tentative: $(cat "$T/rproposed.txt")"
 grep -q 'Dunlin.*(tentative)' "$T/rproposed.txt" && fail "only tentative ones are marked"
+(cd "$T/w/rpt" && "$CTX" rules offer) | grep -q 'added automatically' && fail "a repeat alone is not served at session start"
+# Only a proposal the automatic judge chose to serve is offered, and only within its lapse.
+PB=$("$CTX" sql "SELECT id FROM ctx_rule_proposal WHERE turn = 'rpt-8'")
+"$CTX" sql "INSERT INTO ctx_proposal_judged(id, verdict, at) VALUES ($PA, 'serve', datetime('now')), ($PB, 'serve', datetime('now'))" >/dev/null
 (cd "$T/w/rpt" && "$CTX" rules offer) > "$T/roffer.json"
-python3 - "$T/roffer.json" <<'PY' || fail "the session start offers tentative rules: $(cat "$T/roffer.json")"
+python3 - "$T/roffer.json" "$PA" <<'PY' || fail "the session start offers served tentative rules: $(cat "$T/roffer.json")"
 import json, sys
 c = json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]
-assert "said more than once" in c, c
-assert "- Run the grebe linter before every commit (said 2 times; lapses 2026-11-19)" in c, c
+assert "added automatically" in c and "ctx rules undo" in c, c
+assert "- Run the grebe linter before every commit (said 2 times; lapses 2026-11-19; proposal %s)" % sys.argv[2] in c, c
 assert "bittern" not in c and "- Dunlin" not in c, c
 PY
 "$CTX" rules reject "$PR" >/dev/null
@@ -635,7 +637,6 @@ export CTX_DB="$T/repeats.sqlite"
 # More than one repeat-check window is covered even as the archive keeps advancing.
 export CTX_DB="$T/repeat-queue.sqlite"
 "$CTX" init >/dev/null
-"$CTX" sql "INSERT INTO ctx_meta(key,value) VALUES ('tentative_serving','1')" >/dev/null
 "$CTX" sql 'DROP TABLE ctx_proposal_attempted' >/dev/null
 "$CTX" sql 'PRAGMA user_version = 12' >/dev/null
 [ "$("$CTX" sql 'SELECT count(*) FROM ctx_proposal_attempted')" = 0 ] || fail "an existing tentative-rule database gains retry scheduling state on upgrade"
@@ -754,26 +755,27 @@ grep -q 'exit 0' "$T/invalid.err" && fail "invalid JSON never claims the classif
 
 "$CTX" sql "INSERT INTO ctx_rule_proposal(turn, project, at, text) VALUES ('offer-wide-a', 'rpt', '2026-11-16T09:00:00Z', replace(hex(zeroblob(150)), '0', '界')), ('offer-wide-b', 'rpt', '2026-11-15T09:00:00Z', replace(hex(zeroblob(150)), '0', '界')), ('offer-short', 'rpt', '2026-11-14T09:00:00Z', 'Short rule after oversized line')" >/dev/null
 "$CTX" sql "INSERT INTO ctx_proposal_said(id, turn, at) SELECT id, 'rpt-5', '2026-11-09T09:00:00Z' FROM ctx_rule_proposal WHERE turn LIKE 'offer-%'" >/dev/null
+(cd "$T/w/rpt" && "$CTX" rules offer) > "$T/default-offer.json"
+grep -q 'Short rule after oversized line\|added automatically' "$T/default-offer.json" && fail "repeat instructions no judge chose to serve are not served"
+"$CTX" sql "INSERT INTO ctx_proposal_judged(id, verdict, at) SELECT id, 'serve', datetime('now') FROM ctx_rule_proposal WHERE turn LIKE 'offer-%' OR id = 1" >/dev/null
 (cd "$T/w/rpt" && "$CTX" rules offer) > "$T/sized-offer.json"
 grep -q 'Short rule after oversized line' "$T/sized-offer.json" || fail "an oversized tentative line does not suppress later shorter rules"
-"$CTX" sql "DELETE FROM ctx_meta WHERE key='tentative_serving'" >/dev/null
-(cd "$T/w/rpt" && "$CTX" rules offer) > "$T/default-offer.json"
-grep -q 'Short rule after oversized line\|said more than once recently' "$T/default-offer.json" && fail "unreviewed repeat instructions are not served by default"
-[ "$("$CTX" sql 'SELECT count(*) FROM ctx_proposal_said')" -gt 0 ] || fail "disabling delivery preserves repeat evidence"
-"$CTX" sql "INSERT INTO ctx_meta(key,value) VALUES ('tentative_serving','1')" >/dev/null
+[ "$("$CTX" sql 'SELECT count(*) FROM ctx_proposal_said')" -gt 0 ] || fail "serving nothing preserves repeat evidence"
+"$CTX" sql "DELETE FROM ctx_proposal_judged WHERE id IN (SELECT id FROM ctx_rule_proposal WHERE turn LIKE 'offer-%')" >/dev/null
 "$CTX" sql "DELETE FROM ctx_proposal_said WHERE id IN (SELECT id FROM ctx_rule_proposal WHERE turn LIKE 'offer-%')" >/dev/null
 "$CTX" sql "DELETE FROM ctx_proposal_made WHERE id IN (SELECT id FROM ctx_rule_proposal WHERE turn LIKE 'offer-%')" >/dev/null
 "$CTX" sql "DELETE FROM ctx_rule_proposal WHERE turn LIKE 'offer-%'" >/dev/null
 
 # Forgetting repeat evidence revokes tentative status, including in the session offer.
 (cd "$T/w/rpt" && "$CTX" rules offer) > "$T/before-forget.json"
-grep -q 'said more than once' "$T/before-forget.json" || fail "forget regression starts with a tentative rule"
+grep -q 'added automatically' "$T/before-forget.json" || fail "forget regression starts with a tentative rule"
 EVIDENCE_SESSION=$("$CTX" sql 'SELECT cd.session FROM ctx_proposal_said s JOIN ctx_chunk c ON c.turn = s.turn JOIN ctx_doc d ON d.id = c.doc_id JOIN ctx_capture_day cd ON cd.technote = d.name WHERE s.id = 1 LIMIT 1')
 "$CTX" forget "$EVIDENCE_SESSION" >/dev/null
 [ "$("$CTX" sql 'SELECT count(*) FROM ctx_proposal_said WHERE id = 1')" = 0 ] || fail "forgetting evidence removes its repeat judgement"
 "$CTX" rules --project rpt | grep -q '^tentative' && fail "forgotten evidence no longer promotes a proposal"
 (cd "$T/w/rpt" && "$CTX" rules offer) > "$T/after-forget.json"
-grep -q 'said more than once' "$T/after-forget.json" && fail "forgotten evidence no longer injects a tentative instruction"
+grep -q 'said 2 times' "$T/before-forget.json" || fail "the served rule starts as a repeat"
+grep -q 'said 2 times' "$T/after-forget.json" && fail "forgotten evidence no longer counts as a repeat at session start"
 "$CTX" rebuild >/dev/null 2>&1
 "$CTX" rules --project rpt | grep -q '^tentative' && fail "rebuilding cannot resurrect forgotten repeat evidence"
 
@@ -785,7 +787,7 @@ grep -q 'said more than once' "$T/after-forget.json" && fail "forgotten evidence
 SOURCE_SESSION=$("$CTX" sql "SELECT session FROM ctx_capture WHERE path LIKE '%e7e70007-%'")
 "$CTX" forget "$SOURCE_SESSION" >/dev/null
 [ "$("$CTX" rules proposed --all | wc -l | tr -d ' ')" = 0 ] || fail "forgetting a source hides open and tentative proposals"
-[ "$("$CTX" sql 'SELECT (SELECT count(*) FROM ctx_proposal_said) + (SELECT count(*) FROM ctx_proposal_made) + (SELECT count(*) FROM ctx_proposal_checked) + (SELECT count(*) FROM ctx_proposal_attempted)')" = 0 ] || fail "forget removes proposal metadata even on connections without foreign-key cascades"
+[ "$("$CTX" sql 'SELECT (SELECT count(*) FROM ctx_proposal_said) + (SELECT count(*) FROM ctx_proposal_made) + (SELECT count(*) FROM ctx_proposal_checked) + (SELECT count(*) FROM ctx_proposal_attempted) + (SELECT count(*) FROM ctx_proposal_judged)')" = 0 ] || fail "forget removes proposal metadata even on connections without foreign-key cascades"
 "$CTX" rules --project rpt | grep -q '^tentative' && fail "forgotten source no longer injects tentative rules"
 (cd "$T/w/rpt" && "$CTX" rules offer) > "$T/source-forgotten.json"
 grep -q 'always run the grebe' "$T/source-forgotten.json" && fail "forgotten proposal text never reaches the session offer"
@@ -793,6 +795,163 @@ grep -q 'always run the grebe' "$T/source-forgotten.json" && fail "forgotten pro
 "$CTX" rebuild >/dev/null 2>&1
 [ "$("$CTX" rules proposed --all | wc -l | tr -d ' ')" = 0 ] || fail "rebuilding cannot resurrect forgotten proposals"
 "$CTX" rules --project rpt | grep -q 'Explicit accepted sentinel' || fail "accepted rules survive forgetting and rebuilding"
+
+# The automatic judge: with `ctx rules auto CMD` set, each propose run has a model decide open
+# proposals for the person, leaning to dismiss. Every decision is listed and can be undone.
+export CTX_DB="$T/auto.sqlite"
+"$CTX" init >/dev/null
+AP="$T/autocfg/projects/-w-aut"
+AG="$T/autoglobal"
+mkdir -p "$AP" "$AG" "$T/w/aut" "$T/w/autfull" "$T/w/autelse"
+printf '# Mine\n\nNever vendor third-party libraries; depend on them.\n' > "$AG/CLAUDE.md"
+aut() { printf '{"uuid":"%s","timestamp":"%s","cwd":"/w/aut","message":{"role":"user","content":"%s"}}\n' "$2" "$3" "$4" >> "$AP/a0a0000$1-0000-0000-0000-00000000000$1.jsonl"; }
+aut 1 aut-1 2026-11-10T09:00:00Z "always run the heron formatter before you commit"
+aut 1 aut-2 2026-11-10T09:05:00Z "the kestrel tests must stay under a second each"
+aut 1 aut-3 2026-11-10T09:10:00Z "you are running on the plover model today"
+aut 1 aut-4 2026-11-10T09:15:00Z "I wonder how the osprey cache works"
+aut 2 aut-5 2026-11-12T09:00:00Z "keep the egret changelog in plain words"
+aut 2 aut-6 2026-11-12T09:05:00Z "never vendor the ibis library"
+aut 2 aut-7 2026-11-12T09:10:00Z "name the stork fixtures by date"
+aut 3 aut-8 2026-11-14T09:00:00Z "the egret changelog stays in plain words, as I said"
+aut 4 aut-9 2026-09-01T09:00:00Z "the wren docs go in the wiki"
+for f in "$AP"/*.jsonl; do "$CTX" archive "$f" >/dev/null; done
+"$CTX" remember "Run the heron formatter before every commit" --project aut >/dev/null
+for t in aut-1:"Run the heron formatter before every commit" aut-2:"Keep each kestrel test under a second" aut-3:"Use the plover model" \
+         aut-4:"Explain the osprey cache" aut-5:"Keep the egret changelog in plain words" aut-6:"Never vendor the ibis library" \
+         aut-7:"Name the stork fixtures by date" aut-9:"Put the wren docs in the wiki"; do
+  "$CTX" rules suggest "${t%%:*}" "${t#*:}" >/dev/null
+done
+pid() { "$CTX" sql "SELECT id FROM ctx_rule_proposal WHERE turn = '$1'"; }
+"$CTX" sql "INSERT INTO ctx_proposal_said(id, turn, at) VALUES ($(pid aut-5), 'aut-8', '2026-11-14T09:00:00Z')" >/dev/null
+AFAKE="$T/fake-auto.py"
+cat > "$AFAKE" <<'PY'
+import json, sys
+text = sys.stdin.read()
+with open(sys.argv[1], "a") as log: log.write(text.split("\n", 1)[0] + "\n")
+if not text.startswith("ctx auto v1\n"): print("[]"); sys.exit(0)
+with open(sys.argv[1] + ".prompts", "a") as log: log.write(text + "\n=====\n")
+if len(sys.argv) > 2 and sys.argv[2] == "garbage": print("I would keep it, I think."); sys.exit(0)
+prop = [l for l in text.splitlines() if l.startswith("Proposal: ")][0].lower()
+def say(v, why, quote=""): print("Verdict:\n" + json.dumps({"verdict": v, "why": why, "quote": quote}))
+if "heron" in prop: say("covered", "An existing rule says it.", "HERON formatter   before every commit")
+elif "kestrel" in prop: say("covered", "Said somewhere.", "kestrel tests are always fast")
+elif "plover" in prop: say("setup", "About which model runs today.")
+elif "ibis" in prop: say("covered", "The global instructions say it.", "never vendor third-party libraries")
+elif any(w in prop for w in ("egret", "stork", "wren", "pipit")): say("serve", "A lasting preference.")
+else: say("not", "Not an instruction.")
+PY
+"$CTX" rules classifier "python3 $AFAKE $T/acalls.txt" >/dev/null
+[ "$("$CTX" rules auto)" = none ] || fail "the automatic judge is off by default"
+CLAUDE_CONFIG_DIR="$AG" "$CTX" rules propose >/dev/null
+grep -q '^ctx auto v1$' "$T/acalls.txt" && fail "nothing is judged without the setting"
+[ "$("$CTX" sql 'SELECT count(*) FROM ctx_proposal_judged')" = 0 ] || fail "no judgement without the setting"
+[ "$("$CTX" rules auto "python3 $AFAKE $T/acalls.txt garbage")" = "python3 $AFAKE $T/acalls.txt garbage" ] || fail "ctx rules auto sets the command"
+if CLAUDE_CONFIG_DIR="$AG" "$CTX" rules propose >/dev/null 2>"$T/agarbage.err"; then fail "an unreadable answer fails the run"; fi
+grep -q 'unreadable' "$T/agarbage.err" || fail "an unreadable answer is reported: $(cat "$T/agarbage.err")"
+[ "$(grep -c '^ctx auto v1$' "$T/acalls.txt")" = 1 ] || fail "an unreadable answer stops the run"
+[ "$("$CTX" sql "SELECT (SELECT count(*) FROM ctx_proposal_judged) || ' ' || (SELECT count(*) FROM ctx_rule_proposal WHERE status = 'open')")" = "0 8" ] || fail "an unreadable answer leaves proposals unjudged"
+"$CTX" rules auto "python3 $AFAKE $T/acalls.txt" >/dev/null
+[ "$("$CTX" rules auto)" = "python3 $AFAKE $T/acalls.txt" ] || fail "ctx rules auto prints the command"
+CLAUDE_CONFIG_DIR="$AG" "$CTX" rules propose > "$T/aprop.txt" 2>&1 || fail "propose runs the automatic judge: $(cat "$T/aprop.txt")"
+grep -q '8 proposals judged automatically: 5 dismissed, 3 served' "$T/aprop.txt" || fail "the run reports what it decided: $(cat "$T/aprop.txt")"
+verdict() { "$CTX" sql "SELECT j.verdict || ' ' || p.status FROM ctx_proposal_judged j JOIN ctx_rule_proposal p ON p.id = j.id WHERE p.turn = '$1'"; }
+[ "$(verdict aut-1)" = "covered rejected" ] || fail "covered with a quote from the project's rules dismisses: $(verdict aut-1)"
+[ "$("$CTX" sql "SELECT quote FROM ctx_proposal_judged WHERE id = $(pid aut-1)")" = "HERON formatter   before every commit" ] || fail "the quote is kept"
+[ "$(verdict aut-2)" = "not rejected" ] || fail "covered with a quote found nowhere becomes not, still dismissed: $(verdict aut-2)"
+[ "$(verdict aut-3)" = "setup rejected" ] || fail "setup dismisses: $(verdict aut-3)"
+[ "$(verdict aut-4)" = "not rejected" ] || fail "not dismisses: $(verdict aut-4)"
+[ "$(verdict aut-6)" = "covered rejected" ] || fail "covered with a quote from the global instructions dismisses: $(verdict aut-6)"
+[ "$(verdict aut-5)" = "serve open" ] && [ "$(verdict aut-7)" = "serve open" ] || fail "serve leaves a proposal open"
+[ "$("$CTX" sql "SELECT model FROM ctx_proposal_judged WHERE id = $(pid aut-5)")" = "python3 $AFAKE $T/acalls.txt" ] || fail "the judgement records the command"
+python3 - "$T/acalls.txt.prompts" <<'PY' || fail "the prompt carries the proposal, the person's words, repeats, rules and global instructions"
+import sys
+prompts = open(sys.argv[1]).read().split("\n=====\n")
+egret = [p for p in prompts if "Proposal: Keep the egret changelog in plain words" in p][-1]
+assert egret.startswith("ctx auto v1\n"), egret
+assert "keep the egret changelog in plain words" in egret, egret
+assert "2026-11-14" in egret and "the egret changelog stays in plain words, as I said" in egret, egret
+assert "Run the heron formatter before every commit" in egret, egret
+assert "Never vendor third-party libraries; depend on them." in egret, egret
+assert "lean toward NOT" in egret or "lean toward not" in egret, egret
+PY
+"$CTX" rules proposed --all | grep -q 'osprey\|heron\|plover' && fail "dismissed proposals leave the list"
+(cd "$T/w/aut" && "$CTX" rules offer) > "$T/aoffer.json"
+python3 - "$T/aoffer.json" "$(pid aut-5)" "$(pid aut-7)" <<'PY' || fail "served proposals reach session start as tentative rules: $(cat "$T/aoffer.json")"
+import json, sys
+c = json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]
+assert "added automatically" in c, c
+assert "- Keep the egret changelog in plain words (said 2 times; lapses 2026-12-14; proposal %s)" % sys.argv[2] in c, c
+assert "- Name the stork fixtures by date (said once; lapses 2026-12-12; proposal %s)" % sys.argv[3] in c, c
+assert "wren" not in c, "a served proposal lapses 30 days of the archive's time after it was said"
+assert "osprey" not in c and "plover" not in c, c
+assert c.index("Run the heron formatter") < c.index("egret"), "tentative rules come after the rules in force"
+assert "ctx decided 8 proposals by itself this week (5 dismissed, 3 added as tentative rules): ctx rules activity" in c, c
+PY
+(cd "$T/w/autelse" && "$CTX" rules offer) | grep -q 'ctx decided 8 proposals by itself this week' || fail "the awareness line appears in every project"
+# The awareness line is dropped first when the rules fill the session-start text.
+for i in 1 2 3 4 5 6 7 8; do "$CTX" remember "Rule $i of a full project: $(printf 'the cormorant gauge must be read twice %.0s' 1 2 3 4 5)" --project autfull >/dev/null; done
+(cd "$T/w/autfull" && "$CTX" rules offer) > "$T/afull.json"
+python3 - "$T/afull.json" <<'PY' || fail "the awareness line fits inside the byte cap or is dropped: $(cat "$T/afull.json")"
+import json, sys
+c = json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]
+assert c.count("Rule ") == 8, c
+assert "ctx decided" not in c, c
+PY
+"$CTX" rules activity > "$T/activity.txt"
+python3 - "$T/activity.txt" "$(pid aut-1)" "$(pid aut-2)" <<'PY' || fail "ctx rules activity lists every decision with counts: $(cat "$T/activity.txt")"
+import sys
+t = open(sys.argv[1]).read()
+lines = t.splitlines()
+assert sum(1 for l in lines if l[:4] == "2026" or l[:2] == "20") >= 8, t
+cov = [l for l in lines if "  covered  aut  %s  " % sys.argv[2] in l]
+assert cov and "Run the heron formatter before every commit" in cov[0] and "An existing rule says it." in cov[0], t
+assert "HERON formatter   before every commit" in cov[0], t
+assert [l for l in lines if "  not  aut  %s  " % sys.argv[3] in l], t
+assert "8 automatic decisions in the last 7 days: 5 dismissed (2 covered, 1 setup, 2 not), 3 added as tentative rules" in t, t
+assert "ctx rules undo N" in t, t
+PY
+"$CTX" sql "UPDATE ctx_proposal_judged SET at = datetime('now', '-10 days') WHERE id = $(pid aut-4)" >/dev/null
+"$CTX" rules activity | grep -q 'osprey' && fail "activity shows the last 7 days by default"
+"$CTX" rules activity --days 30 | grep -q 'osprey' || fail "activity --days reaches further back"
+"$CTX" sql "UPDATE ctx_proposal_judged SET at = datetime('now') WHERE id = $(pid aut-4)" >/dev/null
+# Undo: a served proposal stops being served and stays open; a dismissed one reopens and is not judged again.
+"$CTX" rules undo "$(pid aut-5)" | grep -q 'no longer served' || fail "undo of a served proposal says so"
+(cd "$T/w/aut" && "$CTX" rules offer) | grep -q 'egret' && fail "an undone serve stops appearing at session start"
+(cd "$T/w/aut" && "$CTX" rules offer) | grep -q 'stork' || fail "other served proposals still appear"
+[ "$(verdict aut-5)" = "serve open" ] && [ "$("$CTX" sql "SELECT undone FROM ctx_proposal_judged WHERE id = $(pid aut-5)")" = 1 ] || fail "an undone serve stays open, marked undone"
+"$CTX" rules undo "$(pid aut-4)" | grep -q 'reopened' || fail "undo of a dismissal reopens it"
+[ "$(verdict aut-4)" = "not open" ] || fail "an undone dismissal is open again"
+"$CTX" rules proposed --all | grep -q 'osprey' || fail "a reopened proposal waits for the person again"
+"$CTX" rules activity | grep 'osprey' | grep -q '(undone)' || fail "activity marks undone decisions"
+if "$CTX" rules undo "$(pid aut-4)" 2>/dev/null >/dev/null; then fail "a decision is undone once"; fi
+if "$CTX" rules undo 999999 2>"$T/aundo.err" >/dev/null; then fail "undo refuses an id with no automatic decision"; fi
+grep -q 'no automatic decision' "$T/aundo.err" || fail "the refusal says why: $(cat "$T/aundo.err")"
+N=$(grep -c '^ctx auto v1$' "$T/acalls.txt")
+CLAUDE_CONFIG_DIR="$AG" "$CTX" rules propose >/dev/null
+[ "$(grep -c '^ctx auto v1$' "$T/acalls.txt")" = "$N" ] || fail "an undone decision is never judged again"
+# At most 20 proposals a run; the rest wait for the next.
+"$CTX" sql "INSERT INTO ctx_rule_proposal(turn, project, at, text) WITH RECURSIVE n(v) AS (SELECT 1 UNION ALL SELECT v + 1 FROM n WHERE v < 25) SELECT 'aut-bulk-' || v, 'aut', '2026-11-12T09:00:00Z', 'Bulk proposal ' || v FROM n" >/dev/null
+CLAUDE_CONFIG_DIR="$AG" "$CTX" rules propose >/dev/null
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_proposal_judged j JOIN ctx_rule_proposal p ON p.id = j.id WHERE p.turn LIKE 'aut-bulk-%'")" = 20 ] || fail "at most 20 proposals are judged in one run"
+CLAUDE_CONFIG_DIR="$AG" "$CTX" rules propose >/dev/null
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_proposal_judged j JOIN ctx_rule_proposal p ON p.id = j.id WHERE p.turn LIKE 'aut-bulk-%'")" = 25 ] || fail "the rest are judged on the next run"
+# The page lists the week's automatic decisions with the command that undoes each.
+"$CTX" page >/dev/null && python3 - "$CTX_DB.page.html" "$(pid aut-7)" <<'PY' || fail "the page lists automatic decisions"
+import json, re, sys
+page = open(sys.argv[1], encoding="utf-8").read()
+D = json.loads(re.search(r"var D = (\{.*?\});\n  var SEC", page, re.S).group(1))
+stork = [a for a in D["auto"] if a["id"] == int(sys.argv[2])]
+assert stork and stork[0]["v"] == "serve" and stork[0]["t"] == "Name the stork fixtures by date" and stork[0]["why"], D["auto"][:3]
+assert len(D["auto"]) == 33, len(D["auto"])
+assert "ctx rules undo " in page and "s-auto" in page
+PY
+# Judgements are paid for: a rebuild keeps them.
+"$CTX" rebuild >/dev/null 2>&1
+[ "$("$CTX" sql 'SELECT count(*) FROM ctx_proposal_judged')" = 33 ] || fail "a rebuild keeps judgements"
+(cd "$T/w/aut" && "$CTX" rules offer) | grep -q 'stork' || fail "a served proposal survives a rebuild"
+"$CTX" rules auto --off | grep -qx none || fail "ctx rules auto --off clears the command"
+[ "$("$CTX" rules auto)" = none ] || fail "the command is cleared"
+"$CTX" rules classifier --off >/dev/null
 
 # Stats count what agents really ran: searches, misses, reads and skill loads, not mentions.
 export CTX_DB="$T/stats.sqlite"
@@ -2026,7 +2185,7 @@ CLAUDE_CONFIG_DIR="$XC" "$CTX" scan >/dev/null
 "$CTX" forget 5e550000-0000-0000-0000-00000000000 2>/dev/null && fail "an ambiguous prefix is refused"
 export CTX_DB="$T/rebuild.sqlite"
 "$CTX" init >/dev/null
-[ "$("$CTX" sql "PRAGMA user_version")" = 13 ] || fail "a new file is at the current version"
+[ "$("$CTX" sql "PRAGMA user_version")" = 14 ] || fail "a new file is at the current version"
 [ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 7 ] || fail "derived version recorded"
 printf '{"uuid":"rb-1","timestamp":"2026-09-01T10:00:00Z","cwd":"/w/rb","message":{"role":"user","content":"the capybara rollout"}}\n{"uuid":"rb-2","timestamp":"2026-09-01T10:00:05Z","cwd":"/w/rb","message":{"role":"assistant","content":"rolled out the capybara"}}\n' > "$T/ab12cd99-rb.jsonl"
 "$CTX" archive "$T/ab12cd99-rb.jsonl" >/dev/null
@@ -2048,7 +2207,7 @@ grep -q 'rebuilding it once' "$T/rb.err" || fail "an old index is rebuilt on ope
 "$CTX" sql "DROP TABLE ctx_meta" >/dev/null; "$CTX" sql "PRAGMA user_version = 1" >/dev/null
 "$CTX" search --all capybara 2>"$T/rb3.err" | grep -q capybara || fail "an unversioned file still works"
 [ -s "$T/rb3.err" ] && fail "an unversioned file is upgraded without a rebuild"
-[ "$("$CTX" sql "PRAGMA user_version")" = 13 ] || fail "and is marked current"
+[ "$("$CTX" sql "PRAGMA user_version")" = 14 ] || fail "and is marked current"
 
 # The skill eval harness works end to end with a stand-in for the model.
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"

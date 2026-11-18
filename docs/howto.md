@@ -424,15 +424,16 @@ ctx turn turn:UUID                  # read that turn again later, by the id a ru
 A proposal waits 30 days from when it was made. One you have not accepted or rejected by
 then leaves the list, the session-start line and the decisions page, and the list says how
 many expired; `ctx rules accept N` still takes it by number. A queue nobody reads helps no
-one, and a model cannot decide for you yet: on 22 proposals you had decided, Claude Sonnet
-and Haiku agreed with you about 72% of the time.
+one. A model alone agrees with you only so often: on 22 proposals you had decided, Claude
+Sonnet and Haiku agreed with you about 72% of the time, which is why the automatic judge
+below leans toward dismissing.
 
 A proposal you say again, in another session, becomes a tentative rule. `ctx rules`
 lists it after the rules in force, marked `tentative` with how many times you said it
-and when it lapses; `ctx rules proposed` marks it too. These are unreviewed candidates,
-not instructions: automatic session-start delivery is disabled. An independent audit
-found that promotion could drop conditions and confuse related topics with repeated
-instructions. Repeat evidence is kept for further benchmarking. It lapses 30 days after
+and when it lapses; `ctx rules proposed` marks it too. A repeat alone is evidence, not
+an instruction: it reaches session start only if the automatic judge below chose to serve
+it. An independent audit found that promotion could drop conditions and confuse related
+topics with repeated instructions. It lapses 30 days after
 you last said it, counted in the archive's own time, so a machine left off lapses
 nothing. Only accepting it makes it permanent; a rejected one is never tentative. The
 classifier does the checking during `ctx rules propose`: it is shown each open proposal
@@ -440,6 +441,43 @@ with the ten closest turns from your other sessions and says which give the same
 instruction. On the author's archive, 47 of 84 open proposals had been said again. Of
 the 6 rejected, 5 had been said again, all last more than 30 days before; of the 40
 said again within 30 days, none was rejected. A repeat means true now, not true forever.
+
+In practice nobody reviews a queue of proposals, so ctx can decide them for you. Set an
+automatic judge, again any command that reads a prompt on stdin, and every `ctx rules
+propose` (the hourly scan included) ends by having it decide up to 20 open proposals, one
+call each. It is shown the proposal, your own words, the times you said it again, the
+project's rules in force and your global instructions (`~/.claude/CLAUDE.md`, or the one
+under `$CLAUDE_CONFIG_DIR`, first 12 KB), and asked to lean toward not serving when unsure:
+
+- **serve**: a lasting instruction worth adding. It stays open and is given to agents at
+  session start as a tentative rule, after the rules in force, until 30 days of the
+  archive's own time after you last said it.
+- **covered**: already said by a rule or your global instructions. It counts only with a
+  quote ctx finds in the text it sent; a quote found nowhere makes it **not**.
+- **setup**: about how one session or period is run, such as which model is running.
+- **not**: not an instruction, or distorted as a rule.
+
+Everything but serve rejects the proposal, so it is never proposed again: the judge
+deletes far more than it adds. Nothing it does is hidden. Session start says, in one line,
+how many proposals it decided this week; `ctx rules activity` lists each decision with
+its reason and the quote; the decisions page (`ctx page`) has a section for the week. Any
+decision is reversed with `ctx rules undo N`: a dismissed proposal goes back to waiting for
+you, a served one stops being served, and neither is judged again.
+
+```sh
+ctx rules auto "claude -p --model opus --tools ''"   # set it; with none, nothing is decided for you
+ctx rules auto                 # print it
+ctx rules activity [--days N]  # what it decided, newest first; 7 days by default
+ctx rules undo 12              # reverse one decision
+ctx rules auto --off           # stop
+```
+
+Why it leans to delete: on 56 proposals the author labelled, tentative rules as first built
+(served on repeats alone) were ones the author would keep 68% of the time, against a bar of
+90%. Opus, given the global instructions and the project's rules, served 16 of the 56, of
+which the author would keep 12, and dismissed the rest, mostly as already covered. Adding
+stays imperfect, so the judge was tuned to delete, and every decision is visible and
+reversible ([benchmarks](benchmarks.md), "A model judging rule proposals for the person").
 
 `eval/rules_bench.py --classify "CMD"` scores a classifier against a labelled set of
 your turns. On 1,000 of them, Haiku found 84% of the standing instructions at 76%
