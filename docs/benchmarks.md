@@ -41,6 +41,7 @@ This page lists what ctx has been measured to do. Every figure comes from a resu
 | Finding stale memory notes | Failed its bar | Notes rarely go stale because a later session contradicts them; they go stale because the work stops, which no transcript says. Silence catches most of those for nothing, so ctx fades notes of silent projects. It misses the bar on true notes, but a faded note returns with its project's next session. |
 | Duplicate memory notes | No bar | Agents rarely write the same note twice, so ctx does not merge notes. |
 | Instructions said more than once | No bar | A repeat means an instruction is true now, not true forever: 5 of the 6 rejected ones had been repeated, all months earlier. So ctx serves a repeated proposal as a tentative rule that lapses 30 days after it was last said, and only an accepted one is kept. |
+| A model judging rule proposals for the person | Failed its bar | Automatic adding stays imperfect, so ctx's automatic judge leans toward deleting: most proposals it dismisses, often as already covered, and every decision, kept or dismissed, is shown at session start, in ctx rules activity and on the decisions page, and reversible with ctx rules undo. |
 | Holding back a question the archive may answer | Failed its bar | The idea failed clearly. Three in four firings were irrelevant and one in twelve pointed at a conflicting answer, so the hook was removed before it shipped. |
 | Matching answers to the questions agents asked | Passed its bar | The record of questions and answers is consistent on a real archive. This checks that answers are attached to the right question, not that they were read correctly word for word. |
 | Hooks and commands on a real archive | Passed its bar | Every hook takes 4 to 30 ms at the median and none came near the bar; the slowest single run was the compaction brief at 62 ms. The brief used to take 0.4 to 1.2 s on its first run: to find the last landing the person reported it read the text of every typed turn in the archive. It now finds the session's own documents first and reads only their turns. The gate adds about 5 ms to a search or shell command, most of which is the cost of starting a process. The two listing commands are typed by a person, not run by a hook, and are slower. |
@@ -812,6 +813,32 @@ Measured 2026-11-17; good until 2027-02-15.
 - method: Claude Haiku judged meaning, not wording, against the 10 closest turns by word search in other sessions
 
 [Result file](../bench/results/rule-repeats.json)
+
+### A model judging rule proposals for the person
+
+Whether a model can decide rule proposals on the person's behalf, since in practice nobody reviews the queue: 84 proposals were waiting.
+
+- **Compared with:** the person's labels
+- **Bar:** at least 90% of served rules kept. **Failed.**
+- **What it means:** Automatic adding stays imperfect, so ctx's automatic judge leans toward deleting: most proposals it dismisses, often as already covered, and every decision, kept or dismissed, is shown at session start, in ctx rules activity and on the decisions page, and reversible with ctx rules undo.
+
+| Measure | Result |
+| --- | --- |
+| Tentative rules as built, kept by the person | 38 of 56 (68%) (served on repeats alone, with no model deciding) |
+| Haiku, no context: served rules the person keeps | 75% |
+| Sonnet, no context: served rules the person keeps | 70% |
+| Opus with global instructions and project rules: agrees with the person | 26 of 56 |
+| Opus with context: served, and kept by the person | 16 served, 12 kept (75%) |
+| Opus with context: dismissed as already covered, though the person called them true | 19 |
+
+Measured 2026-11-18; good until 2027-02-16.
+
+- sample: 56 rule proposals from the author's archive, each labelled by the person as one they would keep or not
+- source: the author's own session archive; only counts leave it
+- judges: Haiku and Sonnet with the proposal alone; Opus also given the person's global instructions and the project's rules in force
+- verdicts: serve, covered (already said by a rule or the global instructions), setup (about one session or period) or not
+
+[Result file](../bench/results/rule-judge-exam.json)
 
 ## Records
 

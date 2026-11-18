@@ -109,6 +109,7 @@ section.q { display:flex; flex-direction:column; gap:10px; }
 .legend .sw { display:inline-flex; gap:2px; vertical-align:middle; margin-right:4px; } .legend .sw i { width:11px; height:11px; border-radius:2px; background:var(--accent); display:block; }
 .more { border:0; background:transparent; color:var(--accent); padding:8px 12px; width:100%; text-align:left; border-top:1px solid var(--line); }
 .empty { padding:14px 12px; color:var(--muted); }
+.undo { font-family:var(--font-mono); font-size:.8rem; white-space:nowrap; color:var(--fg); }
 
 .foot { position:fixed; left:0; right:0; bottom:0; background:var(--surface); border-top:1px solid var(--line); }
 .foot .in { max-width:1080px; margin:0 auto; padding:9px 16px; display:flex; flex-wrap:wrap; gap:8px 18px; align-items:center; }
@@ -138,6 +139,7 @@ section.q { display:flex; flex-direction:column; gap:10px; }
 <section class="outcome" id="outcome" aria-live="polite"></section>
 
 <section class="q" id="s-rules"></section>
+<section class="q" id="s-auto"></section>
 <section class="q" id="s-conf"></section>
 <section class="q" id="s-held"></section>
 <section class="q" id="s-hooks"></section>
@@ -152,6 +154,7 @@ section.q { display:flex; flex-direction:column; gap:10px; }
   <h2>How to read this</h2>
   <ul>
     <li><b>Proposed rules</b> are sentences ctx's classifier lifted from things you typed, shown with your own words. Accepting one makes it a standing rule offered to agents at session start. <span data-t="rules"></span> wait for you now; you have accepted <span data-t="accepted"></span> and rejected <span data-t="rejected"></span> so far.</li>
+    <li><b>Decided by ctx</b> lists what ctx's automatic judge (<code>ctx rules auto CMD</code>) did with proposed rules in the last seven days, leaning toward dismissing them. Each row names the command that reverses it; <code>ctx rules activity</code> shows the same in a terminal.</li>
     <li><b>Document conflicts</b> are passages in your indexed documents that a judge found to disagree, each kept only with words quoted from both. <span data-t="pairs"></span> pairs of passages make <span data-t="conf"></span> conflicts. Nothing was checked against the code, and the list is never complete.</li>
     <li><b>What ctx holds</b> is every project with archived sessions: <span data-t="held"></span> projects, <span data-t="turns"></span> turns, about <span data-t="mb"></span> MB of text. "Searched" counts <code>ctx search</code> and <code>ctx turn</code> calls made in that project's own sessions in the last 30 days. It misses reads made from another project, and a zero is not proof of no value: an archive is read when something goes wrong.</li>
     <li><b>Hooks</b> are what ctx runs on its own. Runs and times are the last seven days of its call log, and counts start when the log did. "What it did" is given only where ctx records it.</li>
@@ -419,6 +422,22 @@ section.q { display:flex; flex-direction:column; gap:10px; }
     var fail = function () { var pre = document.getElementById("out"), range = document.createRange(); range.selectNodeContents(pre); var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range); document.getElementById("cmds").scrollIntoView({ block: "start" }); b.textContent = "Selected: press copy"; };
     try { navigator.clipboard.writeText(text).then(function () { b.textContent = "Copied"; setTimeout(function () { b.textContent = "Copy choices"; }, 1600); }, fail); } catch (err) { fail(); }
   });
+  function auto() {
+    var host = document.getElementById("s-auto"), A = D.auto, gone = A.filter(function (a) { return a.v !== "serve"; }).length;
+    var said = { serve: "Added as a tentative rule", covered: "Dismissed: already covered", setup: "Dismissed: about one session or period", not: "Dismissed: not a standing instruction" };
+    host.appendChild(el("div", "qhead", '<h2>Decided by ctx this week</h2><span class="count">' + A.length + ' decision' + (A.length === 1 ? '' : 's') + ' · ' + gone + ' dismissed · ' + (A.length - gone) + ' added</span>'));
+    host.appendChild(el("p", "note", "Proposed rules ctx's automatic judge decided without asking you. It leans toward dismissing: a dismissed proposal is not raised again, and an added one is given to agents as a tentative rule until you stop saying it. Run the command beside a row to reverse it."));
+    var list = el("div", "list");
+    if (!A.length) list.appendChild(el("div", "empty", "ctx decided nothing by itself in the last seven days."));
+    A.forEach(function (a) {
+      list.appendChild(el("div", "row" + (a.u ? " done-no" : ""),
+        '<div class="main"><span class="title">' + esc(a.t) + '</span><span class="meta">#' + a.id + ' · ' + esc(a.p) + ' · ' + esc(ago(a.d)) + '</span></div>' +
+        '<div class="ev"><span class="why"><b>' + esc(said[a.v] || a.v) + ':</b> ' + esc(a.why) + '</span>' + (a.q ? '<span>Covered by: <q>' + esc(a.q) + '</q></span>' : '') + '</div>' +
+        (a.u ? '<span class="note">undone</span>' : '<code class="undo">ctx rules undo ' + a.id + '</code>')));
+    });
+    host.appendChild(list);
+  }
+  auto();
   s_held = SEC[2];
   var T = D.tot, lead = T.rules + (T.rules === 1 ? " proposed rule" : " proposed rules") + " and " + T.conf + (T.conf === 1 ? " document conflict" : " document conflicts") + " waiting for you.";
   document.getElementById("kicker").textContent = "ctx · decisions · your archive as of " + nice(T.today);

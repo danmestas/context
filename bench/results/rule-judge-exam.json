@@ -1,0 +1,48 @@
+{
+ "name": "rule-judge-exam",
+ "title": "A model judging rule proposals for the person",
+ "section": "Rules",
+ "order": 70,
+ "date": "2026-11-18",
+ "good_until": "2027-02-16",
+ "commit": "",
+ "command": "",
+ "conditions": {
+  "sample": "56 rule proposals from the author's archive, each labelled by the person as one they would keep or not",
+  "source": "the author's own session archive; only counts leave it",
+  "judges": "Haiku and Sonnet with the proposal alone; Opus also given the person's global instructions and the project's rules in force",
+  "verdicts": "serve, covered (already said by a rule or the global instructions), setup (about one session or period) or not"
+ },
+ "summary": "Whether a model can decide rule proposals on the person's behalf, since in practice nobody reviews the queue: 84 proposals were waiting.",
+ "metrics": [
+  {
+   "label": "Tentative rules as built, kept by the person",
+   "value": "38 of 56 (68%)",
+   "note": "served on repeats alone, with no model deciding"
+  },
+  {
+   "label": "Haiku, no context: served rules the person keeps",
+   "value": "75%"
+  },
+  {
+   "label": "Sonnet, no context: served rules the person keeps",
+   "value": "70%"
+  },
+  {
+   "label": "Opus with global instructions and project rules: agrees with the person",
+   "value": "26 of 56"
+  },
+  {
+   "label": "Opus with context: served, and kept by the person",
+   "value": "16 served, 12 kept (75%)"
+  },
+  {
+   "label": "Opus with context: dismissed as already covered, though the person called them true",
+   "value": "19"
+  }
+ ],
+ "bar": "at least 90% of served rules kept",
+ "verdict": "fail",
+ "baseline": "the person's labels",
+ "meaning": "Automatic adding stays imperfect, so ctx's automatic judge leans toward deleting: most proposals it dismisses, often as already covered, and every decision, kept or dismissed, is shown at session start, in ctx rules activity and on the decisions page, and reversible with ctx rules undo."
+}
