@@ -902,12 +902,22 @@ puts them on one page, with the evidence beside each, and `ctx page apply` does
 what you chose.
 
 ```sh
-ctx page                        # writes <database>.page.html and prints its path
+ctx page                        # the current project's page: <database>.page-NAME.html
+ctx page --all                  # everything, in <database>.page.html
+ctx page --project NAME         # another project's page, from anywhere
 ctx page --open                 # the same, then opens it in your browser
 ctx page --out decisions.html   # or somewhere else
 ctx page apply choices.txt      # shows what the list would do; changes nothing
 ctx page apply choices.txt --yes
 ```
+
+Run inside a project's folder, `ctx page` shows only that project: its rule
+proposals, document conflicts, automatic decisions and its own entry under held
+projects. The hooks run on the whole machine, so they appear only in the page for
+everything, and a project page points to `ctx page --all` instead. Outside any
+project `ctx page` shows everything, as `--all` does. The page names its project
+in the line above the title, and its numbers and top sentence count that project
+only.
 
 The page is one file with no network use and no model calls, and it is private to
 you (mode 0600). Open it in a browser. The top line says how many things need you,

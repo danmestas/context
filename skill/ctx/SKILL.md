@@ -73,8 +73,9 @@ they said, places where a project's documents disagree, what it holds for each
 project, and the hooks it runs.
 
 - When the user asks what ctx is waiting on, what needs their decision, or to see
-  their ctx page, run `ctx page --open`. It writes one page and opens it in their
-  browser. It changes nothing. Say that it is open; do not summarise it for them
+  their ctx page, run `ctx page --open`. It writes the page for the current
+  project and opens it in their browser; `ctx page --all --open` opens the page
+  for every project. It changes nothing. Say that it is open; do not summarise it for them
   unless they ask.
 - The page gives them a list of their choices, in lines such as `accept rule 12`
   or `stop archiving myproj`. These are not commands. When they hand you that

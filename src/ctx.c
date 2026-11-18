@@ -9065,7 +9065,7 @@ static int held_by_turns(const void *a, const void *b) {
 
 /* Reads the archive's projects. Turns come from the speaker index alone, so no turn's text is read;
  * reads are found by the full-text index, which narrows 500,000 turns to the few that mention a ctx call. */
-static void held_load(sqlite3 *db, const char *this_week, held_set *h) {
+static void held_load(sqlite3 *db, const char *this_week, const char *project, held_set *h) {
   typedef struct {
     size_t row; /* an index: the array of rows moves as it grows */
     char week[11];
@@ -9074,7 +9074,8 @@ static void held_load(sqlite3 *db, const char *this_week, held_set *h) {
   cell *cells = NULL;
   size_t nc = 0;
   sqlite3_stmt *q = db_prepare(db, "SELECT project, date(at, '-6 days', 'weekday 1'), count(*), min(substr(at, 1, 10)), max(substr(at, 1, 10)),"
-                                   " sum(at >= date('now', '-30 days')) FROM ctx_chunk WHERE at IS NOT NULL GROUP BY 1, 2");
+                                   " sum(at >= date('now', '-30 days')) FROM ctx_chunk WHERE at IS NOT NULL AND (?1 IS NULL OR project = ?1) GROUP BY 1, 2");
+  if (project) sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
   while (sqlite3_step(q) == SQLITE_ROW) {
     if (!sqlite3_column_text(q, 0) || !sqlite3_column_text(q, 1)) continue;
     held_row *x = held_find(h, (const char *)sqlite3_column_text(q, 0), 1);
@@ -9174,11 +9175,12 @@ static int proposal_order(const void *a, const void *b) {
 /* The open proposals the automatic judge has not decided (or whose decision the person undid), each with the person's own words, how often they said much the same again,
  * and a suggestion by fixed rules. Writes the JSON array; returns how many proposals there were
  * and, in *repeated, how many were said again. */
-static long page_rules(sqlite3 *db, held_set *held, buf *out, long *repeated) {
+static long page_rules(sqlite3 *db, held_set *held, const char *project, buf *out, long *repeated) {
   proposal *p = NULL;
   size_t n = 0;
   sqlite3_stmt *q = db_prepare(db, "SELECT p.id, p.project, substr(coalesce(p.at, ''), 1, 10), p.text, c.body, p.turn FROM ctx_rule_proposal p"
-                                   " LEFT JOIN ctx_chunk c ON c.turn = p.turn WHERE " PROPOSAL_LIVE("p.") " AND " PROPOSAL_UNJUDGED("p.") " ORDER BY p.id");
+                                   " LEFT JOIN ctx_chunk c ON c.turn = p.turn WHERE " PROPOSAL_LIVE("p.") " AND " PROPOSAL_UNJUDGED("p.") " AND (?1 IS NULL OR p.project = ?1) ORDER BY p.id");
+  if (project) sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
   while (sqlite3_step(q) == SQLITE_ROW) {
     p = realloc(p, (n + 1) * sizeof *p);
     if (!p) die("out of memory");
@@ -9351,9 +9353,9 @@ static const char *base_name(const char *path) {
 
 /* The open conflicts, grouped as ctx docs conflicts groups them, each passage once with the date its
  * file was last modified on disk. Nothing is dropped here: a pair whose words left its file is only left out. */
-static void page_conf(sqlite3 *db, buf *out, conf_tot *tot) {
+static void page_conf(sqlite3 *db, const char *project, buf *out, conf_tot *tot) {
   size_t n = 0, nd = 0, ne = 0;
-  conflict_row *r = conflicts_load(db, NULL, 0, &n);
+  conflict_row *r = conflicts_load(db, project, 0, &n);
   char **dirs = NULL; /* registered directories, longest first, so a nested one wins */
   sqlite3_stmt *q = db_prepare(db, "SELECT dir FROM ctx_docs_dir ORDER BY length(dir) DESC");
   while (sqlite3_step(q) == SQLITE_ROW) {
@@ -9580,7 +9582,16 @@ static void page_hooks(sqlite3 *db, const held_set *held, long conflicts, buf *o
 }
 
 /* Every number and list the page's script reads, as one JSON object. */
-static void page_data(sqlite3 *db, buf *out) {
+static long page_count(sqlite3 *db, const char *sql, const char *project) {
+  sqlite3_stmt *q = db_prepare(db, sql);
+  if (project) sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
+  long n = sqlite3_step(q) == SQLITE_ROW ? (long)sqlite3_column_int64(q, 0) : 0;
+  sqlite3_finalize(q);
+  return n;
+}
+
+/* project NULL is every project, with the machine-wide hooks; otherwise only that project's. */
+static void page_data(sqlite3 *db, const char *project, buf *out) {
   char today[11], this_week[11];
   sqlite3_stmt *q = db_prepare(db, "SELECT date('now'), date('now', '-6 days', 'weekday 1')");
   if (sqlite3_step(q) != SQLITE_ROW) die("%s", sqlite3_errmsg(db));
@@ -9588,15 +9599,15 @@ static void page_data(sqlite3 *db, buf *out) {
   snprintf(this_week, sizeof this_week, "%s", (const char *)sqlite3_column_text(q, 1));
   sqlite3_finalize(q);
   held_set held = {0};
-  held_load(db, this_week, &held);
+  held_load(db, this_week, project, &held);
   buf rules = {0}, conf = {0}, hooks = {0};
-  long repeated = 0, nrules = page_rules(db, &held, &rules, &repeated);
+  long repeated = 0, nrules = page_rules(db, &held, project, &rules, &repeated);
   conf_tot ct = {0};
-  page_conf(db, &conf, &ct);
-  page_hooks(db, &held, ct.groups, &hooks);
-  long accepted = db_int(db, "SELECT count(*) FROM ctx_rule_proposal WHERE status = 'accepted'");
-  long rejected = db_int(db, "SELECT count(*) FROM ctx_rule_proposal WHERE status = 'rejected'" /* by the person, not the automatic judge */
-                             " AND id NOT IN (SELECT id FROM ctx_proposal_judged WHERE verdict <> 'serve' AND undone = 0)");
+  page_conf(db, project, &conf, &ct);
+  if (!project) page_hooks(db, &held, ct.groups, &hooks);
+  long accepted = page_count(db, "SELECT count(*) FROM ctx_rule_proposal WHERE status = 'accepted' AND (?1 IS NULL OR project = ?1)", project);
+  long rejected = page_count(db, "SELECT count(*) FROM ctx_rule_proposal WHERE status = 'rejected'" /* by the person, not the automatic judge */
+                                 " AND id NOT IN (SELECT id FROM ctx_proposal_judged WHERE verdict <> 'serve' AND undone = 0) AND (?1 IS NULL OR project = ?1)", project);
   buf_str(out, "{\"rules\":");
   buf_str(out, rules.p ? rules.p : "[]");
   buf_str(out, ",\"auto\":[");
@@ -9604,7 +9615,8 @@ static void page_data(sqlite3 *db, buf *out) {
                      " coalesce((SELECT c.body FROM ctx_chunk c WHERE c.turn = p.turn AND c.heading = 'user' LIMIT 1), ''),"
                      " (SELECT json_group_array(d) FROM (SELECT substr(coalesce(s.at, ''), 1, 10) AS d FROM ctx_proposal_said s WHERE s.id = p.id ORDER BY s.at))"
                      " FROM ctx_proposal_judged j JOIN ctx_rule_proposal p ON p.id = j.id"
-                     " WHERE j.undone = 0 AND j.at >= datetime('now', '-" AUTO_DAYS " days') ORDER BY j.at DESC, j.id DESC");
+                     " WHERE j.undone = 0 AND j.at >= datetime('now', '-" AUTO_DAYS " days') AND (?1 IS NULL OR p.project = ?1) ORDER BY j.at DESC, j.id DESC");
+  if (project) sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
   for (int k = 0; sqlite3_step(q) == SQLITE_ROW; k++) {
     char *t = squash((const char *)sqlite3_column_text(q, 4), 300);
     buf_fmt(out, "%s{\"id\":%lld,\"d\":", k ? "," : "", (long long)sqlite3_column_int64(q, 0));
@@ -9691,6 +9703,8 @@ static void page_data(sqlite3 *db, buf *out) {
   js_str(out, head);
   buf_str(out, ",\"batch\":");
   js_str(out, batch);
+  buf_str(out, ",\"scope\":");
+  js_str(out, project ? project : "");
   buf_str(out, "}");
   free(judge);
   free(rules.p);
@@ -9699,25 +9713,55 @@ static void page_data(sqlite3 *db, buf *out) {
   held_free(&held);
 }
 
-/* ctx page [--out FILE]: writes the page to FILE, by default beside the database, and prints where. */
+/* Whether the archive holds anything under this name: a folder that is no project of ours gets the whole page. */
+static int page_project_known(sqlite3 *db, const char *project) {
+  return page_count(db, "SELECT EXISTS (SELECT 1 FROM ctx_project WHERE project = ?1) OR EXISTS (SELECT 1 FROM ctx_chunk WHERE project = ?1)"
+                        " OR EXISTS (SELECT 1 FROM ctx_rule_proposal WHERE project = ?1) OR EXISTS (SELECT 1 FROM ctx_doc_conflict WHERE project = ?1)", project) > 0;
+}
+
+/* ctx page [--all | --project NAME] [--open] [--out FILE]: writes the page to FILE, by default beside the
+ * database, and prints where. Inside a known project's folder it is that project's page. */
 static int cmd_page_write(int argc, char **argv) {
-  const char *out = NULL;
-  int show = 0;
+  const char *out = NULL, *named = NULL;
+  int show = 0, all = 0;
   for (int i = 0; i < argc; i++) {
     if (!strcmp(argv[i], "--out") && i + 1 < argc && !out) out = argv[++i];
+    else if (!strcmp(argv[i], "--project") && i + 1 < argc && !named) named = argv[++i];
+    else if (!strcmp(argv[i], "--all")) all = 1;
     else if (!strcmp(argv[i], "--open")) show = 1;
-    else die("usage: ctx page [--open] [--out FILE] | apply [FILE] [--yes]");
+    else die("usage: ctx page [--all | --project NAME] [--open] [--out FILE] | apply [FILE] [--yes]");
   }
+  if (all && named) die("ctx page: --all and --project do not go together");
   sqlite3 *db = ctx_open();
+  char *project = named ? dup_text((const unsigned char *)named) : NULL;
+  if (!named && !all) {
+    project = current_project(db);
+    if (project && !page_project_known(db, project)) {
+      free(project);
+      project = NULL;
+    }
+  }
   buf data = {0}, html = {0};
-  page_data(db, &data);
+  page_data(db, project, &data);
   sqlite3_close(db);
   const char *mark = strstr(ctx_page, "/*DATA*/");
   if (!mark) die("the page has no place for its data");
   buf_add(&html, ctx_page, (size_t)(mark - ctx_page));
   buf_add(&html, data.p, data.n);
   buf_str(&html, mark + strlen("/*DATA*/"));
-  char *dflt = out ? NULL : sidecar(".page.html");
+  char *dflt = NULL;
+  if (!out) {
+    char suffix[300] = ".page.html";
+    if (project) { /* a file name keeps letters, digits and . _ - only, so the name cannot reach another folder */
+      char safe[200];
+      size_t k = 0;
+      for (const char *c = project; *c && k + 1 < sizeof safe; c++, k++)
+        safe[k] = isalnum((unsigned char)*c) || *c == '.' || *c == '_' || *c == '-' ? *c : '_';
+      safe[k] = 0;
+      snprintf(suffix, sizeof suffix, ".page-%s.html", k ? safe : "project");
+    }
+    dflt = sidecar(suffix);
+  }
   const char *path = out ? out : dflt;
   char tmp[4400];
   snprintf(tmp, sizeof tmp, "%s.tmp%d", path, (int)getpid());
@@ -9750,6 +9794,7 @@ static int cmd_page_write(int argc, char **argv) {
     }
   }
   free(dflt);
+  free(project);
   free(data.p);
   free(html.p);
   return rc;
