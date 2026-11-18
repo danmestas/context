@@ -936,15 +936,35 @@ CLAUDE_CONFIG_DIR="$AG" "$CTX" rules propose >/dev/null
 CLAUDE_CONFIG_DIR="$AG" "$CTX" rules propose >/dev/null
 [ "$("$CTX" sql "SELECT count(*) FROM ctx_proposal_judged j JOIN ctx_rule_proposal p ON p.id = j.id WHERE p.turn LIKE 'aut-bulk-%'")" = 25 ] || fail "the rest are judged on the next run"
 # The page lists the week's automatic decisions with the command that undoes each.
-"$CTX" page >/dev/null && python3 - "$CTX_DB.page.html" "$(pid aut-7)" <<'PY' || fail "the page lists automatic decisions"
+"$CTX" page >/dev/null && python3 - "$CTX_DB.page.html" "$(pid aut-7)" "$(pid aut-4)" "$(pid aut-5)" "$(pid aut-1)" <<'PY' || fail "the page lists automatic decisions"
 import json, re, sys
 page = open(sys.argv[1], encoding="utf-8").read()
 D = json.loads(re.search(r"var D = (\{.*?\});\n  var SEC", page, re.S).group(1))
 stork = [a for a in D["auto"] if a["id"] == int(sys.argv[2])]
 assert stork and stork[0]["v"] == "serve" and stork[0]["t"] == "Name the stork fixtures by date" and stork[0]["why"], D["auto"][:3]
-assert len(D["auto"]) == 33, len(D["auto"])
-assert "ctx rules undo " in page and "s-auto" in page
+assert stork[0]["said"] == "name the stork fixtures by date" and stork[0]["rep"] == [], "an added rule carries what the person typed: %r" % stork[0]
+egret = [a for a in D["auto"] if a["t"] == "Keep the egret changelog in plain words"]
+assert not egret, "an undone decision is not listed"
+assert len(D["auto"]) == 31, "the week's decisions, less the two undone: %d" % len(D["auto"])
+assert all(a["id"] not in (int(sys.argv[3]), int(sys.argv[4])) for a in D["auto"]), "an undone decision is not listed"
+v = {a["v"] for a in D["auto"]}
+assert {"serve", "covered", "setup", "not"} <= v, "added and every dismissed group: %r" % v
+cov = [a for a in D["auto"] if a["id"] == int(sys.argv[5])][0]
+assert cov["v"] == "covered" and cov["q"] == "HERON formatter   before every commit", "a covered dismissal quotes the rule: %r" % cov
+rules = {r["id"] for r in D["rules"]}
+assert not rules & {a["id"] for a in D["auto"]}, "a proposal the judge decided is never offered as a decision: %r" % rules
+assert int(sys.argv[3]) in rules and int(sys.argv[4]) in rules, "an undone decision is the person's again: %r" % rules
+assert D["judge"] is True
+assert ">Decided for you this week<" in page and "undo decision " in page
 PY
+WREN=$(pid aut-9)
+printf 'undo decision %s    # Put the wren docs in the wiki\n' "$WREN" > "$T/undo.plan"
+"$CTX" page apply "$T/undo.plan" > "$T/undo.txt" || fail "apply shows an undo plan: $(cat "$T/undo.txt")"
+grep -q "^undo the automatic decision on proposal $WREN: Put the wren docs in the wiki (added)$" "$T/undo.txt" && grep -q '^1 action: 1 decision to undo$' "$T/undo.txt" || fail "the plan names the decision and counts it: $(cat "$T/undo.txt")"
+[ "$("$CTX" sql "SELECT undone FROM ctx_proposal_judged WHERE id = $WREN")" = 0 ] || fail "without --yes no decision is undone"
+"$CTX" page apply --yes "$T/undo.plan" > "$T/undo.txt" || fail "apply --yes undoes the decision: $(cat "$T/undo.txt")"
+grep -q 'no longer served' "$T/undo.txt" && tail -1 "$T/undo.txt" | grep -q '^1 of 1 actions done$' || fail "the undo runs as ctx rules undo: $(cat "$T/undo.txt")"
+[ "$("$CTX" sql "SELECT undone FROM ctx_proposal_judged WHERE id = $WREN")" = 1 ] || fail "the decision is marked undone"
 # Judgements are paid for: a rebuild keeps them.
 "$CTX" rebuild >/dev/null 2>&1
 [ "$("$CTX" sql 'SELECT count(*) FROM ctx_proposal_judged')" = 33 ] || fail "a rebuild keeps judgements"
@@ -2061,6 +2081,13 @@ g = hooks["gate"]
 assert (g["runs"], g["med"], g["p95"], g["mx"]) == (3, 4, 10, 10) and g["s"] == 0 and g["t"] == "Remind a session that was never told, once", "a hook's runs and times: %r" % g
 t = D["tot"]
 assert (t["rules"], t["conf"], t["held"], t["turns"]) == (5, 3, 2, al["turns"] + 2), "totals: %r" % t
+assert D["head"] == "5 things need you.", "the top sentence counts what has no suggestion: %r" % D["head"]
+assert D["batch"].startswith("ctx has a suggestion for 3 document conflicts in pgdocs: fix 2"), "then the suggested batch: %r" % D["batch"]
+assert D["judge"] is False, "the automatic judge is off here"
+for h in ("Needs you", "Decided for you this week", "Status"):
+    assert ">" + h + "<" in page, "the page has the %s heading" % h
+for gone in ("How to read this", 'id="outcome"'):
+    assert gone not in page, "the old intro, summary strip and explainer are gone: %s" % gone
 EOF
 # ctx page apply: the choices the page produces, in words that are not commands, so the only way to
 # act on them is through apply and its plan.
@@ -2087,7 +2114,7 @@ tail -1 "$T/plan.txt" | grep -q '^4 of 4 actions done$' || fail "apply says how 
 "$CTX" exclude | grep -q 'project:beta' || fail "the project is excluded"
 # Anything else is refused as a whole before anything runs, naming the line.
 RID2=$("$CTX" sql "SELECT id FROM ctx_rule_proposal WHERE status = 'open' AND text LIKE 'Deploy only%'")
-for bad in "accept rule $RID2; rm -rf $T/pg" "echo hello" "ctx rules accept $RID2" "ctx sql 'DELETE FROM ctx_chunk'" "accept rule $RID2 extra" "forget beta now" "accept rule x" "stop archiving \$(touch $T/canary)" "reject rule $RID2 | cat" "dismiss conflict nothex because x" "ticket 'a' in pgdocs" "ticket 'a' in -x saying 'b'"; do
+for bad in "accept rule $RID2; rm -rf $T/pg" "echo hello" "ctx rules accept $RID2" "ctx sql 'DELETE FROM ctx_chunk'" "accept rule $RID2 extra" "forget beta now" "accept rule x" "stop archiving \$(touch $T/canary)" "reject rule $RID2 | cat" "dismiss conflict nothex because x" "ticket 'a' in pgdocs" "ticket 'a' in -x saying 'b'" "undo decision x" "undo decision" "undo decision 3 4" "undo decision -3" "undo decision 3; rm -rf $T/pg" "undo 3"; do
   printf 'reject rule %s\n%s\n' "$RID2" "$bad" > "$T/bad.plan"
   if "$CTX" page apply --yes "$T/bad.plan" 2> "$T/bad.err" >/dev/null; then fail "a line that is not an allowed form is refused: $bad"; fi
   grep -q 'line 2' "$T/bad.err" || fail "the refusal names the line: $(cat "$T/bad.err")"
@@ -2115,6 +2142,8 @@ import json, re, sys
 page = open(sys.argv[1], encoding="utf-8").read()
 D = json.loads(re.search(r"var D = (\{.*?\});\n  var SEC", page, re.S).group(1))
 assert D["rules"] == [] and D["conf"] == [] and D["held"] == [] and D["hooks"] == [], "nothing to decide"
+assert D["head"] == "Nothing urgent." and D["batch"] == "", "nothing needs the person: %r %r" % (D["head"], D["batch"])
+assert D["auto"] == [], "and nothing was decided for them"
 EOF
 # ctx gate, a PreToolUse hook: in a session that never got the archive note, the first search
 # is turned back once with it. It never blocks twice, and says nothing where it has nothing to offer.

@@ -39,10 +39,23 @@ button { font:inherit; color:inherit; cursor:pointer; }
 button:focus-visible, input:focus-visible, .row:focus-visible, a:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 a { color:var(--accent); }
 
-.outcome { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:14px; border:1px solid var(--line); border-radius:10px; padding:14px 16px; background:var(--surface); }
-.outcome div { display:flex; flex-direction:column; gap:2px; min-width:0; }
-.outcome b { font-size:1.35rem; font-variant-numeric:tabular-nums; }
-.outcome span { color:var(--muted); font-size:.86rem; }
+.batches { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-top:14px; }
+.bt { border:1px solid var(--accent); background:var(--bg); color:var(--accent); border-radius:8px; padding:7px 14px; font-weight:600; }
+.bt[aria-pressed="true"] { background:var(--accent); color:var(--bg); }
+.bt small { font-weight:400; margin-left:6px; }
+details.sub { margin-top:10px; }
+details.sub > summary { cursor:pointer; color:var(--accent); font-size:.9rem; width:max-content; max-width:100%; }
+details.sub > .list { margin-top:8px; }
+details.fold { border-top:1px solid var(--line); padding-top:14px; }
+details.fold > summary { cursor:pointer; list-style:none; display:flex; flex-wrap:wrap; gap:4px 12px; align-items:baseline; }
+details.fold > summary::-webkit-details-marker { display:none; }
+details.fold > summary::before { content:"\25B6"; color:var(--muted); font-size:.8rem; display:inline-block; width:1em; transition:transform .12s; align-self:center; }
+details.fold[open] > summary::before { transform:rotate(90deg); }
+details.fold > summary .count { color:var(--muted); font-size:.9rem; }
+details.fold > .body { display:flex; flex-direction:column; gap:26px; margin-top:14px; }
+summary:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.sub-h { display:flex; flex-wrap:wrap; gap:4px 12px; align-items:baseline; margin-bottom:8px; }
+.sub-h .count { color:var(--muted); font-size:.88rem; }
 
 section.q { display:flex; flex-direction:column; gap:10px; }
 .qhead { display:flex; flex-wrap:wrap; gap:8px 14px; align-items:baseline; }
@@ -74,7 +87,14 @@ section.q { display:flex; flex-direction:column; gap:10px; }
 .seg button[aria-pressed="true"].k1 { background:var(--mid-bg); color:var(--mid); font-weight:600; }
 .seg button[aria-pressed="true"].k2 { background:var(--no-bg); color:var(--no); font-weight:600; }
 .seg button:disabled { opacity:.4; cursor:not-allowed; }
-.seg kbd { font-family:var(--font-mono); font-size:.72em; color:var(--muted); margin-right:4px; }
+.seg kbd, .pick kbd { font-family:var(--font-mono); font-size:.72em; color:var(--muted); margin-right:4px; }
+.row.line { grid-template-columns:minmax(0,1fr) auto; cursor:pointer; }
+.row.line .meta { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.row.line.chosen .title { color:var(--muted); }
+.row.line .meta.cov { white-space:normal; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+.row.line .meta.cov q { quotes:"\201C" "\201D"; color:var(--fg); }
+.pick { justify-self:start; border:1px solid var(--line); background:var(--bg); border-radius:8px; padding:5px 12px; font-size:.84rem; white-space:nowrap; }
+.pick[aria-pressed="true"] { background:var(--mid-bg); color:var(--mid); border-color:var(--mid); font-weight:600; }
 .detail { grid-column:1 / -1; border-top:1px dashed var(--line); margin-top:4px; padding-top:8px; display:flex; flex-direction:column; gap:6px; font-size:.88rem; }
 .detail blockquote { margin:0; padding:5px 9px; border-left:3px solid var(--line); font-family:var(--font-mono); font-size:.82rem; overflow-wrap:anywhere; background:var(--bg); }
 .detail .where { color:var(--muted); font-size:.82rem; overflow-wrap:anywhere; }
@@ -118,14 +138,14 @@ section.q { display:flex; flex-direction:column; gap:10px; }
 .foot button.primary { background:var(--accent); color:var(--bg); border-color:var(--accent); font-weight:600; }
 .cmds { display:flex; flex-direction:column; gap:8px; }
 .cmds pre { margin:0; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--surface); font-family:var(--font-mono); font-size:.8rem; overflow-x:auto; white-space:pre; max-height:340px; }
-.prose { display:flex; flex-direction:column; gap:10px; max-width:74ch; }
-.prose ul { margin:0; padding-left:20px; display:flex; flex-direction:column; gap:6px; }
 @media (max-width:760px) {
-  .row { grid-template-columns:minmax(0,1fr); }
+  .row, .row.line { grid-template-columns:minmax(0,1fr); }
+  .row.line .meta { white-space:normal; }
   .seg { justify-self:start; }
   .tools input { width:130px; }
 }
 @media (prefers-reduced-motion: no-preference) { .row { transition:background-color .12s; } }
+@media (prefers-reduced-motion: reduce) { details.fold > summary::before { transition:none; } }
 </style>
 </head>
 <body>
@@ -133,37 +153,33 @@ section.q { display:flex; flex-direction:column; gap:10px; }
 <header>
   <div class="kicker" id="kicker"></div>
   <h1 id="head"></h1>
-  <p class="lede">ctx is the tool that saves your coding-agent sessions and project documents so they can be searched later. This page lists what it needs you to settle, one row each, with the evidence beside it. This page changes nothing by itself. Nothing is chosen for you: pick row by row, or press <b>Use suggestions</b> in a section to take the suggestion on every row that has one. Your choices become a short list at the foot of the page, and <code>ctx page apply</code> runs that list.</p>
+  <p class="lede" id="batch"></p>
+  <div class="batches" id="batches"></div>
+  <details class="sub" id="f-batch" hidden><summary id="f-batch-s"></summary><div class="list" id="s-batch"></div></details>
 </header>
 
-<section class="outcome" id="outcome" aria-live="polite"></section>
+<section class="q" id="s-need">
+  <div class="qhead"><h2>Needs you</h2><span class="count" id="need-n"></span></div>
+  <div class="list" id="need-list"></div>
+</section>
 
-<section class="q" id="s-rules"></section>
-<section class="q" id="s-auto"></section>
-<section class="q" id="s-conf"></section>
-<section class="q" id="s-held"></section>
-<section class="q" id="s-hooks"></section>
+<details class="fold" id="f-auto">
+  <summary><h2>Decided for you this week</h2><span class="count" id="auto-n"></span></summary>
+  <div class="body" id="s-auto"></div>
+</details>
+
+<details class="fold" id="f-status">
+  <summary><h2>Status</h2><span class="count" id="status-n"></span></summary>
+  <div class="body">
+    <section class="q" id="s-held"></section>
+    <section class="q" id="s-hooks"></section>
+  </div>
+</details>
 
 <section class="cmds" id="cmds">
   <h2>Your choices</h2>
   <p class="note">One line per choice that changes something. Copy them into a file and run <code>ctx page apply FILE</code> to see what would be done; add <code>--yes</code> to do it. Lines beginning with <code>#</code> are left for you: ctx does not edit your Claude Code settings, so removing a hook is yours to do.</p>
   <pre id="out" tabindex="0"></pre>
-</section>
-
-<section class="prose">
-  <h2>How to read this</h2>
-  <ul>
-    <li><b>Proposed rules</b> are sentences ctx's classifier lifted from things you typed, shown with your own words. Accepting one makes it a standing rule offered to agents at session start. <span data-t="rules"></span> wait for you now; you have accepted <span data-t="accepted"></span> and rejected <span data-t="rejected"></span> so far.</li>
-    <li><b>Decided by ctx</b> lists what ctx's automatic judge (<code>ctx rules auto CMD</code>) did with proposed rules in the last seven days, leaning toward dismissing them. Each row names the command that reverses it; <code>ctx rules activity</code> shows the same in a terminal.</li>
-    <li><b>Document conflicts</b> are passages in your indexed documents that a judge found to disagree, each kept only with words quoted from both. <span data-t="pairs"></span> pairs of passages make <span data-t="conf"></span> conflicts. Nothing was checked against the code, and the list is never complete.</li>
-    <li><b>What ctx holds</b> is every project with archived sessions: <span data-t="held"></span> projects, <span data-t="turns"></span> turns, about <span data-t="mb"></span> MB of text. "Searched" counts <code>ctx search</code> and <code>ctx turn</code> calls made in that project's own sessions in the last 30 days. It misses reads made from another project, and a zero is not proof of no value: an archive is read when something goes wrong.</li>
-    <li><b>Hooks</b> are what ctx runs on its own. Runs and times are the last seven days of its call log, and counts start when the log did. "What it did" is given only where ctx records it.</li>
-    <li><b>The grid</b> is every project by every week since the first session in the archive, <span data-t="weeksn"></span> weeks: darker means more turns archived that week, on a log scale shared by all rows, and a ring marks a week in which an agent read that project back. Click a name to find its row. Choose Forget and its row turns red, so you see what would go before anything does.</li>
-    <li><b>The line beside a conflict</b> runs from <span data-t="from"></span> to <span data-t="to"></span> and puts a dot where each document's file was last modified on disk. That is its modification time, not a commit. <span data-t="gap90"></span> of the <span data-t="conf"></span> conflicts have sides three months or more apart; the older side is usually the stale one, but that is a hint, not a finding.</li>
-    <li><b>"You said much the same"</b> beside a proposed rule counts later messages of yours in the same project that share most of its words. <span data-t="again"></span> of the <span data-t="rules"></span> were repeated at least once; ctx suggests accepting only those repeated twice or more.</li>
-    <li>The four bars beside a project are turns archived in each of the last four weeks, oldest first, scaled to that project's own busiest week.</li>
-    <li>Nothing is chosen for you. A suggestion is applied only when you press <b>Use suggestions</b>, and a dot then marks any row where you chose differently. Suggestions follow fixed rules, stated in each row.</li>
-  </ul>
 </section>
 
 </main>
@@ -180,24 +196,30 @@ section.q { display:flex; flex-direction:column; gap:10px; }
   "use strict";
   var D = /*DATA*/;
   var SEC = [
-    { key: "rules", el: "s-rules", title: "Proposed rules", noun: "rule", labels: ["Accept", "Later", "Not a rule"], lead: "Things you typed that read like a standing instruction, grouped by project. Accept: agents in that project are given the rule at every session start. Later: it stays in this list. Not a rule: it is dropped and not proposed again. Click a row to fix the wording first.", page: 12, filter: true },
-    { key: "conf", el: "s-conf", title: "Document conflicts" + (D.tot.cproj ? " in " + D.tot.cproj : ""), noun: "conflict", labels: ["Fix", "Not a conflict", "Later"], lead: "Places where two or more of your documents say things that cannot both be true. Fix: files a ticket for an agent to correct the documents; nothing is edited. Not a conflict: it is set aside with your reason and not raised again unless a quoted passage changes. Later: it stays in this list. Click a row to read the passages.", legend: '<span><i class="lg cur"></i>a document the checking model read as the current one, placed at the date its file was last modified</span><span><i class="lg oth"></i>a document that disagrees with it</span><span><i class="lg e2"></i>red edge: last modified 3 months or more apart</span><span><i class="lg e1"></i>amber edge: 1 to 3 months apart</span>', page: 10, filter: true },
-    { key: "held", el: "s-held", title: "What ctx holds", noun: "project", labels: ["Keep", "Stop archiving", "Forget"], lead: "Every project ctx has saved sessions for. A turn is one message, reply or tool result; a session day is one session on one day. Keep: nothing changes. Stop archiving: what is saved stays searchable, and nothing new is saved. Forget: the project’s sessions are removed from search for good; the saved text stays in ctx’s own history, but nothing will find it.", page: 12, filter: true },
+    { key: "rules", title: "Proposed rules", noun: "rule", labels: ["Accept", "Later", "Not a rule"] },
+    { key: "conf", title: "Document conflicts", noun: "conflict", labels: ["Fix", "Not a conflict", "Later"] },
+    { key: "held", el: "s-held", title: "What ctx holds", noun: "project", labels: ["Keep", "Stop archiving", "Forget"], lead: "Every project ctx has saved sessions for. A turn is one message, reply or tool result; a session day is one session on one day. Keep: nothing changes. Stop archiving: what is saved stays searchable, and nothing new is saved. Forget: the project’s sessions are removed from search for good; the saved text stays in ctx’s own history, but nothing will find it. The grid is every project by every week: darker means more was saved, a ring means an agent searched that project's archive that week.", page: 12, filter: true },
     { key: "hooks", el: "s-hooks", title: "Hooks ctx runs", noun: "hook", labels: ["Keep", "Later", "Remove"], lead: "What ctx does by itself and ran in the last seven days, with how often, how long it took, and what it did. Keep: nothing changes. Later: decide another time. Remove: ctx cannot do this for you, because hooks live in your Claude Code settings file and ctx does not edit it; the list at the foot names the entry to remove.", page: 20, filter: false }
   ];
-  var state = {}, view = {}, cursor = null;
+  var BY = {}; SEC.forEach(function (s) { BY[s.key] = s; });
+  var state = { auto: {} }, view = {}, cursor = null;
   SEC.forEach(function (s) {
     state[s.key] = {};
-    D[s.key].forEach(function (it) { state[s.key][it.id] = { c: null, open: false, text: null }; /* nothing is chosen for you: a suggestion is applied only when you ask */ });
+    D[s.key].forEach(function (it) { state[s.key][it.id] = { c: null, open: false, text: null }; /* nothing is chosen for you: a batch is applied only when you press it */ });
     view[s.key] = { show: "all", text: "", limit: s.page };
   });
+  D.auto.forEach(function (a) { state.auto[a.id] = { undo: false, open: false }; });
   function esc(t) { return String(t).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
   function num(n) { return Number(n).toLocaleString("en-US"); }
   function el(tag, cls, htmlText) { var e = document.createElement(tag); if (cls) e.className = cls; if (htmlText !== undefined) e.innerHTML = htmlText; return e; }
+  function plural(n, one, many) { return num(n) + " " + (n === 1 ? one : (many || one + "s")); }
+  function has(it) { return it.s !== null && it.s !== undefined; }
+  /* a project or hook is the person's only when ctx suggests changing it; keeping it is no change */
+  function change(it) { return has(it) && it.s > 0; }
 
   function evidence(s, it) {
     if (s.key === "rules") return '<span>You said: <q>' + esc(it.said || "(the turn is no longer in the index)") + '</q></span>';
-    if (s.key === "conf") return timeline(it) + '<span class="nums"><span>' + it.n + ' passages in ' + it.ps.map(function (p) { return p[0]; }).filter(function (v, i, a) { return a.indexOf(v) === i; }).length + ' documents</span></span>';
+    if (s.key === "conf") return timeline(it) + '<span class="nums"><span>' + it.n + ' passages in ' + docCount(it) + ' documents</span></span>';
     if (s.key === "held") {
       var m = Math.max.apply(null, it.w.concat([1]));
       var bars = it.w.map(function (v) { return '<i style="height:' + Math.max(1, Math.round(18 * v / m)) + 'px"></i>'; }).join("");
@@ -205,6 +227,7 @@ section.q { display:flex; flex-direction:column; gap:10px; }
     }
     return '<span class="nums"><span>ran ' + num(it.runs) + ' times in 7 days</span><span>usually ' + it.med + ' ms</span><span>slowest ' + num(it.mx) + ' ms</span><span>' + (it.runs * it.med < 1000 ? 'under a second' : Math.round(it.runs * it.med / 1000) + ' seconds') + ' a week in all</span></span><span>' + esc(it.eff) + '</span>';
   }
+  function docCount(it) { return it.ps.map(function (p) { return p[0]; }).filter(function (v, i, a) { return a.indexOf(v) === i; }).length; }
   var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   function nice(d) { return d ? +d.slice(8, 10) + " " + MONTHS[+d.slice(5, 7) - 1] + " " + d.slice(0, 4) : "date unknown"; }
   function day(d) { return Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10)) / 864e5; }
@@ -224,14 +247,23 @@ section.q { display:flex; flex-direction:column; gap:10px; }
       dots.map(function (p, i) { return '<circle class="' + (p[3] ? 'cur' : 'oth') + '" cx="' + xs[i].toFixed(1) + '" cy="9" r="' + (p[3] ? 4.5 : 3.5) + '"><title>' + esc(p[0].split("/").pop()) + ' last changed ' + esc(p[4]) + (p[3] ? ' (likely current)' : '') + '</title></circle>'; }).join("") + months + '</svg>';
   }
   function ago(d) {
+    if (!d) return "date unknown";
     var n = Math.round(day(D.tot.today) - day(d));
-    return n <= 0 ? "today" : n < 60 ? n + " days ago" : Math.round(n / 30.4) + " months ago";
+    return n <= 0 ? "today" : n === 1 ? "yesterday" : n < 60 ? n + " days ago" : Math.round(n / 30.4) + " months ago";
   }
+  function gapText(it) {
+    return it.gap >= 90 ? '<span class="t-no">last changed ' + Math.round(it.gap / 30.4) + ' months apart</span>' : it.gap >= 30 ? '<span class="t-mid">last changed ' + Math.round(it.gap / 7) + ' weeks apart</span>' : it.gap >= 2 ? 'last changed ' + it.gap + ' days apart' : 'last changed the same day';
+  }
+  /* the full line, for the held and hooks lists */
   function meta(s, it) {
-    if (s.key === "rules") return "#" + it.id + " · " + esc(ago(it.d)) + (it.again ? ' · <span class="t-yes">you said much the same in ' + it.again + ' later message' + (it.again === 1 ? '' : 's') + ' in this project</span>' : '') + (it.quiet ? ' · no work in this project for 30 days' : '');
-    if (s.key === "conf") return (D.tot.cproj ? "" : esc(it.p) + " · ") + (it.gap >= 90 ? '<span class="t-no">its documents were last changed ' + Math.round(it.gap / 30.4) + ' months apart</span>' : it.gap >= 30 ? '<span class="t-mid">its documents were last changed ' + Math.round(it.gap / 7) + ' weeks apart</span>' : it.gap >= 2 ? 'its documents were last changed ' + it.gap + ' days apart' : 'its documents were last changed the same day') + (it.agree ? ' · the newer one is the one read as current' : '');
     if (s.key === "held") return it.days + " session days · since " + esc(it.first);
     return 'runs ' + esc(it.ev);
+  }
+  /* the short muted line under a title in a one-line row */
+  function brief(s, it) {
+    if (s.key === "rules") return esc(it.p) + " · #" + it.id + " · " + esc(ago(it.d)) + (it.again ? ' · <span class="t-yes">said ' + it.again + ' more time' + (it.again === 1 ? '' : 's') + '</span>' : '') + (has(it) ? ' · ctx suggests ' + esc(s.labels[it.s].toLowerCase()) : '');
+    if (s.key === "conf") return esc(it.p) + " · " + it.n + " passages in " + docCount(it) + " documents · " + gapText(it) + (has(it) ? ' · ctx suggests ' + esc(s.labels[it.s].toLowerCase()) : '');
+    return meta(s, it) + (has(it) ? ' · ctx suggests ' + esc(s.labels[it.s].toLowerCase()) : '');
   }
   function detail(s, it) {
     if (s.key === "conf") {
@@ -250,31 +282,155 @@ section.q { display:flex; flex-direction:column; gap:10px; }
           d.says.map(function (x) { return '<div class="say ' + (x.cur ? 'cur' : 'oth') + '"><span class="sq">' + esc(x.q) + '</span><span class="sh">' + (x.cur ? 'read as current · ' : '') + 'under “' + esc(x.head) + '”</span></div>'; }).join("") + '</div>';
       }).join("") + '</div>';
     }
-    if (s.key === "rules") return '<label class="where" for="w' + it.id + '">Wording agents would be given. Edit it before accepting if the paraphrase is off:</label><input id="w' + it.id + '" data-word="' + it.id + '" value="' + esc(state.rules[it.id].text === null ? it.t : state.rules[it.id].text) + '">' + '<div class="where">Accepted, agents in <b>' + esc(it.p) + '</b> would be given: <q>' + esc(it.t) + '</q></div><div class="where">Not a rule tells ctx not to propose this sentence again.</div>';
+    if (s.key === "rules") return '<label class="where" for="w' + it.id + '">Wording agents would be given. Edit it before accepting if the paraphrase is off:</label><input id="w' + it.id + '" data-word="' + it.id + '" value="' + esc(state.rules[it.id].text === null ? it.t : state.rules[it.id].text) + '">' + '<div class="where">Accept: agents in <b>' + esc(it.p) + '</b> are given it at every session start. Later: it stays here. Not a rule: ctx does not propose this sentence again.</div>';
     if (s.key === "held") return '<div class="where">' + it.days + ' session days from ' + esc(it.first) + ' to ' + esc(it.last) + ' · ' + num(it.turns) + ' turns · ' + it.mb + ' MB of text · turns in the last four weeks: ' + it.w.map(num).join(", ") + '</div><div class="where">Read back counts ctx search and ctx turn calls in this project\'s own sessions in 30 days: ' + it.reads + '.</div>';
     return '<div class="where">Fires on: ' + esc(it.ev) + ' · 95th percentile ' + it.p95 + ' ms · seven days of the call log</div>';
   }
+  function why(s, it) { return '<span class="why">' + (has(it) ? '<b>Suggests ' + esc(s.labels[it.s].toLowerCase()) + ':</b> ' : '<b>No suggestion:</b> ') + esc(it.why) + '</span>'; }
+
+  /* A row of one line: title, a short muted line, the choices. The evidence opens on click or Enter. */
+  function lineRow(s, it, after) {
+    var st = state[s.key][it.id];
+    var row = el("div", "row line" + (st.c !== null ? " chosen" : "") + (st.c === 2 || (s.key === "conf" && st.c === 1) ? " done-no" : ""));
+    row.tabIndex = 0; row.dataset.sec = s.key; row.dataset.id = it.id; row.setAttribute("aria-expanded", String(st.open));
+    if (cursor && cursor.sec === s.key && String(cursor.id) === String(it.id)) row.classList.add("cur");
+    row.appendChild(el("div", "main", '<span class="title">' + esc(it.t) + '</span><span class="meta">' + brief(s, it) + '</span>'));
+    var seg = el("div", "seg"); seg.setAttribute("role", "group"); seg.setAttribute("aria-label", "Choice for " + it.t);
+    s.labels.forEach(function (lab, c) {
+      var b = el("button", "k" + (s.key === "conf" ? [0, 2, 1][c] : c), '<kbd>' + (c + 1) + '</kbd>' + esc(lab)); b.type = "button"; b.setAttribute("aria-pressed", String(st.c === c));
+      if (s.key === "hooks" && it.lock && c === 2) { b.disabled = true; b.title = "Cannot be removed here: everything else depends on it"; }
+      b.addEventListener("click", function (e) { e.stopPropagation(); cursor = { sec: s.key, id: it.id }; choose(s, it, c); });
+      seg.appendChild(b);
+    });
+    row.appendChild(seg);
+    if (st.open) {
+      var det = el("div", "detail", '<div class="ev">' + evidence(s, it) + why(s, it) + '</div>' + detail(s, it)); row.appendChild(det);
+      var w = det.querySelector("input[data-word]");
+      if (w) { w.addEventListener("click", function (e) { e.stopPropagation(); }); w.addEventListener("input", function () { st.text = w.value === it.t ? null : w.value; totals(); }); }
+    }
+    row.addEventListener("click", function (e) { if (e.target.closest("button") || e.target.closest("input") || e.target.closest(".detail")) return; cursor = { sec: s.key, id: it.id }; st.open = !st.open; after(); focusCursor(); });
+    return row;
+  }
+
+  /* What needs the person: conflicts with no suggestion, proposals the automatic judge left, and
+   * projects or hooks only where ctx suggests a change. Suggested conflicts are in the batches. */
+  function needs() {
+    return [
+      [BY.conf, D.conf.filter(function (it) { return !has(it); })],
+      [BY.rules, D.rules],
+      [BY.held, D.held.filter(change)],
+      [BY.hooks, D.hooks.filter(change)]
+    ].filter(function (g) { return g[1].length; });
+  }
+  function undecided(s, items) { return items.filter(function (it) { return state[s.key][it.id].c === null; }).length; }
+  function renderNeed() {
+    var host = document.getElementById("need-list"), groups = needs(), left = 0;
+    host.innerHTML = "";
+    groups.forEach(function (g) {
+      var s = g[0], items = g[1], open = undecided(s, items); left += open;
+      host.appendChild(el("div", "group", '<b>' + esc(s.title) + '</b><span>' + plural(items.length, s.noun) + (open < items.length ? ' · ' + (items.length - open) + ' chosen' : '') + '</span>'));
+      items.forEach(function (it) { host.appendChild(lineRow(s, it, renderNeed)); });
+    });
+    if (!groups.length) host.appendChild(el("div", "empty", "Nothing needs you."));
+    document.getElementById("need-n").textContent = "· " + num(left);
+  }
+
+  var BATCH = [
+    { c: 0, s: 0, say: function (n) { return "File " + plural(n, "docs ticket"); }, hint: "one ticket a conflict, for an agent to correct the documents" },
+    { c: 1, s: 1, say: function (n) { return "Dismiss " + num(n); }, hint: "not a conflict: not raised again unless a passage changes" }
+  ];
+  function batchItems(b) { return D.conf.filter(function (it) { return it.s === b.s; }); }
+  function renderBatch() {
+    var host = document.getElementById("batches"), all = D.conf.filter(has);
+    host.innerHTML = "";
+    BATCH.forEach(function (b) {
+      var items = batchItems(b); if (!items.length) return;
+      var on = items.every(function (it) { return state.conf[it.id].c === b.c; });
+      var btn = el("button", "bt", esc(b.say(items.length)) + (on ? '<small>chosen · click to clear</small>' : ''));
+      btn.type = "button"; btn.setAttribute("aria-pressed", String(on)); btn.title = b.hint;
+      btn.addEventListener("click", function () {
+        items.forEach(function (it) { state.conf[it.id].c = on ? null : b.c; });
+        refresh("conf");
+      });
+      host.appendChild(btn);
+    });
+    var fold = document.getElementById("f-batch");
+    fold.hidden = !all.length;
+    document.getElementById("f-batch-s").textContent = "See the " + plural(all.length, "conflict") + " ctx has a suggestion for";
+    var list = document.getElementById("s-batch"); list.innerHTML = "";
+    all.forEach(function (it) { list.appendChild(lineRow(BY.conf, it, renderBatch)); });
+  }
+
+  var REASON = {
+    covered: ["Already covered by a rule", "A rule in force or your global instructions already says it; the rule's words are quoted."],
+    setup: ["Session setup", "About how one session or period is run, such as which model is running; not a standing instruction."],
+    not: ["Not a rule", "Not an instruction, or distorted as a rule."]
+  };
+  function autoRow(a) {
+    var st = state.auto[a.id];
+    var row = el("div", "row line" + (st.undo ? " chosen" : "")); row.tabIndex = 0; row.dataset.sec = "auto"; row.dataset.id = a.id; row.setAttribute("aria-expanded", String(st.open));
+    if (cursor && cursor.sec === "auto" && String(cursor.id) === String(a.id)) row.classList.add("cur");
+    row.appendChild(el("div", "main", '<span class="title">' + esc(a.t) + '</span><span class="meta">' + esc(a.p) + ' · ' + esc(ago(a.d)) + ' · ' + esc(a.why) + '</span>' + (a.q ? '<span class="meta cov">Covered by <q>' + esc(a.q) + '</q></span>' : '')));
+    var b = el("button", "pick", '<kbd>1</kbd>' + (st.undo ? "Will undo" : "Undo")); b.type = "button"; b.setAttribute("aria-pressed", String(st.undo));
+    b.title = a.v === "serve" ? "Stop giving it to agents; it waits for you instead" : "Reopen it; it waits for you instead";
+    b.addEventListener("click", function (e) { e.stopPropagation(); cursor = { sec: "auto", id: a.id }; undo(a); });
+    row.appendChild(b);
+    if (st.open) {
+      var again = a.rep && a.rep.length ? "You said it again on " + a.rep.map(function (d) { return d ? nice(d) : "a date not recorded"; }).join(", ") + "." : "You have not said it again since.";
+      row.appendChild(el("div", "detail", '<div class="ev"><span>You typed: <q>' + esc(a.said || "(the turn is no longer in the index)") + '</q></span><span>' + esc(again) + '</span><span class="why"><b>Decided ' + esc(nice(a.d)) + ':</b> ' + esc(a.why) + '</span></div>'));
+    }
+    row.addEventListener("click", function (e) { if (e.target.closest("button") || e.target.closest(".detail")) return; cursor = { sec: "auto", id: a.id }; st.open = !st.open; renderAuto(); focusCursor(); });
+    return row;
+  }
+  function undo(a) { state.auto[a.id].undo = !state.auto[a.id].undo; renderAuto(); totals(); focusCursor(); }
+  function renderAuto() {
+    var host = document.getElementById("s-auto"), A = D.auto, added = A.filter(function (a) { return a.v === "serve"; }), gone = A.length - added.length;
+    document.getElementById("auto-n").textContent = "· " + num(added.length) + " added · " + num(gone) + " dismissed";
+    host.innerHTML = "";
+    host.appendChild(el("p", "note", "Proposed rules ctx's automatic judge decided without asking you in the last seven days. An added rule is given to agents as a tentative rule until you stop saying it; a dismissed one is not raised again. Undo puts one back in your hands."));
+    if (!A.length) {
+      host.appendChild(el("div", "list", '<div class="empty">ctx decided nothing by itself in the last seven days.' + (D.judge ? '' : ' The automatic judge is off; <code>ctx rules auto CMD</code> turns it on.') + '</div>'));
+      return;
+    }
+    var part = function (title, count, items, groups) {
+      var sec = el("section", "q");
+      sec.appendChild(el("div", "sub-h", '<h3>' + esc(title) + '</h3><span class="count">' + num(count) + '</span>'));
+      var list = el("div", "list");
+      if (groups) groups.forEach(function (g) {
+        var mine = items.filter(function (a) { return a.v === g; }); if (!mine.length) return;
+        list.appendChild(el("div", "group", '<b>' + esc(REASON[g][0]) + ' · ' + mine.length + '</b><span>' + esc(REASON[g][1]) + '</span>'));
+        mine.forEach(function (a) { list.appendChild(autoRow(a)); });
+      });
+      else items.forEach(function (a) { list.appendChild(autoRow(a)); });
+      if (!items.length) list.appendChild(el("div", "empty", "None this week."));
+      sec.appendChild(list); host.appendChild(sec);
+    };
+    part("Added", added.length, added, null);
+    part("Dismissed", gone, A.filter(function (a) { return a.v !== "serve"; }), ["covered", "setup", "not"]);
+  }
+
   function visible(s) {
     var v = view[s.key], t = v.text.toLowerCase();
     return D[s.key].filter(function (it) {
       var st = state[s.key][it.id];
       if (v.show === "open" && st.c !== null) return false;
       if (v.show === "chosen" && st.c === null) return false;
-      if (t && (it.t + " " + (it.p || "") + " " + (it.said || "") + " " + (it.files || []).join(" ")).toLowerCase().indexOf(t) < 0) return false;
+      if (t && (it.t + " " + (it.p || "")).toLowerCase().indexOf(t) < 0) return false;
       return true;
     });
   }
   function heat() {
-    var wrap = el("div"), weeks = D.weeks, mx = 1, turns = 0, mb = 0, reads = 0;
-    D.held.forEach(function (it) { turns += it.turns; mb += it.mb; reads += it.reads; it.hist.forEach(function (h) { if (h[0] > mx) mx = h[0]; }); });
+    var wrap = el("div"), weeks = D.weeks, mx = 1, turns = 0, mb = 0;
+    D.held.forEach(function (it) { turns += it.turns; mb += it.mb; it.hist.forEach(function (h) { if (h[0] > mx) mx = h[0]; }); });
     wrap.appendChild(el("div", "big", '<div><b>' + num(turns) + '</b> <span>turns saved (messages, replies and tool results)</span></div><div><b>' + D.held.length + '</b> <span>projects</span></div><div><b>' + weeks.length + '</b> <span>weeks</span></div><div><b>' + Math.round(mb) + ' MB</b> <span>of text</span></div><div><b>' + D.held.filter(function (x) { return x.reads; }).length + '</b> <span>projects an agent searched last month</span></div>'));
+    if (!weeks.length) return wrap;
     var hw = el("div", "heatwrap"), g = el("div", "heat"); g.style.setProperty("--weeks", weeks.length); g.setAttribute("role", "img"); g.setAttribute("aria-label", "Turns archived for each project in each week since " + weeks[0]);
     g.appendChild(el("span", "mo", ""));
-    var names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], last = "";
-    weeks.forEach(function (w) { var m = names[+w.slice(5, 7) - 1], lab = m !== last ? m : ""; last = m; g.appendChild(el("span", "mo", lab)); });
+    var last = "";
+    weeks.forEach(function (w) { var m = MONTHS[+w.slice(5, 7) - 1], lab = m !== last ? m : ""; last = m; g.appendChild(el("span", "mo", lab)); });
     D.held.forEach(function (it) {
       var c = state.held[it.id].c, lab = el("button", "lab" + (c === 2 ? " gone" : c === 1 ? " stop" : ""), esc(it.t)); lab.type = "button"; lab.title = it.t + ": " + num(it.turns) + " turns, " + it.mb + " MB. Click to find its row.";
-      lab.addEventListener("click", function () { view.held.text = it.t; view.held.limit = 12; cursor = { sec: "held", id: it.id }; render(s_held); focusCursor(); });
+      lab.addEventListener("click", function () { view.held.text = it.t; view.held.limit = 12; cursor = { sec: "held", id: it.id }; render(BY.held); focusCursor(); });
       g.appendChild(lab);
       it.hist.forEach(function (h, i) {
         var cell = el("span", "c" + (c === 2 ? " gone" : ""));
@@ -290,20 +446,23 @@ section.q { display:flex; flex-direction:column; gap:10px; }
     wrap.appendChild(hw); wrap.style.display = "flex"; wrap.style.flexDirection = "column"; wrap.style.gap = "12px";
     return wrap;
   }
-  var s_held = null;
   function choose(s, it, c) {
     var st = state[s.key][it.id];
     st.c = st.c === c ? null : c;
-    render(s); totals();
+    refresh(s.key);
   }
+  function refresh(key) {
+    renderNeed(); renderBatch();
+    if (key === "held" || key === "hooks") render(BY[key]);
+    totals(); focusCursor();
+  }
+  /* the held and hooks lists, as they were before the page was folded */
   function render(s) {
     var host = document.getElementById(s.el), v = view[s.key], items = visible(s), all = D[s.key];
     var decided = all.filter(function (it) { return state[s.key][it.id].c !== null; }).length;
     host.innerHTML = "";
-    var head = el("div", "qhead", '<h2>' + esc(s.title) + '</h2><span class="count">' + all.length + ' ' + s.noun + (all.length === 1 ? '' : 's') + ' · ' + decided + ' chosen</span>');
-    host.appendChild(head);
+    host.appendChild(el("div", "qhead", '<h3>' + esc(s.title) + '</h3><span class="count">' + all.length + ' ' + s.noun + (all.length === 1 ? '' : 's') + ' · ' + decided + ' chosen</span>'));
     host.appendChild(el("p", "note", esc(s.lead)));
-    if (s.legend) host.appendChild(el("div", "legend", s.legend));
     if (s.key === "held") host.appendChild(heat());
     var tools = el("div", "tools");
     [["all", "All"], ["open", "Undecided"], ["chosen", "Chosen"]].forEach(function (f) {
@@ -318,40 +477,30 @@ section.q { display:flex; flex-direction:column; gap:10px; }
     s.labels.forEach(function (lab, c) {
       if (s.key === "held" && c === 2) return; /* no bulk forget: it is the one that cannot be undone */
       var b = el("button", "chip act", lab + " all " + items.length + " matching"); b.type = "button";
-      b.addEventListener("click", function () { items.forEach(function (it) { state[s.key][it.id].c = c; }); render(s); totals(); });
+      b.addEventListener("click", function () { items.forEach(function (it) { state[s.key][it.id].c = c; }); refresh(s.key); });
       tools.appendChild(b);
     });
     var sug = el("button", "chip act", "Use suggestions"); sug.type = "button";
-    sug.addEventListener("click", function () { items.forEach(function (it) { state[s.key][it.id].c = (it.s === null || it.s === undefined) ? null : it.s; }); render(s); totals(); });
+    sug.addEventListener("click", function () { items.forEach(function (it) { state[s.key][it.id].c = has(it) ? it.s : null; }); refresh(s.key); });
     tools.appendChild(sug);
     host.appendChild(tools);
     var list = el("div", "list");
     if (!items.length) list.appendChild(el("div", "empty", v.show === "open" ? "Nothing left undecided here." : "Nothing matches."));
-    var lastGroup = null;
     items.slice(0, v.limit).forEach(function (it) {
-      if (s.key === "rules" && it.p !== lastGroup) {
-        lastGroup = it.p;
-        var mine = items.filter(function (x) { return x.p === it.p; });
-        list.appendChild(el("div", "group", '<b>' + esc(it.p) + '</b><span>' + mine.length + ' proposed · ' + mine.filter(function (x) { return x.again; }).length + ' said more than once' + (it.quiet ? ' · quiet for 30 days' : ' · active this month') + '</span>'));
-      }
-      var st = state[s.key][it.id], has = it.s !== null && it.s !== undefined, changed = st.c !== null && has && st.c !== it.s;
-      var row = el("div", "row" + (st.c === 2 || (s.key === "conf" && st.c === 1) ? " done-no" : "") + (s.key === "conf" ? (it.gap >= 90 ? " g2" : it.gap >= 30 ? " g1" : " g0") : "")); row.tabIndex = 0; row.dataset.sec = s.key; row.dataset.id = it.id;
+      var st = state[s.key][it.id], changed = st.c !== null && has(it) && st.c !== it.s;
+      var row = el("div", "row" + (st.c === 2 ? " done-no" : "")); row.tabIndex = 0; row.dataset.sec = s.key; row.dataset.id = it.id;
       if (cursor && cursor.sec === s.key && String(cursor.id) === String(it.id)) row.classList.add("cur");
       var main = el("div", "main", '<span class="title">' + (changed ? '<span class="dot" title="Your choice differs from the suggestion"></span>' : '') + esc(it.t) + '</span><span class="meta">' + meta(s, it) + '</span>');
-      var ev = el("div", "ev", evidence(s, it) + '<span class="why">' + (has ? '<b>Suggests ' + esc(s.labels[it.s].toLowerCase()) + ':</b> ' : '<b>No suggestion:</b> ') + esc(it.why) + '</span>');
+      var ev = el("div", "ev", evidence(s, it) + why(s, it));
       var seg = el("div", "seg"); seg.setAttribute("role", "group"); seg.setAttribute("aria-label", "Choice for " + it.t);
       s.labels.forEach(function (lab, c) {
-        var b = el("button", "k" + (s.key === "conf" ? [0, 2, 1][c] : c), '<kbd>' + (c + 1) + '</kbd>' + esc(lab)); b.type = "button"; b.setAttribute("aria-pressed", String(st.c === c));
+        var b = el("button", "k" + c, '<kbd>' + (c + 1) + '</kbd>' + esc(lab)); b.type = "button"; b.setAttribute("aria-pressed", String(st.c === c));
         if (s.key === "hooks" && it.lock && c === 2) { b.disabled = true; b.title = "Cannot be removed here: everything else depends on it"; }
         b.addEventListener("click", function (e) { e.stopPropagation(); cursor = { sec: s.key, id: it.id }; choose(s, it, c); });
         seg.appendChild(b);
       });
       row.appendChild(main); row.appendChild(ev); row.appendChild(seg);
-      if (st.open) {
-        var det = el("div", "detail", detail(s, it)); row.appendChild(det);
-        var w = det.querySelector("input[data-word]");
-        if (w) { w.addEventListener("click", function (e) { e.stopPropagation(); }); w.addEventListener("input", function () { st.text = w.value === it.t ? null : w.value; totals(); }); }
-      }
+      if (st.open) row.appendChild(el("div", "detail", detail(s, it)));
       row.addEventListener("click", function (e) { if (e.target.closest("button") || e.target.closest("input")) return; cursor = { sec: s.key, id: it.id }; st.open = !st.open; render(s); focusCursor(); });
       list.appendChild(row);
     });
@@ -364,6 +513,7 @@ section.q { display:flex; flex-direction:column; gap:10px; }
   function commands() {
     var out = [], one = function (t) { return String(t).replace(/\s+/g, " ").trim(); }, sq = function (t) { return "'" + one(t).replace(/'/g, "'\\''") + "'"; };
     D.rules.forEach(function (it) { var c = state.rules[it.id].c; var tx = state.rules[it.id].text; if (c === 0) out.push("accept rule " + it.id + (tx ? " as " + sq(tx) : "") + "    # " + one(it.p + ": " + (tx || it.t))); if (c === 2) out.push("reject rule " + it.id + "    # " + one(it.p + ": " + it.t)); });
+    D.auto.forEach(function (a) { if (state.auto[a.id].undo) out.push("undo decision " + a.id + "    # " + one(a.p + ": " + a.t)); });
     D.conf.forEach(function (it) {
       var c = state.conf[it.id].c;
       if (c === 0) out.push("ticket " + sq("Docs: " + it.t) + " in " + sq(it.p) + " saying " + sq(it.ps.map(function (p) { return p[0] + " § " + p[1] + ": \"" + p[2].slice(0, 120) + "\"" + (p[3] ? " (likely current)" : ""); }).join(" | ")));
@@ -375,26 +525,16 @@ section.q { display:flex; flex-direction:column; gap:10px; }
     return out;
   }
   function totals() {
-    var r = D.rules.reduce(function (a, it) { var c = state.rules[it.id].c; if (c !== null) a[c]++; return a; }, [0, 0, 0]);
-    var cf = D.conf.reduce(function (a, it) { var c = state.conf[it.id].c; if (c !== null) a[c]++; return a; }, [0, 0, 0]);
-    var mb = 0, turns = 0, stop = 0, forget = 0;
-    D.held.forEach(function (it) { var c = state.held[it.id].c; if (c === 1) stop++; if (c === 2) { forget++; mb += it.mb; turns += it.turns; } });
-    var ms = 0, gone = 0; D.hooks.forEach(function (it) { if (state.hooks[it.id].c === 2) { gone++; ms += it.runs * it.med; } });
-    var left = D.rules.length - r[0] - r[2] + D.conf.length - cf[0] - cf[1];
-    document.getElementById("outcome").innerHTML =
-      '<div><b>' + left + '</b><span>still undecided, of ' + (D.rules.length + D.conf.length) + '</span></div>' +
-      '<div><b>' + r[0] + ' / ' + r[2] + '</b><span>rules you chose here to accept / reject</span></div>' +
-      '<div><b>' + cf[0] + ' / ' + cf[1] + '</b><span>conflicts you chose here to fix / dismiss</span></div>' +
-      '<div><b>' + forget + (stop ? ' + ' + stop : '') + '</b><span>projects forgotten' + (stop ? ' + stopped' : '') + ', freeing ' + Math.round(mb) + ' MB and ' + num(turns) + ' turns</span></div>' +
-      '<div><b>' + gone + '</b><span>hooks removed, saving ' + Math.round(ms / 1000) + ' s a week</span></div>';
-    var cmds = commands();
-    document.getElementById("sum").textContent = cmds.length ? (function (n) { return n + " choice" + (n === 1 ? "" : "s") + " ready"; })(cmds.filter(function (l) { return l.charAt(0) !== "#"; }).length) + " · " + left + " still waiting on you" : "No choices yet · " + left + " waiting on you";
+    var left = undecided(BY.conf, D.conf) + undecided(BY.rules, D.rules) + undecided(BY.held, D.held.filter(change)) + undecided(BY.hooks, D.hooks.filter(change));
+    var cmds = commands(), n = cmds.filter(function (l) { return l.charAt(0) !== "#"; }).length;
+    document.getElementById("sum").textContent = (n ? plural(n, "choice") + " ready" : "No choices yet") + " · " + (left ? num(left) + " still waiting on you" : "nothing waiting on you");
     document.getElementById("out").textContent = cmds.length ? cmds.join("\n") : "# nothing chosen yet";
   }
-  function rowsOnPage() { return Array.prototype.slice.call(document.querySelectorAll(".row")); }
+  function rowsOnPage() { return Array.prototype.slice.call(document.querySelectorAll(".row")).filter(function (r) { return r.offsetParent !== null; }); }
   function focusCursor() {
     if (!cursor) return;
-    var r = document.querySelector('.row[data-sec="' + cursor.sec + '"][data-id="' + String(cursor.id).replace(/"/g, '\\"') + '"]');
+    var sel = '.row[data-sec="' + cursor.sec + '"][data-id="' + String(cursor.id).replace(/["\\]/g, "\\$&") + '"]';
+    var r = Array.prototype.slice.call(document.querySelectorAll(sel)).filter(function (x) { return x.offsetParent !== null; })[0];
     if (r) { r.classList.add("cur"); r.focus({ preventScroll: true }); r.scrollIntoView({ block: "nearest" }); }
   }
   document.addEventListener("keydown", function (e) {
@@ -408,13 +548,22 @@ section.q { display:flex; flex-direction:column; gap:10px; }
       rows.forEach(function (r) { r.classList.remove("cur"); });
       cursor = { sec: rows[n].dataset.sec, id: rows[n].dataset.id }; focusCursor(); return;
     }
-    if (i < 0) return;
-    var s = SEC.filter(function (x) { return x.key === cursor.sec; })[0];
+    if (i < 0 || (e.target.tagName === "BUTTON" && e.key === "Enter") || e.target.tagName === "SUMMARY") return;
+    if (cursor.sec === "auto") {
+      var a = D.auto.filter(function (x) { return String(x.id) === String(cursor.id); })[0];
+      if (k === "1") { e.preventDefault(); undo(a); }
+      else if (e.key === "Enter") { e.preventDefault(); state.auto[a.id].open = !state.auto[a.id].open; renderAuto(); focusCursor(); }
+      return;
+    }
+    var s = BY[cursor.sec];
     var it = D[s.key].filter(function (x) { return String(x.id) === String(cursor.id); })[0];
     if (k === "1" || k === "2" || k === "3") {
       var c = Number(k) - 1; if (s.key === "hooks" && it.lock && c === 2) return;
-      e.preventDefault(); choose(s, it, c); focusCursor();
-    } else if (e.key === "Enter") { e.preventDefault(); state[s.key][it.id].open = !state[s.key][it.id].open; render(s); focusCursor(); }
+      e.preventDefault(); choose(s, it, c);
+    } else if (e.key === "Enter") {
+      e.preventDefault(); state[s.key][it.id].open = !state[s.key][it.id].open;
+      renderNeed(); renderBatch(); if (s.el) render(s); focusCursor();
+    }
   });
   document.getElementById("jump").addEventListener("click", function () { document.getElementById("cmds").scrollIntoView({ behavior: "smooth", block: "start" }); });
   document.getElementById("copy").addEventListener("click", function () {
@@ -422,29 +571,13 @@ section.q { display:flex; flex-direction:column; gap:10px; }
     var fail = function () { var pre = document.getElementById("out"), range = document.createRange(); range.selectNodeContents(pre); var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range); document.getElementById("cmds").scrollIntoView({ block: "start" }); b.textContent = "Selected: press copy"; };
     try { navigator.clipboard.writeText(text).then(function () { b.textContent = "Copied"; setTimeout(function () { b.textContent = "Copy choices"; }, 1600); }, fail); } catch (err) { fail(); }
   });
-  function auto() {
-    var host = document.getElementById("s-auto"), A = D.auto, gone = A.filter(function (a) { return a.v !== "serve"; }).length;
-    var said = { serve: "Added as a tentative rule", covered: "Dismissed: already covered", setup: "Dismissed: about one session or period", not: "Dismissed: not a standing instruction" };
-    host.appendChild(el("div", "qhead", '<h2>Decided by ctx this week</h2><span class="count">' + A.length + ' decision' + (A.length === 1 ? '' : 's') + ' · ' + gone + ' dismissed · ' + (A.length - gone) + ' added</span>'));
-    host.appendChild(el("p", "note", "Proposed rules ctx's automatic judge decided without asking you. It leans toward dismissing: a dismissed proposal is not raised again, and an added one is given to agents as a tentative rule until you stop saying it. Run the command beside a row to reverse it."));
-    var list = el("div", "list");
-    if (!A.length) list.appendChild(el("div", "empty", "ctx decided nothing by itself in the last seven days."));
-    A.forEach(function (a) {
-      list.appendChild(el("div", "row" + (a.u ? " done-no" : ""),
-        '<div class="main"><span class="title">' + esc(a.t) + '</span><span class="meta">#' + a.id + ' · ' + esc(a.p) + ' · ' + esc(ago(a.d)) + '</span></div>' +
-        '<div class="ev"><span class="why"><b>' + esc(said[a.v] || a.v) + ':</b> ' + esc(a.why) + '</span>' + (a.q ? '<span>Covered by: <q>' + esc(a.q) + '</q></span>' : '') + '</div>' +
-        (a.u ? '<span class="note">undone</span>' : '<code class="undo">ctx rules undo ' + a.id + '</code>')));
-    });
-    host.appendChild(list);
-  }
-  auto();
-  s_held = SEC[2];
-  var T = D.tot, lead = T.rules + (T.rules === 1 ? " proposed rule" : " proposed rules") + " and " + T.conf + (T.conf === 1 ? " document conflict" : " document conflicts") + " waiting for you.";
+  var T = D.tot, sugg = D.held.filter(change).length + D.hooks.filter(change).length;
   document.getElementById("kicker").textContent = "ctx · decisions · your archive as of " + nice(T.today);
-  document.getElementById("head").textContent = T.rules + T.conf === 0 ? "Nothing is waiting for you: no proposed rules and no document conflicts." : "ctx has " + lead + (T.accepted + T.rejected ? " So far you have accepted " + T.accepted + " and rejected " + T.rejected + " of the rules it proposed." : "");
-  var fill = Object.assign({ from: nice(D.span[0]), to: nice(D.span[1]) }, T);
-  Array.prototype.forEach.call(document.querySelectorAll("[data-t]"), function (n) { var v = fill[n.getAttribute("data-t")]; n.textContent = typeof v === "number" ? num(v) : v; });
-  SEC.forEach(render); totals();
+  document.getElementById("head").textContent = D.head;
+  document.getElementById("batch").textContent = D.batch;
+  document.getElementById("batch").hidden = !D.batch;
+  document.getElementById("status-n").textContent = "· " + plural(D.held.length, "project") + " · " + plural(D.hooks.length, "hook") + " · " + plural(D.weeks.length, "week") + "; " + (sugg ? plural(sugg, "change") + " suggested" : "no changes suggested");
+  renderNeed(); renderBatch(); renderAuto(); render(BY.held); render(BY.hooks); totals();
 })();
 </script>
 </body>
