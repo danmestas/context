@@ -2319,22 +2319,93 @@ static void finding_add(sqlite3_stmt *ins, const char *rule, const char *v, size
 
 static void audit_tickets(sqlite3 *db);
 
-/* ctx audit [--all] [--known] [--tickets] [--limit N] | ctx audit --allow ID [NOTE]. Exits 1 if any finding is open. */
+/* ctx audit [--all] [--known] [--tickets] [--limit N] | ctx audit --allow ID [NOTE] | ctx audit --context ID. Exits 1 if any finding is open. */
+/* A token printed around a finding: long ones become their shape, never their value. Plain
+   lowercase words stay, since a word of that kind carries the context and no secret. */
+#define CONTEXT_TOKEN_MIN 12
+static void context_token(const char *s, size_t n) {
+  if (n < CONTEXT_TOKEN_MIN || (classes(s, n) == 1 && entropy(s, n) < 3.5)) {
+    fwrite(s, 1, n, stdout);
+    return;
+  }
+  int m = classes(s, n);
+  printf("<len=%zu%s%s%s%s>", n, m & 1 ? " lower" : "", m & 2 ? " upper" : "", m & 4 ? " digit" : "",
+         m & 8 ? " symbol" : "");
+}
+
+/* Shows the text around finding ID: the finding itself as its shape, and every other long token
+   masked too, so a person or an agent can judge it without ever seeing a value. */
+#define CONTEXT_SPAN 300
+static int audit_context(sqlite3 *db, sqlite3_int64 id) {
+  sqlite3_stmt *q = db_prepare(db,
+      "SELECT f.fingerprint, f.shape, f.rule, f.chunk, coalesce(f.project,''), c.body FROM ctx_audit_finding f"
+      " JOIN ctx_chunk c ON c.id = f.chunk WHERE f.id = ?1");
+  sqlite3_bind_int64(q, 1, id);
+  if (sqlite3_step(q) != SQLITE_ROW) {
+    sqlite3_finalize(q);
+    die("no finding #%lld, or its turn is gone", (long long)id);
+  }
+  const char *fp = (const char *)sqlite3_column_text(q, 0), *shape = (const char *)sqlite3_column_text(q, 1);
+  const char *body = (const char *)sqlite3_column_blob(q, 5);
+  size_t n = (size_t)sqlite3_column_bytes(q, 5), len = 0;
+  const char *l = shape ? strstr(shape, "len=") : NULL;
+  if (l) len = (size_t)strtoull(l + 4, NULL, 10);
+  size_t at = n;
+  for (size_t i = 0; body && len && i + len <= n && at == n; i++) {
+    char hex[17];
+    snprintf(hex, sizeof hex, "%016llx", fingerprint(body + i, len));
+    if (!strcmp(hex, fp)) at = i;
+  }
+  printf("#%lld turn %lld %s %s %s\n", (long long)id, sqlite3_column_int64(q, 3), sqlite3_column_text(q, 4),
+         sqlite3_column_text(q, 2), shape);
+  if (at == n) {
+    sqlite3_finalize(q);
+    die("finding #%lld is no longer in its turn", (long long)id);
+  }
+  size_t from = at > CONTEXT_SPAN ? at - CONTEXT_SPAN : 0, to = at + len + CONTEXT_SPAN < n ? at + len + CONTEXT_SPAN : n;
+  for (size_t i = from; i < to;) {
+    if (i == at) {
+      int m = classes(body + at, len);
+      printf("<<finding len=%zu%s%s%s%s entropy=%.1f>>", len, m & 1 ? " lower" : "", m & 2 ? " upper" : "",
+             m & 4 ? " digit" : "", m & 8 ? " symbol" : "", entropy(body + at, len));
+      i = at + len;
+      continue;
+    }
+    size_t e = span(body, i < at ? at : to, i, c_token);
+    if (e > i) {
+      context_token(body + i, e - i);
+      i = e;
+    } else {
+      putchar(body[i] == '\r' ? ' ' : body[i]);
+      i++;
+    }
+  }
+  putchar('\n');
+  sqlite3_finalize(q);
+  return 0;
+}
+
 static int cmd_audit(int argc, char **argv) {
   int all = 0, use_known = 0, limit = 30, tickets = 0;
-  sqlite3_int64 allow = 0;
+  sqlite3_int64 allow = 0, context = 0;
   const char *note = "";
   for (int i = 0; i < argc; i++) {
     if (!strcmp(argv[i], "--all")) all = 1;
     else if (!strcmp(argv[i], "--known")) use_known = 1;
     else if (!strcmp(argv[i], "--tickets")) tickets = 1;
+    else if (!strcmp(argv[i], "--context") && i + 1 < argc) context = atoll(argv[++i]);
     else if (!strcmp(argv[i], "--limit") && i + 1 < argc) limit = atoi(argv[++i]);
     else if (!strcmp(argv[i], "--allow") && i + 1 < argc) {
       allow = atoll(argv[++i]);
       if (i + 1 < argc) note = argv[++i];
-    } else die("usage: ctx audit [--all] [--known] [--tickets] [--limit N] | --allow ID [NOTE]");
+    } else die("usage: ctx audit [--all] [--known] [--tickets] [--limit N] | --allow ID [NOTE] | --context ID");
   }
   sqlite3 *db = ctx_open();
+  if (context) {
+    int rc = audit_context(db, context);
+    sqlite3_close(db);
+    return rc;
+  }
   if (allow) {
     sqlite3_stmt *u = db_prepare(db,
         "UPDATE ctx_audit_finding SET status = 'allowed', note = ?2 WHERE (rule, fingerprint) ="
@@ -2387,6 +2458,20 @@ static int cmd_audit(int argc, char **argv) {
   sqlite3_finalize(q);
   sqlite3_finalize(ins);
   db_exec(db, "BEGIN IMMEDIATE");
+  /* A scan that covered every turn replaces the open findings of the rules it ran: after a rebuild
+     renumbers turns, the old rows name the wrong turn and would never close. Allowed ones stay. */
+  const char *stale = "DELETE FROM ctx_audit_finding WHERE status = 'open' AND rule %s 'known' AND NOT EXISTS"
+                      " (SELECT 1 FROM temp.f f WHERE f.rule = ctx_audit_finding.rule AND f.fingerprint ="
+                      " ctx_audit_finding.fingerprint AND f.chunk = ctx_audit_finding.chunk)";
+  char sql[512];
+  if (cursor == 0) {
+    snprintf(sql, sizeof sql, stale, "!=");
+    db_exec(db, sql);
+  }
+  if (use_known) {
+    snprintf(sql, sizeof sql, stale, "=");
+    db_exec(db, sql);
+  }
   int before = db_int(db, "SELECT count(*) FROM ctx_audit_finding");
   db_exec(db,
           "INSERT OR IGNORE INTO ctx_audit_finding(rule, fingerprint, chunk, project, day, shape, status, note)"
@@ -10164,6 +10249,7 @@ static const char *const derived_objects[] = {
 static void rebuild_derived(sqlite3 *db) {
   db_exec(db, "BEGIN IMMEDIATE");
   db_exec(db, "DELETE FROM ctx_meta WHERE key IN ('artifact_seen', 'artifact_seen_publisher')"); /* chunk ids change */
+  db_exec(db, "UPDATE ctx_audit_run SET to_id = 0"); /* so the next audit scans every renumbered turn again */
   for (int i = 0; derived_objects[i]; i++) {
     char sql[96];
     snprintf(sql, sizeof sql, "DROP %.*s IF EXISTS %s", (int)strcspn(derived_objects[i], " "), derived_objects[i],
@@ -10215,7 +10301,7 @@ static int usage(void) {
         "       ctx archive TRANSCRIPT\n"
         "       ctx search [--all] [--history] [--as-of DATE] [--limit N] WORDS...\n"
         "       ctx turn ID [BEFORE [AFTER]] [--full]\n"
-        "       ctx audit [--all] [--known] [--tickets] [--limit N] | --allow ID [NOTE]\n"
+        "       ctx audit [--all] [--known] [--tickets] [--limit N] | --allow ID [NOTE] | --context ID\n"
         "       ctx ticket new|ready|show|claim|done|drop|offer ...\n"
         "       ctx project add NAME [--root DIR] [--import FILE | --clone URL] [--remote URL] | list | pull NAME [--from URL]\n"
         "       ctx source add FILE --origin WHERE --class CLASS [--as PATH] | supersede OLD | uses PATH | check\n"
