@@ -1144,6 +1144,8 @@ EOF
 
 i=0; while [ ! -e "$T/hook.sqlite.scan" ] && [ $i -lt 60 ]; do sleep 0.5; i=$((i+1)); done
 [ -e "$T/hook.sqlite.scan" ] || fail "a turn's Stop hook runs the hourly scan, so long sessions get it too"
+# That scan runs detached; let it finish before the next test scans the same archive.
+i=0; while pgrep -f "$CTX hook" >/dev/null && [ $i -lt 240 ]; do sleep 0.5; i=$((i+1)); done
 
 # Junk on stdin never disturbs a session.
 echo 'not json' | "$CTX" hook || fail "hook on junk input"
