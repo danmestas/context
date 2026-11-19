@@ -6,6 +6,7 @@ CTX=${CTX:-$PWD/ctx}
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT INT TERM
 CLAUDE_CONFIG_DIR="$T/claude"; export CLAUDE_CONFIG_DIR # never the real transcripts, memory or CLAUDE.md
+CTX_PI_ROOTS="$T/no-pi"; export CTX_PI_ROOTS # nor the real Pi and pic sessions
 mkdir -p "$CLAUDE_CONFIG_DIR"
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
@@ -1143,6 +1144,8 @@ EOF
 
 i=0; while [ ! -e "$T/hook.sqlite.scan" ] && [ $i -lt 60 ]; do sleep 0.5; i=$((i+1)); done
 [ -e "$T/hook.sqlite.scan" ] || fail "a turn's Stop hook runs the hourly scan, so long sessions get it too"
+# That scan runs detached; let it finish before the next test scans the same archive.
+i=0; while pgrep -f "$CTX hook" >/dev/null && [ $i -lt 240 ]; do sleep 0.5; i=$((i+1)); done
 
 # Junk on stdin never disturbs a session.
 echo 'not json' | "$CTX" hook || fail "hook on junk input"
@@ -1155,6 +1158,86 @@ touch "$T/projects/p1/ignored.txt"
 [ "$("$CTX" scan "$T/projects")" = "1 transcripts read" ] || fail "scan reads a new transcript"
 [ "$("$CTX" scan "$T/projects")" = "0 transcripts read" ] || fail "scan has nothing left"
 [ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE turn='sc-1'")" = 1 ] || fail "scan stored the turn"
+
+# Pi and pic session files are archived like transcripts: found under ~/.pi/agent/sessions
+# and ~/.pic/sessions, one file per session, a header line and then entries.
+PH="$T/pihome"; PID="$PH/.pi/agent/sessions/--w-pi-proj--"; PCD="$PH/.pic/sessions/--w-pic-proj--"
+mkdir -p "$PID" "$PCD"
+pscan() { (unset CTX_PI_ROOTS; HOME="$PH" CLAUDE_CONFIG_DIR="$T/pi-noclaude" "$CTX" scan); }
+pq() { "$CTX" sql "$1"; }
+PIF="$PID/2026-06-03T10-00-00-000Z_pi0001.jsonl"
+cat > "$PIF" <<'EOF'
+{"type":"session","version":3,"id":"pi0001","timestamp":"2026-06-03T10:00:00.000Z","cwd":"/w/pi-proj"}
+{"type":"model_change","id":"e0","parentId":null,"timestamp":"2026-06-03T10:00:00.500Z","provider":"p","modelId":"m"}
+{"type":"message","id":"e1","parentId":"e0","timestamp":"2026-06-03T10:00:01.000Z","message":{"role":"user","content":"please rename the quokka module","timestamp":1}}
+{"type":"message","id":"e2","parentId":"e1","timestamp":"2026-06-03T10:00:02.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hiddenthoughtword"},{"type":"text","text":"renaming quokka now"},{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"git mv quokka.c wallaby.c"}}]}}
+{"type":"message","id":"e3","parentId":"e2","timestamp":"2026-06-03T10:00:03.000Z","message":{"role":"toolResult","toolCallId":"c1","toolName":"bash","content":[{"type":"text","text":"renamed wallaby output"},{"type":"image","data":"imagedatabytes","mimeType":"image/png"}],"isError":false}}
+{"type":"message","id":"e4","parentId":"e3","timestamp":"2026-06-03T10:00:04.000Z","message":{"role":"bashExecution","command":"ls numbat","output":"numbat.txt","exitCode":0,"cancelled":false,"truncated":false}}
+{"type":"compaction","id":"e5","parentId":"e4","timestamp":"2026-06-03T10:00:05.000Z","summary":"we renamed the platypus summary","firstKeptEntryId":"e1","tokensBefore":10}
+{"type":"branch_summary","id":"e6","parentId":"e5","timestamp":"2026-06-03T10:00:06.000Z","fromId":"e2","summary":"branch echidna summary"}
+{"type":"session_info","id":"e7","parentId":"e6","timestamp":"2026-06-03T10:00:07.000Z","name":"old name"}
+{"type":"session_info","id":"e8","parentId":"e7","timestamp":"2026-06-03T10:00:08.000Z","name":"Quokka rename"}
+{"type":"custom_message","id":"e9","parentId":"e8","timestamp":"2026-06-03T10:00:09.000Z","customType":"pic.instructions","content":"bandicoot instructions","display":false}
+{"type":"label","id":"ea","parentId":"e9","timestamp":"2026-06-03T10:00:10.000Z","targetId":"e1","label":"dingolabel"}
+{"type":"thinking_level_change","id":"eb","parentId":"ea","timestamp":"2026-06-03T10:00:11.000Z","thinkingLevel":"high"}
+{"type":"custom","id":"ec","parentId":"eb","timestamp":"2026-06-03T10:00:12.000Z","customType":"x","data":{"w":"cassowarydata"}}
+{"type":"message","id":"ed","parentId":"e1","timestamp":"2026-06-03T10:00:13.000Z","message":{"role":"user","content":[{"type":"text","text":"a forked kookaburra branch"},{"type":"image","data":"x","mimeType":"image/png"}]}}
+EOF
+# pic writes the same format; this one is version 1, with no version and no entry ids.
+PCF="$PCD/2026-06-04T09-00-00-000Z_pic0001.jsonl"
+cat > "$PCF" <<'EOF'
+{"type":"session","id":"pic0001","timestamp":"2026-06-04T09:00:00.000Z","cwd":"/w/pic-proj"}
+{"type":"message","timestamp":"2026-06-04T09:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"tell me about the wombat"}]}}
+{"type":"message","timestamp":"2026-06-04T09:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"the wombat is square"}]}}
+EOF
+[ "$(pscan)" = "2 transcripts read" ] || fail "scan reads a Pi and a pic session under the default roots: $(pscan)"
+[ "$(pq "SELECT session || ' ' || project FROM ctx_capture WHERE path = '$PIF'")" = "pi-pi0001 pi-proj" ] || fail "a Pi session is keyed by its header id, its project from its cwd: $(pq "SELECT session, project FROM ctx_capture")"
+[ "$(pq "SELECT project FROM ctx_capture WHERE path = '$PCF'")" = "pic-proj" ] || fail "a pic session's project"
+[ "$(pq "SELECT group_concat(heading, ' ') FROM (SELECT heading FROM ctx_chunk WHERE turn GLOB 'pi-pi0001/*' ORDER BY id)")" = "user assistant tool tool meta meta meta meta user" ] \
+  || fail "Pi entries become turns in file order: $(pq "SELECT group_concat(heading || ':' || turn, ' ') FROM ctx_chunk WHERE turn GLOB 'pi-*'")"
+[ "$(pq "SELECT count(*) FROM ctx_chunk WHERE body GLOB '*hiddenthoughtword*' OR body GLOB '*imagedatabytes*' OR body GLOB '*bandicoot*' OR body GLOB '*dingolabel*' OR body GLOB '*cassowarydata*'")" = 0 ] \
+  || fail "thinking, images, instructions, labels and custom data are not turns"
+pq "SELECT body FROM ctx_chunk WHERE turn = 'pi-pi0001/e2'" | grep -qF 'bash {"command":"git mv quokka.c wallaby.c"}' || fail "a tool call reads as its name and arguments: $(pq "SELECT body FROM ctx_chunk WHERE turn = 'pi-pi0001/e2'")"
+pq "SELECT body FROM ctx_chunk WHERE turn = 'pi-pi0001/e2'" | grep -q '^renaming quokka now$' || fail "an assistant turn keeps its text"
+[ "$(pq "SELECT body FROM ctx_chunk WHERE turn = 'pi-pi0001/e3'")" = "renamed wallaby output" ] || fail "a tool result keeps its text"
+pq "SELECT body FROM ctx_chunk WHERE turn = 'pi-pi0001/e4'" | grep -q 'ls numbat' && pq "SELECT body FROM ctx_chunk WHERE turn = 'pi-pi0001/e4'" | grep -q 'numbat.txt' || fail "a bash execution keeps its command and output"
+[ "$(pq "SELECT body FROM ctx_chunk WHERE turn = 'pi-pi0001/e8'")" = "Session name: Quokka rename" ] || fail "the session name is a note"
+[ "$(pq "SELECT at FROM ctx_chunk WHERE turn = 'pi-pi0001/e1'")" = "2026-06-03T10:00:01.000Z" ] || fail "a turn keeps its entry's time"
+[ "$(pq "SELECT count(*) FROM ctx_chunk WHERE turn GLOB 'pi-pic0001@*'")" = 2 ] || fail "a version 1 session's turns, which have no ids, are kept by position: $(pq "SELECT turn FROM ctx_chunk WHERE turn GLOB 'pi-pic*'")"
+"$CTX" search --all quokka | grep -q 'pi-proj session' || fail "ctx search finds a Pi turn: $("$CTX" search --all quokka)"
+"$CTX" search --all wombat | grep -q 'pic-proj session assistant' || fail "ctx search finds a pic turn"
+id=$(pq "SELECT id FROM ctx_chunk WHERE turn = 'pi-pi0001/e2'")
+"$CTX" turn "$id" 1 1 | grep -q "^--- #$id assistant 2026-06-03T10:00:02.000Z" || fail "ctx turn reads a Pi turn: $("$CTX" turn "$id" 1 1)"
+"$CTX" turn "$id" 1 1 | grep -q 'please rename the quokka module' || fail "ctx turn reads around a Pi turn"
+"$CTX" extract "$PIF" | grep -q '^--- pi-pi000 turn 2 assistant ' || fail "ctx extract reads a Pi file: $("$CTX" extract "$PIF" | grep '^---')"
+before=$(pq "SELECT count(*) FROM ctx_chunk")
+[ "$(pscan)" = "0 transcripts read" ] && [ "$(pq "SELECT count(*) FROM ctx_chunk")" = "$before" ] || fail "scanning again adds nothing"
+# Appending archives only what is new; a line still being written waits for its newline.
+printf '%s\n%s' '{"type":"message","id":"ee","parentId":"ed","timestamp":"2026-06-03T11:00:00.000Z","message":{"role":"assistant","content":[{"type":"text","text":"appended platypus reply"}]}}' \
+  '{"type":"message","id":"ef","parentId":"ee","timestamp":"2026-06-03T11:00:01.000Z","message":{"role":"user","content":"torn line"' >> "$PIF"
+[ "$(pscan)" = "1 transcripts read" ] || fail "an appended Pi file is read again"
+[ "$(pq "SELECT count(*) FROM ctx_chunk")" = "$((before + 1))" ] && [ "$(pq "SELECT count(*) FROM ctx_chunk WHERE turn = 'pi-pi0001/ee'")" = 1 ] || fail "appending archives only the new entry"
+[ "$(pq "SELECT offset FROM ctx_capture WHERE session = 'pi-pi0001'")" -lt "$(wc -c < "$PIF")" ] || fail "a torn last line is not consumed"
+printf '}}\n' >> "$PIF"
+pscan >/dev/null
+[ "$(pq "SELECT body FROM ctx_chunk WHERE turn = 'pi-pi0001/ef'")" = "torn line" ] && [ "$(pq "SELECT count(*) FROM ctx_chunk")" = "$((before + 2))" ] || fail "a completed line is archived once"
+# A rewritten head is read again from the start, and finds every turn already stored.
+sed -i.bak '1s/"cwd":"\/w\/pi-proj"/"cwd":"\/w\/pi-proj","parentSession":"elsewhere"/' "$PIF" && rm "$PIF.bak"
+[ "$(pscan)" = "1 transcripts read" ] && [ "$(pq "SELECT count(*) FROM ctx_chunk")" = "$((before + 2))" ] || fail "a rewritten Pi file is read again without copies"
+# A version 2 file says hookMessage for what version 3 calls custom: both are notes.
+mkdir -p "$PID/../--w-pi-two--"
+cat > "$PID/../--w-pi-two--/s.jsonl" <<'EOF'
+{"type":"session","version":2,"id":"pi0002","timestamp":"2026-06-05T09:00:00.000Z","cwd":"/w/pi-two"}
+{"type":"message","id":"h1","parentId":null,"timestamp":"2026-06-05T09:00:01.000Z","message":{"role":"hookMessage","customType":"x","content":"a hook said tapir","display":true}}
+{"type":"message","id":"h2","parentId":"h1","timestamp":"2026-06-05T09:00:02.000Z","message":{"role":"custom","customType":"x","content":[{"type":"text","text":"an extension said tapir"}],"display":true}}
+EOF
+pscan >/dev/null
+[ "$(pq "SELECT group_concat(heading, ' ') FROM ctx_chunk WHERE turn GLOB 'pi-pi0002/*'")" = "meta meta" ] || fail "hook and extension messages are notes"
+# The roots are configurable; a missing root is skipped.
+mkdir -p "$T/pi-alt/--w-alt--"
+sed 's/"id":"pic0001"/"id":"alt0001"/' "$PCF" > "$T/pi-alt/--w-alt--/a.jsonl"
+[ "$(CTX_PI_ROOTS="$T/pi-missing:$T/pi-alt" CLAUDE_CONFIG_DIR="$T/pi-noclaude" "$CTX" scan)" = "1 transcripts read" ] || fail "CTX_PI_ROOTS names the roots"
+[ "$(pq "SELECT count(*) FROM ctx_chunk WHERE turn GLOB 'pi-alt0001@*'")" = 2 ] || fail "a configured root is archived"
 
 # The deadline reaches the runs a scan starts. ctx re-runs its own argv[0], so a
 # stand-in reports the time its own alarm has left. No timing is involved.

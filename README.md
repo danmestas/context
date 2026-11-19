@@ -12,8 +12,8 @@ file per machine.
 
 ## What it does
 
-- **Archives sessions.** Hooks capture each session as it runs; a periodic scan
-  catches anything missed. Tool output is kept, trimmed, and known secret shapes
+- **Archives sessions.** Hooks capture each Claude Code session as it runs; a
+  periodic scan catches anything missed, and Pi and pic sessions too. Tool output is kept, trimmed, and known secret shapes
   are replaced with `[REDACTED]` before anything is stored.
 - **Searches them.** `ctx search` ranks turns with SQLite's FTS5, this project
   first; `ctx turn` reads around a hit. The `ctx` skill teaches agents to do both.
