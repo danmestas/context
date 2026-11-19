@@ -35,6 +35,7 @@ This page lists what ctx has been measured to do. Every figure comes from a resu
 | Answering questions about past work | Passed its bar | Telling the agent at session start that an archive exists is worth about 7 questions in 90 and costs no extra tokens. The difference is borderline by a sign test (p = 0.052), so it is kept as likely but not proven. |
 | Reaching for the archive unprompted | Failed its bar | Rewording the triggers made no real difference (one question in 23), so the wording was not changed. Fresh agents already search about four times in five without being told. |
 | A reminder when a prompt refers to earlier work | Failed its bar | The reminder changed nothing because agents already searched every time. The hook exists but is off by default. This test cannot show what happens deep in a long session, where the reminder might matter more. |
+| Do agents work the docs tickets they are offered, and correctly? (before and after the offer change) | Failed its bar |  |
 | Finding standing instructions in what a person types | No bar | A small model finds about five in six standing instructions; cue words find one in six. About a quarter of what it proposes is not a rule, which is why a person accepts or rejects each proposal. |
 | Flagging rules that have gone stale | Passed its bar | The stronger model never flagged a rule that was still true, so it is the one ctx uses. It finds only a few of the stale rules, because most are never contradicted in conversation; a monthly review covers the rest. |
 | Which kinds of rule go stale | No bar | Status notes go stale within weeks and rules in a person's own words rarely do, so ctx fades by kind. Fading by age would have silenced about a quarter of rules that were still true. |
@@ -671,6 +672,41 @@ eval/skill_eval.py run --set all --only IDS --ask plain --cond C,R
 ```
 
 [Result file](../bench/results/recall-line.json)
+
+### Do agents work the docs tickets they are offered, and correctly? (before and after the offer change)
+
+Same benchmark run twice: v1 with the three-ticket offer, v2 with a one-line offer that says to claim and a done that is refused while the passages still disagree. v2 fixed claims, prods and closed-without-fix, and the offer costs fewer tokens, but agents still almost never take up docs tickets unless the user asks.
+
+- **Bar:** half of offer sessions close a ticket; 9 in 10 closures right and no real problem dropped; task no worse on paired runs; prods acknowledged within 2 tool calls every time. **Failed.**
+
+| Measure | Result |
+| --- | --- |
+| Sessions with the offer that closed a ticket | v1 3 of 36, v2 1 of 36 (bar 18 of 36) |
+| Closures judged correct | v1 44 of 48, v2 34 of 36 (most from the arm where the user asked for two tickets) |
+| Real problems closed without a fix | v1 3, v2 1 (bar 0; v2: 0 marked done without an edit (done refused 4 times), 1 dropped wrongly) |
+| Fixes judged wrong | v1 1, v2 1 |
+| User task score, offer against none | v1 9.44 against 9.42, v2 9.44 against 9.44 (sign test p = 1 both) |
+| Tokens per session, none against offer | v1 225k against 424k, v2 207k against 314k (+88% before, +52% after) |
+| Prods delivered | v1 4 of 9, v2 9 of 9 (v1 sessions that were not told to claim never claimed, so 5 prods could not be delivered) |
+| Prods acknowledged within 2 tool calls | v1 2 of 4 delivered, v2 4 of 9 (v2: 8 of 9 acknowledged at some point) |
+| Cost per closed ticket, asked arm | about $0.45 both (as Claude Code reports it for DeepSeek, not DeepSeek's own price) |
+| dagnats #1019 and #1023 fixes judged correct | 20 of 20 (v1 only) |
+
+Measured 2026-11-18; good until 2027-02-16.
+
+- repository: dagnats at 4b762048 (just before #1019), one fresh history-free copy per session
+- tickets: 82 confirmed conflict rows from the 2026-11-16 eval copy, filed by ctx itself: 65 open docs tickets, offered order shuffled per task
+- subject: DeepSeek V4.1 Flash in Claude Code, headless, sandboxed to the copy, with SessionStart ctx ticket offer and PostToolUse ctx hook post
+- tasks: 12 ordinary dagnats tasks (4 planted bugs, 4 add-a-test, 4 code questions), 3 repeats, offer against no tickets
+- extra arms: 13 sessions where the user also asks for two docs tickets to be worked, 4 more that also ask for a claim (for prods)
+- judges: Claude Opus with Read/Grep/Glob on the code for each closure; Claude Sonnet, blind, for the user's task
+- builds: v1 ctx before 9d509af1; v2 trunk after landing 9d509af1, every scratch archive rebuilt with it
+
+```sh
+DOCBENCH_V=-v2 ~/.ctx/eval/docbench/run.py run && judge.py tasks && judge.py closures; aggregate.py -v2
+```
+
+[Result file](../bench/results/docs-tickets.json)
 
 ## Rules
 
