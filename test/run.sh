@@ -7,6 +7,7 @@ T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT INT TERM
 CLAUDE_CONFIG_DIR="$T/claude"; export CLAUDE_CONFIG_DIR # never the real transcripts, memory or CLAUDE.md
 CTX_PI_ROOTS="$T/no-pi"; export CTX_PI_ROOTS # nor the real Pi and pic sessions
+CTX_PIC_DB="$T/no-pic.sqlite"; export CTX_PIC_DB # nor pic's real database
 mkdir -p "$CLAUDE_CONFIG_DIR"
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
@@ -1553,6 +1554,202 @@ sed 's/"id":"pic0001"/"id":"alt0001"/' "$PCF" > "$T/pi-alt/--w-alt--/a.jsonl"
 [ "$(CTX_PI_ROOTS="$T/pi-missing:$T/pi-alt" CLAUDE_CONFIG_DIR="$T/pi-noclaude" "$CTX" scan)" = "1 transcripts read" ] || fail "CTX_PI_ROOTS names the roots"
 [ "$(pq "SELECT count(*) FROM ctx_chunk WHERE turn GLOB 'pi-alt0001@*'")" = 2 ] || fail "a configured root is archived"
 
+# pic keeps its conversations as rows of ~/.pic/pic.sqlite: the same Pi lines, some deflated
+# the way SQLite Archive stores files (sz is the inflated size; a line as long as sz is raw).
+PICDB="$PH/.pic/pic.sqlite"
+cat > "$T/picrows.py" <<'EOF'
+# db conversation workspace first-seq file-or-dash ("-" reads lines on stdin)
+import sqlite3, sys, zlib
+db, conv, ws, seq, src = sys.argv[1:6]
+seq = int(seq)
+lines = (sys.stdin if src == "-" else open(src)).read().splitlines()
+c = sqlite3.connect(db)
+c.execute("CREATE TABLE IF NOT EXISTS picu_pi_session_line(conversation TEXT NOT NULL, seq INTEGER NOT NULL, workspace TEXT NOT NULL,"
+          " kind TEXT NOT NULL, entry INTEGER, sz INTEGER NOT NULL, line BLOB NOT NULL, PRIMARY KEY(conversation, seq))")
+for i, l in enumerate(lines):
+    raw = l.encode()
+    z = zlib.compress(raw)
+    stored = z if (seq + i) % 2 and len(z) < len(raw) else raw  # odd rows deflated, even rows raw
+    kind = l.split('"type":"', 1)[1].split('"', 1)[0]
+    c.execute("INSERT INTO picu_pi_session_line VALUES (?,?,?,?,?,?,?)", (conv, seq + i, ws, kind, None, len(raw), stored))
+c.commit()
+EOF
+picrows() { python3 "$T/picrows.py" "$@"; }
+picscan() { (unset CTX_PI_ROOTS CTX_PIC_DB; HOME="$PH" CLAUDE_CONFIG_DIR="$T/pi-noclaude" "$CTX" scan); }
+# A missing database, a database without the table, and an empty CTX_PIC_DB are nothing to archive.
+[ "$(picscan)" = "0 transcripts read" ] || fail "a missing pic database is skipped: $(picscan)"
+python3 -c "import sqlite3,sys; sqlite3.connect(sys.argv[1]).execute('CREATE TABLE other(x)')" "$PICDB"
+[ "$(picscan 2>&1)" = "0 transcripts read" ] || fail "a pic database without the table is skipped: $(picscan 2>&1)"
+rm "$PICDB"
+picrows "$PICDB" picdb01 /w/picdb-proj 0 - <<'EOF'
+{"type":"session","version":3,"id":"picdb01","timestamp":"2026-06-06T08:00:00.000Z","cwd":"/w/picdb-proj"}
+{"type":"message","id":"r1","parentId":null,"timestamp":"2026-06-06T08:00:01.000Z","message":{"role":"user","content":"where does the aardvark sleep, aardvark aardvark aardvark aardvark"}}
+{"type":"message","id":"r2","parentId":"r1","timestamp":"2026-06-06T08:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"the pangolin sleeps underground"}]}}
+{"type":"compaction","id":"r3","parentId":"r2","timestamp":"2026-06-06T08:00:03.000Z","summary":"we discussed the aardvark and the pangolin, the aardvark and the pangolin","firstKeptEntryId":"r1","tokensBefore":10}
+EOF
+[ "$(python3 -c "import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute('SELECT sum(sz <> length(line)), sum(sz = length(line)) FROM picu_pi_session_line').fetchone())" "$PICDB")" = "(2, 2)" ] \
+  || fail "the fixture holds deflated and raw lines"
+[ "$(CTX_PIC_DB= HOME="$PH" CLAUDE_CONFIG_DIR="$T/pi-noclaude" CTX_PI_ROOTS= "$CTX" scan)" = "0 transcripts read" ] || fail "an empty CTX_PIC_DB skips pic's database"
+[ "$(pq "SELECT count(*) FROM ctx_chunk WHERE turn GLOB 'pi-picdb01/*'")" = 0 ] || fail "an empty CTX_PIC_DB archives nothing"
+# Conversations that pic also wrote as files, already archived from them, come over as rows too.
+picrows "$PICDB" pi0001 /w/pi-proj 0 "$PIF"
+picrows "$PICDB" pic0001 /w/pic-proj 0 "$PCF"
+before=$(pq "SELECT count(*) FROM ctx_chunk")
+[ "$(picscan)" = "3 transcripts read" ] || fail "scan reads each pic conversation from the database by default: $(picscan)"
+[ "$(pq "SELECT group_concat(heading || ':' || turn, ' ') FROM (SELECT heading, turn FROM ctx_chunk WHERE turn GLOB 'pi-picdb01*' ORDER BY id)")" = "user:pi-picdb01/r1 assistant:pi-picdb01/r2 meta:pi-picdb01/r3" ] \
+  || fail "rows become the turns a file would: $(pq "SELECT group_concat(heading || ':' || turn, ' ') FROM ctx_chunk WHERE turn GLOB 'pi-picdb01*'")"
+[ "$(pq "SELECT count(*) FROM ctx_chunk")" = "$((before + 3))" ] || fail "conversations archived from files are not stored again: $(pq "SELECT turn FROM ctx_chunk WHERE id > (SELECT max(id) - 8 FROM ctx_chunk)")"
+[ "$(pq "SELECT session || ' ' || project FROM ctx_capture WHERE session = 'pi-picdb01'")" = "pi-picdb01 picdb-proj" ] || fail "a pic conversation's project is its workspace"
+"$CTX" search --all aardvark | grep -q 'picdb-proj session user' || fail "ctx search finds a deflated line's text: $("$CTX" search --all aardvark)"
+"$CTX" search --all pangolin | grep -q 'picdb-proj session assistant' || fail "ctx search finds a raw line's text: $("$CTX" search --all pangolin)"
+before=$(pq "SELECT count(*) FROM ctx_chunk")
+[ "$(picscan)" = "0 transcripts read" ] && [ "$(pq "SELECT count(*) FROM ctx_chunk")" = "$before" ] || fail "scanning pic's rows again adds nothing"
+# A new row adds one turn; a row that cannot be inflated, or claims a huge size, is skipped.
+python3 - "$PICDB" <<'EOF'
+import sqlite3, sys, zlib
+c = sqlite3.connect(sys.argv[1])
+bad = b"not deflate data at all"
+c.execute("INSERT INTO picu_pi_session_line VALUES ('picdb01', 4, '/w/picdb-proj', 'message', NULL, 999, ?)", (bad,))
+c.execute("INSERT INTO picu_pi_session_line VALUES ('picdb01', 5, '/w/picdb-proj', 'message', NULL, 1 << 40, ?)", (bad,))
+l = '{"type":"message","id":"r6","parentId":"r3","timestamp":"2026-06-06T09:00:00.000Z","message":{"role":"user","content":"a late question about the tapir, tapir, tapir, tapir"}}'.encode()
+c.execute("INSERT INTO picu_pi_session_line VALUES ('picdb01', 6, '/w/picdb-proj', 'message', 7, ?, ?)", (len(l), zlib.compress(l)))
+c.commit()
+EOF
+[ "$(picscan 2>/dev/null)" = "1 transcripts read" ] || fail "a new row is read: $(picscan 2>&1)"
+[ "$(pq "SELECT count(*) FROM ctx_chunk")" = "$((before + 1))" ] && [ "$(pq "SELECT count(*) FROM ctx_chunk WHERE turn = 'pi-picdb01/r6'")" = 1 ] || fail "a new row adds one turn"
+[ "$(pq "SELECT seq FROM ctx_pic_cursor WHERE conversation = 'picdb01'")" = 6 ] || fail "the cursor is the last seq read"
+# The cursor is state: a rebuild keeps it, and the scan after finds nothing new.
+pictouch() { python3 -c "import os,sys,time; os.utime(sys.argv[1], None)" "$PICDB"; } # changed, so the scan looks
+"$CTX" rebuild >/dev/null
+pictouch
+[ "$(picscan)" = "0 transcripts read" ] && [ "$(pq "SELECT count(*) FROM ctx_chunk")" = "$((before + 1))" ] || fail "a rebuild keeps pic's cursor"
+# pic.sqlite is opened read-only: a database ctx cannot write to is still read.
+picrows "$PICDB" picdb02 /w/picdb-proj 0 - <<'EOF'
+{"type":"session","version":3,"id":"picdb02","timestamp":"2026-06-07T08:00:00.000Z","cwd":"/w/picdb-proj"}
+{"type":"message","id":"q1","parentId":null,"timestamp":"2026-06-07T08:00:01.000Z","message":{"role":"user","content":"read only okapi"}}
+EOF
+chmod a-w "$PICDB"
+[ "$(picscan)" = "1 transcripts read" ] && [ "$(pq "SELECT count(*) FROM ctx_chunk WHERE turn = 'pi-picdb02/q1'")" = 1 ] || fail "a read-only pic database is archived"
+chmod u+w "$PICDB"
+# An unchanged database is not read at all: a row slipped in with the size and time kept is not seen
+# until the database changes again.
+python3 - "$PICDB" <<'EOF'
+import os, sqlite3, sys
+p = sys.argv[1]
+st = os.stat(p)
+counter = open(p, "rb").read(28)[24:28]  # the file change counter, put back too
+c = sqlite3.connect(p)
+l = b'{"type":"message","id":"q2","parentId":"q1","timestamp":"2026-06-07T08:00:02.000Z","message":{"role":"user","content":"a quiet quoll"}}'
+c.execute("INSERT INTO picu_pi_session_line VALUES ('picdb02', 2, '/w/picdb-proj', 'message', NULL, ?, ?)", (len(l), l))
+c.commit(); c.close()
+assert os.stat(p).st_size == st.st_size, "the row fits the page"
+with open(p, "r+b") as f:
+    f.seek(24); f.write(counter)
+os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns))
+EOF
+[ "$(picscan)" = "0 transcripts read" ] && [ "$(pq "SELECT count(*) FROM ctx_chunk WHERE turn = 'pi-picdb02/q2'")" = 0 ] || fail "an unchanged pic database is not read"
+pictouch
+[ "$(picscan)" = "1 transcripts read" ] && [ "$(pq "SELECT count(*) FROM ctx_chunk WHERE turn = 'pi-picdb02/q2'")" = 1 ] || fail "a changed pic database is read"
+# The session is the header's id, not the conversation column: a conversation pic keys otherwise,
+# archived earlier from its file, is not stored again, and rows past the header keep the id.
+mkdir -p "$T/pic-hdr"
+cat > "$T/pic-hdr/h.jsonl" <<'EOF'
+{"type":"session","version":3,"id":"hdr0009","timestamp":"2026-06-08T08:00:00.000Z","cwd":"/w/picdb-proj"}
+{"type":"message","id":"h1","parentId":null,"timestamp":"2026-06-08T08:00:01.000Z","message":{"role":"user","content":"the header names the gecko"}}
+EOF
+"$CTX" archive "$T/pic-hdr/h.jsonl" >/dev/null
+before=$(pq "SELECT count(*) FROM ctx_chunk")
+picrows "$PICDB" pdbconv9 /w/picdb-proj 0 "$T/pic-hdr/h.jsonl"
+[ "$(picscan)" = "1 transcripts read" ] && [ "$(pq "SELECT count(*) FROM ctx_chunk")" = "$before" ] || fail "a conversation keyed apart from its header id is not stored twice"
+[ "$(pq "SELECT count(*) FROM ctx_capture WHERE session = 'pi-pdbconv9'")" = 0 ] || fail "the session is not named after the conversation column"
+echo '{"type":"message","id":"h2","parentId":"h1","timestamp":"2026-06-08T08:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"a later gecko"}]}}' | picrows "$PICDB" pdbconv9 /w/picdb-proj 2 -
+[ "$(picscan)" = "1 transcripts read" ] && [ "$(pq "SELECT count(*) FROM ctx_chunk WHERE turn = 'pi-hdr0009/h2'")" = 1 ] || fail "a later row keeps the header's id: $(pq "SELECT turn FROM ctx_chunk WHERE turn GLOB '*h2'")"
+# A skipped row still moves the position, so a later line without an id is keyed as in its file.
+cat > "$T/pic-hdr/v1.jsonl" <<'EOF'
+{"type":"session","id":"pos0001","timestamp":"2026-06-09T08:00:00.000Z","cwd":"/w/picdb-proj"}
+{"type":"message","timestamp":"2026-06-09T08:00:01.000Z","message":{"role":"user","content":"a lost marmot"}}
+{"type":"message","timestamp":"2026-06-09T08:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"a kept marmot"}]}}
+EOF
+"$CTX" archive "$T/pic-hdr/v1.jsonl" >/dev/null
+before=$(pq "SELECT count(*) FROM ctx_chunk")
+python3 - "$PICDB" "$T/pic-hdr/v1.jsonl" <<'EOF'
+import sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+for i, l in enumerate(open(sys.argv[2]).read().splitlines()):
+    raw = l.encode()
+    c.execute("INSERT INTO picu_pi_session_line VALUES ('pos0001', ?, '/w/picdb-proj', 'message', NULL, ?, ?)",
+              (i, len(raw), b"garbage, not deflate" if i == 1 else raw))
+c.commit()
+EOF
+[ "$(picscan 2>"$T/pic-skip.err")" = "1 transcripts read" ] && [ "$(pq "SELECT count(*) FROM ctx_chunk")" = "$before" ] || fail "a skipped row keeps later positions aligned with the file: $(pq "SELECT turn FROM ctx_chunk WHERE turn GLOB 'pi-pos0001*'")"
+grep -q 'pos0001 line 1' "$T/pic-skip.err" || fail "a skipped row is reported"
+# A row claiming more than 64 MB is skipped, and the warning says how much.
+python3 - "$PICDB" <<'EOF'
+import sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+c.execute("INSERT INTO picu_pi_session_line VALUES ('pos0001', 3, '/w/picdb-proj', 'message', NULL, 1 << 30, x'00')")
+c.commit()
+EOF
+picscan 2>&1 >/dev/null | grep -q '1073741824 bytes' || fail "a huge row's warning states its size"
+# ctx exclude --project keeps out a project whose conversations came as pic rows.
+picrows "$PICDB" picx01 /w/picx-proj 0 - <<'EOF'
+{"type":"session","version":3,"id":"picx01","timestamp":"2026-06-10T08:00:00.000Z","cwd":"/w/picx-proj"}
+{"type":"message","id":"x1","parentId":null,"timestamp":"2026-06-10T08:00:01.000Z","message":{"role":"user","content":"an excluded ibex"}}
+EOF
+picscan >/dev/null
+[ "$(pq "SELECT count(*) FROM ctx_chunk WHERE turn = 'pi-picx01/x1'")" = 1 ] || fail "a pic project is archived before it is excluded"
+"$CTX" exclude --project picx-proj >/dev/null || fail "a pic project can be excluded"
+echo '{"type":"message","id":"x2","parentId":"x1","timestamp":"2026-06-10T08:00:02.000Z","message":{"role":"user","content":"a second excluded ibex"}}' | picrows "$PICDB" picx01 /w/picx-proj 2 -
+picscan >/dev/null
+[ "$(pq "SELECT count(*) FROM ctx_chunk WHERE turn = 'pi-picx01/x2'")" = 0 ] || fail "an excluded pic project archives nothing more"
+[ "$(pq "SELECT count(*) FROM ctx_exclude WHERE slug = '.pic'")" = 0 ] || fail "pic's own folder is not excluded"
+# Removing the exclusion lets the held-back row in at the next scan, though pic wrote nothing since.
+"$CTX" exclude --remove --project picx-proj >/dev/null || fail "a pic project's exclusion can be removed"
+picscan >/dev/null
+[ "$(pq "SELECT count(*) FROM ctx_chunk WHERE turn = 'pi-picx01/x2'")" = 1 ] || fail "removing an exclusion lets pic's held rows in"
+# A conversation whose header row cannot be read is skipped, not named after its conversation column.
+python3 - "$PICDB" <<'EOF'
+import sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+l = b'{"type":"message","id":"n1","parentId":null,"timestamp":"2026-06-12T08:00:01.000Z","message":{"role":"user","content":"a headless newt"}}'
+c.execute("INSERT INTO picu_pi_session_line VALUES ('nohdr1', 0, '/w/picdb-proj', 'session', NULL, 500, x'0102')")
+c.execute("INSERT INTO picu_pi_session_line VALUES ('nohdr1', 1, '/w/picdb-proj', 'message', NULL, ?, ?)", (len(l), l))
+c.commit()
+EOF
+picscan >/dev/null 2>&1
+[ "$(pq "SELECT count(*) FROM ctx_chunk WHERE turn GLOB '*/n1'")" = 0 ] && [ "$(pq "SELECT count(*) FROM ctx_capture WHERE session = 'pi-nohdr1'")" = 0 ] \
+  || fail "a conversation without a readable header is skipped"
+# A database in WAL mode is read while pic writes to it, and reading leaves no files beside it.
+WALDB="$T/picwal/pic.sqlite"; mkdir -p "$T/picwal"
+python3 "$T/picrows.py" "$WALDB" walc01 /w/picdb-proj 0 - <<'EOF'
+{"type":"session","version":3,"id":"walc01","timestamp":"2026-06-11T08:00:00.000Z","cwd":"/w/picdb-proj"}
+EOF
+python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('PRAGMA journal_mode=WAL'); c.close()" "$WALDB"
+[ ! -e "$WALDB-wal" ] && [ ! -e "$WALDB-shm" ] || fail "the WAL fixture starts closed"
+walscan() { CTX_PIC_DB="$WALDB" CTX_PI_ROOTS= CLAUDE_CONFIG_DIR="$T/pi-noclaude" "$CTX" scan; }
+[ "$(walscan)" = "1 transcripts read" ] || fail "a closed WAL database is read"
+[ ! -e "$WALDB-wal" ] && [ ! -e "$WALDB-shm" ] || fail "reading a closed WAL database leaves no files: $(ls "$T/picwal")"
+python3 - "$WALDB" "$CTX" "$T" <<'EOF' || fail "a WAL database is read while pic writes"
+import os, sqlite3, subprocess, sys
+db, ctx, T = sys.argv[1:4]
+env = dict(os.environ, CTX_PIC_DB=db, CTX_PI_ROOTS="", CLAUDE_CONFIG_DIR=T + "/pi-noclaude")
+def row(c, seq, id, text):
+    l = ('{"type":"message","id":"%s","parentId":null,"timestamp":"2026-06-11T08:00:0%d.000Z","message":{"role":"user","content":"%s"}}' % (id, seq, text)).encode()
+    c.execute("INSERT INTO picu_pi_session_line VALUES ('walc01', ?, '/w/picdb-proj', 'message', NULL, ?, ?)", (seq, len(l), l))
+def turns(id):
+    return subprocess.run([ctx, "sql", "SELECT count(*) FROM ctx_chunk WHERE turn = 'pi-walc01/%s'" % id], env=env, capture_output=True, text=True).stdout.strip()
+c = sqlite3.connect(db, isolation_level=None)
+c.execute("BEGIN"); row(c, 1, "w1", "a committed wallaroo"); c.execute("COMMIT")
+c.execute("BEGIN"); row(c, 2, "w2", "an uncommitted wallaroo")
+out = subprocess.run([ctx, "scan"], env=env, capture_output=True, text=True, timeout=60)
+assert out.returncode == 0 and out.stdout.strip() == "1 transcripts read", out
+assert turns("w1") == "1" and turns("w2") == "0", (turns("w1"), turns("w2"))
+c.execute("COMMIT")
+out = subprocess.run([ctx, "scan"], env=env, capture_output=True, text=True, timeout=60)
+assert out.stdout.strip() == "1 transcripts read" and turns("w2") == "1", (out, turns("w2"))
+c.close()
+EOF
+
 # The deadline reaches the runs a scan starts. ctx re-runs its own argv[0], so a
 # stand-in reports the time its own alarm has left. No timing is involved.
 python3 - "$CTX" "$T" <<'EOF'
@@ -2768,7 +2965,7 @@ CLAUDE_CONFIG_DIR="$XC" "$CTX" scan >/dev/null
 "$CTX" forget 5e550000-0000-0000-0000-00000000000 2>/dev/null && fail "an ambiguous prefix is refused"
 export CTX_DB="$T/rebuild.sqlite"
 "$CTX" init >/dev/null
-[ "$("$CTX" sql "PRAGMA user_version")" = 16 ] || fail "a new file is at the current version"
+[ "$("$CTX" sql "PRAGMA user_version")" = 17 ] || fail "a new file is at the current version"
 [ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 7 ] || fail "derived version recorded"
 printf '{"uuid":"rb-1","timestamp":"2026-09-01T10:00:00Z","cwd":"/w/rb","message":{"role":"user","content":"the capybara rollout"}}\n{"uuid":"rb-2","timestamp":"2026-09-01T10:00:05Z","cwd":"/w/rb","message":{"role":"assistant","content":"rolled out the capybara"}}\n' > "$T/ab12cd99-rb.jsonl"
 "$CTX" archive "$T/ab12cd99-rb.jsonl" >/dev/null
@@ -2790,7 +2987,7 @@ grep -q 'rebuilding it once' "$T/rb.err" || fail "an old index is rebuilt on ope
 "$CTX" sql "DROP TABLE ctx_meta" >/dev/null; "$CTX" sql "PRAGMA user_version = 1" >/dev/null
 "$CTX" search --all capybara 2>"$T/rb3.err" | grep -q capybara || fail "an unversioned file still works"
 [ -s "$T/rb3.err" ] && fail "an unversioned file is upgraded without a rebuild"
-[ "$("$CTX" sql "PRAGMA user_version")" = 16 ] || fail "and is marked current"
+[ "$("$CTX" sql "PRAGMA user_version")" = 17 ] || fail "and is marked current"
 
 # Docs tickets: every documentation problem ctx finds becomes a ticket, once each, without the
 # person's sign-off, and the overview shows who holds it and carries a prod to that session.

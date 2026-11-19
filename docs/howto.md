@@ -124,6 +124,17 @@ messages and each name the session is given (`Session name: ...`) are `meta`.
 Thinking and images are left out. Pi keeps a session as a tree, for forks and
 branches; ctx archives its entries in file order.
 
+pic now keeps its conversations as rows of `~/.pic/pic.sqlite` (the table
+`picu_pi_session_line`), the same lines one per row, some deflated. The scan reads
+them too, read-only, and a row becomes exactly the turn its line would in a file, so
+a conversation already archived from pic's older files is not stored twice. ctx
+remembers the last row it read of each conversation, and a rebuild keeps that, so
+each scan reads only new rows, and none at all while the database and its write-ahead
+log keep their size and time. A row that cannot be inflated, or claims more than
+64 MB, is skipped with a warning. Reading a closed database leaves no `-wal` or
+`-shm` files beside it, and `ctx exclude --project` keeps pic's conversations out too. Set `CTX_PIC_DB` to read another database, or to an empty string to skip
+it; a missing database, or one without the table, is skipped.
+
 ## Keep sessions out, or take one out
 
 ```sh
@@ -1154,5 +1165,6 @@ ctx sql "SELECT project, count(*) FROM ctx_capture GROUP BY 1"
 | `CTX_DB` | the database, instead of `~/.ctx/ctx.sqlite` |
 | `CLAUDE_CONFIG_DIR` | where transcripts are found, instead of `~/.claude` |
 | `CTX_PI_ROOTS` | where Pi and pic sessions are found, colon-separated, instead of `~/.pi/agent/sessions:~/.pic/sessions` |
+| `CTX_PIC_DB` | pic's database of conversations, instead of `~/.pic/pic.sqlite`; empty skips it |
 | `USER` | the name on check-ins, claims and sources |
 | `CTX_SESSION` | the session `ctx wiki save` records a page against |

@@ -43,6 +43,20 @@ CREATE TABLE IF NOT EXISTS ctx_capture_day(
   PRIMARY KEY (session, day)
 ) STRICT, WITHOUT ROWID;
 
+-- How far each pic conversation has been archived from pic.sqlite, whose rows are
+-- append-only per conversation. id is the id in its header row (seq 0), which names the
+-- session pi-<id> as in its file form; slug is its workspace with every character that is
+-- not a letter or digit turned into a dash, what ctx exclude matches; seq is the last row
+-- read; offset is the byte where the next line would start in the session file the rows
+-- stand for, so a line without an entry id is keyed by the same position as in that file.
+CREATE TABLE IF NOT EXISTS ctx_pic_cursor(
+  conversation TEXT PRIMARY KEY,
+  id           TEXT NOT NULL,
+  slug         TEXT NOT NULL,
+  seq          INTEGER NOT NULL,
+  offset       INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
+
 -- Audit runs and findings. A finding names a chunk by id, which a rebuild changes;
 -- the fingerprint is what an allowance follows.
 CREATE TABLE IF NOT EXISTS ctx_audit_run(

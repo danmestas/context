@@ -21,6 +21,7 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#include <zlib.h>
 
 #include "sqlite3.h"
 #include "schema.h"
@@ -29,7 +30,7 @@
 #include "page.h"
 
 #define CTX_VERSION "0.0.1"
-#define CTX_USER_VERSION 16    /* PRAGMA user_version once initialized */
+#define CTX_USER_VERSION 17    /* PRAGMA user_version once initialized */
 #define CTX_DERIVED_VERSION 7 /* raise when schema/index.sql changes; ctx then rebuilds */
 
 /* A tool's output is kept up to this size at each end; the middle is cut. */
@@ -921,15 +922,14 @@ static void turn_day(const turn_t *t, char out[11], const char *fallback) {
   out[10] = 0;
 }
 
-/* Stores one batch of turns and advances the read position, in one transaction. */
-static long archive_batch(sqlite3 *db, const char *session, const char *path, const char *project,
-                          long long repo_id, turn_t *turns, size_t n, long long offset) {
+/* Stores one batch of turns, those not already held, inside the caller's transaction. */
+static long store_turns(sqlite3 *db, const char *session, const char *path, const char *project,
+                        long long repo_id, turn_t *turns, size_t n) {
   long stored = 0;
   char sid[9], today[32];
   session_id(session, sid); /* a transcript's session is its file name; a Pi session's is pi- and its id */
   time_t now = time(NULL);
   strftime(today, sizeof today, "%Y-%m-%d", gmtime(&now));
-  db_exec(db, "BEGIN IMMEDIATE");
 
   sqlite3_stmt *up = db_prepare(db,
       "INSERT INTO ctx_capture(session, path, project) VALUES (?1, ?2, ?3)"
@@ -1104,7 +1104,14 @@ static long archive_batch(sqlite3 *db, const char *session, const char *path, co
   sqlite3_finalize(day_in);
   sqlite3_finalize(doc);
   sqlite3_finalize(chunk);
+  return stored;
+}
 
+/* Stores one batch of turns and advances the read position, in one transaction. */
+static long archive_batch(sqlite3 *db, const char *session, const char *path, const char *project,
+                          long long repo_id, turn_t *turns, size_t n, long long offset) {
+  db_exec(db, "BEGIN IMMEDIATE");
+  long stored = store_turns(db, session, path, project, repo_id, turns, n);
   char hash[17];
   head_hash(path, offset, hash);
   sqlite3_stmt *pos = db_prepare(db, "UPDATE ctx_capture SET offset=?2, head_hash=?3 WHERE session=?1");
@@ -2316,9 +2323,311 @@ static long scan_root(sqlite3 *db, sqlite3_stmt *q, const char *root, int quiet)
   return ran;
 }
 
+/* pic keeps its conversations as rows of pic.sqlite, one Pi session line per row, in seq
+ * order from the header at seq 0. A line longer than its row is deflated, SQLite Archive
+ * style: sz is its inflated length. A row claiming more than this is skipped. */
+#define PIC_LINE_MAX (64 * 1024 * 1024)
+/* Rows read at a time; no read of pic.sqlite is held open while ctx writes. */
+#define PIC_ROWS 512
+
+static long long mtime_ns(const struct stat *st) {
+#ifdef __APPLE__
+  return (long long)st->st_mtimespec.tv_sec * 1000000000LL + st->st_mtimespec.tv_nsec;
+#else
+  return (long long)st->st_mtim.tv_sec * 1000000000LL + st->st_mtim.tv_nsec;
+#endif
+}
+
+/* What pic.sqlite and its write-ahead log look like on disk, with the database's change
+ * counter: the same stamp twice means nothing was written between. 0 when there is no
+ * database. */
+static int pic_stamp(const char *path, buf *out) {
+  struct stat st, wst;
+  if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) return 0;
+  char wal[4200];
+  snprintf(wal, sizeof wal, "%s-wal", path);
+  int has_wal = stat(wal, &wst) == 0;
+  unsigned char head[28] = {0}; /* bytes 24-27: SQLite's file change counter, for filesystems with coarse times */
+  FILE *f = fopen(path, "rb");
+  if (f) {
+    if (fread(head, 1, sizeof head, f) != sizeof head) memset(head, 0, sizeof head);
+    fclose(f);
+  }
+  unsigned long counter = (unsigned long)head[24] << 24 | (unsigned long)head[25] << 16 | (unsigned long)head[26] << 8 | head[27];
+  out->n = 0;
+  buf_fmt(out, "%lu %lld %lld %lld %lld %s", counter, (long long)st.st_size, mtime_ns(&st),
+          has_wal ? (long long)wst.st_size : -1LL, has_wal ? mtime_ns(&wst) : -1LL, path);
+  return 1;
+}
+
+static int pic_unchanged(const char *path, const buf *stamp) {
+  buf now = {0};
+  int same = pic_stamp(path, &now) && !strcmp(now.p, stamp->p);
+  free(now.p);
+  return same;
+}
+
+/* Opens pic.sqlite read-only. A database in WAL mode with neither -wal nor -shm beside it is
+ * closed, and is opened immutable so that reading it leaves no files in pic's folder; the
+ * caller then checks the file did not change while it read. Otherwise it is opened read-only
+ * with normal locking, which sees what pic has committed. */
+static sqlite3 *pic_open(const char *path, int *immutable) {
+  unsigned char head[100];
+  FILE *f = fopen(path, "rb");
+  if (!f) return NULL;
+  size_t got = fread(head, 1, sizeof head, f);
+  fclose(f);
+  int wal_mode = got == sizeof head && head[18] == 2 && head[19] == 2;
+  char side[4200];
+  struct stat st;
+  snprintf(side, sizeof side, "%s-wal", path);
+  int loose = stat(side, &st) == 0;
+  snprintf(side, sizeof side, "%s-shm", path);
+  loose |= stat(side, &st) == 0;
+  *immutable = wal_mode && !loose;
+  buf uri = {0};
+  buf_str(&uri, "file:");
+  for (const char *c = path; *c; c++) {
+    if (*c == '?' || *c == '#' || *c == '%') buf_fmt(&uri, "%%%02X", (unsigned char)*c);
+    else buf_add(&uri, c, 1);
+  }
+  buf_str(&uri, *immutable ? "?mode=ro&immutable=1" : "?mode=ro");
+  sqlite3 *pic = NULL;
+  int rc = sqlite3_open_v2(uri.p, &pic, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, NULL);
+  free(uri.p);
+  if (rc != SQLITE_OK) {
+    sqlite3_close(pic);
+    return NULL;
+  }
+  sqlite3_busy_timeout(pic, 5000);
+  return pic;
+}
+
+/* A row's line, raw or inflated, as a NUL-terminated copy of sz bytes the caller frees; NULL
+ * if the row cannot be read. */
+static char *pic_line(const void *data, int n, sqlite3_int64 sz) {
+  if (n < 0 || sz < 0 || sz > PIC_LINE_MAX) return NULL;
+  char *out = malloc((size_t)sz + 1);
+  if (!out) die("out of memory");
+  if (n == sz) {
+    if (n) memcpy(out, data, (size_t)n);
+  } else {
+    uLongf len = (uLongf)sz;
+    if (!data || uncompress((Bytef *)out, &len, (const Bytef *)data, (uLong)n) != Z_OK || len != (uLongf)sz) {
+      free(out);
+      return NULL;
+    }
+  }
+  out[sz] = 0;
+  return out;
+}
+
+typedef struct {
+  sqlite3_int64 seq, sz;
+  char *ws, *line;
+} pic_row;
+
+/* Archives what pic has added to each conversation in pic.sqlite since its cursor, through
+ * the Pi extractor, so a row makes the turn and key its line makes in a session file, and
+ * turns already held from pic's older files are not stored again. Nothing is read when the
+ * database has not changed since the last scan. Returns the conversations read. */
+static long pic_scan(sqlite3 *db, const char *path) {
+  buf stamp = {0};
+  if (!pic_stamp(path, &stamp)) return 0;
+  sqlite3_stmt *q = db_prepare(db, "SELECT value FROM ctx_meta WHERE key = 'pic_stamp'");
+  int same = sqlite3_step(q) == SQLITE_ROW && !strcmp((const char *)sqlite3_column_text(q, 0), stamp.p);
+  sqlite3_finalize(q);
+  int immutable = 0;
+  sqlite3 *pic = same ? NULL : pic_open(path, &immutable);
+  if (!pic) {
+    free(stamp.p);
+    return 0;
+  }
+
+  /* The conversations and their last rows, read in one go and let go of. */
+  char **convs = NULL;
+  sqlite3_int64 *maxes = NULL;
+  size_t nconv = 0, capconv = 0;
+  int abandon = 0;
+  q = NULL;
+  if (sqlite3_prepare_v2(pic, "SELECT conversation, max(seq) FROM picu_pi_session_line GROUP BY conversation", -1, &q, NULL) == SQLITE_OK) {
+    int rc;
+    while ((rc = sqlite3_step(q)) == SQLITE_ROW) {
+      const unsigned char *c = sqlite3_column_text(q, 0);
+      if (!c || !*c) continue;
+      if (nconv == capconv) {
+        capconv = capconv ? capconv * 2 : 64;
+        convs = realloc(convs, capconv * sizeof *convs);
+        maxes = realloc(maxes, capconv * sizeof *maxes);
+        if (!convs || !maxes) die("out of memory");
+      }
+      convs[nconv] = dup_text(c);
+      maxes[nconv++] = sqlite3_column_int64(q, 1);
+    }
+    if (rc != SQLITE_DONE) abandon = 1; /* busy or damaged: the next scan tries again */
+  } /* else no table: nothing of pic's to archive */
+  sqlite3_finalize(q);
+  if (immutable && !pic_unchanged(path, &stamp)) abandon = 1;
+  sqlite3_stmt *rows = NULL;
+  if (nconv && !abandon &&
+      sqlite3_prepare_v2(pic, "SELECT seq, workspace, sz, line FROM picu_pi_session_line WHERE conversation = ?1 AND seq > ?2 ORDER BY seq LIMIT ?3",
+                         -1, &rows, NULL) != SQLITE_OK)
+    abandon = 1;
+
+  sqlite3_stmt *cur = db_prepare(db, "SELECT id, slug, seq, offset FROM ctx_pic_cursor WHERE conversation = ?1");
+  sqlite3_stmt *cap = db_prepare(db, "SELECT path, project FROM ctx_capture WHERE session = ?1");
+  sqlite3_stmt *put = db_prepare(db, "INSERT OR REPLACE INTO ctx_pic_cursor(conversation, id, slug, seq, offset) VALUES (?1, ?2, ?3, ?4, ?5)");
+  extractor e;
+  ex_open(&e);
+  sqlite3_stmt *head = db_prepare(e.db, "SELECT json_extract(?1,'$.id') WHERE json_valid(?1)"
+                                        " AND json_extract(?1,'$.type') = 'session' AND json_type(?1,'$.id') = 'text'");
+  sqlite3_int64 repo_id = 0;
+  long read = 0;
+  turn_t *turns = NULL;
+  pic_row *got = calloc(PIC_ROWS, sizeof *got);
+  if (!got) die("out of memory");
+  size_t capturns = 0;
+  for (size_t k = 0; k < nconv && !abandon; k++) {
+    const char *conv = convs[k];
+    char id[128] = "", slug[1024] = "", session[128] = "";
+    sqlite3_int64 last = -1, offset = 0;
+    sqlite3_bind_text(cur, 1, conv, -1, SQLITE_STATIC);
+    if (sqlite3_step(cur) == SQLITE_ROW) {
+      snprintf(id, sizeof id, "%s", sqlite3_column_text(cur, 0));
+      snprintf(slug, sizeof slug, "%s", sqlite3_column_text(cur, 1));
+      last = sqlite3_column_int64(cur, 2);
+      offset = sqlite3_column_int64(cur, 3);
+    }
+    sqlite3_reset(cur);
+    if (maxes[k] <= last) continue;
+    char *where = NULL, *project = NULL;
+    int began = 0, skip = 0;
+    for (int done = 0; !done && !skip && !abandon;) {
+      size_t n = 0;
+      long long bytes = 0;
+      int rc = SQLITE_ROW;
+      sqlite3_bind_text(rows, 1, conv, -1, SQLITE_STATIC);
+      sqlite3_bind_int64(rows, 2, last);
+      sqlite3_bind_int(rows, 3, PIC_ROWS);
+      while (n < PIC_ROWS && bytes < BATCH_BYTES && (rc = sqlite3_step(rows)) == SQLITE_ROW) {
+        pic_row *r = &got[n++];
+        r->seq = sqlite3_column_int64(rows, 0);
+        r->ws = dup_text(sqlite3_column_text(rows, 1));
+        r->sz = sqlite3_column_int64(rows, 2);
+        r->line = pic_line(sqlite3_column_blob(rows, 3), sqlite3_column_bytes(rows, 3), r->sz);
+        if (r->line) bytes += r->sz;
+        else if (r->sz < 0 || r->sz > PIC_LINE_MAX)
+          fprintf(stderr, "ctx: pic conversation %s line %lld claims %lld bytes; skipped\n", conv, (long long)r->seq, (long long)r->sz);
+        else
+          fprintf(stderr, "ctx: pic conversation %s line %lld cannot be inflated; skipped\n", conv, (long long)r->seq);
+      }
+      done = rc == SQLITE_DONE || (rc == SQLITE_ROW && n < PIC_ROWS && bytes < BATCH_BYTES);
+      if (rc != SQLITE_ROW && rc != SQLITE_DONE) abandon = 1;
+      sqlite3_reset(rows); /* the read ends here, before anything is written */
+      if (immutable && !pic_unchanged(path, &stamp)) abandon = 1;
+      if (!n || abandon) done = 1;
+      if (n && !abandon && !began) {
+        began = 1;
+        if (!*id && got[0].seq == 0 && got[0].line) { /* the header names the session, as in the file form */
+          sqlite3_bind_text(head, 1, got[0].line, (int)got[0].sz, SQLITE_STATIC);
+          if (sqlite3_step(head) == SQLITE_ROW) snprintf(id, sizeof id, "%.100s", sqlite3_column_text(head, 0));
+          sqlite3_reset(head);
+        }
+        if (!*id) { /* never the conversation column: the file form, if any, is named by the header */
+          fprintf(stderr, "ctx: pic conversation %s has no readable header; skipped\n", conv);
+          skip = 1;
+        }
+        snprintf(session, sizeof session, "pi-%s", id);
+        if (!*slug) {
+          snprintf(slug, sizeof slug, "%s", got[0].ws);
+          for (char *c = slug; *c; c++)
+            if (!c_alnum((unsigned char)*c)) *c = '-';
+        }
+        if (skip || session_forgotten(db, session) || (*slug && folder_excluded(db, slug))) {
+          skip = 1;
+        } else {
+          if (!repo_id) {
+            open_private(db);
+            repo_id = db_int(db, "SELECT coalesce((SELECT id FROM ctx_repo WHERE name = 'me'), 0)");
+            if (!repo_id) die("no private repository; run: ctx init");
+          }
+          sqlite3_bind_text(cap, 1, session, -1, SQLITE_STATIC);
+          if (sqlite3_step(cap) == SQLITE_ROW) { /* one archived from a file keeps that file as its path */
+            where = dup_text(sqlite3_column_text(cap, 0));
+            project = dup_text(sqlite3_column_text(cap, 1));
+          }
+          sqlite3_reset(cap);
+          if (!where) {
+            size_t len = strlen(path) + strlen(conv) + 2;
+            where = malloc(len);
+            if (!where) die("out of memory");
+            snprintf(where, len, "%s#%s", path, conv);
+          }
+          if (!project) project = project_for(db, got[0].ws);
+          snprintf(e.pi, sizeof e.pi, "%s", session);
+        }
+      }
+      size_t nturns = 0;
+      for (size_t i = 0; i < n; i++) {
+        if (!skip && !abandon) {
+          turn_t t = {0};
+          if (got[i].line && pi_line(&e, got[i].line, (size_t)got[i].sz, offset, &t)) {
+            if (nturns == capturns) {
+              capturns = capturns ? capturns * 2 : 256;
+              turns = realloc(turns, capturns * sizeof *turns);
+              if (!turns) die("out of memory");
+            }
+            turns[nturns++] = t;
+          }
+          offset += (got[i].sz > 0 ? got[i].sz : 0) + 1; /* where the next line starts in the file form, read or not */
+          last = got[i].seq;
+        }
+        free(got[i].ws);
+        free(got[i].line);
+      }
+      if (n && !skip && !abandon) {
+        db_exec(db, "BEGIN IMMEDIATE");
+        store_turns(db, session, where, project, repo_id, turns, nturns);
+        sqlite3_bind_text(put, 1, conv, -1, SQLITE_STATIC);
+        sqlite3_bind_text(put, 2, id, -1, SQLITE_STATIC);
+        sqlite3_bind_text(put, 3, slug, -1, SQLITE_STATIC);
+        sqlite3_bind_int64(put, 4, last);
+        sqlite3_bind_int64(put, 5, offset);
+        if (sqlite3_step(put) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+        sqlite3_reset(put);
+        db_exec(db, "COMMIT");
+      }
+      for (size_t i = 0; i < nturns; i++) turn_free(&turns[i]);
+    }
+    if (began && !skip) read++;
+    free(where);
+    free(project);
+  }
+  if (!abandon) {
+    q = db_prepare(db, "INSERT OR REPLACE INTO ctx_meta(key, value) VALUES ('pic_stamp', ?1)");
+    sqlite3_bind_text(q, 1, stamp.p, -1, SQLITE_STATIC);
+    if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+    sqlite3_finalize(q);
+  }
+  for (size_t k = 0; k < nconv; k++) free(convs[k]);
+  free(convs);
+  free(maxes);
+  free(got);
+  free(turns);
+  sqlite3_finalize(head);
+  ex_close(&e);
+  sqlite3_finalize(cur);
+  sqlite3_finalize(cap);
+  sqlite3_finalize(put);
+  sqlite3_finalize(rows);
+  sqlite3_close(pic);
+  free(stamp.p);
+  return read;
+}
+
 /* Archives any transcript that has grown since it was last read: Claude Code's, then Pi's
  * and pic's from CTX_PI_ROOTS (colon-separated), by default ~/.pi/agent/sessions and
- * ~/.pic/sessions. */
+ * ~/.pic/sessions, then pic's conversations from CTX_PIC_DB, by default ~/.pic/pic.sqlite. */
 static int cmd_scan(const char *root_arg) {
   sqlite3 *db = ctx_open();
   sqlite3_stmt *q = db_prepare(db, "SELECT offset FROM ctx_capture WHERE session = ?1");
@@ -2344,6 +2653,13 @@ static int cmd_scan(const char *root_arg) {
     for (char *r = roots ? strtok_r(roots, ":", &save) : NULL; r; r = strtok_r(NULL, ":", &save))
       ran += scan_root(db, q, r, 1);
     free(roots);
+    const char *picdb = getenv("CTX_PIC_DB");
+    if (picdb) {
+      if (*picdb) ran += pic_scan(db, picdb);
+    } else if (home && *home) {
+      snprintf(root, sizeof root, "%s/.pic/pic.sqlite", home);
+      ran += pic_scan(db, root);
+    }
   }
   sqlite3_finalize(q);
   relabel_speakers(db);
@@ -6875,11 +7191,15 @@ static int cmd_exclude(int argc, char **argv) {
       sqlite3_step(q);
       sqlite3_finalize(q);
       if (!sqlite3_changes(db)) die("project %s was not excluded", name);
+      db_exec(db, "DELETE FROM ctx_meta WHERE key = 'pic_stamp'"); /* pic's held-back rows come at the next scan */
       printf("project %s is no longer excluded\n", name);
     } else {
       q = db_prepare(db, "INSERT OR REPLACE INTO ctx_exclude(dir, slug) SELECT DISTINCT ?1 || f, f FROM (SELECT replace(rtrim(rtrim(path, replace(path, '/', '')), '/'),"
                          " rtrim(rtrim(rtrim(path, replace(path, '/', '')), '/'), replace(rtrim(rtrim(path, replace(path, '/', '')), '/'), '/', '')), '') AS f"
-                         " FROM ctx_capture WHERE project = ?2) WHERE f <> ''");
+                         " FROM ctx_capture k WHERE project = ?2 AND NOT EXISTS (SELECT 1 FROM ctx_pic_cursor c" /* pic's rows sit in no folder of their own */
+                         "   WHERE k.session = 'pi-' || c.id AND substr(k.path, -length(c.conversation) - 1) = '#' || c.conversation)"
+                         " UNION SELECT c.slug FROM ctx_pic_cursor c JOIN ctx_capture k ON k.session = 'pi-' || c.id WHERE k.project = ?2)"
+                         " WHERE f <> ''");
       sqlite3_bind_text(q, 1, like, -1, SQLITE_STATIC);
       sqlite3_bind_text(q, 2, name, -1, SQLITE_STATIC);
       if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
@@ -6924,6 +7244,7 @@ static int cmd_exclude(int argc, char **argv) {
   if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
   sqlite3_finalize(q);
   if (remove && !sqlite3_changes(db)) die("%s was not excluded", given);
+  if (remove) db_exec(db, "DELETE FROM ctx_meta WHERE key = 'pic_stamp'"); /* pic's held-back rows come at the next scan */
   printf(remove ? "%s is no longer excluded\n" : "excluded %s: its sessions and memory will not be archived\n", given);
   sqlite3_close(db);
   return 0;
