@@ -987,6 +987,309 @@ grep -q 'no longer served' "$T/undo.txt" && tail -1 "$T/undo.txt" | grep -q '^1 
 [ "$("$CTX" rules auto)" = none ] || fail "the command is cleared"
 "$CTX" rules classifier --off >/dev/null
 
+# Redundant rules. Identical copies in one project collapse after every import; project rules
+# the global CLAUDE.md already says are retired by the automatic judge; the same rule saved in
+# several projects is offered on the page as one global rule. Each is listed and undone.
+export CTX_DB="$T/redund.sqlite"
+"$CTX" init >/dev/null
+RD="$T/redcfg"
+CLAUDE_CONFIG_DIR="$RD"; export CLAUDE_CONFIG_DIR # the global CLAUDE.md is the rule keyed under it
+rdsess() { mkdir -p "$RD/projects/-w-$1/memory"; printf '{"uuid":"%s","timestamp":"2026-11-1%sT10:00:00Z","cwd":"/w/%s","message":{"role":"user","content":"hello %s"}}\n' "$2" "$3" "$1" "$1" > "$RD/projects/-w-$1/$4.jsonl"; "$CTX" archive "$RD/projects/-w-$1/$4.jsonl" >/dev/null; }
+rdsess plume rd-1 1 d0c0ffe1-0000-0000-0000-000000000001
+rdsess quill rd-2 2 d0c0ffe2-0000-0000-0000-000000000002
+rdmem() { printf -- '---\nname: %s\ndescription: %s\nmetadata:\n  type: feedback\n---\n\n%s\n' "$2" "$3" "$4" > "$RD/projects/-w-$1/memory/$2.md"; }
+rdkey() { "$CTX" sql "SELECT name FROM ctx_doc WHERE kind = 'rule' AND name GLOB '*/-w-$1/memory/$2.md'"; }
+rdstatus() { "$CTX" sql "SELECT coalesce(status, 'active') FROM ctx_doc WHERE kind = 'rule' AND name GLOB '*/-w-$1/memory/$2.md'"; }
+rdnote() { "$CTX" sql "SELECT fsl_technote(r.technote) FROM ctx_rule r WHERE r.key = '$1'"; }
+printf '# Global\n\nNever attribute an AI in commits, PRs or comments.\nDelegate mechanical work to the cheapest model that fits.\n' > "$RD/CLAUDE.md"
+rdmem plume merge-green "Squash-merge once CI is green" "Squash-merge a PR once CI is green."
+rdmem plume merge-green-copy "Merge when the checks pass" "squash-merge   a PR
+once CI is GREEN."
+rdmem plume merge-green-word "Squash-merge once CI is red" "Squash-merge a PR once CI is red."
+rdmem quill merge-green "Squash-merge once CI is green" "Squash-merge a PR once CI is green."
+CLAUDE_CONFIG_DIR="$RD" "$CTX" rules import >/dev/null
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_doc WHERE kind = 'rule' AND project = 'plume' AND status = 'replaced' AND name GLOB '*/merge-green*'")" = 1 ] || fail "two identical memory files in one project collapse to one: $("$CTX" rules --all --project plume)"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_doc WHERE kind = 'rule' AND project = 'plume' AND status IS NULL AND (name GLOB '*/merge-green.md' OR name GLOB '*/merge-green-copy.md')")" = 1 ] || fail "frontmatter, case and spacing alone still count as identical"
+[ "$(rdstatus plume merge-green-word)" = active ] || fail "one changed word means no collapse"
+[ "$(rdstatus quill merge-green)" = active ] || fail "identical files in two projects do not collapse"
+RCOPY=$("$CTX" sql "SELECT name FROM ctx_doc WHERE kind = 'rule' AND project = 'plume' AND status = 'replaced'")
+RKEPT=$("$CTX" sql "SELECT name FROM ctx_doc WHERE kind = 'rule' AND project = 'plume' AND status IS NULL AND name GLOB '*/merge-green*.md' AND name NOT GLOB '*-word.md'")
+rdnote "$RCOPY" | grep -qx "reason: identical copy of $RKEPT" || fail "a copy is replaced by the oldest, saying so: $(rdnote "$RCOPY")"
+rdnote "$RCOPY" | grep -qx "by: $RKEPT" || fail "a copy names the rule it copies"
+[ "$("$CTX" sql "SELECT key || ' ' || kept || ' ' || project || ' ' || undone FROM ctx_rule_collapse")" = "$RCOPY $RKEPT plume 0" ] || fail "each collapse is recorded: $("$CTX" sql 'SELECT * FROM ctx_rule_collapse')"
+CLAUDE_CONFIG_DIR="$RD" "$CTX" rules import | grep -q '^0 rules changed' || fail "a collapse sticks while the files are unchanged"
+"$CTX" rules activity > "$T/rdact.txt"
+grep -q "collapsed  plume  $RCOPY: identical copy of $RKEPT" "$T/rdact.txt" || fail "activity lists the week's collapses: $(cat "$T/rdact.txt")"
+grep -q 'ctx rules restore KEY' "$T/rdact.txt" || fail "activity says how to restore"
+"$CTX" rules collapse --dry-run | grep -q '^0 identical copies would collapse' || fail "a dry run finds nothing left to collapse"
+# Covered by the global CLAUDE.md: the judge must quote it word for word.
+rdmem plume no-attrib "No AI attribution in commits" "Never attribute an AI in commits or PRs."
+rdmem plume cheap-model "Delegate to the cheapest model" "Delegate mechanical work to the cheapest model."
+rdmem plume tests-cond "Delegate after the tests pass" "In plume, delegate mechanical work to the cheapest model only after the tests pass."
+CLAUDE_CONFIG_DIR="$RD" "$CTX" rules import >/dev/null
+COVFAKE="$T/fake-covered.py"
+cat > "$COVFAKE" <<'PY'
+import json, sys
+text = sys.stdin.read()
+log, mode = sys.argv[1], (sys.argv[2] if len(sys.argv) > 2 else "")
+if not text.startswith("ctx covered v1\n"): print("[]"); sys.exit(0)
+with open(log + ".prompts", "a") as f: f.write(text + "\n=====\n")
+rules = [json.loads(l) for l in text.rsplit("\nRules:\n", 1)[1].splitlines() if l.startswith("{")]
+with open(log, "a") as f: f.write("call %d %s\n" % (len(rules), " ".join(r["key"].rsplit("/", 1)[-1] for r in rules)))
+if mode == "fail": sys.exit(3)
+if mode == "garbage": print("They all look covered to me."); sys.exit(0)
+if mode == "silent": print("[]"); sys.exit(0)
+if mode == "edit":  # the person edits a rule while the judge is thinking
+    import subprocess
+    for r in rules:
+        if "attribute" in r["text"].lower():
+            with open(r["key"], "a") as f: f.write("Except in tern release notes.\n")
+    subprocess.run([sys.argv[3], "rules", "import"], check=True, stdout=subprocess.DEVNULL)
+out = []
+for r in rules:
+    t = r["text"].lower()
+    if "only after the tests pass" in t: out.append({"key": r["key"], "covered": False, "quote": ""})
+    elif "attribute" in t: out.append({"key": r["key"], "covered": True, "quote": "Never attribute an AI in commits,\n  PRs or comments."})
+    elif "cheapest" in t: out.append({"key": r["key"], "covered": True, "quote": "Always delegate everything to the haiku models"})
+    else: out.append({"key": r["key"], "covered": False, "quote": ""})
+print("Verdicts:\n" + json.dumps(out))
+PY
+"$CTX" rules covered 2>&1 | grep -q 'no automatic judge' || fail "the covered check needs the automatic judge"
+"$CTX" rules covered --dry-run > "$T/rdcov.txt"
+grep -q '^6 rules would be sent to the judge' "$T/rdcov.txt" || fail "a dry run counts what would be sent: $(cat "$T/rdcov.txt")"
+grep -q 'no-attrib.md' "$T/rdcov.txt" || fail "a dry run lists the rules"
+grep -q 'CLAUDE.md' "$T/rdcov.txt" && fail "the global CLAUDE.md is never judged against itself"
+[ -e "$T/cov.log" ] && fail "a dry run calls no judge"
+"$CTX" rules auto "python3 $COVFAKE $T/cov.log fail" >/dev/null
+if "$CTX" rules covered >/dev/null 2>"$T/rdcov.err"; then fail "a failing judge fails the check"; fi
+grep -q 'failed (exit 3)' "$T/rdcov.err" || fail "the judge's exit is reported: $(cat "$T/rdcov.err")"
+"$CTX" rules auto "python3 $COVFAKE $T/cov.log garbage" >/dev/null
+if "$CTX" rules covered >/dev/null 2>"$T/rdcov.err"; then fail "an unreadable answer fails the check"; fi
+grep -q 'unreadable' "$T/rdcov.err" || fail "an unreadable answer is reported: $(cat "$T/rdcov.err")"
+[ "$("$CTX" sql 'SELECT count(*) FROM ctx_rule_covered')" = 0 ] || fail "a failing or unreadable judge records nothing"
+[ "$(rdstatus plume no-attrib)" = active ] || fail "a failing judge retires nothing"
+"$CTX" rules auto "python3 $COVFAKE $T/cov.log" >/dev/null
+: > "$T/cov.log"
+"$CTX" rules covered > "$T/rdcov.txt" || fail "the covered check runs: $(cat "$T/rdcov.txt")"
+grep -q '6 rules checked against the global CLAUDE.md, 1 retired as covered' "$T/rdcov.txt" || fail "the check reports: $(cat "$T/rdcov.txt")"
+[ "$(rdstatus plume no-attrib)" = retired ] || fail "a covered rule is retired"
+rdnote "$(rdkey plume no-attrib)" | grep -qx 'reason: covered by global CLAUDE.md: "Never attribute an AI in commits, PRs or comments."' || fail "it is retired with its quote: $(rdnote "$(rdkey plume no-attrib)")"
+[ "$(rdstatus plume cheap-model)" = active ] || fail "an invented quote retires nothing"
+[ "$(rdstatus plume tests-cond)" = active ] || fail "a project rule with an extra condition stays"
+[ "$("$CTX" sql "SELECT covered FROM ctx_rule_covered WHERE key GLOB '*/cheap-model.md'")" = 0 ] || fail "an invented quote is stored as not covered"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_rule_covered")" = 6 ] || fail "every verdict is stored"
+python3 - "$T/cov.log.prompts" <<'PY' || fail "the prompt carries the global text and each rule's key and text"
+import sys
+p = open(sys.argv[1]).read().split("\n=====\n")[-2]
+assert p.startswith("ctx covered v1\n"), p
+assert "Delegate mechanical work to the cheapest model that fits." in p, p
+assert "no narrower scope" in p and "extra condition" in p, p
+assert '"text":"Never attribute an AI in commits or PRs."' in p, p
+assert "name: no-attrib" not in p, "frontmatter is not sent"
+PY
+CALLS=$(wc -l < "$T/cov.log")
+"$CTX" rules covered >/dev/null
+[ "$(wc -l < "$T/cov.log")" = "$CALLS" ] || fail "a second run sends nothing again for unchanged texts"
+"$CTX" rules activity | grep -q "covered  plume  $(rdkey plume no-attrib): covered by global CLAUDE.md" || fail "activity lists covered retirements: $("$CTX" rules activity)"
+CLAUDE_CONFIG_DIR="$RD" "$CTX" rules import | grep -q '^0 rules changed' || fail "a covered retirement sticks while the file is unchanged"
+printf 'Keep the plume changelog in plain words.\n' >> "$RD/CLAUDE.md"
+CLAUDE_CONFIG_DIR="$RD" "$CTX" rules import >/dev/null
+"$CTX" rules covered --dry-run | grep -q '^5 rules would be sent' || fail "editing the global CLAUDE.md makes rules eligible again: $("$CTX" rules covered --dry-run)"
+"$CTX" rules covered >/dev/null
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_rule_covered")" = 11 ] || fail "the verdicts against the new text are stored"
+# ctx rules restore undoes any retirement, sticks across imports, and is never redone.
+if "$CTX" rules restore no-such-rule.md 2>/dev/null; then fail "restore refuses an unknown key"; fi
+if "$CTX" rules restore "$(rdkey plume tests-cond)" 2>"$T/rdres.err"; then fail "restore refuses a rule that is not retired"; fi
+grep -q 'is not retired' "$T/rdres.err" || fail "the refusal says why: $(cat "$T/rdres.err")"
+"$CTX" rules restore "$RCOPY" | grep -q 'restored' || fail "restore a collapsed copy"
+[ "$("$CTX" sql "SELECT status IS NULL FROM ctx_doc WHERE kind = 'rule' AND name = '$RCOPY'")" = 1 ] || fail "a restored rule is active"
+rdnote "$RCOPY" | grep -qx 'reason: restored' || fail "a restored rule says so"
+CLAUDE_CONFIG_DIR="$RD" "$CTX" rules import >/dev/null
+[ "$("$CTX" sql "SELECT status IS NULL FROM ctx_doc WHERE kind = 'rule' AND name = '$RCOPY'")" = 1 ] || fail "a restored collapse is not collapsed again"
+[ "$("$CTX" sql "SELECT undone FROM ctx_rule_collapse WHERE key = '$RCOPY'")" = 1 ] || fail "the collapse is marked undone"
+"$CTX" rules restore "$(rdkey plume no-attrib)" >/dev/null || fail "restore a covered rule"
+CLAUDE_CONFIG_DIR="$RD" "$CTX" rules import >/dev/null
+"$CTX" rules covered >/dev/null
+[ "$(rdstatus plume no-attrib)" = active ] || fail "a restored covered rule is not retired again"
+"$CTX" rules retire merge-green-word.md --reason "plume never merges on red" >/dev/null
+"$CTX" rules restore merge-green-word.md >/dev/null
+CLAUDE_CONFIG_DIR="$RD" "$CTX" rules import >/dev/null
+[ "$(rdstatus plume merge-green-word)" = active ] || fail "restore after retire survives an import"
+"$CTX" rules activity > "$T/rdact.txt"
+grep -q "restored  plume  $RCOPY" "$T/rdact.txt" && grep -q "restored  plume  .*merge-green-word.md" "$T/rdact.txt" || fail "activity lists restores: $(cat "$T/rdact.txt")"
+grep -q "collapsed  plume  $RCOPY: identical copy of .* (restored)" "$T/rdact.txt" || fail "activity marks a restored collapse: $(cat "$T/rdact.txt")"
+# The same rule saved in several projects: offered on the page as one global rule.
+rdmem plume lint-first "Run the heron linter before every commit" "Run the heron linter before every commit."
+rdmem quill lint-before "Run the heron linter before each commit" "Always run the heron linter before each commit."
+rdmem quill kiln-temps "Log the kiln temperatures hourly" "Log the kiln temperatures every hour."
+rdmem plume egret-wiki "Put the egret docs in the wiki" "Put the egret docs in the wiki."
+rdmem quill egret-wiki2 "Put egret docs into the wiki" "Put egret docs into the wiki, never the repo."
+CLAUDE_CONFIG_DIR="$RD" "$CTX" rules import >/dev/null
+"$CTX" page >/dev/null
+python3 - "$CTX_DB.page.html" "$(rdkey plume lint-first)" "$(rdkey quill lint-before)" <<'PY' || fail "two projects with near-identical rules make one group"
+import json, re, sys
+page = open(sys.argv[1], encoding="utf-8").read()
+D = json.loads(re.search(r"var D = (\{.*?\});\n  var SEC", page, re.S).group(1))
+lint = [g for g in D["same"] if any(m["k"] == sys.argv[2] for m in g["m"])]
+assert len(lint) == 1, D["same"]
+assert sorted(m["k"] for m in lint[0]["m"]) == sorted(sys.argv[2:4]), lint
+assert {m["p"] for m in lint[0]["m"]} == {"plume", "quill"}, lint
+assert lint[0]["m"][lint[0]["pick"]]["t"] == "Run the heron linter before every commit", "the longest title is the default"
+assert all(m["s"] for m in lint[0]["m"]), lint
+assert not any(m["k"].endswith("/kiln-temps.md") for g in D["same"] for m in g["m"]), "a dissimilar rule does not join"
+assert len(D["same"]) <= 10
+assert ">Same rule in several projects<" in page and "make global " in page and "not the same " in page
+PY
+if command -v node >/dev/null 2>&1; then
+  python3 - "$CTX_DB.page.html" > "$T/page.js" <<'PY'
+import re, sys
+print(re.search(r"<script>(.*)</script>", open(sys.argv[1], encoding="utf-8").read(), re.S).group(1))
+PY
+  node --check "$T/page.js" || fail "the page's script stays valid"
+fi
+"$CTX" page --project quill >/dev/null
+grep -q 'lint-before.md' "$CTX_DB.page-quill.html" || fail "a project's page offers its groups"
+"$CTX" rules same > "$T/rdsame.txt"
+grep -q '^group ' "$T/rdsame.txt" && grep -q 'egret-wiki2.md' "$T/rdsame.txt" || fail "ctx rules same lists the groups: $(cat "$T/rdsame.txt")"
+printf "not the same '%s' '%s'    # egret docs\n" "$(rdkey plume egret-wiki)" "$(rdkey quill egret-wiki2)" > "$T/same.plan"
+"$CTX" page apply "$T/same.plan" > "$T/same.txt" || fail "apply accepts not the same: $(cat "$T/same.txt")"
+grep -q '^1 action: 1 group to keep apart$' "$T/same.txt" || fail "the plan counts it: $(cat "$T/same.txt")"
+"$CTX" page apply --yes "$T/same.plan" >/dev/null || fail "apply --yes records not the same"
+"$CTX" rules same | grep -q 'egret-wiki' && fail "not the same hides the group"
+printf "make global '%s' '%s'    # heron linter\n" "$(rdkey plume lint-first)" "$(rdkey quill lint-before)" > "$T/global.plan"
+"$CTX" page apply "$T/global.plan" > "$T/global.txt" || fail "apply accepts make global: $(cat "$T/global.txt")"
+grep -q '^1 action: 1 group to make global$' "$T/global.txt" || fail "the plan counts it: $(cat "$T/global.txt")"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_doc WHERE kind = 'rule' AND project = '*' AND name GLOB 'manual:*'")" = 0 ] || fail "without --yes nothing is made global"
+"$CTX" page apply --yes "$T/global.plan" > "$T/global.txt" || fail "apply --yes makes it global: $(cat "$T/global.txt")"
+GK=$("$CTX" sql "SELECT name FROM ctx_doc WHERE kind = 'rule' AND project = '*' AND status IS NULL AND name GLOB 'manual:*'")
+[ -n "$GK" ] && [ "$("$CTX" sql "SELECT title FROM ctx_doc WHERE name = '$GK'")" = "Run the heron linter before every commit" ] || fail "make global creates one rule for every project"
+[ "$(rdstatus plume lint-first) $(rdstatus quill lint-before)" = "replaced replaced" ] || fail "make global replaces every member"
+rdnote "$(rdkey quill lint-before)" | grep -qx "by: $GK" || fail "each member names the global rule"
+rdnote "$GK" | grep -q 'name: lint-first\|^---$\|type: feedback' && fail "the global rule leaves the member's frontmatter behind: $(rdnote "$GK")"
+rdnote "$GK" | grep -qx 'Run the heron linter before every commit.' || fail "the global rule keeps the member's words: $(rdnote "$GK")"
+if "$CTX" rules global "$(rdkey plume cheap-model)" "$(rdkey plume tests-cond)" 2>"$T/rdg.err"; then fail "make global needs rules from two projects"; fi
+grep -q 'two projects' "$T/rdg.err" || fail "the refusal says why: $(cat "$T/rdg.err")"
+if "$CTX" rules global "$(rdkey quill kiln-temps)" "$RD/CLAUDE.md" 2>"$T/rdg.err"; then fail "make global refuses a whole CLAUDE.md"; fi
+grep -q 'CLAUDE.md' "$T/rdg.err" || fail "the refusal names it: $(cat "$T/rdg.err")"
+KU=$("$CTX" remember "Log the kiln temperatures every hour until the move" --project plume --until 2099-01-01 | cut -d' ' -f1)
+if "$CTX" rules global "$(rdkey quill kiln-temps)" "$KU" 2>"$T/rdg.err"; then fail "make global refuses a rule with an until date"; fi
+grep -q "$KU.*until" "$T/rdg.err" || fail "the refusal names the member with the date: $(cat "$T/rdg.err")"
+printf "make global '%s' '%s'\n" "$(rdkey plume cheap-model)" "$(rdkey plume tests-cond)" > "$T/global1.plan"
+if "$CTX" page apply --yes "$T/global1.plan" >/dev/null 2>&1; then fail "apply refuses a one-project group too"; fi
+[ "$(rdstatus plume cheap-model)" = active ] || fail "a refused group changes nothing"
+(cd "$T" && "$CTX" rules --project quill) | grep -q 'Run the heron linter before every commit' || fail "the global rule applies in every project"
+"$CTX" rules same | grep -q 'lint-' && fail "a group made global is not offered again"
+if "$CTX" rules global "$(rdkey quill kiln-temps)" 2>/dev/null; then fail "make global needs at least two rules"; fi
+# Only the keys on the line are made global: the person can trim a member from it.
+rdmem plume wren-a "Ring the wren bell at noon" "Ring the wren bell at noon."
+rdmem quill wren-b "Ring the wren bell at noon daily" "Ring the wren bell at noon, daily."
+rdmem quill wren-c "Ring the wren bell at dusk" "Ring the wren bell at dusk."
+"$CTX" rules import >/dev/null
+"$CTX" page >/dev/null
+python3 - "$CTX_DB.page.html" "$(rdkey plume wren-a)" "$(rdkey quill wren-b)" "$(rdkey quill wren-c)" <<'PY2' || fail "the wren rules make one group of three"
+import json, re, sys
+D = json.loads(re.search(r"var D = (\{.*?\});\n  var SEC", open(sys.argv[1], encoding="utf-8").read(), re.S).group(1))
+assert [sorted(m["k"] for m in g["m"]) for g in D["same"] if any(m["k"] == sys.argv[2] for m in g["m"])] == [sorted(sys.argv[2:5])], D["same"]
+PY2
+printf "make global '%s' '%s'\n" "$(rdkey plume wren-a)" "$(rdkey quill wren-b)" > "$T/trim.plan"
+"$CTX" page apply --yes "$T/trim.plan" >/dev/null || fail "apply a trimmed group"
+[ "$(rdstatus plume wren-a) $(rdstatus quill wren-b) $(rdstatus quill wren-c)" = "replaced replaced active" ] || fail "a member trimmed from the line is left untouched"
+# Measure: one script reports, for an archive, what each part would change, changing nothing.
+CTX="$CTX" sh tools/rule_redundancy.sh > "$T/rdmeasure.txt" || fail "the measure script runs: $(cat "$T/rdmeasure.txt")"
+grep -q '^active rules: [0-9]' "$T/rdmeasure.txt" && grep -q '^identical copies to collapse: 0' "$T/rdmeasure.txt" && grep -q '^rules to send to the covered check: [0-9]' "$T/rdmeasure.txt" && grep -q '^groups of the same rule in several projects: [0-9]' "$T/rdmeasure.txt" || fail "the measure reports four numbers: $(cat "$T/rdmeasure.txt")"
+(unset CTX_DB; CTX="$CTX" sh tools/rule_redundancy.sh >/dev/null 2>&1) && fail "the measure refuses to run without CTX_DB"
+"$CTX" rules auto --off >/dev/null
+# At most 20 rules a call and 3 calls a run; a run of the automatic judge does the check too.
+export CTX_DB="$T/covbatch.sqlite"
+"$CTX" init >/dev/null
+RB="$T/covbcfg"
+CLAUDE_CONFIG_DIR="$RB"; export CLAUDE_CONFIG_DIR
+mkdir -p "$RB/projects/-w-gannet/memory"
+printf '{"uuid":"gb-1","timestamp":"2026-11-10T10:00:00Z","cwd":"/w/gannet","message":{"role":"user","content":"hello gannet"}}\n' > "$RB/projects/-w-gannet/d0c0ffe3-0000-0000-0000-000000000003.jsonl"
+"$CTX" archive "$RB/projects/-w-gannet/d0c0ffe3-0000-0000-0000-000000000003.jsonl" >/dev/null
+printf 'Never attribute an AI in commits, PRs or comments.\n' > "$RB/CLAUDE.md"
+i=0; while [ $i -lt 65 ]; do i=$((i + 1)); printf 'Gannet kiln rule number %s.\n' "$i" > "$RB/projects/-w-gannet/memory/kiln-$i.md"; done
+CLAUDE_CONFIG_DIR="$RB" "$CTX" rules import >/dev/null
+"$CTX" rules auto "python3 $COVFAKE $T/covb.log" >/dev/null
+"$CTX" rules covered >/dev/null
+[ "$(wc -l < "$T/covb.log" | tr -d ' ')" = 3 ] && ! grep -qv '^call 20 ' "$T/covb.log" || fail "at most 20 rules a call and 3 calls a run: $(cat "$T/covb.log")"
+[ "$("$CTX" sql 'SELECT count(*) FROM ctx_rule_covered')" = 60 ] || fail "the rest wait for the next run"
+"$CTX" rules classifier "python3 $COVFAKE $T/covb-classify.log" >/dev/null
+"$CTX" rules propose >/dev/null
+[ "$("$CTX" sql 'SELECT count(*) FROM ctx_rule_covered')" = 65 ] || fail "the hourly propose run checks covered rules too"
+"$CTX" rules classifier --off >/dev/null
+"$CTX" rules auto --off >/dev/null
+# A copy comes back when the rule it copied is no longer in force; a covered rule comes back
+# when the global words it was retired on are gone.
+export CTX_DB="$T/revive.sqlite"
+"$CTX" init >/dev/null
+RV="$T/revcfg"
+CLAUDE_CONFIG_DIR="$RV"; export CLAUDE_CONFIG_DIR
+mkdir -p "$RV/projects/-w-tern/memory"
+printf '{"uuid":"tn-1","timestamp":"2026-11-11T10:00:00Z","cwd":"/w/tern","message":{"role":"user","content":"hello tern"}}\n' > "$RV/projects/-w-tern/d0c0ffe4-0000-0000-0000-000000000004.jsonl"
+"$CTX" archive "$RV/projects/-w-tern/d0c0ffe4-0000-0000-0000-000000000004.jsonl" >/dev/null
+printf 'Never attribute an AI in commits, PRs or comments.\n' > "$RV/CLAUDE.md"
+printf 'Tern builds run on the slow runner.\n' > "$RV/projects/-w-tern/memory/runner-a.md"
+cp "$RV/projects/-w-tern/memory/runner-a.md" "$RV/projects/-w-tern/memory/runner-b.md"
+"$CTX" rules import >/dev/null
+TCOPY=$("$CTX" sql "SELECT name FROM ctx_doc WHERE kind = 'rule' AND status = 'replaced' AND name GLOB '*/runner-?.md'")
+TKEPT=$("$CTX" sql "SELECT name FROM ctx_doc WHERE kind = 'rule' AND status IS NULL AND name GLOB '*/runner-?.md'")
+[ -n "$TCOPY" ] && [ -n "$TKEPT" ] || fail "the revival test starts with a collapse"
+rm "$TKEPT"
+"$CTX" rules import >/dev/null; "$CTX" rules import >/dev/null
+[ "$("$CTX" sql "SELECT coalesce(status, 'active') FROM ctx_doc WHERE name = '$TCOPY'")" = active ] || fail "a copy comes back when the file it copied is deleted: $("$CTX" rules --all --project tern)"
+[ "$("$CTX" sql "SELECT undone FROM ctx_rule_collapse WHERE key = '$TCOPY'")" = 1 ] || fail "its collapse is marked undone"
+KX=$("$CTX" remember "Feed the tern logs to the archive nightly" --project tern --until 2099-01-01 | cut -d' ' -f1)
+KY=$("$CTX" remember "Feed the tern logs to the archive nightly" --project tern | cut -d' ' -f1)
+"$CTX" rules import >/dev/null
+[ "$("$CTX" sql "SELECT coalesce(status, 'active') FROM ctx_doc WHERE name = 'manual:$KY'")" = replaced ] || fail "the later of two remembered copies is replaced"
+"$CTX" sql "SELECT fsl_technote_save(replace(CAST(fsl_technote(technote) AS TEXT), 'until: 2099-01-01', 'until: 2020-01-01'), json_object('id', technote)) FROM ctx_rule WHERE key = 'manual:$KX'" >/dev/null
+"$CTX" rules import >/dev/null; "$CTX" rules import >/dev/null
+[ "$("$CTX" sql "SELECT coalesce(status, 'active') FROM ctx_doc WHERE name = 'manual:$KX'")" = expired ] || fail "the kept rule expires"
+[ "$("$CTX" sql "SELECT coalesce(status, 'active') FROM ctx_doc WHERE name = 'manual:$KY'")" = active ] || fail "a copy comes back when the rule it copied expires: $("$CTX" rules --all --project tern)"
+printf 'Never attribute an AI in commits or PRs.\n' > "$RV/projects/-w-tern/memory/no-credit.md"
+"$CTX" rules import >/dev/null
+"$CTX" rules auto "python3 $COVFAKE $T/covr.log" >/dev/null
+"$CTX" rules covered >/dev/null
+tstatus() { "$CTX" sql "SELECT coalesce(status, 'active') FROM ctx_doc WHERE kind = 'rule' AND name GLOB '*/-w-tern/memory/$1.md'"; }
+[ "$(tstatus no-credit)" = retired ] || fail "the revival test starts with a covered rule"
+printf 'Be terse.\n' > "$RV/CLAUDE.md"
+"$CTX" rules import >/dev/null
+[ "$(tstatus no-credit)" = active ] || fail "a covered rule comes back when its quote leaves the global CLAUDE.md"
+[ "$("$CTX" sql "SELECT undone FROM ctx_rule_covered WHERE key GLOB '*/no-credit.md' AND covered = 1")" = 1 ] || fail "its verdict is marked undone"
+printf 'Never attribute an AI in commits, PRs or comments.\n' > "$RV/CLAUDE.md"
+"$CTX" rules import >/dev/null
+"$CTX" rules covered >/dev/null
+[ "$(tstatus no-credit)" = retired ] || fail "a revived rule is judged again when the global words come back"
+"$CTX" rules restore no-credit.md >/dev/null
+"$CTX" rules covered >/dev/null
+"$CTX" rules import >/dev/null
+[ "$(tstatus no-credit)" = active ] || fail "a rule the person restored is never retired again on the same texts"
+# A rule edited while the judge thinks is not retired on the verdict about its old text.
+printf 'Never attribute an AI in commits, PRs or comments.\n' > "$RV/CLAUDE.md"
+printf 'Do not attribute an AI anywhere in tern commits or PRs.\n' > "$RV/projects/-w-tern/memory/credit.md"
+"$CTX" rules import >/dev/null
+"$CTX" rules auto "python3 $COVFAKE $T/covr.log edit $CTX" >/dev/null
+"$CTX" rules covered >/dev/null 2>&1 || true
+[ "$(tstatus credit)" = active ] || fail "a rule edited during the check is not retired on the old verdict"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_rule_covered WHERE key GLOB '*/credit.md' AND covered = 1")" = 0 ] || fail "nor is a covered verdict stored for it"
+# A rule the judge leaves out is recorded as not covered, so the queue moves on.
+"$CTX" rules auto "python3 $COVFAKE $T/covr.log silent" >/dev/null
+: > "$T/covr.log"
+"$CTX" rules covered >/dev/null
+[ "$(wc -l < "$T/covr.log" | tr -d ' ')" = 1 ] || fail "the silent judge is asked once: $(cat "$T/covr.log")"
+"$CTX" rules covered >/dev/null
+[ "$(wc -l < "$T/covr.log" | tr -d ' ')" = 1 ] || fail "rules the judge left out are not sent again until they change"
+# An empty global CLAUDE.md is no global CLAUDE.md.
+printf '  \n\n' > "$RV/CLAUDE.md"
+"$CTX" rules import >/dev/null
+"$CTX" rules auto "python3 $COVFAKE $T/covr.log" >/dev/null
+: > "$T/covr.log"
+"$CTX" rules covered | grep -q 'no global CLAUDE.md' || fail "an empty global CLAUDE.md is treated as absent"
+[ -s "$T/covr.log" ] && fail "an empty global CLAUDE.md calls no judge"
+"$CTX" rules auto --off >/dev/null
+CLAUDE_CONFIG_DIR="$T/claude"; export CLAUDE_CONFIG_DIR
+
 # Stats count what agents really ran: searches, misses, reads and skill loads, not mentions.
 export CTX_DB="$T/stats.sqlite"
 "$CTX" init >/dev/null
@@ -2465,7 +2768,7 @@ CLAUDE_CONFIG_DIR="$XC" "$CTX" scan >/dev/null
 "$CTX" forget 5e550000-0000-0000-0000-00000000000 2>/dev/null && fail "an ambiguous prefix is refused"
 export CTX_DB="$T/rebuild.sqlite"
 "$CTX" init >/dev/null
-[ "$("$CTX" sql "PRAGMA user_version")" = 15 ] || fail "a new file is at the current version"
+[ "$("$CTX" sql "PRAGMA user_version")" = 16 ] || fail "a new file is at the current version"
 [ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 7 ] || fail "derived version recorded"
 printf '{"uuid":"rb-1","timestamp":"2026-09-01T10:00:00Z","cwd":"/w/rb","message":{"role":"user","content":"the capybara rollout"}}\n{"uuid":"rb-2","timestamp":"2026-09-01T10:00:05Z","cwd":"/w/rb","message":{"role":"assistant","content":"rolled out the capybara"}}\n' > "$T/ab12cd99-rb.jsonl"
 "$CTX" archive "$T/ab12cd99-rb.jsonl" >/dev/null
@@ -2487,7 +2790,7 @@ grep -q 'rebuilding it once' "$T/rb.err" || fail "an old index is rebuilt on ope
 "$CTX" sql "DROP TABLE ctx_meta" >/dev/null; "$CTX" sql "PRAGMA user_version = 1" >/dev/null
 "$CTX" search --all capybara 2>"$T/rb3.err" | grep -q capybara || fail "an unversioned file still works"
 [ -s "$T/rb3.err" ] && fail "an unversioned file is upgraded without a rebuild"
-[ "$("$CTX" sql "PRAGMA user_version")" = 15 ] || fail "and is marked current"
+[ "$("$CTX" sql "PRAGMA user_version")" = 16 ] || fail "and is marked current"
 
 # Docs tickets: every documentation problem ctx finds becomes a ticket, once each, without the
 # person's sign-off, and the overview shows who holds it and carries a prod to that session.

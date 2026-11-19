@@ -115,6 +115,9 @@ section.q { display:flex; flex-direction:column; gap:10px; }
 .say { display:flex; flex-direction:column; gap:1px; padding-left:10px; border-left:3px solid var(--mid); }
 .say.cur { border-left-color:var(--yes); } .sq { overflow-wrap:anywhere; } .sh { color:var(--muted); font-size:.76rem; }
 .detail input { font:inherit; width:100%; padding:6px 9px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); }
+.detail label.member { display:flex; gap:8px; align-items:baseline; color:var(--fg); font-size:.86rem; overflow-wrap:anywhere; cursor:pointer; }
+.detail label.member input { width:auto; padding:0; margin:0; flex:none; }
+.detail label.member span { color:var(--muted); font-size:.8rem; }
 .big { display:flex; flex-wrap:wrap; gap:6px 26px; align-items:baseline; }
 .big b { font-size:clamp(1.6rem,4vw,2.4rem); line-height:1; font-variant-numeric:tabular-nums; } .big span { color:var(--muted); font-size:.9rem; }
 .heatwrap { overflow-x:auto; border:1px solid var(--line); border-radius:10px; padding:12px; background:var(--surface); }
@@ -169,6 +172,12 @@ section.q { display:flex; flex-direction:column; gap:10px; }
   <div class="list" id="need-list"></div>
 </section>
 
+<section class="q" id="s-same" hidden>
+  <div class="qhead"><h2>Same rule in several projects</h2><span class="count" id="same-n"></span></div>
+  <p class="note">Rules saved separately in two or more projects that seem to say the same thing. Make global: one rule for every project, in the words you pick, replaces them all. Not the same: these are not offered together again while they stay as they are. Later: nothing changes. ctx never widens a rule without your choice.</p>
+  <div class="list" id="same-list"></div>
+</section>
+
 <details class="fold" id="f-auto">
   <summary><h2>Decided for you this week</h2><span class="count" id="auto-n"></span></summary>
   <div class="body" id="s-auto"></div>
@@ -209,13 +218,14 @@ section.q { display:flex; flex-direction:column; gap:10px; }
   ];
   var BY = {}; SEC.forEach(function (s) { BY[s.key] = s; });
   D.tickets = /*TICKETS*/;
-  var state = { auto: {} }, view = {}, cursor = null;
+  var state = { auto: {}, same: {} }, view = {}, cursor = null;
   SEC.forEach(function (s) {
     state[s.key] = {};
     D[s.key].forEach(function (it) { state[s.key][it.id] = { c: null, open: false, text: null }; /* nothing is chosen for you: a batch is applied only when you press it */ });
     view[s.key] = { show: "all", text: "", limit: s.page };
   });
   D.auto.forEach(function (a) { state.auto[a.id] = { undo: false, open: false }; });
+  D.same.forEach(function (g) { state.same[g.id] = { c: null, pick: g.pick }; });
   function esc(t) { return String(t).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
   function num(n) { return Number(n).toLocaleString("en-US"); }
   function el(tag, cls, htmlText) { var e = document.createElement(tag); if (cls) e.className = cls; if (htmlText !== undefined) e.innerHTML = htmlText; return e; }
@@ -391,6 +401,38 @@ section.q { display:flex; flex-direction:column; gap:10px; }
   }
   function undo(a) { state.auto[a.id].undo = !state.auto[a.id].undo; renderAuto(); totals(); focusCursor(); }
 
+  /* A group of rules from several projects: the members, the words to keep, and the three choices. */
+  var SAME = ["Make global", "Not the same", "Later"];
+  function sameRow(g) {
+    var st = state.same[g.id];
+    var row = el("div", "row line" + (st.c !== null ? " chosen" : "") + (st.c === 1 ? " done-no" : "")); row.tabIndex = 0; row.dataset.sec = "same"; row.dataset.id = g.id;
+    if (cursor && cursor.sec === "same" && cursor.id === g.id) row.classList.add("cur");
+    var projects = g.m.map(function (m) { return m.p; }).filter(function (v, i, a) { return a.indexOf(v) === i; });
+    row.appendChild(el("div", "main", '<span class="title">' + esc(g.m[st.pick].t) + '</span><span class="meta">' + plural(g.m.length, "rule") + ' in ' + plural(projects.length, "project") + ': ' + esc(projects.join(", ")) + '</span>'));
+    var seg = el("div", "seg"); seg.setAttribute("role", "group"); seg.setAttribute("aria-label", "Choice for " + g.m[st.pick].t);
+    SAME.forEach(function (lab, c) {
+      var b = el("button", "k" + [0, 2, 1][c], '<kbd>' + (c + 1) + '</kbd>' + esc(lab)); b.type = "button"; b.setAttribute("aria-pressed", String(st.c === c));
+      b.addEventListener("click", function (e) { e.stopPropagation(); cursor = { sec: "same", id: g.id }; sameChoose(g, c); });
+      seg.appendChild(b);
+    });
+    row.appendChild(seg);
+    var det = el("div", "detail", '<div class="where">The words the one rule for every project would keep:</div>' + g.m.map(function (m, i) {
+      return '<label class="member"><input type="radio" name="pick-' + esc(g.id) + '" data-i="' + i + '"' + (i === st.pick ? ' checked' : '') + '>' + esc(m.t) + '<span>' + esc(m.p) + ' · ' + esc(m.s) + '</span></label>';
+    }).join(""));
+    Array.prototype.forEach.call(det.querySelectorAll("input"), function (r) {
+      r.addEventListener("change", function () { st.pick = Number(r.dataset.i); cursor = { sec: "same", id: g.id }; renderSame(); totals(); focusCursor(); });
+    });
+    row.appendChild(det);
+    return row;
+  }
+  function sameChoose(g, c) { var st = state.same[g.id]; st.c = st.c === c ? null : c; renderSame(); totals(); focusCursor(); }
+  function renderSame() {
+    var sec = document.getElementById("s-same"), host = document.getElementById("same-list");
+    sec.hidden = !D.same.length; host.innerHTML = "";
+    document.getElementById("same-n").textContent = "· " + plural(D.same.length, "group");
+    D.same.forEach(function (g) { host.appendChild(sameRow(g)); });
+  }
+
   /* Tickets: one row a project, open ones first, each opening to its ticket list. A claimed
    * ticket names the session holding it, with a Copy button for its prod command; one closed
    * this week shows the result or the reason it was dropped. */
@@ -441,7 +483,8 @@ section.q { display:flex; flex-direction:column; gap:10px; }
   function anyChoice() {
     var s = SEC.some(function (x) { return D[x.key].some(function (it) { return state[x.key][it.id] && state[x.key][it.id].c !== null; }); });
     var u = D.auto.some(function (a) { return state.auto[a.id] && state.auto[a.id].undo; });
-    return s || u;
+    var g = D.same.some(function (x) { return state.same[x.id].c !== null; });
+    return s || u || g;
   }
   /* Every named fold keeps its open state across a reload, and does so quietly if storage is denied. */
   function rememberFolds() {
@@ -596,6 +639,12 @@ section.q { display:flex; flex-direction:column; gap:10px; }
     var out = [], one = function (t) { return String(t).replace(/\s+/g, " ").trim(); }, sq = function (t) { return "'" + one(t).replace(/'/g, "'\\''") + "'"; };
     D.rules.forEach(function (it) { var c = state.rules[it.id].c; var tx = state.rules[it.id].text; if (c === 0) out.push("accept rule " + it.id + (tx ? " as " + sq(tx) : "") + "    # " + one(it.p + ": " + (tx || it.t))); if (c === 2) out.push("reject rule " + it.id + "    # " + one(it.p + ": " + it.t)); });
     D.auto.forEach(function (a) { if (state.auto[a.id].undo) out.push("undo decision " + a.id + "    # " + one(a.p + ": " + a.t)); });
+    D.same.forEach(function (g) {
+      var st = state.same[g.id], first = g.m[st.pick], rest = g.m.filter(function (m, i) { return i !== st.pick; });
+      var why = "    # " + one(first.t) + " (" + g.m.map(function (m) { return m.p; }).filter(function (v, i, a) { return a.indexOf(v) === i; }).join(", ") + ")";
+      if (st.c === 0) out.push("make global " + [first].concat(rest).map(function (m) { return sq(m.k); }).join(" ") + why);
+      if (st.c === 1) out.push("not the same " + g.m.map(function (m) { return sq(m.k); }).join(" ") + why);
+    });
     D.conf.forEach(function (it) {
       var c = state.conf[it.id].c;
       if (c === 0) out.push("ticket " + sq("Docs: " + it.t) + " in " + sq(it.p) + " saying " + sq(it.ps.map(function (p) { return p[0] + " § " + p[1] + ": \"" + p[2].slice(0, 120) + "\"" + (p[3] ? " (likely current)" : ""); }).join(" | ")) + " for conflict " + it.id);
@@ -631,6 +680,11 @@ section.q { display:flex; flex-direction:column; gap:10px; }
       cursor = { sec: rows[n].dataset.sec, id: rows[n].dataset.id }; focusCursor(); return;
     }
     if (i < 0 || (e.target.tagName === "BUTTON" && e.key === "Enter") || e.target.tagName === "SUMMARY") return;
+    if (cursor.sec === "same") {
+      var g = D.same.filter(function (x) { return x.id === cursor.id; })[0];
+      if (k === "1" || k === "2" || k === "3") { e.preventDefault(); sameChoose(g, Number(k) - 1); }
+      return;
+    }
     if (cursor.sec === "auto") {
       var a = D.auto.filter(function (x) { return String(x.id) === String(cursor.id); })[0];
       if (k === "1") { e.preventDefault(); undo(a); }
@@ -660,7 +714,7 @@ section.q { display:flex; flex-direction:column; gap:10px; }
   document.getElementById("batch").textContent = D.batch;
   document.getElementById("batch").hidden = !D.batch;
   document.getElementById("status-n").textContent = "· " + plural(D.held.length, "project") + (D.scope ? "" : " · " + plural(D.hooks.length, "hook")) + " · " + plural(D.weeks.length, "week") + "; " + (sugg ? plural(sugg, "change") + " suggested" : "no changes suggested");
-  renderNeed(); renderBatch(); renderAuto(); render(BY.held); renderTickets(); rememberFolds(); totals(); armReload();
+  renderNeed(); renderBatch(); renderSame(); renderAuto(); render(BY.held); renderTickets(); rememberFolds(); totals(); armReload();
   if (D.scope) document.getElementById("s-hooks").innerHTML = '<p class="note">Hooks run on the whole machine. <code>ctx page --all</code> shows them.</p>';
   else render(BY.hooks);
 })();
