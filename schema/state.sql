@@ -266,3 +266,55 @@ CREATE TABLE IF NOT EXISTS ctx_proposal_judged(
   at      TEXT NOT NULL,
   undone  INTEGER NOT NULL DEFAULT 0
 ) STRICT;
+
+-- Identical copies of a rule in one project, found after every rules import: same text once a
+-- memory file's frontmatter, case and spacing are set aside. The copy is replaced by the
+-- oldest. rule_hash is the copy's compared text; undone = 1 once `ctx rules restore` undid it.
+CREATE TABLE IF NOT EXISTS ctx_rule_collapse(
+  key       TEXT NOT NULL,
+  rule_hash TEXT NOT NULL,
+  kept      TEXT NOT NULL,      -- the rule it is a copy of
+  project   TEXT NOT NULL,
+  at        TEXT NOT NULL,
+  undone    INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (key, rule_hash)
+) STRICT, WITHOUT ROWID;
+
+-- The automatic judge's verdict on whether the global CLAUDE.md already says a project rule,
+-- one per rule text and global text, so neither is sent again until one of them changes.
+-- covered = 1 only with a quote found word for word in the global text; such a rule is
+-- retired. Paid judgements, so state: a rebuild keeps them.
+CREATE TABLE IF NOT EXISTS ctx_rule_covered(
+  key         TEXT NOT NULL,
+  rule_hash   TEXT NOT NULL,
+  global_hash TEXT NOT NULL,
+  covered     INTEGER NOT NULL,
+  quote       TEXT NOT NULL DEFAULT '',
+  at          TEXT NOT NULL,
+  undone      INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (key, rule_hash, global_hash)
+) STRICT, WITHOUT ROWID;
+
+-- Retirements the person undid with `ctx rules restore`, whatever retired the rule. While the
+-- rule's text and the global CLAUDE.md are as they were then, neither the collapse of copies
+-- nor the covered check retires it again.
+CREATE TABLE IF NOT EXISTS ctx_rule_restore(
+  id          INTEGER PRIMARY KEY,
+  key         TEXT NOT NULL,
+  rule_hash   TEXT NOT NULL,
+  global_hash TEXT NOT NULL,
+  was         TEXT NOT NULL,     -- the status and reason it had
+  at          TEXT NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS ctx_rule_restore_key ON ctx_rule_restore(key, rule_hash);
+
+-- The person's answer to a group of rules from several projects the page offered as one:
+-- made into one rule for every project, or not the same. sig hashes the members' keys and
+-- texts, so a group whose members change is offered again.
+CREATE TABLE IF NOT EXISTS ctx_rule_same(
+  sig      TEXT PRIMARY KEY,
+  decision TEXT NOT NULL CHECK (decision IN ('global', 'distinct')),
+  keys     TEXT NOT NULL,       -- JSON array of the member keys
+  made     TEXT,                -- for global: the new rule's key
+  at       TEXT NOT NULL
+) STRICT, WITHOUT ROWID;

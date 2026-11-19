@@ -410,6 +410,7 @@ ctx rules                     # the rules in force here, with every-project ones
 ctx rules --all               # every rule anywhere, with retired and expired ones
 ctx rules retire KEY --reason "we left beta"
 ctx rules retire KEY --reason "now says more" --by NEWKEY             # replaced
+ctx rules restore KEY         # undo any retirement or replacement
 ```
 
 Every scan also imports `~/.claude/CLAUDE.md`, each project's `CLAUDE.md` and
@@ -546,6 +547,65 @@ Each rule is a technote in your private repository, so every version is kept and
 rules sync with your archive. A rule past its `--until` date expires. Search shows
 rules in force, each under its file name or key; `--history` brings back expired,
 replaced and retired ones.
+
+### Fewer copies of the same rule
+
+Most redundancy is not a rule said twice in one project in different words: on the
+author's archive, merging those would retire 2 of 380 rules. It is memory files that
+repeat what `~/.claude/CLAUDE.md` already says everywhere, files copied word for word,
+and the same rule saved in several projects. ctx removes the first two on its own,
+leaning toward fewer rules, and offers the third. Nothing deletes a file: a retired
+rule stays retired while its file is unchanged, and editing the file brings it back.
+
+**Identical copies collapse.** After every import, rules in force in one project whose
+text is the same, once a memory file's frontmatter, case and spacing are set aside,
+are copies. The oldest stays; each other is replaced by it, with the reason `identical
+copy of KEY`. Copies in different projects are left alone, as are CLAUDE.md and
+AGENTS.md files.
+
+**Rules the global CLAUDE.md covers are retired.** With an automatic judge set (`ctx
+rules auto CMD`), every run that decides proposals also shows the judge your global
+CLAUDE.md beside project rules, 20 at a time and at most 60 a run, and asks which it
+already says in every project, with nothing narrower, no extra condition and no time
+limit missing. A rule that adds anything stays. A rule is retired only with a quote of
+at least 20 characters found word for word in the global text; the reason carries the
+quote. Each verdict is kept against both texts, so a rule is sent again only when it or
+the global CLAUDE.md changes. A judge that fails or answers unreadably records nothing.
+
+```sh
+ctx rules covered              # check now
+ctx rules covered --dry-run    # list what would be sent; calls nothing, changes nothing
+ctx rules collapse --dry-run   # list the copies an import would collapse
+```
+
+Both show in `ctx rules activity` for the last 7 days, and `ctx rules restore KEY`
+undoes either, or a retirement of your own. A restored rule is active again with the
+reason `restored`, and neither check retires it again while its text and the global
+CLAUDE.md stay as they were. A rule retired because its file was deleted comes back
+when the file does, so restore refuses it.
+
+ctx also undoes its own retirements when their reason goes. A copy comes back when the
+rule it copied is no longer in force (its file deleted, or it expired, faded or was
+retired), and a covered rule comes back when its quote is no longer in the global
+CLAUDE.md. A global CLAUDE.md that is empty counts as none. A rule edited while the judge
+is deciding is not retired on the verdict about its old text, and a rule the judge leaves
+out of its answer counts as not covered, so a few never hold the queue.
+
+**The same rule in several projects is offered as one.** The decisions page has a
+section, "Same rule in several projects", with up to 10 groups of rules in force in two
+or more projects whose titles share enough of their words (Jaccard 0.3 or more, without
+common words). On the author's rules, 0.6 found one pair across projects and 0.3 found
+12, about 9 of them truly the same rule, so a group may be wrong; you decide each. **Make
+global** creates one rule for every project, as `ctx remember --project '*'` would, in the
+words of the member you pick (the longest title by default, frontmatter left out), and
+replaces every member with it. It refuses a group from one project, a whole CLAUDE.md or
+AGENTS.md, a rule already for every project, and a rule with an `--until` date. **Not the same** is recorded, and
+the group is not offered again while its members stay as they are. **Later** does
+nothing. No rule is widened without that choice. `ctx rules same` lists the groups.
+
+`tools/rule_redundancy.sh` reports all of this for an archive and changes nothing:
+rules in force, copies to collapse, rules the covered check would send, and groups. Run
+it on a copy: `CTX_DB=/tmp/copy.sqlite tools/rule_redundancy.sh`.
 
 ## Pick up after a compaction
 
@@ -1034,6 +1094,11 @@ days: rules it added, and proposals it dismissed, grouped by reason (already cov
 by a rule, with the rule's words; session setup; not a rule). Each has **Undo**.
 Decisions you already undid are not listed.
 
+**Same rule in several projects** lists groups of rules saved separately in two or
+more projects that seem to say the same thing, each with Make global, Not the same or
+Later, and the members to pick the words from. A project's page lists the groups with a
+member in that project.
+
 **Status** is folded too: the projects ctx holds (Keep, Stop archiving or Forget),
 the hooks it runs (Keep, Later or Remove) and the weekly grid, with a one-line
 summary of how many changes ctx suggests. Nothing is chosen for you. Your choices
@@ -1055,6 +1120,8 @@ with shell single-quote rules and are never passed to a shell.
 - `stop archiving NAME` is `ctx exclude --project NAME`; what is held stays searchable.
 - `forget NAME` is `ctx forget --project NAME`; the project's sessions leave search for good.
 - `undo decision N` is `ctx rules undo N`: the automatic judge's decision on proposal N is reversed, and the plan names the proposal.
+- `make global KEY KEY...` is Make global for a group of the same rule in several projects: one rule for every project in the first key's words, replacing every key listed (`ctx rules global`).
+- `not the same KEY KEY...` is Not the same: the group is not offered again while its rules are unchanged (`ctx rules distinct`).
 - Remove, for a hook, is only a `#` comment naming the entry to remove. ctx does not
   edit your Claude Code settings.
 
