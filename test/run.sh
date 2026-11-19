@@ -218,6 +218,15 @@ N=$("$CTX" sql "SELECT technote FROM ctx_rule WHERE key LIKE '%notam-mono.md'")
 rm "$RC/projects/-w-rp/memory/notam-mono.md"
 CLAUDE_CONFIG_DIR="$RC" "$CTX" rules import >/dev/null
 "$CTX" rules --all --project rp | grep -q 'notam-mono.md  rp retired' || fail "a removed file retires its rule: $("$CTX" rules --all --project rp)"
+printf -- '---\nname: notam-mono\noriginSessionId: d00d0001-0000-0000-0000-000000000001\n---\n\nRaw NOTAM text is monospaced, like Jeppesen.\n' > "$RC/projects/-w-rp/memory/notam-mono.md"
+CLAUDE_CONFIG_DIR="$RC" "$CTX" rules import >/dev/null
+"$CTX" rules --project rp | grep -q 'notam-mono.md' || fail "a file that comes back revives the rule its removal retired: $("$CTX" rules --all --project rp | grep notam)"
+"$CTX" rules retire notam-mono.md --reason "covered by the style guide" >/dev/null
+printf -- '---\nname: notam-mono\noriginSessionId: d00d0001-0000-0000-0000-000000000001\n---\n\nRaw NOTAM text is monospaced in every view.\n' > "$RC/projects/-w-rp/memory/notam-mono.md"
+CLAUDE_CONFIG_DIR="$RC" "$CTX" rules import >/dev/null
+"$CTX" rules --project rp | grep -q 'notam-mono.md' || fail "editing a retired note's file brings it back: $("$CTX" rules --all --project rp | grep notam)"
+rm "$RC/projects/-w-rp/memory/notam-mono.md"
+CLAUDE_CONFIG_DIR="$RC" "$CTX" rules import >/dev/null
 [ "$("$CTX" sql "SELECT count(*) FROM ctx_doc WHERE kind='session' AND id IN (SELECT doc_id FROM ctx_chunk WHERE body LIKE '%changelog%')")" = 0 ] || fail "a rule is not a session"
 B=$("$CTX" sql "SELECT count(*) FROM ctx_doc WHERE kind='rule'")
 "$CTX" rebuild >/dev/null
@@ -300,6 +309,8 @@ CLAUDE_CONFIG_DIR="$RC" "$CTX" rules import >/dev/null
 "$CTX" rules judge >/dev/null
 [ "$("$CTX" sql "SELECT count(*) FROM ctx_rule_check WHERE key GLOB '*/CLAUDE.md'")" = 0 ] || fail "a project's CLAUDE.md is never judged"
 "$CTX" rules retire short-commits.md --reason "full messages now" >/dev/null
+CLAUDE_CONFIG_DIR="$RC" "$CTX" rules import >/dev/null
+"$CTX" rules --all --project rp | grep -q '^short-commits.md  rp retired' || fail "a retired memory note stays retired when its unchanged file is imported again: $("$CTX" rules --all --project rp | grep short-commits)"
 "$CTX" sql "UPDATE ctx_rule_check SET asked = NULL" >/dev/null
 (cd "$T/w/rp" && "$CTX" rules offer) | grep -q 'One rule may be outdated' && fail "a retired rule is never asked about"
 "$CTX" rules judge-with --off >/dev/null

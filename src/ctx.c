@@ -7382,6 +7382,26 @@ static void memory_project(sqlite3 *db, const char *dir, const char *origin, cha
   sqlite3_finalize(q);
 }
 
+#define RULE_FILE_GONE "its file was removed"
+
+/* A rule retired or replaced on purpose stays so while its file says the same: without this
+ * the next scan would read the unchanged file and bring the rule back. Editing the file is a
+ * new statement and revives it; so does a file coming back after its removal retired it. */
+static int rule_retired_unchanged(sqlite3 *db, const char *key, const char *body) {
+  sqlite3_stmt *q = db_prepare(db, "SELECT CAST(fsl_technote(technote) AS TEXT) FROM ctx_rule WHERE key = ?1");
+  sqlite3_bind_text(q, 1, key, -1, SQLITE_STATIC);
+  int keep = 0;
+  if (sqlite3_step(q) == SQLITE_ROW && sqlite3_column_text(q, 0)) {
+    const char *text = (const char *)sqlite3_column_text(q, 0);
+    char status[40], reason[200];
+    rule_field(text, "status", status, sizeof status);
+    rule_field(text, "reason", reason, sizeof reason);
+    keep = (!strcmp(status, "retired") || !strcmp(status, "replaced")) && strcmp(reason, RULE_FILE_GONE) && !strcmp(rule_body(text), body);
+  }
+  sqlite3_finalize(q);
+  return keep;
+}
+
 static int import_file(sqlite3 *db, const char *path, const char *project, const char *origin) {
   size_t n = 0;
   char *data = slurp(path, &n);
@@ -7397,9 +7417,12 @@ static int import_file(sqlite3 *db, const char *path, const char *project, const
   buf clean = {0};
   add_redacted(&clean, data, n); /* the same rules as transcripts */
   buf_add(&clean, "", 1);
-  rule_t r = {.key = path, .project = project, .source = path, .origin = origin, .kind = *kind ? kind : NULL,
-              .written = written, .body = clean.p};
-  int saved = rule_save(db, &r);
+  int saved = 0;
+  if (!rule_retired_unchanged(db, path, clean.p)) {
+    rule_t r = {.key = path, .project = project, .source = path, .origin = origin, .kind = *kind ? kind : NULL,
+                .written = written, .body = clean.p};
+    saved = rule_save(db, &r);
+  }
   free(clean.p);
   free(data);
   return saved;
@@ -7485,7 +7508,7 @@ static long rules_import(sqlite3 *db) {
     rule_field(text, "written", written, sizeof written);
     rule_t r = {.key = (const char *)sqlite3_column_text(gone, 0), .project = (const char *)sqlite3_column_text(gone, 1),
                 .source = src, .origin = origin, .kind = kind, .written = written, .status = "retired",
-                .reason = "its file was removed", .body = rule_body(text)};
+                .reason = RULE_FILE_GONE, .body = rule_body(text)};
     changed += rule_save(db, &r);
   }
   sqlite3_finalize(gone);
