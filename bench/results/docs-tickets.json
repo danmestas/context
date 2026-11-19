@@ -1,0 +1,73 @@
+{
+ "name": "docs-tickets",
+ "title": "Do agents work the docs tickets they are offered, and correctly? (before and after the offer change)",
+ "section": "Agent behaviour",
+ "order": 100,
+ "date": "2026-11-18",
+ "good_until": "2027-02-16",
+ "commit": "",
+ "command": "DOCBENCH_V=-v2 ~/.ctx/eval/docbench/run.py run && judge.py tasks && judge.py closures; aggregate.py -v2",
+ "conditions": {
+  "repository": "dagnats at 4b762048 (just before #1019), one fresh history-free copy per session",
+  "tickets": "82 confirmed conflict rows from the 2026-11-16 eval copy, filed by ctx itself: 65 open docs tickets, offered order shuffled per task",
+  "subject": "DeepSeek V4.1 Flash in Claude Code, headless, sandboxed to the copy, with SessionStart ctx ticket offer and PostToolUse ctx hook post",
+  "tasks": "12 ordinary dagnats tasks (4 planted bugs, 4 add-a-test, 4 code questions), 3 repeats, offer against no tickets",
+  "extra arms": "13 sessions where the user also asks for two docs tickets to be worked, 4 more that also ask for a claim (for prods)",
+  "judges": "Claude Opus with Read/Grep/Glob on the code for each closure; Claude Sonnet, blind, for the user's task",
+  "builds": "v1 ctx before 9d509af1; v2 trunk after landing 9d509af1, every scratch archive rebuilt with it"
+ },
+ "summary": "Same benchmark run twice: v1 with the three-ticket offer, v2 with a one-line offer that says to claim and a done that is refused while the passages still disagree. v2 fixed claims, prods and closed-without-fix, and the offer costs fewer tokens, but agents still almost never take up docs tickets unless the user asks.",
+ "metrics": [
+  {
+   "label": "Sessions with the offer that closed a ticket",
+   "value": "v1 3 of 36, v2 1 of 36",
+   "note": "bar 18 of 36"
+  },
+  {
+   "label": "Closures judged correct",
+   "value": "v1 44 of 48, v2 34 of 36",
+   "note": "most from the arm where the user asked for two tickets"
+  },
+  {
+   "label": "Real problems closed without a fix",
+   "value": "v1 3, v2 1",
+   "note": "bar 0; v2: 0 marked done without an edit (done refused 4 times), 1 dropped wrongly"
+  },
+  {
+   "label": "Fixes judged wrong",
+   "value": "v1 1, v2 1"
+  },
+  {
+   "label": "User task score, offer against none",
+   "value": "v1 9.44 against 9.42, v2 9.44 against 9.44",
+   "note": "sign test p = 1 both"
+  },
+  {
+   "label": "Tokens per session, none against offer",
+   "value": "v1 225k against 424k, v2 207k against 314k",
+   "note": "+88% before, +52% after"
+  },
+  {
+   "label": "Prods delivered",
+   "value": "v1 4 of 9, v2 9 of 9",
+   "note": "v1 sessions that were not told to claim never claimed, so 5 prods could not be delivered"
+  },
+  {
+   "label": "Prods acknowledged within 2 tool calls",
+   "value": "v1 2 of 4 delivered, v2 4 of 9",
+   "note": "v2: 8 of 9 acknowledged at some point"
+  },
+  {
+   "label": "Cost per closed ticket, asked arm",
+   "value": "about $0.45 both",
+   "note": "as Claude Code reports it for DeepSeek, not DeepSeek's own price"
+  },
+  {
+   "label": "dagnats #1019 and #1023 fixes judged correct",
+   "value": "20 of 20",
+   "note": "v1 only"
+  }
+ ],
+ "bar": "half of offer sessions close a ticket; 9 in 10 closures right and no real problem dropped; task no worse on paired runs; prods acknowledged within 2 tool calls every time",
+ "verdict": "fail"
+}
