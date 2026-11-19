@@ -330,6 +330,21 @@ grep -q 'short-commits.md' "$T/review.txt" && fail "review leaves retired rules 
 (cd "$T/w/rp" && "$CTX" rules review) | grep -q 'no rules are due' || fail "reviewed rules are not due again"
 "$CTX" sql "UPDATE ctx_rule_check SET reviewed = NULL" >/dev/null
 "$CTX" sql "DELETE FROM ctx_meta WHERE key = 'review_offered'" >/dev/null
+# Claude Code loads the memory folder of the directory it starts in, so the offer leaves that
+# folder out; pic loads no memory folder, so a hook from pic gets those notes too.
+PD="$T/w/pelican"; mkdir -p "$PD"; PD=$(cd "$PD" && pwd -P) # the real path, as getcwd reports it
+PSLUG=$(printf '%s' "$PD" | tr '/.' '--')
+mkdir -p "$RC/projects/$PSLUG/memory"
+printf -- '---\nname: pelican-tabs\ndescription: Pelican configs use tabs, never spaces\nmetadata:\n  type: feedback\n---\n\nPelican configs use tabs.\n' > "$RC/projects/$PSLUG/memory/pelican-tabs.md"
+printf '{"uuid":"pel-1","timestamp":"2026-11-03T11:00:00Z","cwd":"%s","message":{"role":"user","content":"pelican work"}}\n' "$PD" > "$RC/projects/$PSLUG/d00d00b1-0000-0000-0000-0000000000b1.jsonl"
+"$CTX" archive "$RC/projects/$PSLUG/d00d00b1-0000-0000-0000-0000000000b1.jsonl" >/dev/null
+CLAUDE_CONFIG_DIR="$RC" "$CTX" rules import >/dev/null
+(cd "$PD" && printf '{"hook_event_name":"SessionStart","source":"startup","session_id":"pel-s"}' | CLAUDE_CONFIG_DIR="$RC" "$CTX" rules offer) > "$T/pel-cc.json"
+grep -q 'Pelican configs use tabs' "$T/pel-cc.json" && fail "Claude Code is not offered the memory folder it loads itself: $(cat "$T/pel-cc.json")"
+(cd "$PD" && printf '{"hook_event_name":"SessionStart","source":"startup","session_id":"pel-s","harness":"pic"}' | CLAUDE_CONFIG_DIR="$RC" "$CTX" rules offer) > "$T/pel-pic.json"
+grep -q 'Pelican configs use tabs' "$T/pel-pic.json" || fail "pic, which loads no memory folder, is offered it: $(cat "$T/pel-pic.json")"
+(cd "$PD" && printf '{"hook_event_name":"SessionStart","source":"startup","session_id":"pel-s"}' | PIC_HOOK=1 CLAUDE_CONFIG_DIR="$RC" "$CTX" rules offer) | grep -q 'Pelican configs use tabs' || fail "PIC_HOOK=1 marks a hook from pic as well"
+"$CTX" sql "DELETE FROM ctx_meta WHERE key = 'review_offered'" >/dev/null # those offers mentioned the review; the next test wants it fresh
 (cd "$T/w/rp" && "$CTX" rules offer) | grep -q 'monthly check' || fail "the hook mentions a due review"
 (cd "$T/w/rp" && "$CTX" rules offer) | grep -q 'monthly check' && fail "the review is mentioned once a month"
 (cd "$T/w/rp" && "$CTX" rules review --done) >/dev/null
