@@ -107,6 +107,23 @@ trimmed. Each session becomes a technote in your private repository, `repo:me`,
 one per session per day, tagged with its project. A project is the directory the
 session ran in, or the project it belongs to after `ctx project add`.
 
+### Pi and pic sessions
+
+The same scan archives sessions of Pi, the coding agent, which
+keeps one file per session under `~/.pi/agent/sessions`, and of pic, whose
+`pic export --pi` writes the same format under `~/.pic/sessions`. Set
+`CTX_PI_ROOTS` to a colon-separated list of folders to look elsewhere, or to an
+empty string to skip them; a missing folder is skipped. `ctx archive FILE` and
+`ctx extract FILE` take these files too; ctx knows them by their first line.
+
+A Pi session is stored under `pi-` and the id in its header, with its project from
+the header's working directory, the way a Claude Code session is. Your messages
+are `user` turns; the agent's text and tool calls are `assistant`; tool results
+and `!` shell commands are `tool`; compaction and branch summaries, extension
+messages and each name the session is given (`Session name: ...`) are `meta`.
+Thinking and images are left out. Pi keeps a session as a tree, for forks and
+branches; ctx archives its entries in file order.
+
 ## Keep sessions out, or take one out
 
 ```sh
@@ -1069,5 +1086,6 @@ ctx sql "SELECT project, count(*) FROM ctx_capture GROUP BY 1"
 |---|---|
 | `CTX_DB` | the database, instead of `~/.ctx/ctx.sqlite` |
 | `CLAUDE_CONFIG_DIR` | where transcripts are found, instead of `~/.claude` |
+| `CTX_PI_ROOTS` | where Pi and pic sessions are found, colon-separated, instead of `~/.pi/agent/sessions:~/.pic/sessions` |
 | `USER` | the name on check-ins, claims and sources |
 | `CTX_SESSION` | the session `ctx wiki save` records a page against |

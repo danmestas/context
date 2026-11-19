@@ -543,10 +543,58 @@ static void turn_free(turn_t *t) {
   memset(t, 0, sizeof *t);
 }
 
+/* Pi and pic session files (Pi's session-manager.ts, format versions 1 to 3): a header line
+ * {"type":"session","id","cwd",...}, then one entry per line. Entries form a tree by parentId,
+ * for forks and branches; they are archived in file order and the tree is not rebuilt. */
+static const char sql_pi_meta[] =
+    "SELECT CASE json_extract(?1,'$.type')"
+    "  WHEN 'message' THEN CASE json_extract(?1,'$.message.role')"
+    "    WHEN 'user' THEN 'user' WHEN 'assistant' THEN 'assistant'"
+    "    WHEN 'toolResult' THEN 'tool' WHEN 'bashExecution' THEN 'tool'"
+    "    WHEN 'custom' THEN 'meta' WHEN 'hookMessage' THEN 'meta'" /* hookMessage: version 2's name for custom */
+    "    WHEN 'branchSummary' THEN 'meta' WHEN 'compactionSummary' THEN 'meta' END"
+    "  WHEN 'compaction' THEN 'meta' WHEN 'branch_summary' THEN 'meta' WHEN 'session_info' THEN 'meta' END,"
+    " json_extract(?1,'$.timestamp'), json_extract(?1,'$.id')"
+    " WHERE json_valid(?1)";
+
+/* The parts of a Pi entry in sql_parts' terms. Thinking and images are left out; a tool
+ * result's text is tool output; a bash execution is a call and its output. */
+static const char sql_pi_parts[] =
+    "SELECT CASE json_extract(?1,'$.message.role') WHEN 'toolResult' THEN 'tool_result' ELSE 'text' END,"
+    "       json_extract(?1,'$.message.content')"
+    " WHERE json_extract(?1,'$.type') = 'message' AND json_type(?1,'$.message.content') = 'text'"
+    " UNION ALL "
+    "SELECT kind, part FROM ("
+    "  SELECT e.key AS k,"
+    "    CASE json_extract(e.value,'$.type') WHEN 'toolCall' THEN 'tool_use'"
+    "      WHEN 'text' THEN CASE json_extract(?1,'$.message.role') WHEN 'toolResult' THEN 'tool_result' ELSE 'text' END"
+    "    END AS kind,"
+    "    CASE json_extract(e.value,'$.type') WHEN 'text' THEN json_extract(e.value,'$.text')"
+    "      WHEN 'toolCall' THEN json_extract(e.value,'$.name') || ' ' || coalesce(json_extract(e.value,'$.arguments'),'')"
+    "    END AS part"
+    "  FROM json_each(?1,'$.message.content') e"
+    "  WHERE json_extract(?1,'$.type') = 'message' AND json_type(?1,'$.message.content') = 'array'"
+    "    AND json_type(e.value) = 'object'"
+    "  ORDER BY k)"
+    " UNION ALL "
+    "SELECT 'tool_use', 'bash ' || json_object('command', json_extract(?1,'$.message.command'))"
+    " WHERE json_extract(?1,'$.type') = 'message' AND json_extract(?1,'$.message.role') = 'bashExecution'"
+    " UNION ALL "
+    "SELECT 'tool_result', json_extract(?1,'$.message.output')"
+    " WHERE json_extract(?1,'$.type') = 'message' AND json_extract(?1,'$.message.role') = 'bashExecution'"
+    " UNION ALL "
+    "SELECT 'text', coalesce(json_extract(?1,'$.message.summary'), json_extract(?1,'$.summary'))"
+    " WHERE json_extract(?1,'$.type') IN ('compaction', 'branch_summary')"
+    "    OR (json_extract(?1,'$.type') = 'message' AND json_extract(?1,'$.message.role') IN ('branchSummary', 'compactionSummary'))"
+    " UNION ALL "
+    "SELECT 'text', 'Session name: ' || json_extract(?1,'$.name')"
+    " WHERE json_extract(?1,'$.type') = 'session_info' AND json_type(?1,'$.name') = 'text'";
+
 typedef struct {
   sqlite3 *db;
-  sqlite3_stmt *meta, *parts, *cwd;
+  sqlite3_stmt *meta, *parts, *cwd, *pi_meta, *pi_parts;
   buf body, clean;
+  char pi[160]; /* the session of a Pi file being read, or empty for a Claude Code transcript */
 } extractor;
 
 static void ex_open(extractor *e) {
@@ -555,12 +603,16 @@ static void ex_open(extractor *e) {
   e->meta = db_prepare(e->db, sql_meta);
   e->parts = db_prepare(e->db, sql_parts);
   e->cwd = db_prepare(e->db, "SELECT json_extract(?1,'$.cwd') WHERE json_valid(?1)");
+  e->pi_meta = db_prepare(e->db, sql_pi_meta);
+  e->pi_parts = db_prepare(e->db, sql_pi_parts);
 }
 
 static void ex_close(extractor *e) {
   sqlite3_finalize(e->meta);
   sqlite3_finalize(e->parts);
   sqlite3_finalize(e->cwd);
+  sqlite3_finalize(e->pi_meta);
+  sqlite3_finalize(e->pi_parts);
   sqlite3_close(e->db);
   free(e->body.p);
   free(e->clean.p);
@@ -582,6 +634,66 @@ static char *ex_cwd(extractor *e, const char *line, size_t len) {
   return out;
 }
 
+/* Fills e->body with a line's parts, as rows of (kind, text) from parts: redacted, and
+ * tool calls and output trimmed. */
+static void ex_body(extractor *e, sqlite3_stmt *parts, const char *line, size_t len, int *has_tool, char **first_text) {
+  e->body.n = 0;
+  int first = 1;
+  sqlite3_bind_text(parts, 1, line, (int)len, SQLITE_STATIC);
+  while (sqlite3_step(parts) == SQLITE_ROW) {
+    const char *kind = (const char *)sqlite3_column_text(parts, 0);
+    const char *text = (const char *)sqlite3_column_text(parts, 1);
+    size_t n = (size_t)sqlite3_column_bytes(parts, 1);
+    if (!kind || !text) continue;
+    int is_text = !strcmp(kind, "text");
+    if (!is_text && strcmp(kind, "tool_use") && strcmp(kind, "tool_result")) continue;
+    if (is_text && is_noise(text)) continue;
+    if (!is_text && !strcmp(kind, "tool_result")) *has_tool = 1;
+    if (is_text && first_text && !*first_text) *first_text = dup_text((const unsigned char *)text);
+    if (!first) buf_str(&e->body, "\n");
+    first = 0;
+    e->clean.n = 0;
+    add_redacted(&e->clean, text, n);
+    for (size_t z = 0; z < e->clean.n; z++) /* a NUL in text ends it for C readers, Fossil's included */
+      if (!e->clean.p[z]) e->clean.p[z] = ' ';
+    if (is_text) buf_add(&e->body, e->clean.p, e->clean.n);
+    else add_tool_text(&e->body, e->clean.p, e->clean.n);
+  }
+  sqlite3_reset(parts);
+}
+
+static void ex_keep(extractor *e, turn_t *t, const char *role, const unsigned char *ts, const char *uuid, const unsigned char *cwd) {
+  t->role = dup_text((const unsigned char *)role);
+  t->ts = dup_text(ts);
+  t->uuid = dup_text((const unsigned char *)uuid);
+  t->cwd = dup_text(cwd);
+  t->body = malloc(e->body.n + 1);
+  if (!t->body) die("out of memory");
+  memcpy(t->body, e->body.p, e->body.n + 1);
+  t->body_n = e->body.n;
+}
+
+/* Parses one line of a Pi session file, which starts at byte at. Its turn id is the session
+ * and the entry's id; entries of version 1 files have none, and are known by position. */
+static int pi_line(extractor *e, const char *line, size_t len, long long at, turn_t *t) {
+  int kept = 0;
+  sqlite3_bind_text(e->pi_meta, 1, line, (int)len, SQLITE_STATIC);
+  if (sqlite3_step(e->pi_meta) == SQLITE_ROW && sqlite3_column_text(e->pi_meta, 0)) {
+    int has_tool = 0;
+    ex_body(e, e->pi_parts, line, len, &has_tool, NULL);
+    if (e->body.n && !is_blank(e->body.p, e->body.n)) {
+      char uuid[256];
+      const char *id = (const char *)sqlite3_column_text(e->pi_meta, 2);
+      if (id && *id) snprintf(uuid, sizeof uuid, "%s/%s", e->pi, id);
+      else snprintf(uuid, sizeof uuid, "%s@%lld", e->pi, at);
+      ex_keep(e, t, (const char *)sqlite3_column_text(e->pi_meta, 0), sqlite3_column_text(e->pi_meta, 1), uuid, NULL);
+      kept = 1;
+    }
+  }
+  sqlite3_reset(e->pi_meta);
+  return kept;
+}
+
 /* Parses one transcript line. Returns 1 and fills t if it holds a turn to keep. */
 static int ex_line(extractor *e, const char *line, size_t len, turn_t *t) {
   int kept = 0;
@@ -590,40 +702,12 @@ static int ex_line(extractor *e, const char *line, size_t len, turn_t *t) {
     const char *role = (const char *)sqlite3_column_text(e->meta, 0);
     if (role && (!strcmp(role, "user") || !strcmp(role, "assistant")) &&
         sqlite3_column_int(e->meta, 1) == 0) {
-      e->body.n = 0;
-      int first = 1, has_tool = 0;
+      int has_tool = 0;
       char *first_text = NULL;
-      sqlite3_bind_text(e->parts, 1, line, (int)len, SQLITE_STATIC);
-      while (sqlite3_step(e->parts) == SQLITE_ROW) {
-        const char *kind = (const char *)sqlite3_column_text(e->parts, 0);
-        const char *text = (const char *)sqlite3_column_text(e->parts, 1);
-        size_t n = (size_t)sqlite3_column_bytes(e->parts, 1);
-        if (!kind || !text) continue;
-        int is_text = !strcmp(kind, "text");
-        if (!is_text && strcmp(kind, "tool_use") && strcmp(kind, "tool_result")) continue;
-        if (is_text && is_noise(text)) continue;
-        if (!is_text && !strcmp(kind, "tool_result")) has_tool = 1;
-        if (is_text && !first_text) first_text = dup_text((const unsigned char *)text);
-        if (!first) buf_str(&e->body, "\n");
-        first = 0;
-        e->clean.n = 0;
-        add_redacted(&e->clean, text, n);
-        for (size_t z = 0; z < e->clean.n; z++) /* a NUL in text ends it for C readers, Fossil's included */
-          if (!e->clean.p[z]) e->clean.p[z] = ' ';
-        if (is_text) buf_add(&e->body, e->clean.p, e->clean.n);
-        else add_tool_text(&e->body, e->clean.p, e->clean.n);
-      }
-      sqlite3_reset(e->parts);
+      ex_body(e, e->parts, line, len, &has_tool, &first_text);
       if (e->body.n && !is_blank(e->body.p, e->body.n)) {
-        t->role = dup_text((const unsigned char *)speaker(role, (const char *)sqlite3_column_text(e->meta, 5),
-                                                          sqlite3_column_int(e->meta, 6), has_tool, first_text));
-        t->ts = dup_text(sqlite3_column_text(e->meta, 2));
-        t->uuid = dup_text(sqlite3_column_text(e->meta, 3));
-        t->cwd = dup_text(sqlite3_column_text(e->meta, 4));
-        t->body = malloc(e->body.n + 1);
-        if (!t->body) die("out of memory");
-        memcpy(t->body, e->body.p, e->body.n + 1);
-        t->body_n = e->body.n;
+        ex_keep(e, t, speaker(role, (const char *)sqlite3_column_text(e->meta, 5), sqlite3_column_int(e->meta, 6), has_tool, first_text),
+                sqlite3_column_text(e->meta, 2), (const char *)sqlite3_column_text(e->meta, 3), sqlite3_column_text(e->meta, 4));
         kept = 1;
       }
       free(first_text);
@@ -633,6 +717,37 @@ static int ex_line(extractor *e, const char *line, size_t len, turn_t *t) {
   return kept;
 }
 
+/* Whether path is a Pi or pic session file, told by its header line. If so, sets session to
+ * "pi-" and the header's id, so it cannot be taken for a Claude Code session, and *cwd (if
+ * asked) to the header's working directory, which the caller frees. */
+static int pi_header(sqlite3 *db, const char *path, char *session, size_t cap, char **cwd) {
+  static const char head[] = "{\"type\":\"session\"";
+  char start[sizeof head - 1];
+  FILE *f = fopen(path, "r");
+  if (!f) return 0;
+  int pi = 0;
+  if (fread(start, 1, sizeof start, f) == sizeof start && !memcmp(start, head, sizeof start)) {
+    rewind(f);
+    char *line = NULL;
+    size_t lcap = 0;
+    ssize_t len = getline(&line, &lcap, f);
+    if (len > 0) {
+      sqlite3_stmt *q = db_prepare(db, "SELECT json_extract(?1,'$.id'), json_extract(?1,'$.cwd')"
+                                       " WHERE json_valid(?1) AND json_extract(?1,'$.type') = 'session' AND json_type(?1,'$.id') = 'text'");
+      sqlite3_bind_text(q, 1, line, (int)len, SQLITE_STATIC);
+      if (sqlite3_step(q) == SQLITE_ROW && *sqlite3_column_text(q, 0)) {
+        snprintf(session, cap, "pi-%.100s", (const char *)sqlite3_column_text(q, 0));
+        if (cwd) *cwd = sqlite3_column_text(q, 1) ? dup_text(sqlite3_column_text(q, 1)) : NULL;
+        pi = 1;
+      }
+      sqlite3_finalize(q);
+    }
+    free(line);
+  }
+  fclose(f);
+  return pi;
+}
+
 /* Writes one numbered record per user or assistant turn. */
 static int cmd_extract(const char *path) {
   FILE *f = fopen(path, "r");
@@ -640,14 +755,18 @@ static int cmd_extract(const char *path) {
   extractor e;
   ex_open(&e);
   char sid[9];
-  session_id(path, sid);
+  int pi = pi_header(e.db, path, e.pi, sizeof e.pi, NULL);
+  session_id(pi ? e.pi : path, sid);
   char *line = NULL;
   size_t cap = 0;
   ssize_t len;
   long n = 0;
+  long long at = 0;
   while ((len = getline(&line, &cap, f)) != -1) {
     turn_t t = {0};
-    if (ex_line(&e, line, (size_t)len, &t)) {
+    long long here = at;
+    at += len;
+    if (pi ? pi_line(&e, line, (size_t)len, here, &t) : ex_line(&e, line, (size_t)len, &t)) {
       printf("--- %s turn %ld %s %s %s\n", sid, ++n, t.role, t.ts, t.uuid);
       fwrite(t.body, 1, t.body_n, stdout);
       fputs("\n\n", stdout);
@@ -807,7 +926,7 @@ static long archive_batch(sqlite3 *db, const char *session, const char *path, co
                           long long repo_id, turn_t *turns, size_t n, long long offset) {
   long stored = 0;
   char sid[9], today[32];
-  session_id(path, sid);
+  session_id(session, sid); /* a transcript's session is its file name; a Pi session's is pi- and its id */
   time_t now = time(NULL);
   strftime(today, sizeof today, "%Y-%m-%d", gmtime(&now));
   db_exec(db, "BEGIN IMMEDIATE");
@@ -1033,13 +1152,21 @@ static int cmd_archive(const char *path) {
   base = base ? base + 1 : path;
   char session[128];
   snprintf(session, sizeof session, "%.*s", (int)strcspn(base, "."), base);
+  char *pi_cwd = NULL;
+  int pi = pi_header(db, path, session, sizeof session, &pi_cwd);
   { /* the folder the transcript sits in names its working directory */
-    char folder[1024] = "";
+    char folder[1024] = "", slug[1024] = "";
     const char *end = base > path ? base - 1 : path, *start = end;
     while (start > path && start[-1] != '/') start--;
     snprintf(folder, sizeof folder, "%.*s", (int)(end - start), start);
-    if (folder_excluded(db, folder) || session_forgotten(db, session)) {
+    if (pi_cwd) { /* Pi names its folders otherwise; the slug Claude Code would use is what exclusions hold */
+      snprintf(slug, sizeof slug, "%s", pi_cwd);
+      for (char *c = slug; *c; c++)
+        if (!c_alnum((unsigned char)*c)) *c = '-';
+    }
+    if (folder_excluded(db, folder) || (*slug && folder_excluded(db, slug)) || session_forgotten(db, session)) {
       puts("0 turns archived");
+      free(pi_cwd);
       sqlite3_close(db);
       return 0;
     }
@@ -1068,6 +1195,8 @@ static int cmd_archive(const char *path) {
     }
     sqlite3_finalize(q);
   }
+  if (pi && !project && pi_cwd) project = project_for(db, pi_cwd);
+  free(pi_cwd);
 
   FILE *f = fopen(path, "r");
   if (!f) die("cannot open %s: %s", path, strerror(errno));
@@ -1075,6 +1204,7 @@ static int cmd_archive(const char *path) {
 
   extractor e;
   ex_open(&e);
+  if (pi) snprintf(e.pi, sizeof e.pi, "%s", session);
   char *line = NULL;
   size_t cap = 0, nturns = 0, capturns = 0;
   ssize_t len = 0;
@@ -1086,6 +1216,7 @@ static int cmd_archive(const char *path) {
     len = getline(&line, &cap, f);
     int whole = len > 0 && line[len - 1] == '\n';
     if (whole) {
+      long long at = pos;
       pos += len;
       if (!project) {
         char *cwd = ex_cwd(&e, line, (size_t)len);
@@ -1095,7 +1226,7 @@ static int cmd_archive(const char *path) {
         }
       }
       turn_t t = {0};
-      if (ex_line(&e, line, (size_t)len, &t)) {
+      if (pi ? pi_line(&e, line, (size_t)len, at, &t) : ex_line(&e, line, (size_t)len, &t)) {
         if (nturns == capturns) {
           capturns = capturns ? capturns * 2 : 256;
           turns = realloc(turns, capturns * sizeof *turns);
@@ -2140,21 +2271,15 @@ static void redact_again(sqlite3 *db) {
             changed_turns - copies, changed_notes, changed_rows, copies);
 }
 
-/* Archives any transcript that has grown since it was last read. */
-static int cmd_scan(const char *root_arg) {
-  char root[4200];
-  if (root_arg) {
-    snprintf(root, sizeof root, "%s", root_arg);
-  } else {
-    const char *cfg = getenv("CLAUDE_CONFIG_DIR"), *home = getenv("HOME");
-    if (cfg && *cfg) snprintf(root, sizeof root, "%s/projects", cfg);
-    else if (home && *home) snprintf(root, sizeof root, "%s/.claude/projects", home);
-    else die("HOME is not set");
-  }
-  sqlite3 *db = ctx_open();
-  sqlite3_stmt *q = db_prepare(db, "SELECT offset FROM ctx_capture WHERE session = ?1");
+/* Archives each session file in the folders under root that grew since it was last read.
+ * Claude Code and Pi both keep one folder per working directory. A missing root is skipped
+ * when quiet, and an error otherwise. */
+static long scan_root(sqlite3 *db, sqlite3_stmt *q, const char *root, int quiet) {
   DIR *top = opendir(root);
-  if (!top) die("cannot read %s: %s", root, strerror(errno));
+  if (!top) {
+    if (quiet && errno == ENOENT) return 0;
+    die("cannot read %s: %s", root, strerror(errno));
+  }
   long ran = 0;
   struct dirent *p;
   while ((p = readdir(top))) {
@@ -2167,23 +2292,59 @@ static int cmd_scan(const char *root_arg) {
     while ((e = readdir(d))) {
       size_t n = strlen(e->d_name);
       if (n < 7 || strcmp(e->d_name + n - 6, ".jsonl")) continue;
-      char stem[128];
-      snprintf(stem, sizeof stem, "%.*s", (int)strcspn(e->d_name, "."), e->d_name);
-      if (session_forgotten(db, stem)) continue;
       char path[5000];
       snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
       struct stat st;
       if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
-      sqlite3_bind_text(q, 1, e->d_name, (int)strcspn(e->d_name, "."), SQLITE_STATIC);
+      char session[128];
+      snprintf(session, sizeof session, "%.*s", (int)strcspn(e->d_name, "."), e->d_name);
+      sqlite3_bind_text(q, 1, session, -1, SQLITE_TRANSIENT);
       long long off = sqlite3_step(q) == SQLITE_ROW ? sqlite3_column_int64(q, 0) : -1;
       sqlite3_reset(q);
-      if (off == (long long)st.st_size) continue;
+      if (off < 0 && pi_header(db, path, session, sizeof session, NULL)) { /* a Pi session is known by its header's id */
+        sqlite3_bind_text(q, 1, session, -1, SQLITE_TRANSIENT);
+        off = sqlite3_step(q) == SQLITE_ROW ? sqlite3_column_int64(q, 0) : -1;
+        sqlite3_reset(q);
+      }
+      if (session_forgotten(db, session) || off == (long long)st.st_size) continue;
       run_self("archive", path);
       ran++;
     }
     closedir(d);
   }
   closedir(top);
+  return ran;
+}
+
+/* Archives any transcript that has grown since it was last read: Claude Code's, then Pi's
+ * and pic's from CTX_PI_ROOTS (colon-separated), by default ~/.pi/agent/sessions and
+ * ~/.pic/sessions. */
+static int cmd_scan(const char *root_arg) {
+  sqlite3 *db = ctx_open();
+  sqlite3_stmt *q = db_prepare(db, "SELECT offset FROM ctx_capture WHERE session = ?1");
+  long ran = 0;
+  if (root_arg) {
+    ran += scan_root(db, q, root_arg, 0);
+  } else {
+    char root[4200];
+    const char *cfg = getenv("CLAUDE_CONFIG_DIR"), *home = getenv("HOME"), *pi = getenv("CTX_PI_ROOTS");
+    if (cfg && *cfg) snprintf(root, sizeof root, "%s/projects", cfg);
+    else if (home && *home) snprintf(root, sizeof root, "%s/.claude/projects", home);
+    else die("HOME is not set");
+    ran += scan_root(db, q, root, 1);
+    char *roots = NULL;
+    if (pi) roots = dup_text((const unsigned char *)pi);
+    else if (home && *home) {
+      size_t n = 2 * strlen(home) + 64;
+      roots = malloc(n);
+      if (!roots) die("out of memory");
+      snprintf(roots, n, "%s/.pi/agent/sessions:%s/.pic/sessions", home, home);
+    }
+    char *save = NULL;
+    for (char *r = roots ? strtok_r(roots, ":", &save) : NULL; r; r = strtok_r(NULL, ":", &save))
+      ran += scan_root(db, q, r, 1);
+    free(roots);
+  }
   sqlite3_finalize(q);
   relabel_speakers(db);
   redact_again(db);
