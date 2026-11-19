@@ -6,7 +6,8 @@
 #   cp ~/.ctx/ctx.sqlite /tmp/copy.sqlite    # with ctx not running
 #   CTX_DB=/tmp/copy.sqlite tools/rule_redundancy.sh
 #
-# The global CLAUDE.md is the rule keyed under CLAUDE_CONFIG_DIR, else ~/.claude, as for ctx.
+# Each agent's global instructions are the rules keyed by the paths ctx reads them from, with
+# the same environment (CLAUDE_CONFIG_DIR, CODEX_HOME and the rest, else HOME) as for ctx.
 set -eu
 
 CTX=${CTX:-ctx}

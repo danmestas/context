@@ -8,6 +8,13 @@ trap 'rm -rf "$T"' EXIT INT TERM
 CLAUDE_CONFIG_DIR="$T/claude"; export CLAUDE_CONFIG_DIR # never the real transcripts, memory or CLAUDE.md
 CTX_PI_ROOTS="$T/no-pi"; export CTX_PI_ROOTS # nor the real Pi and pic sessions
 CTX_PIC_DB="$T/no-pic.sqlite"; export CTX_PIC_DB # nor pic's real database
+# nor any other agent's global instructions; python3 and node are pinned first, since a
+# version manager's shim may need the real HOME
+mkdir -p "$T/bin" "$T/home"
+ln -s "$(python3 -c 'import sys; print(sys.executable)')" "$T/bin/python3"
+if command -v node >/dev/null 2>&1; then ln -s "$(node -p process.execPath)" "$T/bin/node"; fi
+PATH="$T/bin:$PATH"; HOME="$T/home"; export PATH HOME
+unset CODEX_HOME PI_CODING_AGENT_DIR XDG_CONFIG_HOME
 mkdir -p "$CLAUDE_CONFIG_DIR"
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
@@ -988,6 +995,139 @@ grep -q 'no longer served' "$T/undo.txt" && tail -1 "$T/undo.txt" | grep -q '^1 
 [ "$("$CTX" rules auto)" = none ] || fail "the command is cleared"
 "$CTX" rules classifier --off >/dev/null
 
+# Every agent's global instructions are a rule for every project, keyed by the path that agent
+# reads; no agent's whole instruction file is one rule; and a project rule is covered only by
+# the global instructions of the agents it reaches.
+export CTX_DB="$T/agents.sqlite"
+"$CTX" init >/dev/null
+AH="$T/agent, home"; AC="$T/agentclaude"; AW="$T/w/wren" # a comma in a path must not split a list of files
+mkdir -p "$AH/.codex" "$AH/.gemini" "$AH/suit" "$AC/projects/-w-wren/memory" "$AW"
+printf 'Always run the wren formatter before every single commit.\n' > "$AH/suit/shared.md"
+ln -s "$AH/suit/shared.md" "$AH/.codex/AGENTS.md"
+printf 'Never deploy the wren service on a Friday afternoon.\n' > "$AH/.gemini/GEMINI.md"
+printf 'Keep every wren commit small and focused on one change.\nSquash-merge every wren branch once CI is green.\n' > "$AC/CLAUDE.md"
+printf 'Keep every wren commit small and focused on one change.\n' > "$AW/GEMINI.md"
+printf 'Wren builds with make.\n' > "$AW/AGENTS.md"
+"$CTX" sql "INSERT INTO ctx_project(root, project) VALUES ('$AW', 'wren')" >/dev/null
+printf '{"uuid":"ag-1","timestamp":"2026-11-15T10:00:00Z","cwd":"/w/wren","message":{"role":"user","content":"hello wren"}}\n' > "$AC/projects/-w-wren/a9e00001-0000-0000-0000-000000000001.jsonl"
+"$CTX" archive "$AC/projects/-w-wren/a9e00001-0000-0000-0000-000000000001.jsonl" >/dev/null
+agmem() { printf -- '---\nname: %s\ndescription: %s\nmetadata:\n  type: feedback\n---\n\n%s\n' "$1" "$2" "$3" > "$AC/projects/-w-wren/memory/$1.md"; }
+agmem friday "No Friday deploys" "Never deploy the wren service on a Friday afternoon."
+agmem small "Small commits" "Keep every wren commit small and focused on one change."
+agmem fmt "Format first" "Always run the wren formatter before every single commit."
+agmem squash "Squash on green" "Squash-merge every wren branch once CI is green."
+agrun() { HOME="$AH" CLAUDE_CONFIG_DIR="$AC" "$CTX" "$@"; }
+agnote() { "$CTX" sql "SELECT fsl_technote(r.technote) FROM ctx_rule r WHERE r.key = '$1'"; }
+agstatus() { "$CTX" sql "SELECT coalesce(status, 'active') FROM ctx_doc WHERE kind = 'rule' AND name = '$AC/projects/-w-wren/memory/$1.md'"; }
+agrun rules import >/dev/null
+[ "$("$CTX" sql "SELECT project FROM ctx_doc WHERE kind = 'rule' AND name = '$AH/.codex/AGENTS.md'")" = '*' ] || fail "a codex global AGENTS.md is a rule for every project: $("$CTX" rules --all)"
+agnote "$AH/.codex/AGENTS.md" | grep -qx 'agent: codex' || fail "the codex global rule names its agent: $(agnote "$AH/.codex/AGENTS.md")"
+agnote "$AH/.codex/AGENTS.md" | grep -q 'wren formatter' || fail "a symlinked global file is read through its link"
+agnote "$AH/.gemini/GEMINI.md" | grep -qx 'agent: gemini' || fail "the gemini global is a rule with its agent"
+agnote "$AC/CLAUDE.md" | grep -qx 'agent: claude' || fail "the claude global names its agent"
+[ "$("$CTX" sql "SELECT project FROM ctx_doc WHERE kind = 'rule' AND name = '$AW/GEMINI.md'")" = wren ] || fail "a project GEMINI.md is imported for its project"
+agnote "$AW/GEMINI.md" | grep -qx 'agent: gemini' || fail "a project GEMINI.md names its agent"
+agnote "$AW/AGENTS.md" | grep -qx 'agent: codex,pi,opencode' || fail "a project AGENTS.md names every agent that reads it: $(agnote "$AW/AGENTS.md")"
+[ "$(agstatus small)" = active ] || fail "a project GEMINI.md is a whole file, never collapsed with a rule it repeats"
+[ "$("$CTX" sql "SELECT status IS NULL FROM ctx_doc WHERE kind = 'rule' AND name = '$AW/GEMINI.md'")" = 1 ] || fail "a project GEMINI.md is never collapsed"
+agrun rules import | grep -q '^0 rules changed' || fail "an unchanged set of instruction files changes nothing"
+# A retirement from before global instructions were named by file still revives.
+OLDQ='Squash-merge every wren branch once CI is green.'
+"$CTX" rules retire squash.md --reason "covered by global CLAUDE.md: \"$OLDQ\"" >/dev/null
+"$CTX" sql "INSERT INTO ctx_rule_covered(key, rule_hash, global_hash, covered, quote, at) VALUES ('$AC/projects/-w-wren/memory/squash.md', 'old', 'old', 1, '$OLDQ', datetime('now'))" >/dev/null
+agrun rules import >/dev/null
+[ "$(agstatus squash)" = retired ] || fail "an old-format covered rule stays retired while its quote is in the global text"
+printf 'Keep every wren commit small and focused on one change.\n' > "$AC/CLAUDE.md"
+agrun rules import >/dev/null
+[ "$(agstatus squash)" = active ] || fail "an old-format covered rule revives when its quote leaves the global text: $(agnote "$AC/projects/-w-wren/memory/squash.md")"
+agnote "$AC/projects/-w-wren/memory/squash.md" | grep -qx "reason: its quote is no longer in the global instructions ($AC/CLAUDE.md)" || fail "the revival names the file: $(agnote "$AC/projects/-w-wren/memory/squash.md")"
+"$CTX" rules retire squash.md --reason "the person says so" >/dev/null
+# Covered: the quote must be in the global instructions of an agent the rule reaches.
+AGFAKE="$T/fake-agents.py"
+cat > "$AGFAKE" <<'PY'
+import json, sys
+text = sys.stdin.read()
+if not text.startswith("ctx covered v1\n"): print("[]"); sys.exit(0)
+with open(sys.argv[1], "a") as f: f.write(text + "\n=====\n")
+rules = [json.loads(l) for l in text.rsplit("\nRules:\n", 1)[1].splitlines() if l.startswith("{")]
+print(json.dumps([{"key": r["key"], "covered": True, "quote": r["text"].strip()} for r in rules]))
+PY
+"$CTX" rules auto "python3 $AGFAKE $T/agcov.log" >/dev/null
+agrun rules covered --dry-run > "$T/agdry.txt"
+grep -qE 'GEMINI.md|AGENTS.md|CLAUDE.md' "$T/agdry.txt" && fail "no whole instruction file is judged: $(cat "$T/agdry.txt")"
+grep -q '^3 rules would be sent' "$T/agdry.txt" || fail "the memory rules are sent: $(cat "$T/agdry.txt")"
+agrun rules covered > "$T/agcov.txt" || fail "the covered check runs: $(cat "$T/agcov.txt")"
+grep -q '3 rules checked against the global instructions, 1 retired as covered' "$T/agcov.txt" || fail "the check reports: $(cat "$T/agcov.txt")"
+[ "$(agstatus friday)" = active ] || fail "a memory rule covered only by GEMINI.md is not retired: Claude Code never reads it"
+[ "$(agstatus fmt)" = active ] || fail "a memory rule covered only by the codex AGENTS.md is not retired"
+[ "$(agstatus small)" = retired ] || fail "a memory rule covered by the claude global is retired"
+agnote "$AC/projects/-w-wren/memory/small.md" | grep -qx "reason: covered by global instructions ($AC/CLAUDE.md): \"Keep every wren commit small and focused on one change.\"" || fail "it is retired naming the file: $(agnote "$AC/projects/-w-wren/memory/small.md")"
+grep -qF "Global instructions ($AC/CLAUDE.md):" "$T/agcov.log" || fail "the prompt names the file it quotes"
+grep -q "Global instructions ($AH" "$T/agcov.log" && fail "the prompt carries only the global instructions of agents the rules reach"
+"$CTX" rules activity | grep -qF "covered  wren  $AC/projects/-w-wren/memory/small.md: covered by global instructions ($AC/CLAUDE.md)" || fail "activity names the file: $("$CTX" rules activity)"
+printf 'Keep commits tidy.\n' > "$AC/CLAUDE.md"
+agrun rules import >/dev/null
+[ "$(agstatus small)" = active ] || fail "a covered rule revives when its quote leaves its file"
+# A scan run with another agent folder does not retire the files it did not visit: only a
+# file that is gone retires its rule, so hooks and the scheduled scan never churn.
+mkdir -p "$AH/.config/opencode" "$T/xdg2/opencode" "$T/otherclaude"
+printf 'Opencode reads this at home.\n' > "$AH/.config/opencode/AGENTS.md"
+printf 'Opencode reads this elsewhere.\n' > "$T/xdg2/opencode/AGENTS.md"
+agxdg() { (XDG_CONFIG_HOME="$T/xdg2"; export XDG_CONFIG_HOME; agrun "$@"); }
+agrun rules import >/dev/null
+agxdg rules import >/dev/null
+agrun rules import | grep -q '^0 rules changed' || fail "an import without XDG_CONFIG_HOME after one with it changes nothing"
+agxdg rules import | grep -q '^0 rules changed' || fail "an import with XDG_CONFIG_HOME after one without it changes nothing"
+(HOME="$AH" CLAUDE_CONFIG_DIR="$T/otherclaude" "$CTX" rules import) >/dev/null
+[ "$("$CTX" sql "SELECT coalesce(status, 'active') FROM ctx_doc WHERE kind = 'rule' AND name = '$AC/CLAUDE.md'")" = active ] || fail "an import with another Claude Code folder keeps a global file still on disk"
+agrun rules import >/dev/null
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_doc WHERE kind = 'rule' AND status IS NULL AND name IN ('$AH/.config/opencode/AGENTS.md', '$T/xdg2/opencode/AGENTS.md', '$AC/CLAUDE.md', '$AC/projects/-w-wren/memory/friday.md')")" = 4 ] || fail "files still on disk stay in force"
+rm "$T/xdg2/opencode/AGENTS.md"
+agrun rules import >/dev/null
+[ "$("$CTX" sql "SELECT status FROM ctx_doc WHERE kind = 'rule' AND name = '$T/xdg2/opencode/AGENTS.md'")" = retired ] || fail "a removed file still retires its rule"
+# A rule two agents load is covered only when the quote is in the global file of each.
+"$CTX" rules retire friday.md --reason "out of the way" >/dev/null
+"$CTX" rules retire fmt.md --reason "out of the way" >/dev/null
+"$CTX" rules retire small.md --reason "out of the way" >/dev/null
+M1='Never force-push any wren branch to the shared remote.'
+M2='Always run the wren formatter before every single commit.'
+"$CTX" remember "$M1" --project wren >/dev/null
+printf '%s\n' "$M1" > "$AC/CLAUDE.md"
+agrun rules import >/dev/null
+agboth() { (CTX_TEST=1 CTX_TEST_REACH="codex manual:*"; export CTX_TEST CTX_TEST_REACH; agrun "$@"); }
+agboth rules covered > "$T/agboth.txt" || fail "the covered check runs for two agents: $(cat "$T/agboth.txt")"
+grep -q '1 rules checked against the global instructions, 0 retired' "$T/agboth.txt" || fail "a quote in only one of two agents' files retires nothing: $(cat "$T/agboth.txt")"
+"$CTX" remember "$M2" --project wren >/dev/null
+printf '%s\n%s\n' "$M1" "$M2" > "$AC/CLAUDE.md"
+agrun rules import >/dev/null
+agboth rules covered > "$T/agboth.txt" || fail "the covered check runs again: $(cat "$T/agboth.txt")"
+grep -q '2 rules checked against the global instructions, 1 retired' "$T/agboth.txt" || fail "a quote in both agents' files retires: $(cat "$T/agboth.txt")"
+M2KEY=$("$CTX" sql "SELECT name FROM ctx_doc WHERE kind = 'rule' AND name GLOB 'manual:*' AND status = 'retired'")
+agnote "$M2KEY" | grep -qxF "reason: covered by global instructions ($AC/CLAUDE.md, $AH/.codex/AGENTS.md): \"$M2\"" || fail "the reason names each agent's file: $(agnote "$M2KEY")"
+(CTX_TEST=1 CTX_TEST_REACH="pi manual:*"; export CTX_TEST CTX_TEST_REACH; agrun rules covered --dry-run) | grep -q '^0 rules would be sent' || fail "a rule reaching an agent with no global file is never covered"
+(CTX_TEST_REACH="pi manual:*"; export CTX_TEST_REACH; agrun rules covered --dry-run) | grep -q '^1 rules would be sent' || fail "CTX_TEST_REACH does nothing without CTX_TEST"
+(CTX_TEST=1 CTX_TEST_REACH="nosuch manual:*"; export CTX_TEST CTX_TEST_REACH; agrun rules covered --dry-run) >/dev/null || fail "an unknown agent in CTX_TEST_REACH is ignored"
+printf '%s\n' "$M2" > "$AH/suit/shared.md"
+agboth rules import >/dev/null
+[ "$("$CTX" sql "SELECT status FROM ctx_doc WHERE kind = 'rule' AND name = '$M2KEY'")" = retired ] || fail "a two-agent retirement stands while the quote is in both files"
+printf 'Something else.\n' > "$AH/suit/shared.md"
+agboth rules import >/dev/null
+[ "$("$CTX" sql "SELECT coalesce(status, 'active') FROM ctx_doc WHERE kind = 'rule' AND name = '$M2KEY'")" = active ] || fail "a two-agent retirement revives when the quote leaves either file"
+agnote "$M2KEY" | grep -qxF "reason: its quote is no longer in the global instructions ($AH/.codex/AGENTS.md)" || fail "the revival names the file the quote left: $(agnote "$M2KEY")"
+# Only a global instruction file stays in force while it is on disk: a memory folder that is
+# excluded, and the files of a project no longer registered, retire their rules.
+agmem heron "Heron" "Feed the heron at noon."
+agrun rules import >/dev/null
+[ "$(agstatus heron)" = active ] || fail "a new memory rule is in force"
+"$CTX" exclude --project wren >/dev/null
+agrun rules import >/dev/null
+[ "$(agstatus heron)" = retired ] || fail "an excluded memory folder retires its rules"
+"$CTX" sql "DELETE FROM ctx_project WHERE project = 'wren'" >/dev/null
+agrun rules import >/dev/null
+[ "$("$CTX" sql "SELECT coalesce(status, 'active') FROM ctx_doc WHERE kind = 'rule' AND name = '$AW/AGENTS.md'")" = retired ] || fail "an unregistered project's AGENTS.md is retired"
+agnote "$AW/AGENTS.md" | grep -qx 'reason: its file was removed' || fail "it is retired as before: $(agnote "$AW/AGENTS.md")"
+[ "$("$CTX" sql "SELECT coalesce(status, 'active') FROM ctx_doc WHERE kind = 'rule' AND name = '$AH/.codex/AGENTS.md'")" = active ] || fail "a global file stays in force"
+
 # Redundant rules. Identical copies in one project collapse after every import; project rules
 # the global CLAUDE.md already says are retired by the automatic judge; the same rule saved in
 # several projects is offered on the page as one global rule. Each is listed and undone.
@@ -1072,9 +1212,9 @@ grep -q 'unreadable' "$T/rdcov.err" || fail "an unreadable answer is reported: $
 "$CTX" rules auto "python3 $COVFAKE $T/cov.log" >/dev/null
 : > "$T/cov.log"
 "$CTX" rules covered > "$T/rdcov.txt" || fail "the covered check runs: $(cat "$T/rdcov.txt")"
-grep -q '6 rules checked against the global CLAUDE.md, 1 retired as covered' "$T/rdcov.txt" || fail "the check reports: $(cat "$T/rdcov.txt")"
+grep -q '6 rules checked against the global instructions, 1 retired as covered' "$T/rdcov.txt" || fail "the check reports: $(cat "$T/rdcov.txt")"
 [ "$(rdstatus plume no-attrib)" = retired ] || fail "a covered rule is retired"
-rdnote "$(rdkey plume no-attrib)" | grep -qx 'reason: covered by global CLAUDE.md: "Never attribute an AI in commits, PRs or comments."' || fail "it is retired with its quote: $(rdnote "$(rdkey plume no-attrib)")"
+rdnote "$(rdkey plume no-attrib)" | grep -qx "reason: covered by global instructions ($RD/CLAUDE.md): \"Never attribute an AI in commits, PRs or comments.\"" || fail "it is retired with its quote: $(rdnote "$(rdkey plume no-attrib)")"
 [ "$(rdstatus plume cheap-model)" = active ] || fail "an invented quote retires nothing"
 [ "$(rdstatus plume tests-cond)" = active ] || fail "a project rule with an extra condition stays"
 [ "$("$CTX" sql "SELECT covered FROM ctx_rule_covered WHERE key GLOB '*/cheap-model.md'")" = 0 ] || fail "an invented quote is stored as not covered"
@@ -1091,7 +1231,7 @@ PY
 CALLS=$(wc -l < "$T/cov.log")
 "$CTX" rules covered >/dev/null
 [ "$(wc -l < "$T/cov.log")" = "$CALLS" ] || fail "a second run sends nothing again for unchanged texts"
-"$CTX" rules activity | grep -q "covered  plume  $(rdkey plume no-attrib): covered by global CLAUDE.md" || fail "activity lists covered retirements: $("$CTX" rules activity)"
+"$CTX" rules activity | grep -qF "covered  plume  $(rdkey plume no-attrib): covered by global instructions ($RD/CLAUDE.md)" || fail "activity lists covered retirements: $("$CTX" rules activity)"
 CLAUDE_CONFIG_DIR="$RD" "$CTX" rules import | grep -q '^0 rules changed' || fail "a covered retirement sticks while the file is unchanged"
 printf 'Keep the plume changelog in plain words.\n' >> "$RD/CLAUDE.md"
 CLAUDE_CONFIG_DIR="$RD" "$CTX" rules import >/dev/null
@@ -1281,12 +1421,12 @@ printf 'Do not attribute an AI anywhere in tern commits or PRs.\n' > "$RV/projec
 [ "$(wc -l < "$T/covr.log" | tr -d ' ')" = 1 ] || fail "the silent judge is asked once: $(cat "$T/covr.log")"
 "$CTX" rules covered >/dev/null
 [ "$(wc -l < "$T/covr.log" | tr -d ' ')" = 1 ] || fail "rules the judge left out are not sent again until they change"
-# An empty global CLAUDE.md is no global CLAUDE.md.
+# An empty global CLAUDE.md is no global instructions.
 printf '  \n\n' > "$RV/CLAUDE.md"
 "$CTX" rules import >/dev/null
 "$CTX" rules auto "python3 $COVFAKE $T/covr.log" >/dev/null
 : > "$T/covr.log"
-"$CTX" rules covered | grep -q 'no global CLAUDE.md' || fail "an empty global CLAUDE.md is treated as absent"
+"$CTX" rules covered | grep -q 'no global instructions' || fail "an empty global CLAUDE.md is treated as absent"
 [ -s "$T/covr.log" ] && fail "an empty global CLAUDE.md calls no judge"
 "$CTX" rules auto --off >/dev/null
 CLAUDE_CONFIG_DIR="$T/claude"; export CLAUDE_CONFIG_DIR
@@ -2965,7 +3105,7 @@ CLAUDE_CONFIG_DIR="$XC" "$CTX" scan >/dev/null
 "$CTX" forget 5e550000-0000-0000-0000-00000000000 2>/dev/null && fail "an ambiguous prefix is refused"
 export CTX_DB="$T/rebuild.sqlite"
 "$CTX" init >/dev/null
-[ "$("$CTX" sql "PRAGMA user_version")" = 17 ] || fail "a new file is at the current version"
+[ "$("$CTX" sql "PRAGMA user_version")" = 18 ] || fail "a new file is at the current version"
 [ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 7 ] || fail "derived version recorded"
 printf '{"uuid":"rb-1","timestamp":"2026-09-01T10:00:00Z","cwd":"/w/rb","message":{"role":"user","content":"the capybara rollout"}}\n{"uuid":"rb-2","timestamp":"2026-09-01T10:00:05Z","cwd":"/w/rb","message":{"role":"assistant","content":"rolled out the capybara"}}\n' > "$T/ab12cd99-rb.jsonl"
 "$CTX" archive "$T/ab12cd99-rb.jsonl" >/dev/null
@@ -2987,7 +3127,7 @@ grep -q 'rebuilding it once' "$T/rb.err" || fail "an old index is rebuilt on ope
 "$CTX" sql "DROP TABLE ctx_meta" >/dev/null; "$CTX" sql "PRAGMA user_version = 1" >/dev/null
 "$CTX" search --all capybara 2>"$T/rb3.err" | grep -q capybara || fail "an unversioned file still works"
 [ -s "$T/rb3.err" ] && fail "an unversioned file is upgraded without a rebuild"
-[ "$("$CTX" sql "PRAGMA user_version")" = 17 ] || fail "and is marked current"
+[ "$("$CTX" sql "PRAGMA user_version")" = 18 ] || fail "and is marked current"
 
 # Docs tickets: every documentation problem ctx finds becomes a ticket, once each, without the
 # person's sign-off, and the overview shows who holds it and carries a prod to that session.

@@ -30,7 +30,7 @@
 #include "page.h"
 
 #define CTX_VERSION "0.0.1"
-#define CTX_USER_VERSION 17    /* PRAGMA user_version once initialized */
+#define CTX_USER_VERSION 18    /* PRAGMA user_version once initialized */
 #define CTX_DERIVED_VERSION 7 /* raise when schema/index.sql changes; ctx then rebuilds */
 
 /* A tool's output is kept up to this size at each end; the middle is cut. */
@@ -7378,8 +7378,43 @@ static int cmd_decisions(int argc, char **argv) {
  *   project  the project it applies to, or * for every project
  *   source   the file it was read from; origin  the session it was said in
  *   until    the date it stops applying; status  retired or replaced; by, reason
- * Claude Code's memory files and CLAUDE.md files are imported on every scan; a file
- * that is gone retires its rule. The index is built from the technotes. */
+ *   agent    for an agent's instruction file, the agents that read it
+ * Claude Code's memory files and every agent's instruction files are imported on every scan;
+ * a file that is gone retires its rule. The index is built from the technotes. */
+
+/* The coding agents whose instruction files are rules. Each reads a global file, at DIR/REL
+ * when its variable ENV names DIR, else at HOME/HOME_REL, and in each project a file named
+ * PROJECT_FILE. Adding an agent is adding a row; a new file name goes in INSTRUCTION_FILES. */
+typedef struct {
+  const char *name, *env, *rel, *home_rel, *project_file;
+} agent_t;
+static const agent_t agents[] = {
+    {"claude", "CLAUDE_CONFIG_DIR", "CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.md"},
+    {"codex", "CODEX_HOME", "AGENTS.md", ".codex/AGENTS.md", "AGENTS.md"},
+    {"gemini", NULL, NULL, ".gemini/GEMINI.md", "GEMINI.md"},
+    {"pi", "PI_CODING_AGENT_DIR", "AGENTS.md", ".pi/agent/AGENTS.md", "AGENTS.md"},
+    {"opencode", "XDG_CONFIG_HOME", "opencode/AGENTS.md", ".config/opencode/AGENTS.md", "AGENTS.md"},
+};
+#define AGENT_COUNT (sizeof agents / sizeof *agents)
+
+/* Every file name in agents, global or project: such a file is a whole set of instructions,
+ * never one rule, so it is never collapsed, offered, judged or grouped. rules_import refuses
+ * a row whose file is missing here. */
+#define INSTRUCTION_FILES(X, c) X(c, "CLAUDE.md") X(c, "AGENTS.md") X(c, "GEMINI.md")
+#define INSTRUCTION_GLOB_(c, f) c " NOT GLOB '*/" f "' AND "
+#define INSTRUCTION_NAME_(c, f) f,
+/* SQL true when column c is not a whole instruction file */
+#define NOT_INSTRUCTIONS(c) "(" INSTRUCTION_FILES(INSTRUCTION_GLOB_, c) "1)"
+static const char *const instruction_files[] = {INSTRUCTION_FILES(INSTRUCTION_NAME_, 0) NULL};
+
+/* Agent i's global instruction file; 0 when neither its variable nor HOME is set. */
+static int agent_global(size_t i, char *out, size_t cap) {
+  const char *dir = agents[i].env ? getenv(agents[i].env) : NULL, *home = getenv("HOME");
+  if (dir && *dir) snprintf(out, cap, "%s/%s", dir, agents[i].rel);
+  else if (home && *home) snprintf(out, cap, "%s/%s", home, agents[i].home_rel);
+  else return 0;
+  return 1;
+}
 
 /* The value of header line NAME, copied into out; "" when absent. */
 static void rule_field(const char *text, const char *name, char *out, size_t cap) {
@@ -7428,14 +7463,15 @@ static void rule_title(const char *body, char *out, size_t cap) {
 typedef struct {
   const char *key, *project, *source, *origin, *until, *status, *by, *reason, *body;
   const char *kind, *written; /* a memory note's type, and the day its file was last written */
+  const char *agent;          /* the agents that read it, for an instruction file */
 } rule_t;
 
 /* Saves a rule unless its technote already says the same. Returns 1 if saved. */
 static int rule_save(sqlite3 *db, const rule_t *r) {
   buf text = {0};
-  const char *names[] = {"key", "project", "kind", "written", "source", "origin", "until", "status", "by", "reason"};
-  const char *vals[] = {r->key, r->project, r->kind, r->written, r->source, r->origin, r->until, r->status, r->by, r->reason};
-  for (int i = 0; i < 10; i++) {
+  const char *names[] = {"key", "project", "agent", "kind", "written", "source", "origin", "until", "status", "by", "reason"};
+  const char *vals[] = {r->key, r->project, r->agent, r->kind, r->written, r->source, r->origin, r->until, r->status, r->by, r->reason};
+  for (int i = 0; i < 11; i++) {
     if (!vals[i] || !*vals[i]) continue;
     buf_str(&text, names[i]);
     buf_str(&text, ": ");
@@ -7723,7 +7759,7 @@ static int rule_retired_unchanged(sqlite3 *db, const char *key, const char *body
   return keep;
 }
 
-static int import_file(sqlite3 *db, const char *path, const char *project, const char *origin) {
+static int import_file(sqlite3 *db, const char *path, const char *project, const char *origin, const char *agent) {
   size_t n = 0;
   char *data = slurp(path, &n);
   if (!data || !n) { free(data); return 0; }
@@ -7741,7 +7777,7 @@ static int import_file(sqlite3 *db, const char *path, const char *project, const
   int saved = 0;
   if (!rule_retired_unchanged(db, path, clean.p)) {
     rule_t r = {.key = path, .project = project, .source = path, .origin = origin, .kind = *kind ? kind : NULL,
-                .written = written, .body = clean.p};
+                .written = written, .agent = agent, .body = clean.p};
     saved = rule_save(db, &r);
   }
   free(clean.p);
@@ -7789,31 +7825,29 @@ static int rule_set_status(sqlite3 *db, const char *key, const char *status, con
     return 0;
   }
   const char *text = (const char *)sqlite3_column_text(q, 1);
-  char src[600], origin[160], until[40], kind[24], written[16];
+  char src[600], origin[160], until[40], kind[24], written[16], agent[200];
   rule_field(text, "source", src, sizeof src);
   rule_field(text, "origin", origin, sizeof origin);
   rule_field(text, "until", until, sizeof until);
   rule_field(text, "kind", kind, sizeof kind);
   rule_field(text, "written", written, sizeof written);
+  rule_field(text, "agent", agent, sizeof agent);
   rule_t r = {.key = key, .project = (const char *)sqlite3_column_text(q, 0), .source = src, .origin = origin, .until = until,
-              .kind = kind, .written = written, .status = status, .by = by, .reason = reason, .body = rule_body(text)};
+              .kind = kind, .written = written, .agent = agent, .status = status, .by = by, .reason = reason, .body = rule_body(text)};
   rule_save(db, &r);
   sqlite3_finalize(q);
   return 1;
 }
 
-/* The global CLAUDE.md's text, read from its rule as rules_import keys it, when that rule is in
- * force and says something; NULL otherwise. Every project's rules are measured against this
- * one. known, when given, says whether the archive has that rule at all, in force or not: a
- * scan run with another configuration folder must not read it as deleted. */
-static char *global_rule_text(sqlite3 *db, int *known) {
-  char base[4200], key[4300];
+/* An agent's global instructions as the archive has them: the text of the rule keyed by path,
+ * the file the agent reads, when that rule is in force and says something; NULL otherwise.
+ * known, when given, says whether the archive has that rule at all, in force or not: a scan
+ * run with another configuration folder must not read it as deleted. */
+static char *global_rule_text(sqlite3 *db, const char *path, int *known) {
   if (known) *known = 0;
-  if (!claude_dir(base, sizeof base)) return NULL;
-  snprintf(key, sizeof key, "%s/CLAUDE.md", base);
   sqlite3_stmt *q = db_prepare(db, "SELECT d.status IS NULL, c.body FROM ctx_doc d JOIN ctx_chunk c ON c.doc_id = d.id"
                                    " WHERE d.kind = 'rule' AND d.name = ?1 AND d.project = '*' ORDER BY c.seq LIMIT 1");
-  sqlite3_bind_text(q, 1, key, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 1, path, -1, SQLITE_STATIC);
   char *text = NULL;
   if (sqlite3_step(q) == SQLITE_ROW) {
     if (known) *known = 1;
@@ -7824,55 +7858,206 @@ static char *global_rule_text(sqlite3 *db, int *known) {
   return text;
 }
 
-static char *global_rule_hash(sqlite3 *db) {
-  char *g = global_rule_text(db, NULL);
-  char *h = sha3_hex(g ? g : "", g ? strlen(g) : 0);
-  free(g);
+static size_t agent_index(const char *name) {
+  for (size_t i = 0; i < AGENT_COUNT; i++)
+    if (!strcmp(agents[i].name, name)) return i;
+  die("no agent %s", name);
+  return 0;
+}
+
+/* How a rule that is not an instruction file reaches an agent: Claude Code loads its memory
+ * files, and ctx's SessionStart hook for Claude Code offers the rules from ctx remember. With
+ * below set, the key must start with the folder of the agent's global file and the glob is
+ * matched against the rest, so no path from HOME is ever read as a pattern. Another agent's
+ * hook is another row. */
+static const struct {
+  const char *agent, *glob;
+  int below;
+} rule_reach[] = {
+    {"claude", "/projects/*/memory/*", 1},
+    {"claude", "manual:*", 0},
+};
+
+static int reach_matches(size_t agent, const char *glob, int below, const char *key) {
+  if (!below) return !sqlite3_strglob(glob, key);
+  char g[4200];
+  if (!agent_global(agent, g, sizeof g) || !strrchr(g, '/')) return 0;
+  size_t n = (size_t)(strrchr(g, '/') - g);
+  return !strncmp(key, g, n) && !sqlite3_strglob(glob, key + n);
+}
+
+/* The agents a rule reaches, one bit per row of agents. CTX_TEST_REACH, "AGENT GLOB", adds a
+ * row for the test suite, which has no second agent's hook to exercise. It counts only with
+ * CTX_TEST=1 as well, so a stray value in a shell does nothing, and an unknown agent is
+ * ignored. */
+static unsigned rule_agents(const char *key) {
+  unsigned bits = 0;
+  for (size_t r = 0; r < sizeof rule_reach / sizeof *rule_reach; r++) {
+    size_t i = agent_index(rule_reach[r].agent);
+    if (reach_matches(i, rule_reach[r].glob, rule_reach[r].below, key)) bits |= 1u << i;
+  }
+  const char *extra = getenv("CTX_TEST_REACH"), *test = getenv("CTX_TEST");
+  char name[40];
+  int at = 0;
+  if (extra && test && !strcmp(test, "1") && sscanf(extra, "%39s %n", name, &at) == 1 && at)
+    for (size_t i = 0; i < AGENT_COUNT; i++)
+      if (!strcmp(agents[i].name, name) && reach_matches(i, extra + at, 0, key)) bits |= 1u << i;
+  return bits;
+}
+
+/* The global instructions of the agents in bits that the archive has in force, one per file;
+ * of[i] is agent i's file, or -1 when it has none. */
+typedef struct {
+  size_t n;
+  char *path[AGENT_COUNT], *text[AGENT_COUNT];
+  int of[AGENT_COUNT];
+} globals_t;
+
+static void globals_read(sqlite3 *db, unsigned bits, globals_t *g) {
+  memset(g, 0, sizeof *g);
+  for (size_t i = 0; i < AGENT_COUNT; i++) {
+    char path[4200];
+    g->of[i] = -1;
+    if (!(bits & 1u << i) || !agent_global(i, path, sizeof path)) continue;
+    for (size_t j = 0; j < g->n && g->of[i] < 0; j++)
+      if (!strcmp(g->path[j], path)) g->of[i] = (int)j;
+    if (g->of[i] >= 0) continue;
+    char *text = global_rule_text(db, path, NULL);
+    if (!text) continue;
+    g->of[i] = (int)g->n;
+    g->path[g->n] = dup_text((const unsigned char *)path);
+    g->text[g->n++] = text;
+  }
+}
+
+/* Whether every agent in bits has global instructions: a rule is covered only when each agent
+ * that loads it already has the words, so one without a global file covers nothing. */
+static int globals_complete(const globals_t *g, unsigned bits) {
+  for (size_t i = 0; i < AGENT_COUNT; i++)
+    if (bits & 1u << i && g->of[i] < 0) return 0;
+  return bits != 0;
+}
+
+static void globals_free(globals_t *g) {
+  for (size_t i = 0; i < g->n; i++) { free(g->path[i]); free(g->text[i]); }
+  g->n = 0;
+}
+
+/* One hash over the texts a verdict was made against. A single file hashes as its text alone,
+ * so verdicts kept against the global CLAUDE.md before other agents counted stay valid. */
+static char *globals_hash(const globals_t *g) {
+  if (g->n < 2) return sha3_hex(g->n ? g->text[0] : "", g->n ? strlen(g->text[0]) : 0);
+  buf all = {0};
+  for (size_t i = 0; i < g->n; i++) {
+    buf_add(&all, g->path[i], strlen(g->path[i]) + 1);
+    buf_add(&all, g->text[i], strlen(g->text[i]) + 1);
+  }
+  char *h = sha3_hex(all.p, all.n);
+  free(all.p);
   return h;
+}
+
+/* The hash of the global instructions a rule is measured against. */
+static char *rule_globals_hash(sqlite3 *db, const char *key) {
+  globals_t g;
+  globals_read(db, rule_agents(key), &g);
+  char *h = globals_hash(&g);
+  globals_free(&g);
+  return h;
+}
+
+/* What a covered retirement's reason says of its files: the text in COVERED_REASON's
+ * parentheses, which is the one file of a verdict from before ctx_rule_covered_file, or Claude
+ * Code's file for the reason ctx wrote before other agents counted. With revived set, a
+ * revival's reason counts too, for showing where a quote was. 0 for any other reason. The
+ * files of a newer verdict are read from ctx_rule_covered_file, since a list in a reason is
+ * ambiguous when a path has the separator in it. */
+#define COVERED_REASON "covered by global instructions ("
+#define COVERED_REASON_OLD "covered by global CLAUDE.md: "
+#define COVERED_REVIVED "its quote is no longer in the global instructions ("
+static int covered_files(const char *reason, int revived, char *out, size_t cap) {
+  if (!strncmp(reason, COVERED_REASON_OLD, strlen(COVERED_REASON_OLD))) return agent_global(agent_index("claude"), out, cap);
+  const char *p = NULL, *e = NULL;
+  if (!strncmp(reason, COVERED_REASON, strlen(COVERED_REASON))) {
+    p = reason + strlen(COVERED_REASON);
+    e = strstr(p, "): \"");
+  } else if (revived && !strncmp(reason, COVERED_REVIVED, strlen(COVERED_REVIVED))) {
+    p = reason + strlen(COVERED_REVIVED);
+    e = strrchr(p, ')');
+  }
+  if (!e) return 0;
+  snprintf(out, cap, "%.*s", (int)(e - p), p);
+  return 1;
 }
 
 /* What ctx retired on its own comes back when the reason is gone: a copy whose kept rule is no
  * longer in force (its file deleted, expired, faded or retired), and a covered rule whose quote
- * is no longer in the global CLAUDE.md. No judge is needed for either. Returns how many. */
+ * is no longer in the global file it was found in. No judge is needed for either. Returns how
+ * many. */
 typedef struct {
-  char *key, *other;
+  char *key, *other, *why;
   int copy;
 } revive_t;
 
 static long rules_revive(sqlite3 *db) {
   open_private(db);
   db_exec(db, "SELECT fsl_use('repo:me')");
-  int known = 0;
-  char *global = global_rule_text(db, &known), *flat = squash(global ? global : "", global ? strlen(global) + 1 : 1);
   sqlite3_stmt *q = db_prepare(db,
-      "SELECT c.key, c.kept, 1, CAST(fsl_technote(r.technote) AS TEXT) FROM ctx_rule_collapse c JOIN ctx_rule r ON r.key = c.key"
+      "SELECT c.key, c.kept, 1, CAST(fsl_technote(r.technote) AS TEXT), '', '' FROM ctx_rule_collapse c JOIN ctx_rule r ON r.key = c.key"
       " JOIN ctx_doc d ON d.kind = 'rule' AND d.name = c.key"
       " WHERE c.undone = 0 AND d.status = 'replaced' AND NOT EXISTS (SELECT 1 FROM ctx_doc k WHERE k.kind = 'rule' AND k.name = c.kept AND k.status IS NULL)"
-      " UNION ALL SELECT v.key, v.quote, 0, CAST(fsl_technote(r.technote) AS TEXT) FROM ctx_rule_covered v JOIN ctx_rule r ON r.key = v.key"
-      " JOIN ctx_doc d ON d.kind = 'rule' AND d.name = v.key WHERE ?1 AND v.covered = 1 AND v.undone = 0 AND d.status = 'retired'");
-  sqlite3_bind_int(q, 1, known);
+      " UNION ALL SELECT v.key, v.quote, 0, CAST(fsl_technote(r.technote) AS TEXT), v.rule_hash, v.global_hash"
+      " FROM ctx_rule_covered v JOIN ctx_rule r ON r.key = v.key"
+      " JOIN ctx_doc d ON d.kind = 'rule' AND d.name = v.key WHERE v.covered = 1 AND v.undone = 0 AND d.status = 'retired'");
+  sqlite3_stmt *files = db_prepare(db, "SELECT file FROM ctx_rule_covered_file WHERE key = ?1 AND rule_hash = ?2 AND global_hash = ?3 ORDER BY seq");
   revive_t *v = NULL;
   size_t n = 0;
   while (sqlite3_step(q) == SQLITE_ROW) {
     const char *text = (const char *)sqlite3_column_text(q, 3), *other = (const char *)sqlite3_column_text(q, 1);
     int copy = sqlite3_column_int(q, 2);
     if (!text) continue;
-    char by[700], reason[900];
+    char by[700], reason[4800], file[4200];
     rule_field(text, "by", by, sizeof by);
     rule_field(text, "reason", reason, sizeof reason);
     /* only while ctx's own retirement stands: the person may have retired it since */
-    if (copy ? strcmp(by, other) || strncmp(reason, "identical copy of ", 18) : strncmp(reason, "covered by global CLAUDE.md: ", 29) || strstr(flat, other)) continue;
+    if (copy ? strcmp(by, other) || strncmp(reason, "identical copy of ", 18) : !covered_files(reason, 0, file, sizeof file)) continue;
+    buf why = {0};
+    if (copy) buf_str(&why, "the rule it copied is no longer in force");
+    else { /* it stands while every file it was found in still has the quote */
+      for (int c = 0; c < 3; c++) sqlite3_bind_text(files, c + 1, (const char *)sqlite3_column_text(q, c == 0 ? 0 : c + 3), -1, SQLITE_STATIC);
+      int listed = 0;
+      char *gone = NULL;
+      for (;;) {
+        const char *f = file;
+        if (sqlite3_step(files) == SQLITE_ROW) f = (const char *)sqlite3_column_text(files, 0), listed = 1;
+        else if (listed) break;
+        int known = 0;
+        char *global = global_rule_text(db, f, &known), *flat = squash(global ? global : "", global ? strlen(global) + 1 : 1);
+        if (known && !strstr(flat, other)) gone = dup_text((const unsigned char *)f); /* a file this scan cannot see is not deleted */
+        free(flat);
+        free(global);
+        if (gone || !listed) break;
+      }
+      sqlite3_reset(files);
+      if (!gone) continue;
+      buf_str(&why, COVERED_REVIVED);
+      buf_str(&why, gone);
+      buf_str(&why, ")");
+      free(gone);
+    }
+    buf_add(&why, "", 1);
     v = realloc(v, (n + 1) * sizeof *v);
     if (!v) die("out of memory");
-    v[n++] = (revive_t){dup_text(sqlite3_column_text(q, 0)), dup_text((const unsigned char *)other), copy};
+    v[n++] = (revive_t){dup_text(sqlite3_column_text(q, 0)), dup_text((const unsigned char *)other), why.p, copy};
   }
   sqlite3_finalize(q);
+  sqlite3_finalize(files);
   if (n) {
     sqlite3_stmt *copy = db_prepare(db, "UPDATE ctx_rule_collapse SET undone = 1 WHERE key = ?1 AND kept = ?2");
     sqlite3_stmt *cov = db_prepare(db, "UPDATE ctx_rule_covered SET undone = 1 WHERE key = ?1 AND covered = 1");
     db_exec(db, "BEGIN IMMEDIATE");
     for (size_t i = 0; i < n; i++) {
-      rule_set_status(db, v[i].key, NULL, NULL, v[i].copy ? "the rule it copied is no longer in force" : "its quote is no longer in the global CLAUDE.md");
+      rule_set_status(db, v[i].key, NULL, NULL, v[i].why);
       sqlite3_stmt *u = v[i].copy ? copy : cov;
       sqlite3_bind_text(u, 1, v[i].key, -1, SQLITE_STATIC);
       if (v[i].copy) sqlite3_bind_text(u, 2, v[i].other, -1, SQLITE_STATIC);
@@ -7884,16 +8069,14 @@ static long rules_revive(sqlite3 *db) {
     sqlite3_finalize(cov);
     rules_index(db);
   }
-  for (size_t i = 0; i < n; i++) { free(v[i].key); free(v[i].other); }
+  for (size_t i = 0; i < n; i++) { free(v[i].key); free(v[i].other); free(v[i].why); }
   free(v);
-  free(flat);
-  free(global);
   return (long)n;
 }
 
 /* Identical copies of a rule in one project: every active rule but the oldest, by its first
- * technote, is replaced by that oldest one. Never across projects, never a whole CLAUDE.md or
- * AGENTS.md, and never a copy the person restored while its text is unchanged. A dry run only
+ * technote, is replaced by that oldest one. Never across projects, never a whole instruction
+ * file, and never a copy the person restored while its text is unchanged. A dry run only
  * prints. Returns how many copies were (or would be) replaced. */
 typedef struct {
   char *key, *project, *hash;
@@ -7915,7 +8098,7 @@ static long rules_collapse(sqlite3 *db, int dry) {
       "SELECT d.name, d.project, c.body, coalesce((SELECT min(e.mtime) FROM fslrepo_me_event e JOIN fslrepo_me_tag t ON t.tagid = e.tagid"
       "  WHERE t.tagname = 'event-' || r.technote), 0)"
       " FROM ctx_doc d JOIN ctx_chunk c ON c.doc_id = d.id AND c.seq = 0 JOIN ctx_rule r ON r.key = d.name"
-      " WHERE d.kind = 'rule' AND d.status IS NULL AND d.name NOT GLOB '*/CLAUDE.md' AND d.name NOT GLOB '*/AGENTS.md'");
+      " WHERE d.kind = 'rule' AND d.status IS NULL AND " NOT_INSTRUCTIONS("d.name"));
   copy_rule *r = NULL;
   size_t n = 0;
   while (sqlite3_step(q) == SQLITE_ROW) {
@@ -7966,10 +8149,33 @@ static long rules_collapse(sqlite3 *db, int dry) {
   return collapsed;
 }
 
-/* Imports CLAUDE.md files and Claude Code memory files as rules, retires the rules whose
- * file is gone, and collapses identical copies. Returns how many changed. */
+/* The agents in the table that read a file named by f, at the file name's row when f is a
+ * project file and at the global path's row otherwise, joined with ',' into out. */
+static void agents_reading(const char *path, const char *project_file, char *out, size_t cap) {
+  size_t o = 0;
+  *out = 0;
+  for (size_t i = 0; i < AGENT_COUNT; i++) {
+    char g[4200];
+    int reads = project_file ? !strcmp(agents[i].project_file, project_file) : agent_global(i, g, sizeof g) && !strcmp(g, path);
+    if (reads && o + strlen(agents[i].name) + 2 < cap) o += (size_t)snprintf(out + o, cap - o, "%s%s", o ? "," : "", agents[i].name);
+  }
+}
+
+static int instruction_file(const char *name) {
+  for (int i = 0; instruction_files[i]; i++)
+    if (!strcmp(instruction_files[i], name)) return 1;
+  return 0;
+}
+
+/* Imports every agent's instruction files and Claude Code memory files as rules, retires the
+ * rules whose file is gone, and collapses identical copies. Returns how many changed. */
 static long rules_import(sqlite3 *db) {
-  char base[4200], path[5000];
+  char base[4200], path[5000], agent[200];
+  for (size_t i = 0; i < AGENT_COUNT; i++) {
+    const char *g = strrchr(agents[i].home_rel, '/');
+    if (!instruction_file(agents[i].project_file) || !instruction_file(g ? g + 1 : agents[i].home_rel))
+      die("agent %s reads a file missing from INSTRUCTION_FILES", agents[i].name);
+  }
   if (!claude_dir(base, sizeof base)) return 0;
   open_private(db);
   db_exec(db, "SELECT fsl_use('repo:me')");
@@ -7977,20 +8183,22 @@ static long rules_import(sqlite3 *db) {
   sqlite3_stmt *seen = db_prepare(db, "INSERT OR IGNORE INTO temp.seen_rule VALUES (?1)");
   long changed = 0;
   db_exec(db, "BEGIN IMMEDIATE");
-  snprintf(path, sizeof path, "%s/CLAUDE.md", base);
-  if (exists(path)) {
-    changed += import_file(db, path, "*", "");
+  /* each agent's global file, keyed by the path the agent reads, a link read as its target */
+  for (size_t i = 0; i < AGENT_COUNT; i++) {
+    if (!agent_global(i, path, sizeof path) || !exists(path)) continue;
+    agents_reading(path, NULL, agent, sizeof agent);
+    changed += import_file(db, path, "*", "", agent);
     sqlite3_bind_text(seen, 1, path, -1, SQLITE_TRANSIENT);
     sqlite3_step(seen);
     sqlite3_reset(seen);
   }
   sqlite3_stmt *roots = db_prepare(db, "SELECT root, project FROM ctx_project");
   while (sqlite3_step(roots) == SQLITE_ROW) {
-    static const char *const names[] = {"CLAUDE.md", "AGENTS.md", NULL};
-    for (int i = 0; names[i]; i++) {
-      snprintf(path, sizeof path, "%s/%s", sqlite3_column_text(roots, 0), names[i]);
-      if (!exists(path)) continue;
-      changed += import_file(db, path, (const char *)sqlite3_column_text(roots, 1), "");
+    for (int i = 0; instruction_files[i]; i++) {
+      agents_reading(NULL, instruction_files[i], agent, sizeof agent);
+      snprintf(path, sizeof path, "%s/%s", sqlite3_column_text(roots, 0), instruction_files[i]);
+      if (!*agent || !exists(path)) continue;
+      changed += import_file(db, path, (const char *)sqlite3_column_text(roots, 1), "", agent);
       sqlite3_bind_text(seen, 1, path, -1, SQLITE_TRANSIENT);
       sqlite3_step(seen);
       sqlite3_reset(seen);
@@ -8020,7 +8228,7 @@ static long rules_import(sqlite3 *db) {
         free(head);
       }
       memory_project(db, dir, origin, project, sizeof project);
-      changed += import_file(db, file, project, origin);
+      changed += import_file(db, file, project, origin, NULL);
       sqlite3_bind_text(seen, 1, file, -1, SQLITE_TRANSIENT);
       sqlite3_step(seen);
       sqlite3_reset(seen);
@@ -8029,20 +8237,27 @@ static long rules_import(sqlite3 *db) {
   }
   if (top) closedir(top);
   sqlite3_finalize(seen);
-  /* an imported file that is gone retires its rule */
+  /* a file this import did not visit retires its rule, as an excluded memory folder or a project
+   * no longer registered should; except an agent's global file still on disk, whose path
+   * depends on variables that hooks and the scheduled scan set differently. A global file the
+   * person moved, its old copy left in place, so keeps its old rule too: telling a move from
+   * another environment's file would take a record of every environment, and the old copy is
+   * still a file some agent may read. */
   sqlite3_stmt *gone = db_prepare(db,
       "SELECT r.key, d.project, CAST(fsl_technote(r.technote) AS TEXT) FROM ctx_rule r JOIN ctx_doc d ON d.kind = 'rule' AND d.name = r.key"
       " WHERE r.key NOT GLOB 'manual:*' AND r.key NOT IN (SELECT key FROM temp.seen_rule) AND d.status IS NULL");
   while (sqlite3_step(gone) == SQLITE_ROW) {
     const char *text = (const char *)sqlite3_column_text(gone, 2);
     if (!text) continue;
-    char origin[80], src[600], kind[24], written[16];
+    char origin[80], src[600], kind[24], written[16], agent[200];
     rule_field(text, "origin", origin, sizeof origin);
     rule_field(text, "source", src, sizeof src);
     rule_field(text, "kind", kind, sizeof kind);
     rule_field(text, "written", written, sizeof written);
+    rule_field(text, "agent", agent, sizeof agent);
+    if (*agent && !strcmp((const char *)sqlite3_column_text(gone, 1), "*") && exists((const char *)sqlite3_column_text(gone, 0))) continue;
     rule_t r = {.key = (const char *)sqlite3_column_text(gone, 0), .project = (const char *)sqlite3_column_text(gone, 1),
-                .source = src, .origin = origin, .kind = kind, .written = written, .status = "retired",
+                .source = src, .origin = origin, .kind = kind, .written = written, .agent = agent, .status = "retired",
                 .reason = RULE_FILE_GONE, .body = rule_body(text)};
     changed += rule_save(db, &r);
   }
@@ -8124,7 +8339,7 @@ static int cmd_remember(int argc, char **argv) {
 /* Rules due their monthly check: active, for this project or every project, and neither
  * reviewed nor kept in 90 days. */
 #define REVIEW_DUE " FROM ctx_doc d LEFT JOIN ctx_rule_check k ON k.key = d.name WHERE d.kind = 'rule' AND d.status IS NULL" \
-                   " AND d.project IN (?1, '*') AND d.name NOT GLOB '*/CLAUDE.md' AND d.name NOT GLOB '*/AGENTS.md'" \
+                   " AND d.project IN (?1, '*') AND " NOT_INSTRUCTIONS("d.name") \
                    " AND coalesce(k.reviewed, '') < date('now', '-90 days') AND coalesce(k.kept, '') < date('now', '-90 days')"
 #define REVIEW_DUE_COUNT "SELECT count(*)" REVIEW_DUE
 
@@ -8293,7 +8508,7 @@ static int rules_offer(void) {
   if (sqlite3_prepare_v2(db,
           "SELECT CASE WHEN name GLOB 'manual:*' THEN substr(name, 8) ELSE replace(name, rtrim(name, replace(name, '/', '')), '') END, title"
           " FROM ctx_doc WHERE kind = 'rule' AND status IS NULL AND project IN (?1, '*')"
-          " AND name NOT GLOB '*/CLAUDE.md' AND name NOT GLOB '*/AGENTS.md' AND (?2 = '' OR name NOT GLOB ?2 || '*')"
+          " AND " NOT_INSTRUCTIONS("name") " AND (?2 = '' OR name NOT GLOB ?2 || '*')"
           " ORDER BY name GLOB 'manual:*' DESC, mtime DESC LIMIT 15" /* manual rules first */, -1, &q, NULL) == SQLITE_OK) {
     sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
     sqlite3_bind_text(q, 2, here, -1, SQLITE_STATIC);
@@ -8359,7 +8574,7 @@ static int rules_offer(void) {
   if (sqlite3_prepare_v2(db,
           "SELECT k.key, d.title, k.evidence FROM ctx_rule_check k JOIN ctx_doc d ON d.kind = 'rule' AND d.name = k.key"
           " WHERE k.verdict = 'stale' AND k.evidence <> '' AND d.status IS NULL AND d.project = ?1"
-          " AND d.name NOT GLOB '*/CLAUDE.md' AND d.name NOT GLOB '*/AGENTS.md'"
+          " AND " NOT_INSTRUCTIONS("d.name")
           " AND (k.asked IS NULL OR k.asked < date('now', '-30 days')) AND (k.kept IS NULL OR k.kept < k.checked)"
           " ORDER BY k.checked DESC LIMIT 1", -1, &q, NULL) == SQLITE_OK) {
     sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
@@ -8593,7 +8808,7 @@ static int rules_judge(sqlite3 *db, long limit, int quiet) {
       " SELECT d.name, d.project, c.body, CAST(fsl_technote(r.technote) AS TEXT) FROM ctx_doc d JOIN ctx_chunk c ON c.doc_id = d.id"
       " JOIN ctx_rule r ON r.key = d.name JOIN last l ON l.project = d.project LEFT JOIN ctx_rule_check k ON k.key = d.name"
       " WHERE d.kind = 'rule' AND d.status IS NULL AND d.project <> '*'"
-      " AND d.name NOT GLOB '*/CLAUDE.md' AND d.name NOT GLOB '*/AGENTS.md'" /* whole instruction files are not one rule */
+      " AND " NOT_INSTRUCTIONS("d.name") /* whole instruction files are not one rule */
       " AND coalesce(k.checked, '') < date('now', '-7 days') AND coalesce(k.kept, '') < date('now', '-90 days')"
       " AND l.at > coalesce(k.checked, '') ORDER BY l.at DESC LIMIT ?1");
   sqlite3_bind_int64(pick, 1, limit);
@@ -10030,13 +10245,12 @@ static void buf_cut(buf *b, const char *s, size_t max) {
   buf_add(b, s, n);
 }
 
-/* The person's global instructions, the CLAUDE.md every Claude Code session loads, cut short. */
-static void global_instructions(buf *out) {
-  const char *cfg = getenv("CLAUDE_CONFIG_DIR"), *home = getenv("HOME");
-  char path[4200];
-  if (cfg && *cfg) snprintf(path, sizeof path, "%s/CLAUDE.md", cfg);
-  else if (home && *home) snprintf(path, sizeof path, "%s/.claude/CLAUDE.md", home);
-  else return;
+/* The person's global instructions for the agent that is offered served proposals: ctx's
+ * SessionStart hook for Claude Code offers them, so its global file, cut short. Its path goes in
+ * path, "" when unknown. */
+static void global_instructions(buf *out, char *path, size_t cap) {
+  *path = 0;
+  if (!agent_global(agent_index("claude"), path, cap)) return;
   FILE *f = fopen(path, "rb");
   if (!f) return;
   buf raw = {0};
@@ -10057,7 +10271,8 @@ static int rules_auto(sqlite3 *db, int quiet) {
   char *cmd = rules_auto_cmd(db);
   if (!cmd) return 0;
   buf global = {0};
-  global_instructions(&global);
+  char global_path[4200];
+  global_instructions(&global, global_path, sizeof global_path);
   buf_add(&global, "", 1);
   sqlite3_stmt *q = db_prepare(db,
       "SELECT p.id, p.project, p.text, coalesce((SELECT c.body FROM ctx_chunk c WHERE c.turn = p.turn AND c.heading = 'user' LIMIT 1), ''),"
@@ -10129,7 +10344,13 @@ static int rules_auto(sqlite3 *db, int quiet) {
     sqlite3_reset(rules);
     if (sent.n) buf_add(&prompt, sent.p, sent.n);
     else buf_str(&prompt, "none\n");
-    buf_str(&prompt, "\nGlobal instructions:\n");
+    buf_str(&prompt, "\nGlobal instructions");
+    if (*global_path) {
+      buf_str(&prompt, " (");
+      buf_str(&prompt, global_path);
+      buf_str(&prompt, ")");
+    }
+    buf_str(&prompt, ":\n");
     buf_str(&prompt, *global.p ? global.p : "none");
     buf_str(&prompt, "\n");
     buf_str(&sent, "\n");
@@ -10219,11 +10440,12 @@ static int rules_auto(sqlite3 *db, int quiet) {
   return failed;
 }
 
-/* Project rules the global CLAUDE.md already says, in every project: the automatic judge reads
- * the global text beside a batch of rules and names the ones it covers. A verdict counts only
- * with a quote found word for word in the global text, so the judge cannot retire a rule by
- * inventing one. Each verdict is kept against both texts' hashes, so neither is sent again
- * until one changes. */
+/* Project rules the global instructions already say, in every project: the automatic judge
+ * reads the global files of the agents a batch of rules reaches beside those rules and names the
+ * ones they cover. A rule reaches an agent when that agent loads it (rule_reach); another
+ * agent's global file never covers it. A verdict counts only with a quote found word for word
+ * in one of those files, so the judge cannot retire a rule by inventing one. Each verdict is
+ * kept against both texts' hashes, so neither is sent again until one changes. */
 #define COVERED_BATCH 20
 #define COVERED_BATCHES 3 /* a scan's bound on the cost */
 #define COVERED_RULE_MAX 1500
@@ -10242,8 +10464,23 @@ static const char covered_prompt[] =
 
 typedef struct {
   char *key, *project, *text, *hash;
+  size_t group, seq;
   int answered;
 } cov_rule;
+
+/* Rules that reach the same agents, and the global instructions they are judged against. */
+typedef struct {
+  unsigned bits;
+  globals_t g;
+  char *hash, *flat[AGENT_COUNT];
+  buf sent; /* the global files as the judge sees them; a quote must come from one */
+} cov_group;
+
+static int cov_order(const void *a, const void *b) {
+  const cov_rule *x = a, *y = b;
+  if (x->group != y->group) return x->group < y->group ? -1 : 1;
+  return (x->seq > y->seq) - (x->seq < y->seq);
+}
 
 static int rules_covered(sqlite3 *db, int dry, int quiet) {
   char *cmd = rules_auto_cmd(db);
@@ -10251,28 +10488,47 @@ static int rules_covered(sqlite3 *db, int dry, int quiet) {
     if (!quiet) fputs("ctx: no automatic judge; set one with: ctx rules auto CMD\n", stderr);
     return 0;
   }
-  char *global = global_rule_text(db, NULL);
-  if (!global) {
-    if (!quiet) puts(dry ? "0 rules would be sent to the judge: the global CLAUDE.md is not among the rules" : "no global CLAUDE.md among the rules: nothing to check");
+  unsigned reached = 0; /* every agent some rule can reach */
+  for (size_t r = 0; r < sizeof rule_reach / sizeof *rule_reach; r++) reached |= 1u << agent_index(rule_reach[r].agent);
+  globals_t any;
+  globals_read(db, reached, &any);
+  size_t have = any.n;
+  globals_free(&any);
+  if (!have) {
+    if (!quiet) puts(dry ? "0 rules would be sent to the judge: no global instructions among the rules" : "no global instructions among the rules: nothing to check");
     free(cmd);
     return 0;
   }
-  char *gh = sha3_hex(global, strlen(global));
   sqlite3_stmt *q = db_prepare(db,
       "SELECT d.name, d.project, c.body FROM ctx_doc d JOIN ctx_chunk c ON c.doc_id = d.id AND c.seq = 0"
       " WHERE d.kind = 'rule' AND d.status IS NULL AND d.project <> '*'"
-      " AND d.name NOT GLOB '*/CLAUDE.md' AND d.name NOT GLOB '*/AGENTS.md' ORDER BY d.project, d.name");
+      " AND " NOT_INSTRUCTIONS("d.name") " ORDER BY d.project, d.name");
   /* a verdict undone by a revival no longer stands; the person's own restores are kept apart */
   sqlite3_stmt *known = db_prepare(db, "SELECT 1 FROM ctx_rule_covered WHERE key = ?1 AND rule_hash = ?2 AND global_hash = ?3 AND undone = 0"
                                        " UNION ALL SELECT 1 FROM ctx_rule_restore WHERE key = ?1 AND rule_hash = ?2 AND global_hash = ?3");
   cov_rule *todo = NULL;
-  size_t n = 0;
+  cov_group *groups = NULL;
+  size_t n = 0, ng = 0;
   while (sqlite3_step(q) == SQLITE_ROW && (dry || n < COVERED_BATCH * COVERED_BATCHES)) {
-    const char *body = (const char *)sqlite3_column_text(q, 2);
+    const char *key = (const char *)sqlite3_column_text(q, 0), *body = (const char *)sqlite3_column_text(q, 2);
+    unsigned bits = rule_agents(key);
+    if (!bits) continue; /* no agent with global instructions loads it */
+    size_t gi = 0;
+    while (gi < ng && groups[gi].bits != bits) gi++;
+    if (gi == ng) {
+      groups = realloc(groups, (ng + 1) * sizeof *groups);
+      if (!groups) die("out of memory");
+      memset(&groups[ng], 0, sizeof *groups);
+      groups[ng].bits = bits;
+      globals_read(db, bits, &groups[ng].g);
+      groups[ng].hash = globals_hash(&groups[ng].g);
+      ng++;
+    }
+    if (!globals_complete(&groups[gi].g, bits)) continue; /* an agent that loads it has no global instructions here */
     char *h = rule_text_hash(body);
-    sqlite3_bind_text(known, 1, (const char *)sqlite3_column_text(q, 0), -1, SQLITE_STATIC);
+    sqlite3_bind_text(known, 1, key, -1, SQLITE_STATIC);
     sqlite3_bind_text(known, 2, h, -1, SQLITE_STATIC);
-    sqlite3_bind_text(known, 3, gh, -1, SQLITE_STATIC);
+    sqlite3_bind_text(known, 3, groups[gi].hash, -1, SQLITE_STATIC);
     int seen = sqlite3_step(known) == SQLITE_ROW;
     sqlite3_reset(known);
     if (seen) {
@@ -10281,7 +10537,8 @@ static int rules_covered(sqlite3 *db, int dry, int quiet) {
     }
     todo = realloc(todo, (n + 1) * sizeof *todo);
     if (!todo) die("out of memory");
-    todo[n++] = (cov_rule){dup_text(sqlite3_column_text(q, 0)), dup_text(sqlite3_column_text(q, 1)), rule_plain(body), h, 0};
+    todo[n] = (cov_rule){dup_text((const unsigned char *)key), dup_text(sqlite3_column_text(q, 1)), rule_plain(body), h, gi, n, 0};
+    n++;
   }
   sqlite3_finalize(q);
   sqlite3_finalize(known);
@@ -10291,10 +10548,23 @@ static int rules_covered(sqlite3 *db, int dry, int quiet) {
     for (size_t i = 0; i < n; i++) printf("%s  %s\n", todo[i].project, todo[i].key);
     printf("%zu rules would be sent to the judge, at most %d a scan\n", n, COVERED_BATCH * COVERED_BATCHES);
   } else {
-    buf sent = {0}; /* the global text as the judge sees it; a quote must come from it */
-    buf_cut(&sent, global, AUTO_GLOBAL_MAX);
-    buf_add(&sent, "", 1);
-    char *flat = squash(sent.p, strlen(sent.p) + 1);
+    for (size_t gi = 0; gi < ng; gi++) {
+      cov_group *g = &groups[gi];
+      for (size_t j = 0; j < g->g.n; j++) {
+        buf cut = {0};
+        buf_cut(&cut, g->g.text[j], AUTO_GLOBAL_MAX);
+        buf_add(&cut, "", 1);
+        buf_str(&g->sent, "Global instructions (");
+        buf_str(&g->sent, g->g.path[j]);
+        buf_str(&g->sent, "):\n");
+        buf_str(&g->sent, cut.p);
+        buf_str(&g->sent, "\n\n");
+        g->flat[j] = squash(cut.p, strlen(cut.p) + 1);
+        free(cut.p);
+      }
+      buf_add(&g->sent, "", 1);
+    }
+    sort_some(todo, n, sizeof *todo, cov_order); /* a batch is judged against one group's files */
     sqlite3_stmt *line = db_prepare(db, "SELECT json_object('key', ?1, 'text', ?2)");
     sqlite3_stmt *answer = db_prepare(db,
         "SELECT json_extract(value, '$.key'), json_type(value, '$.covered') = 'true',"
@@ -10302,18 +10572,20 @@ static int rules_covered(sqlite3 *db, int dry, int quiet) {
         " WHERE json_type(value) = 'object' AND json_type(value, '$.key') = 'text' AND json_type(value, '$.covered') IN ('true', 'false')");
     sqlite3_stmt *save = db_prepare(db, "INSERT OR REPLACE INTO ctx_rule_covered(key, rule_hash, global_hash, covered, quote, at, undone)"
                                         " VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'), 0)");
+    sqlite3_stmt *unfile = db_prepare(db, "DELETE FROM ctx_rule_covered_file WHERE key = ?1 AND rule_hash = ?2 AND global_hash = ?3");
+    sqlite3_stmt *file = db_prepare(db, "INSERT INTO ctx_rule_covered_file(key, rule_hash, global_hash, seq, file) VALUES (?1, ?2, ?3, ?4, ?5)");
     /* the judge may take minutes: a rule edited, retired or replaced meanwhile is not judged by its old text */
     sqlite3_stmt *now = db_prepare(db, "SELECT c.body FROM ctx_doc d JOIN ctx_chunk c ON c.doc_id = d.id AND c.seq = 0"
                                        " WHERE d.kind = 'rule' AND d.name = ?1 AND d.status IS NULL");
     open_private(db);
     db_exec(db, "SELECT fsl_use('repo:me')");
-    for (size_t from = 0; from < n && !failed; from += COVERED_BATCH) {
-      size_t to = from + COVERED_BATCH < n ? from + COVERED_BATCH : n;
+    for (size_t from = 0, to, batches = 0; from < n && !failed && batches < COVERED_BATCHES; from = to, batches++) {
+      cov_group *g = &groups[todo[from].group];
+      for (to = from + 1; to < n && to - from < COVERED_BATCH && todo[to].group == todo[from].group; to++) {}
       buf prompt = {0};
       buf_str(&prompt, covered_prompt);
-      buf_str(&prompt, "Global instructions:\n");
-      buf_str(&prompt, sent.p);
-      buf_str(&prompt, "\n\nRules:\n");
+      buf_str(&prompt, g->sent.p);
+      buf_str(&prompt, "Rules:\n");
       for (size_t i = from; i < to; i++) {
         buf cut = {0};
         buf_cut(&cut, todo[i].text, COVERED_RULE_MAX);
@@ -10359,17 +10631,38 @@ static int rules_covered(sqlite3 *db, int dry, int quiet) {
           free(h);
           if (!same) continue; /* sent again, as it is now, next time */
           char *quote = squash((const char *)sqlite3_column_text(answer, 2), strlen((const char *)sqlite3_column_text(answer, 2)) + 1);
-          int covered = sqlite3_column_int(answer, 1) && strlen(quote) >= COVERED_QUOTE_MIN && strstr(flat, quote);
+          /* covered only when the quote is in the global file of every agent that loads the rule */
+          int covered = sqlite3_column_int(answer, 1) && strlen(quote) >= COVERED_QUOTE_MIN;
+          for (size_t j = 0; j < g->g.n && covered; j++) covered = strstr(g->flat[j], quote) != NULL;
           sqlite3_bind_text(save, 1, r->key, -1, SQLITE_STATIC);
           sqlite3_bind_text(save, 2, r->hash, -1, SQLITE_STATIC);
-          sqlite3_bind_text(save, 3, gh, -1, SQLITE_STATIC);
+          sqlite3_bind_text(save, 3, g->hash, -1, SQLITE_STATIC);
           sqlite3_bind_int(save, 4, covered);
           sqlite3_bind_text(save, 5, covered ? quote : "", -1, SQLITE_STATIC);
           sqlite3_step(save);
           sqlite3_reset(save);
+          sqlite3_bind_text(unfile, 1, r->key, -1, SQLITE_STATIC);
+          sqlite3_bind_text(unfile, 2, r->hash, -1, SQLITE_STATIC);
+          sqlite3_bind_text(unfile, 3, g->hash, -1, SQLITE_STATIC);
+          sqlite3_step(unfile);
+          sqlite3_reset(unfile);
+          for (size_t j = 0; covered && j < g->g.n; j++) {
+            sqlite3_bind_text(file, 1, r->key, -1, SQLITE_STATIC);
+            sqlite3_bind_text(file, 2, r->hash, -1, SQLITE_STATIC);
+            sqlite3_bind_text(file, 3, g->hash, -1, SQLITE_STATIC);
+            sqlite3_bind_int64(file, 4, (sqlite3_int64)j);
+            sqlite3_bind_text(file, 5, g->g.path[j], -1, SQLITE_STATIC);
+            sqlite3_step(file);
+            sqlite3_reset(file);
+          }
           if (covered) {
             buf why = {0};
-            buf_str(&why, "covered by global CLAUDE.md: \"");
+            buf_str(&why, COVERED_REASON);
+            for (size_t j = 0; j < g->g.n; j++) {
+              if (j) buf_str(&why, ", ");
+              buf_str(&why, g->g.path[j]);
+            }
+            buf_str(&why, "): \"");
             buf_cut(&why, quote, COVERED_REASON_QUOTE);
             buf_str(&why, "\"");
             buf_add(&why, "", 1);
@@ -10385,7 +10678,7 @@ static int rules_covered(sqlite3 *db, int dry, int quiet) {
           if (todo[i].answered) continue;
           sqlite3_bind_text(save, 1, todo[i].key, -1, SQLITE_STATIC);
           sqlite3_bind_text(save, 2, todo[i].hash, -1, SQLITE_STATIC);
-          sqlite3_bind_text(save, 3, gh, -1, SQLITE_STATIC);
+          sqlite3_bind_text(save, 3, g->hash, -1, SQLITE_STATIC);
           sqlite3_bind_int(save, 4, 0);
           sqlite3_bind_text(save, 5, "", -1, SQLITE_STATIC);
           sqlite3_step(save);
@@ -10400,16 +10693,21 @@ static int rules_covered(sqlite3 *db, int dry, int quiet) {
     sqlite3_finalize(line);
     sqlite3_finalize(answer);
     sqlite3_finalize(save);
+    sqlite3_finalize(unfile);
+    sqlite3_finalize(file);
     sqlite3_finalize(now);
-    free(flat);
-    free(sent.p);
     if (retired) rules_index(db);
-    if (!quiet || retired) printf("%ld rules checked against the global CLAUDE.md, %ld retired as covered (ctx rules activity)\n", checked, retired);
+    if (!quiet || retired) printf("%ld rules checked against the global instructions, %ld retired as covered (ctx rules activity)\n", checked, retired);
   }
   for (size_t i = 0; i < n; i++) { free(todo[i].key); free(todo[i].project); free(todo[i].text); free(todo[i].hash); }
   free(todo);
-  free(gh);
-  free(global);
+  for (size_t gi = 0; gi < ng; gi++) {
+    for (size_t j = 0; j < groups[gi].g.n; j++) free(groups[gi].flat[j]);
+    globals_free(&groups[gi].g);
+    free(groups[gi].hash);
+    free(groups[gi].sent.p);
+  }
+  free(groups);
   free(cmd);
   return failed;
 }
@@ -10592,25 +10890,44 @@ static int rules_proposals(sqlite3 *db, int argc, char **argv) {
     }
     /* rules ctx retired on its own, and the retirements the person undid */
     q = db_prepare(db,
-        "SELECT substr(x.at, 1, 10), x.what, coalesce(d.project, ''), x.key, x.note, x.undone FROM ("
-        " SELECT at, 'collapsed' AS what, key, 'identical copy of ' || kept AS note, undone FROM ctx_rule_collapse"
-        " UNION ALL SELECT at, 'covered', key, 'covered by global CLAUDE.md: \"' || quote || '\"', undone FROM ctx_rule_covered WHERE covered = 1"
-        " UNION ALL SELECT at, 'restored', key, 'was ' || was, 0 FROM ctx_rule_restore) x"
+        "SELECT substr(x.at, 1, 10), x.what, coalesce(d.project, ''), x.key, x.note, x.undone, x.files FROM ("
+        " SELECT at, 'collapsed' AS what, key, 'identical copy of ' || kept AS note, undone, NULL AS files FROM ctx_rule_collapse"
+        " UNION ALL SELECT at, 'covered', key, quote, undone, (SELECT group_concat(file, ', ') FROM (SELECT file FROM ctx_rule_covered_file f"
+        "  WHERE f.key = v.key AND f.rule_hash = v.rule_hash AND f.global_hash = v.global_hash ORDER BY seq)) FROM ctx_rule_covered v WHERE covered = 1"
+        " UNION ALL SELECT at, 'restored', key, 'was ' || was, 0, NULL FROM ctx_rule_restore) x"
         " LEFT JOIN ctx_doc d ON d.kind = 'rule' AND d.name = x.key"
         " WHERE x.at >= datetime('now', '-' || ?1 || ' days') ORDER BY x.at DESC, x.what");
     sqlite3_bind_int64(q, 1, days);
+    /* the global file a covered rule was retired by, as its reason says now or said before a restore */
+    open_private(db);
+    db_exec(db, "SELECT fsl_use('repo:me')");
+    sqlite3_stmt *why = db_prepare(db, "SELECT CAST(fsl_technote(technote) AS TEXT) FROM ctx_rule WHERE key = ?1"
+                                       " UNION ALL SELECT 'reason: ' || substr(was, 10) FROM (SELECT was FROM ctx_rule_restore"
+                                       "  WHERE key = ?1 AND was GLOB 'retired: *' ORDER BY at DESC)");
     long changes = 0, collapsed = 0, retired = 0;
     while (sqlite3_step(q) == SQLITE_ROW) {
       const char *what = (const char *)sqlite3_column_text(q, 1);
-      printf("%s  %s  %s  %s: %s%s\n", sqlite3_column_text(q, 0), what, sqlite3_column_text(q, 2), sqlite3_column_text(q, 3),
-             sqlite3_column_text(q, 4), sqlite3_column_int(q, 5) ? " (restored)" : "");
+      printf("%s  %s  %s  %s: ", sqlite3_column_text(q, 0), what, sqlite3_column_text(q, 2), sqlite3_column_text(q, 3));
+      if (!strcmp(what, "covered")) {
+        char file[4200] = "", reason[4800];
+        if (sqlite3_column_text(q, 6)) snprintf(file, sizeof file, "%s", sqlite3_column_text(q, 6)); /* the verdict's own record */
+        sqlite3_bind_text(why, 1, (const char *)sqlite3_column_text(q, 3), -1, SQLITE_STATIC);
+        while (!*file && sqlite3_step(why) == SQLITE_ROW && sqlite3_column_text(why, 0)) {
+          rule_field((const char *)sqlite3_column_text(why, 0), "reason", reason, sizeof reason);
+          if (!covered_files(reason, 1, file, sizeof file)) *file = 0;
+        }
+        sqlite3_reset(why);
+        printf("covered by global instructions%s%s%s: \"%s\"", *file ? " (" : "", file, *file ? ")" : "", sqlite3_column_text(q, 4));
+      } else printf("%s", sqlite3_column_text(q, 4));
+      printf("%s\n", sqlite3_column_int(q, 5) ? " (restored)" : "");
       changes++;
       collapsed += !strcmp(what, "collapsed");
       retired += !strcmp(what, "covered");
     }
     sqlite3_finalize(q);
+    sqlite3_finalize(why);
     if (changes)
-      printf("%ld rule change%s in the last %ld days: %ld identical cop%s collapsed, %ld covered by the global CLAUDE.md, %ld restored by you\n"
+      printf("%ld rule change%s in the last %ld days: %ld identical cop%s collapsed, %ld covered by global instructions, %ld restored by you\n"
              "Restore one with: ctx rules restore KEY\n",
              changes, changes == 1 ? "" : "s", days, collapsed, collapsed == 1 ? "y" : "ies", retired, changes - collapsed - retired);
     return 0;
@@ -11364,7 +11681,7 @@ static void same_find(sqlite3 *db, same_rule **rules, size_t *nr, same_group **g
   sqlite3_stmt *q = db_prepare(db,
       "SELECT d.name, d.project, d.title, c.body FROM ctx_doc d JOIN ctx_chunk c ON c.doc_id = d.id AND c.seq = 0"
       " WHERE d.kind = 'rule' AND d.status IS NULL AND d.project <> '*'"
-      " AND d.name NOT GLOB '*/CLAUDE.md' AND d.name NOT GLOB '*/AGENTS.md' ORDER BY d.project, d.name");
+      " AND " NOT_INSTRUCTIONS("d.name") " ORDER BY d.project, d.name");
   same_rule *r = NULL;
   size_t n = 0;
   while (sqlite3_step(q) == SQLITE_ROW) {
@@ -12545,7 +12862,7 @@ static size_t rules_members(sqlite3 *db, int argc, char **argv, int global, char
   *hashes = calloc(n + 1, sizeof **hashes);
   *bodies = calloc(n + 1, sizeof **bodies);
   if (!*keys || !*hashes || !*bodies) die("out of memory");
-  sqlite3_stmt *q = db_prepare(db, "SELECT d.status IS NULL, c.body, d.project, d.name GLOB '*/CLAUDE.md' OR d.name GLOB '*/AGENTS.md',"
+  sqlite3_stmt *q = db_prepare(db, "SELECT d.status IS NULL, c.body, d.project, NOT " NOT_INSTRUCTIONS("d.name") ","
                                    " CAST(fsl_technote(r.technote) AS TEXT) FROM ctx_doc d JOIN ctx_chunk c ON c.doc_id = d.id AND c.seq = 0"
                                    " JOIN ctx_rule r ON r.key = d.name WHERE d.kind = 'rule' AND d.name = ?1");
   char *first_project = NULL;
@@ -12561,7 +12878,7 @@ static size_t rules_members(sqlite3 *db, int argc, char **argv, int global, char
       const char *project = (const char *)sqlite3_column_text(q, 2), *note = (const char *)sqlite3_column_text(q, 4);
       char until[40] = "";
       if (note) rule_field(note, "until", until, sizeof until);
-      if (sqlite3_column_int(q, 3)) die("%s is a whole CLAUDE.md or AGENTS.md file, not one rule; it cannot be made global", argv[i]);
+      if (sqlite3_column_int(q, 3)) die("%s is a whole instruction file, not one rule; it cannot be made global", argv[i]);
       if (!strcmp(project, "*")) die("%s already applies to every project", argv[i]);
       if (*until) die("%s has an until date (%s), which a rule for every project would lose; retire or edit it first", argv[i], until);
       if (!first_project) first_project = dup_text((const unsigned char *)project);
@@ -12646,7 +12963,7 @@ static int rules_redundant(sqlite3 *db, int argc, char **argv) {
     if (strcmp(status, "retired") && strcmp(status, "replaced")) die("%s is not retired", argv[1]);
     if (!strcmp(reason, RULE_FILE_GONE)) die("%s was retired because its file was removed; put the file back and the next import brings it back", argv[1]);
     snprintf(was, sizeof was, "%s%s%s", status, *reason ? ": " : "", reason);
-    char *rh = rule_text_hash(rule_body(text)), *gh = global_rule_hash(db);
+    char *rh = rule_text_hash(rule_body(text)), *gh = rule_globals_hash(db, key);
     sqlite3_finalize(q);
     static const char *const steps[] = {
         "UPDATE ctx_rule_collapse SET undone = 1 WHERE key = ?1",

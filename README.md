@@ -23,8 +23,8 @@ file per machine.
 - **Audits the archive** for secret-shaped strings that redaction missed, and
   for values you already know are secret.
 - **Keeps standing rules.** `ctx remember` records an instruction for future
-  sessions, with an optional end date, and every scan imports CLAUDE.md and
-  Claude Code's memory files as rules. Rules keep their history, sync, and can be
+  sessions, with an optional end date, and every scan imports each coding agent's instruction
+  files (CLAUDE.md, AGENTS.md, GEMINI.md) and Claude Code's memory files as rules. Rules keep their history, sync, and can be
   replaced or retired.
 - **Records decisions.** `ctx decisions` lists each question an agent asked you
   and your answer. After a compaction the agent is told where the session stood:

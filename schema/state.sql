@@ -294,7 +294,7 @@ CREATE TABLE IF NOT EXISTS ctx_rule_collapse(
   PRIMARY KEY (key, rule_hash)
 ) STRICT, WITHOUT ROWID;
 
--- The automatic judge's verdict on whether the global CLAUDE.md already says a project rule,
+-- The automatic judge's verdict on whether the global instructions already say a project rule,
 -- one per rule text and global text, so neither is sent again until one of them changes.
 -- covered = 1 only with a quote found word for word in the global text; such a rule is
 -- retired. Paid judgements, so state: a rebuild keeps them.
@@ -307,6 +307,18 @@ CREATE TABLE IF NOT EXISTS ctx_rule_covered(
   at          TEXT NOT NULL,
   undone      INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (key, rule_hash, global_hash)
+) STRICT, WITHOUT ROWID;
+
+-- The global files a covered verdict found its quote in, one per agent the rule reaches, in
+-- order: kept apart from the retirement's reason, which a path with any character can make
+-- ambiguous. Verdicts from before it name their one file in the reason.
+CREATE TABLE IF NOT EXISTS ctx_rule_covered_file(
+  key         TEXT NOT NULL,
+  rule_hash   TEXT NOT NULL,
+  global_hash TEXT NOT NULL,
+  seq         INTEGER NOT NULL,
+  file        TEXT NOT NULL,
+  PRIMARY KEY (key, rule_hash, global_hash, seq)
 ) STRICT, WITHOUT ROWID;
 
 -- Retirements the person undid with `ctx rules restore`, whatever retired the rule. While the
