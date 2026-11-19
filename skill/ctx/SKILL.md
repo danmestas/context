@@ -87,11 +87,14 @@ project, and the hooks it runs.
 
 ## Docs tickets
 
-ctx files a ticket of its own for every documentation problem it finds. Docs
-tickets (their titles start `Docs:`) may be fixed or closed without the user's
-sign-off, but only after the user's request: `ctx ticket claim ID` before you
-work on one, then `ctx ticket done ID --result WHAT` when the documents are
-right, or `ctx ticket drop ID --reason WHY` when it is not a real problem.
+ctx files a ticket of its own for every documentation problem it finds. The
+session-start offer gives only their count; `ctx ticket ready` lists them.
+Docs tickets (their titles start `Docs:`) may be fixed or closed without the
+user's sign-off, but only after the user's request: `ctx ticket claim ID`
+before you work on one, check the code, fix the documents, then
+`ctx ticket done ID --result WHAT`, or `ctx ticket drop ID --reason WHY` when
+it is not a real problem. `done` checks the documents and refuses while the
+problem is still there; edit them first, or drop the ticket with a reason.
 `ctx ticket prod` is the user's way to message you about a ticket; never run
 it yourself.
 
