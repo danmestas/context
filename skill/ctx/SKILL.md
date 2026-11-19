@@ -85,7 +85,7 @@ project, and the hooks it runs.
   go ahead. Never add `--yes` on your own, never write or change lines in the
   list yourself, and never carry out a choice with some other ctx command.
 - ctx retires some rules on its own: identical copies, and project rules the
-  user's global CLAUDE.md already says. `ctx rules activity` lists them; when the
+  user's global instructions already say. `ctx rules activity` lists them; when the
   user wants one back, `ctx rules restore KEY` undoes any retirement.
 
 ## Docs tickets

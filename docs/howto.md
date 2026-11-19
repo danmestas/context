@@ -424,12 +424,27 @@ ctx rules retire KEY --reason "now says more" --by NEWKEY             # replaced
 ctx rules restore KEY         # undo any retirement or replacement
 ```
 
-Every scan also imports `~/.claude/CLAUDE.md`, each project's `CLAUDE.md` and
-`AGENTS.md`, and Claude Code's memory files, the ones it writes on its own when you
-correct it. A memory file belongs to the project whose transcripts sit beside it,
+Every scan also imports each coding agent's global instructions as a rule for every
+project, each project's `CLAUDE.md`, `AGENTS.md` and `GEMINI.md`, and Claude Code's memory
+files, the ones it writes on its own when you correct it. The global files are the ones
+the agents read:
+
+| agent    | global instructions                                              | project file |
+|----------|------------------------------------------------------------------|--------------|
+| claude   | `$CLAUDE_CONFIG_DIR/CLAUDE.md`, else `~/.claude/CLAUDE.md`       | `CLAUDE.md`  |
+| codex    | `$CODEX_HOME/AGENTS.md`, else `~/.codex/AGENTS.md`               | `AGENTS.md`  |
+| gemini   | `~/.gemini/GEMINI.md`                                            | `GEMINI.md`  |
+| pi       | `$PI_CODING_AGENT_DIR/AGENTS.md`, else `~/.pi/agent/AGENTS.md`   | `AGENTS.md`  |
+| opencode | `$XDG_CONFIG_HOME/opencode/AGENTS.md`, else `~/.config/opencode/AGENTS.md` | `AGENTS.md` |
+
+Each such rule is keyed by the path the agent reads, a symbolic link read as the file it
+points to, and says which agents read it (`agent: codex,pi,opencode` for a project's
+`AGENTS.md`). A whole instruction file is never treated as one rule: it is not collapsed,
+judged, offered for review or grouped. A memory file belongs to the project whose transcripts sit beside it,
 and records the session it was written in. Redaction applies as for transcripts.
 When a file changes, its rule gets a new version; when it is deleted, its rule is
-retired. `ctx rules import` does this at once.
+retired. A file a scan did not visit, because a hook and the scheduled scan see
+different agent folders, stays in force while it is still on disk. `ctx rules import` does this at once.
 
 A classifier proposes rules from what you type. It is any command that reads a
 prompt on stdin and answers on stdout, so it works with whatever model you use;
@@ -475,8 +490,9 @@ In practice nobody reviews a queue of proposals, so ctx can decide them for you.
 automatic judge, again any command that reads a prompt on stdin, and every `ctx rules
 propose` (the hourly scan included) ends by having it decide up to 20 open proposals, one
 call each. It is shown the proposal, your own words, the times you said it again, the
-project's rules in force and your global instructions (`~/.claude/CLAUDE.md`, or the one
-under `$CLAUDE_CONFIG_DIR`, first 12 KB), and asked to lean toward not serving when unsure:
+project's rules in force and your global instructions for Claude Code, whose session start
+offers served proposals (`~/.claude/CLAUDE.md`, or the one under `$CLAUDE_CONFIG_DIR`,
+first 12 KB, named by its path), and asked to lean toward not serving when unsure:
 
 - **serve**: a lasting instruction worth adding. It stays open and is given to agents at
   session start as a tentative rule, after the rules in force, until 30 days of the
@@ -563,7 +579,7 @@ replaced and retired ones.
 
 Most redundancy is not a rule said twice in one project in different words: on the
 author's archive, merging those would retire 2 of 380 rules. It is memory files that
-repeat what `~/.claude/CLAUDE.md` already says everywhere, files copied word for word,
+repeat what your global instructions already say everywhere, files copied word for word,
 and the same rule saved in several projects. ctx removes the first two on its own,
 leaning toward fewer rules, and offers the third. Nothing deletes a file: a retired
 rule stays retired while its file is unchanged, and editing the file brings it back.
@@ -571,17 +587,24 @@ rule stays retired while its file is unchanged, and editing the file brings it b
 **Identical copies collapse.** After every import, rules in force in one project whose
 text is the same, once a memory file's frontmatter, case and spacing are set aside,
 are copies. The oldest stays; each other is replaced by it, with the reason `identical
-copy of KEY`. Copies in different projects are left alone, as are CLAUDE.md and
-AGENTS.md files.
+copy of KEY`. Copies in different projects are left alone, as are whole instruction
+files.
 
-**Rules the global CLAUDE.md covers are retired.** With an automatic judge set (`ctx
-rules auto CMD`), every run that decides proposals also shows the judge your global
-CLAUDE.md beside project rules, 20 at a time and at most 60 a run, and asks which it
-already says in every project, with nothing narrower, no extra condition and no time
-limit missing. A rule that adds anything stays. A rule is retired only with a quote of
-at least 20 characters found word for word in the global text; the reason carries the
-quote. Each verdict is kept against both texts, so a rule is sent again only when it or
-the global CLAUDE.md changes. A judge that fails or answers unreadably records nothing.
+**Rules your global instructions cover are retired.** A project rule is measured only
+against the global instructions of the agents that actually load it: Claude Code loads its
+memory files, and its session start offers the rules from `ctx remember`, so today both
+are measured against Claude Code's global file alone. A memory rule that only
+`~/.gemini/GEMINI.md` repeats stays, since Claude Code never reads that file. With an
+automatic judge set (`ctx rules auto CMD`), every run that decides proposals also shows the
+judge those global files, each named by its path, beside project rules, 20 at a time and
+at most 60 a run, and asks which they already say in every project, with nothing
+narrower, no extra condition and no time limit missing. A rule that adds anything stays.
+A rule is retired only with a quote of at least 20 characters found word for word in the
+global file of every agent that loads it, so an agent with no global file keeps the rule;
+the reason names those files and carries the quote, as in `covered by global
+instructions (/home/you/.claude/CLAUDE.md): "..."`. Each verdict is kept against both
+texts, so a rule is sent again only when it or those global files change. A judge that
+fails or answers unreadably records nothing.
 
 ```sh
 ctx rules covered              # check now
@@ -592,13 +615,15 @@ ctx rules collapse --dry-run   # list the copies an import would collapse
 Both show in `ctx rules activity` for the last 7 days, and `ctx rules restore KEY`
 undoes either, or a retirement of your own. A restored rule is active again with the
 reason `restored`, and neither check retires it again while its text and the global
-CLAUDE.md stay as they were. A rule retired because its file was deleted comes back
+instructions stay as they were. A rule retired because its file was deleted comes back
 when the file does, so restore refuses it.
 
 ctx also undoes its own retirements when their reason goes. A copy comes back when the
 rule it copied is no longer in force (its file deleted, or it expired, faded or was
-retired), and a covered rule comes back when its quote is no longer in the global
-CLAUDE.md. A global CLAUDE.md that is empty counts as none. A rule edited while the judge
+retired), and a covered rule comes back when its quote is no longer in a global file its
+reason names; a retirement from before files were named, `covered by global
+CLAUDE.md: "..."`, is checked against Claude Code's global file. A global file that is
+empty counts as none. A rule edited while the judge
 is deciding is not retired on the verdict about its old text, and a rule the judge leaves
 out of its answer counts as not covered, so a few never hold the queue.
 
@@ -609,8 +634,8 @@ common words). On the author's rules, 0.6 found one pair across projects and 0.3
 12, about 9 of them truly the same rule, so a group may be wrong; you decide each. **Make
 global** creates one rule for every project, as `ctx remember --project '*'` would, in the
 words of the member you pick (the longest title by default, frontmatter left out), and
-replaces every member with it. It refuses a group from one project, a whole CLAUDE.md or
-AGENTS.md, a rule already for every project, and a rule with an `--until` date. **Not the same** is recorded, and
+replaces every member with it. It refuses a group from one project, a whole instruction
+file, a rule already for every project, and a rule with an `--until` date. **Not the same** is recorded, and
 the group is not offered again while its members stay as they are. **Later** does
 nothing. No rule is widened without that choice. `ctx rules same` lists the groups.
 
@@ -1020,6 +1045,10 @@ drops the search index, citations and links and rebuilds them from the
 repositories. When a new version of `ctx` changes those tables it rebuilds by
 itself on first use; the kept tables are upgraded in place. A rebuild of a large
 archive takes a minute or two.
+
+The first scan after upgrading to the version that reads every agent's instructions saves
+one new version of each rule made from an instruction file, adding its `agent:` line; that
+happens once, and the rule's text is unchanged.
 
 ## Measure and improve the skill
 
