@@ -141,6 +141,15 @@ shape. pic marks each run with `"harness": "pic"` in the hook's input and
 notes of the directory pic started in, which Claude Code would have loaded itself
 and pic does not.
 
+In Claude Code the model kept memory by writing notes itself, and the whole
+MEMORY.md index came with every session. pic does neither, so the session-start
+offer, in every harness, carries one line saying how to save a lasting preference,
+correction or fact (`ctx remember "TEXT"`, with `--project '*'` for every project),
+and when a project has more rules than the offer shows it ends the list with
+"… N more: `ctx rules`". The hooks read tool names in either harness's spelling:
+pic's `bash`, `read`, `edit`, `grep` and `find` gate and nudge as Claude Code's
+`Bash`, `Read`, `Edit`, `Grep` and `Glob` do, and `MultiEdit` counts as an edit.
+
 ## Keep sessions out, or take one out
 
 ```sh
