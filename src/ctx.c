@@ -1479,7 +1479,8 @@ static int cmd_turn(int argc, char **argv) {
   return 0;
 }
 
-/* Stats. A turn records each shell call as a line "Bash {json input}". These count
+/* Stats. A turn records each shell call as a line "Bash {json input}", or "bash {...}" from a
+ * Pi or pic session. These count
  * the times a command really ran `ctx SUB`: at the start of the command or after
  * ; & | or (, past VAR=value words, by any path to ctx. A mention in an argument,
  * such as grep 'ctx search', or a line inside a heredoc is not a call. */
@@ -1549,7 +1550,7 @@ static void sql_ctx_calls(sqlite3_context *cx, int argc, sqlite3_value **argv) {
   for (const char *line = body; line && line < stop;) { /* a command's newlines are escaped, so it is one line */
     const char *end = memchr(line, '\n', (size_t)(stop - line));
     size_t len = end ? (size_t)(end - line) : (size_t)(stop - line);
-    if (len > 6 && !memcmp(line, "Bash {", 6)) {
+    if (len > 6 && !strncasecmp(line, "bash {", 6)) {
       const char *p = memmem(line, len, "\"command\":\"", 11);
       if (p) {
         cmd.n = 0;
@@ -6373,6 +6374,17 @@ static int noted_mark(const char *session, int by_gate) {
   return 1;
 }
 
+/* A hook's tool_name in one spelling: Claude Code says Bash, Glob and MultiEdit, pic says bash,
+ * find and edit. Lower case, with Glob as find and MultiEdit as edit, so each hook compares
+ * against one name whichever harness ran it. */
+static void tool_canon(const char *name, char *out, size_t cap) {
+  size_t k = 0;
+  for (; name && name[k] && k + 1 < cap; k++) out[k] = (char)tolower((unsigned char)name[k]);
+  out[k] = 0;
+  if (!strcmp(out, "glob")) snprintf(out, cap, "find");
+  else if (!strcmp(out, "multiedit")) snprintf(out, cap, "edit");
+}
+
 /* Whether a shell command starts a search: grep, rg, find and the like at the start of the
  * line or after ; & | (, and git log or git grep. A ctx command is never one. */
 static int search_command(const char *cmd) {
@@ -6609,7 +6621,7 @@ static int cmd_gate(void) {
                              " json_extract(?1, '$.cwd'), json_extract(?1, '$.tool_input.command') WHERE json_valid(?1)", -1, &q, NULL) == SQLITE_OK) {
     sqlite3_bind_text(q, 1, in.p, (int)in.n, SQLITE_STATIC);
     if (sqlite3_step(q) == SQLITE_ROW) {
-      snprintf(tool, sizeof tool, "%s", sqlite3_column_text(q, 0));
+      tool_canon((const char *)sqlite3_column_text(q, 0), tool, sizeof tool);
       snprintf(session, sizeof session, "%s", sqlite3_column_text(q, 1));
       if (sqlite3_column_text(q, 2)) cwd = dup_text(sqlite3_column_text(q, 2));
       if (sqlite3_column_text(q, 3)) cmd = dup_text(sqlite3_column_text(q, 3));
@@ -6618,7 +6630,7 @@ static int cmd_gate(void) {
   }
   free(in.p);
   hook_note_activity(db, session); /* every hook run says its session is alive */
-  int search = !strcmp(tool, "Grep") || !strcmp(tool, "Glob") || (!strcmp(tool, "Bash") && cmd && search_command(cmd));
+  int search = !strcmp(tool, "grep") || !strcmp(tool, "find") || (!strcmp(tool, "bash") && cmd && search_command(cmd));
   char *mark = search ? noted_path(session) : NULL;
   if (mark && stat(mark, &st)) { /* a search, in a session not yet told */
     char here[4096];
@@ -8513,24 +8525,41 @@ static int rules_offer(void) {
     sqlite3_close(db);
     return 0;
   }
+  /* How to save memory, in every harness: pic, unlike Claude Code, has the model write no memory
+   * notes of its own. It replaces that note-writing, so its room is kept before the rules are
+   * placed, as is the room for the line that says how many rules were left out. */
+  static const char save_line[] = "When the user states a lasting preference, correction or fact about this project, save it:"
+                                  " `ctx remember \"TEXT\"` (add `--project '*'` for every project).";
+  static const char more_fmt[] = "\n\u2026 %d more: `ctx rules`";
+  const size_t room = OFFER_MAX - (sizeof save_line - 1) - (sizeof more_fmt + 8); /* the count fits in 10 digits */
   buf text = {0};
-  int n = 0;
+  int n = 0, rules = 0;
   if (sqlite3_prepare_v2(db,
-          "SELECT CASE WHEN name GLOB 'manual:*' THEN substr(name, 8) ELSE replace(name, rtrim(name, replace(name, '/', '')), '') END, title"
+          "SELECT CASE WHEN name GLOB 'manual:*' THEN substr(name, 8) ELSE replace(name, rtrim(name, replace(name, '/', '')), '') END, title,"
+          " count(*) OVER ()" /* every active rule, before the limit */
           " FROM ctx_doc WHERE kind = 'rule' AND status IS NULL AND project IN (?1, '*')"
           " AND " NOT_INSTRUCTIONS("name") " AND (?2 = '' OR name NOT GLOB ?2 || '*')"
           " ORDER BY name GLOB 'manual:*' DESC, mtime DESC LIMIT 15" /* manual rules first */, -1, &q, NULL) == SQLITE_OK) {
     sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
     sqlite3_bind_text(q, 2, here, -1, SQLITE_STATIC);
-    while (sqlite3_step(q) == SQLITE_ROW && n < OFFER_RULES && text.n < OFFER_MAX) {
+    while (n < OFFER_RULES && sqlite3_step(q) == SQLITE_ROW) {
+      rules = sqlite3_column_int(q, 2);
+      const char *title = (const char *)sqlite3_column_text(q, 1), *key = (const char *)sqlite3_column_text(q, 0);
+      if (!title || !key) continue;
+      if (text.n + 3 + strlen(title) + 2 + strlen(key) + 1 > room) break; /* in order: the rest are counted, not shown */
       buf_str(&text, "\n- ");
-      buf_str(&text, (const char *)sqlite3_column_text(q, 1));
+      buf_str(&text, title);
       buf_str(&text, " (");
-      buf_str(&text, (const char *)sqlite3_column_text(q, 0));
+      buf_str(&text, key);
       buf_str(&text, ")");
       n++;
     }
     sqlite3_finalize(q);
+  }
+  if (rules > n) { /* Claude Code's MEMORY.md showed the whole index; this says the rest exists */
+    char more[64];
+    snprintf(more, sizeof more, more_fmt, rules - n);
+    buf_str(&text, more);
   }
   int sessions = 0;
   if (sqlite3_prepare_v2(db, "SELECT count(*) FROM ctx_doc WHERE kind = 'session' AND project = ?1", -1, &q, NULL) == SQLITE_OK) {
@@ -8565,6 +8594,7 @@ static int rules_offer(void) {
     }
     sqlite3_finalize(q);
   }
+  size_t used = text.n + (tent.n ? sizeof tent_head - 1 + tent.n : 0) + sizeof save_line - 1;
   /* What the automatic judge did this week, in any project: one line, the first to go when
    * the rules leave no room for it. */
   char aware[200] = "";
@@ -8574,7 +8604,7 @@ static int rules_offer(void) {
       int all = sqlite3_column_int(q, 0), gone = sqlite3_column_int(q, 1);
       int len = snprintf(aware, sizeof aware, "ctx decided %d proposal%s by itself this week (%d dismissed, %d added as tentative rules):"
                          " ctx rules activity", all, all == 1 ? "" : "s", gone, all - gone);
-      if (len < 0 || (size_t)len >= sizeof aware || text.n + (tent.n ? sizeof tent_head - 1 + tent.n : 0) + (size_t)len > OFFER_MAX) *aware = 0;
+      if (len < 0 || (size_t)len >= sizeof aware || used + (size_t)len > OFFER_MAX) *aware = 0;
     }
     sqlite3_finalize(q);
   }
@@ -8610,7 +8640,7 @@ static int rules_offer(void) {
   }
   buf brief = {0};
   if (*session && (!strcmp(source, "compact") || !strcmp(source, "resume"))) session_brief(db, session, &brief);
-  if (sessions || n || tent.n || *aware || waiting || *ask_key || review_now || brief.n || conflicts) {
+  { /* the remember line is always there, so there is always something to say */
     buf all = {0};
     char line[1600];
     if (brief.n) buf_add(&all, brief.p, brief.n); /* first: it is what the person will ask about */
@@ -8638,6 +8668,8 @@ static int rules_offer(void) {
       buf_str(&all, tent_head);
       buf_add(&all, tent.p, tent.n);
     }
+    buf_str(&all, all.n ? "\n\n" : "");
+    buf_str(&all, save_line);
     if (*aware) {
       buf_str(&all, all.n ? "\n\n" : "");
       buf_str(&all, aware);
@@ -9226,16 +9258,18 @@ static int hook_post(int post) {
   sqlite3_stmt *q = NULL;
   char given[4200] = "", session[128] = "", real[4200], cwd[4200] = "", *cmd = NULL;
   int tool = 0;
-  if (sqlite3_prepare_v2(db, "SELECT json_extract(?1, '$.tool_name') IN ('Read', 'Edit', 'Write', 'MultiEdit'), coalesce(json_extract(?1, '$.tool_input.file_path'), ''),"
+  if (sqlite3_prepare_v2(db, "SELECT coalesce(json_extract(?1, '$.tool_name'), ''), coalesce(json_extract(?1, '$.tool_input.file_path'), ''),"
                              " coalesce(json_extract(?1, '$.session_id'), ''), coalesce(json_extract(?1, '$.cwd'), ''),"
-                             " CASE WHEN json_extract(?1, '$.tool_name') = 'Bash' THEN json_extract(?1, '$.tool_input.command') END WHERE json_valid(?1)", -1, &q, NULL) == SQLITE_OK) {
+                             " json_extract(?1, '$.tool_input.command') WHERE json_valid(?1)", -1, &q, NULL) == SQLITE_OK) {
     sqlite3_bind_text(q, 1, in.p, (int)in.n, SQLITE_STATIC);
     if (sqlite3_step(q) == SQLITE_ROW) {
-      tool = sqlite3_column_int(q, 0);
+      char name[64];
+      tool_canon((const char *)sqlite3_column_text(q, 0), name, sizeof name);
+      tool = !strcmp(name, "read") || !strcmp(name, "edit") || !strcmp(name, "write");
       snprintf(given, sizeof given, "%s", sqlite3_column_text(q, 1));
       snprintf(session, sizeof session, "%s", sqlite3_column_text(q, 2));
       snprintf(cwd, sizeof cwd, "%s", sqlite3_column_text(q, 3));
-      if (sqlite3_column_text(q, 4)) cmd = dup_text(sqlite3_column_text(q, 4));
+      if (!strcmp(name, "bash") && sqlite3_column_text(q, 4)) cmd = dup_text(sqlite3_column_text(q, 4));
     }
     sqlite3_finalize(q);
   }

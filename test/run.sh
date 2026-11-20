@@ -931,8 +931,9 @@ for i in 1 2 3 4 5 6 7 8; do "$CTX" remember "Rule $i of a full project: $(print
 python3 - "$T/afull.json" <<'PY' || fail "the awareness line fits inside the byte cap or is dropped: $(cat "$T/afull.json")"
 import json, sys
 c = json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]
-assert c.count("Rule ") == 8, c
-assert "ctx decided" not in c, c
+shown = c.count("Rule ")
+assert 0 < shown < 8 and "\u2026 %d more: `ctx rules`" % (8 - shown) in c, c
+assert "ctx remember" in c and "ctx decided" not in c, c
 PY
 "$CTX" rules activity > "$T/activity.txt"
 python3 - "$T/activity.txt" "$(pid aut-1)" "$(pid aut-2)" <<'PY' || fail "ctx rules activity lists every decision with counts: $(cat "$T/activity.txt")"
@@ -2731,6 +2732,10 @@ nudge n1 Edit "$RD/guide/ledger.md" | grep -q 'likely current: this file' || fai
 nudge n2 Write "$T/repo/docs/adr/ledger-design.md" | grep -q 'disagreeing' || fail "another session is nudged afresh"
 [ -z "$(nudge n3 Read "$T/repo/docs/guide/notes.md")" ] || fail "a document with no recorded conflict says nothing"
 [ -z "$(nudge n3 Bash "$T/repo/docs/adr/ledger-design.md")" ] || fail "only reading and editing tools are nudged"
+nudge n7 edit "$T/repo/docs/adr/ledger-design.md" | grep -q 'disagreeing' || fail "a lower-case edit is nudged like Edit"
+nudge n8 MultiEdit "$T/repo/docs/adr/ledger-design.md" | grep -q 'disagreeing' || fail "MultiEdit is nudged as an edit"
+nudge n9 multiedit "$T/repo/docs/adr/ledger-design.md" | grep -q 'disagreeing' || fail "multiedit in any case is an edit"
+[ -z "$(nudge n10 bash "$T/repo/docs/adr/ledger-design.md")" ] || fail "nor is a lower-case bash"
 [ -z "$(printf 'not json' | (cd "$T/demo" && "$CTX" docs nudge))" ] || fail "the nudge says nothing on input it cannot read"
 [ -z "$(CTX_DB="$T/nonudge.sqlite" nudge n4 Read "$T/repo/docs/adr/ledger-design.md")" ] && [ ! -e "$T/nonudge.sqlite" ] || fail "no archive, no nudge"
 # A conflict can be dismissed with a reason. It stays dismissed, is not counted or nudged, and
@@ -3079,6 +3084,78 @@ printf '{"hook_event_name":"SubagentStart","session_id":"s-seven","cwd":"%s"}' "
 "$CTX" stats --hooks | grep -q '^gate turned back 4 sessions$' || fail "the hook report counts the sessions the gate turned back, not those that got the note: $("$CTX" stats --hooks)"
 [ -z "$(gate "" "$GP" Grep '{"pattern":"heron"}')" ] || fail "with no session to remember, the gate does not act"
 [ -z "$(CTX_DB="$T/nogate.sqlite" gate s-eight "$GP" Grep '{"pattern":"heron"}')" ] && [ ! -e "$T/nogate.sqlite" ] || fail "no archive, no gate"
+# pic sends its tool names in lower case (bash, read, edit, write, grep, find, ls); they gate
+# as Claude Code's do, and find is Glob under another name.
+gate s-pic1 "$GP" bash '{"command":"grep -rn heron ."}' | grep -q '"deny"' || fail "a lower-case bash search is gated like Bash"
+gate s-pic2 "$GP" grep '{"pattern":"heron"}' | grep -q '"deny"' || fail "a lower-case grep is gated like Grep"
+gate s-pic3 "$GP" find '{"pattern":"*.md"}' | grep -q '"deny"' || fail "find is gated like Glob"
+gate s-pic4 "$GP" GLOB '{"pattern":"*.md"}' | grep -q '"deny"' || fail "a tool name in any case is the same tool"
+[ -z "$(gate s-pic5 "$GP" bash '{"command":"make test"}')" ] || fail "a lower-case bash command that is not a search passes"
+[ -z "$(gate s-pic5 "$GP" read '{"file_path":"/x"}')" ] && [ -z "$(gate s-pic5 "$GP" ls '{"path":"/x"}')" ] || fail "lower-case read and ls pass"
+# A Pi or pic turn records its shell calls as "bash {...}"; ctx stats counts them as it counts Bash.
+[ "$("$CTX" sql "SELECT ctx_calls('bash {\"command\":\"ctx search heron\"}' || char(10) || 'Bash {\"command\":\"ctx search wren\"}', 'search')")" = 2 ] \
+  || fail "ctx_calls counts a shell call recorded in either case"
+# The session-start offer says what memory is for and how to save it: pic, unlike Claude Code,
+# has the model write no memory notes of its own. A project with more active rules than the
+# offer shows says how many more there are.
+export CTX_DB="$T/picmem.sqlite"
+"$CTX" init >/dev/null
+mkdir -p "$T/w/idx20" "$T/w/idx3" "$T/w/idx0" "$T/w/idxfull"
+for i in $(seq 1 20); do "$CTX" remember "Index rule $i: wipe the kestrel lens" --project idx20 >/dev/null; done
+for i in 1 2 3; do "$CTX" remember "Small rule $i: oil the kestrel hinge" --project idx3 >/dev/null; done
+offer() { printf '{"hook_event_name":"SessionStart","source":"startup","session_id":"%s","harness":"pic"}' "$2" | (cd "$T/w/$1" && "$CTX" rules offer); }
+offer idx20 pm-1 > "$T/idx20.json"
+offer idx3 pm-2 > "$T/idx3.json"
+(cd "$T/w/idx0" && "$CTX" rules offer) > "$T/idx0.json"
+python3 - "$T/idx20.json" "$T/idx3.json" "$T/idx0.json" <<'PY' || fail "the offer carries the remember line and the index line: $(cat "$T/idx20.json" "$T/idx3.json" "$T/idx0.json")"
+import json, sys
+docs = [json.load(open(p))["hookSpecificOutput"] for p in sys.argv[1:]]
+for d in docs:
+    assert d["hookEventName"] == "SessionStart", d
+    c = d["additionalContext"]
+    assert "save it: `ctx remember \"TEXT\"` (add `--project '*'` for every project)." in c, c
+    assert "MUST" not in c, c
+big, small, none = (d["additionalContext"] for d in docs)
+assert big.count("Index rule ") == 15, big
+assert "… 5 more: `ctx rules`" in big, big
+assert big.index("… 5 more") < big.index("ctx remember"), big
+assert "more: `ctx rules`" not in small and small.count("Small rule ") == 3, small
+assert "more: `ctx rules`" not in none, none
+PY
+# Room for the remember line is kept before the rules are placed, so it is never left out; it
+# comes before the awareness line, which goes first when the rules fill the offer.
+"$CTX" sql "INSERT INTO ctx_proposal_judged(id, verdict, at) VALUES (1, 'not', datetime('now'))" >/dev/null
+offer idx0 pm-4 > "$T/idx0b.json"
+python3 - "$T/idx0b.json" <<'PY' || fail "the remember line comes before the awareness line: $(cat "$T/idx0b.json")"
+import json, sys
+c = json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]
+assert "ctx decided 1 proposal by itself" in c, c
+assert c.index("ctx remember") < c.index("ctx decided"), c
+PY
+# Rules that leave room for one of the two keep the remember line, and stay within the cap.
+mkdir -p "$T/w/idxmid"
+for i in $(seq 10 23); do "$CTX" remember "Mid rule $i: $(printf 'x%.0s' $(seq 1 77)) heron" --project idxmid >/dev/null; done
+offer idxmid pm-5 > "$T/idxmid.json"
+python3 - "$T/idxmid.json" <<'PY' || fail "with room for one line, the remember line wins over the awareness line: $(cat "$T/idxmid.json")"
+import json, sys
+c = json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]
+assert c.count("Mid rule ") == 14 and "ctx remember" in c and "ctx decided" not in c, c
+save = next(l for l in c.split("\n") if "ctx remember" in l)
+assert sum(len(l) + 1 for l in c.split("\n") if l.startswith("- Mid rule ")) + len(save) <= 1800, c
+PY
+for i in $(seq 10 29); do "$CTX" remember "Full rule $i: $(printf 'x%.0s' $(seq 1 76)) heron" --project idxfull >/dev/null; done
+offer idxfull pm-6 > "$T/idxfull.json"
+python3 - "$T/idxfull.json" <<'PY' || fail "rules that fill the offer keep the remember line and drop the awareness line: $(cat "$T/idxfull.json")"
+import json, sys
+c = json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]
+shown = c.count("Full rule ")
+assert 0 < shown < 15 and "ctx remember" in c and "ctx decided" not in c, c
+lines = c.split("\n")
+more = next(l for l in lines if l.startswith("\u2026 "))
+assert more == "\u2026 %d more: `ctx rules`" % (20 - shown), more
+save = next(l for l in lines if "ctx remember" in l)
+assert sum(len(l) + 1 for l in lines if l.startswith("- Full rule ")) + len(more) + 1 + len(save) <= 1800, c
+PY
 # A working directory can be kept out of the archive, and a session can be forgotten.
 export CTX_DB="$T/excl.sqlite"
 "$CTX" init >/dev/null
@@ -3317,6 +3394,11 @@ DT2=$("$CTX" ticket new "Another claimed job" --project dp)
 "$CTX" ticket claim "$DT2" --as agent7 >/dev/null
 post sess-c "cd /w/x && /usr/local/bin/ctx ticket claim $DT2 --as agent7 && echo done" >/dev/null
 [ "$(held "$DT2")" = sess-c:open ] || fail "a chained claim with a path and --as is recorded: $(held "$DT2")"
+# pic's lower-case bash records claims as Bash does.
+DTP=$("$CTX" ticket new "A job claimed from pic" --project dp)
+"$CTX" ticket claim "$DTP" >/dev/null
+hj PostToolUse sess-p "$DPD" bash command "ctx ticket claim $DTP" | (cd "$T/dpaper" && "$CTX" hook post) >/dev/null
+[ "$(held "$DTP")" = sess-p:open ] || fail "a claim run by a lower-case bash is recorded: $(held "$DTP")"
 # seen_at moves when the session runs any hook.
 "$CTX" sql "UPDATE ctx_ticket_claim SET seen_at = '2026-01-01 00:00:00'" >/dev/null
 gate sess-a 'ls -la' >/dev/null
