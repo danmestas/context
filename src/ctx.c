@@ -8435,6 +8435,14 @@ static void session_brief(sqlite3 *db, const char *session, buf *all) {
 /* What Claude Code says about the event, if it says anything at once: SessionStart
  * passes JSON on stdin; run by hand or by the eval, there is none, and this never waits. */
 static char hook_event[32]; /* hook_event_name, when the harness gave one */
+static char hook_harness[16]; /* "pic" when pic ran the hook; empty for Claude Code */
+
+/* pic marks its hook runs with "harness":"pic" in the input and PIC_HOOK=1 in the environment.
+ * It loads no Claude Code memory folder, so what Claude Code would load itself is not left out. */
+static int hook_from_pic(void) {
+  const char *e = getenv("PIC_HOOK");
+  return !strcmp(hook_harness, "pic") || (e && !strcmp(e, "1"));
+}
 
 static void hook_input(char *source, size_t scap, char *session, size_t ncap) {
   *source = *session = 0;
@@ -8453,13 +8461,15 @@ static void hook_input(char *source, size_t scap, char *session, size_t ncap) {
   if (sqlite3_open(":memory:", &mem) == SQLITE_OK) {
     sqlite3_stmt *q = NULL;
     if (sqlite3_prepare_v2(mem, "SELECT coalesce(json_extract(?1, '$.source'), ''), coalesce(json_extract(?1, '$.session_id'), ''),"
-                                " coalesce(json_extract(?1, '$.hook_event_name'), '') WHERE json_valid(?1)",
+                                " coalesce(json_extract(?1, '$.hook_event_name'), ''), coalesce(json_extract(?1, '$.harness'), '')"
+                                " WHERE json_valid(?1)",
                            -1, &q, NULL) == SQLITE_OK) {
       sqlite3_bind_text(q, 1, in.p, (int)in.n, SQLITE_STATIC);
       if (sqlite3_step(q) == SQLITE_ROW) {
         snprintf(source, scap, "%s", sqlite3_column_text(q, 0));
         snprintf(session, ncap, "%s", sqlite3_column_text(q, 1));
         snprintf(hook_event, sizeof hook_event, "%s", sqlite3_column_text(q, 2));
+        snprintf(hook_harness, sizeof hook_harness, "%s", sqlite3_column_text(q, 3));
       }
       sqlite3_finalize(q);
     }
@@ -8476,7 +8486,7 @@ static int rules_offer(void) {
   if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK) { free(path); return 0; }
   sqlite3_busy_timeout(db, 200);
   char cwd[4096], here[4200] = "";
-  if (getcwd(cwd, sizeof cwd)) { /* the memory folder Claude Code already loads for this directory */
+  if (!hook_from_pic() && getcwd(cwd, sizeof cwd)) { /* the memory folder Claude Code already loads for this directory */
     const char *cfg = getenv("CLAUDE_CONFIG_DIR"), *home = getenv("HOME");
     char slug[4096];
     snprintf(slug, sizeof slug, "%s", cwd);

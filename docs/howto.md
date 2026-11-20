@@ -135,6 +135,12 @@ log keep their size and time. A row that cannot be inflated, or claims more than
 `-shm` files beside it, and `ctx exclude --project` keeps pic's conversations out too. Set `CTX_PIC_DB` to read another database, or to an empty string to skip
 it; a missing database, or one without the table, is skipped.
 
+pic can run the same hooks as Claude Code, from `~/.pic/hooks.json` in the same
+shape. pic marks each run with `"harness": "pic"` in the hook's input and
+`PIC_HOOK=1` in its environment. At session start ctx then also offers the memory
+notes of the directory pic started in, which Claude Code would have loaded itself
+and pic does not.
+
 ## Keep sessions out, or take one out
 
 ```sh
