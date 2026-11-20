@@ -2638,6 +2638,53 @@ SUM=$(cksum "$P1" "$P2"); MT=$(ls -l "$P1" "$P2")
 [ ! -s "$T/roll2.out" ] || fail "a second roll writes nothing: $(cat "$T/roll2.out")"
 [ "$SUM" = "$(cksum "$P1" "$P2")" ] && [ "$MT" = "$(ls -l "$P1" "$P2")" ] || fail "an existing day is not rewritten"
 [ -z "$(find "$TEL" -name '.tmp*')" ] || fail "no temp files left"
+# ctx telemetry page: charts from the Parquet files, queried through the duckdb program.
+PGMIN="$T/minpath"; mkdir -p "$PGMIN"
+if CTX_DUCKDB="$T/no-such-duckdb" PATH="$PGMIN" "$CTX" telemetry page > "$T/pg.out" 2> "$T/pg.err"; then fail "telemetry page without duckdb fails"; fi
+[ "$(cat "$T/pg.err")" = "ctx: telemetry page needs the duckdb program (https://duckdb.org); none found" ] || fail "missing duckdb message: $(cat "$T/pg.err")"
+cat > "$T/fakeduck" <<'EOS'
+#!/bin/sh
+# canned answers, keyed on the tag comment in each query
+case "$3" in
+*tag:meta*) echo '[{"first":"2026-11-10","last":"2026-11-12","total":9,"versions":"9.9.9-fake"}]' ;;
+*tag:daily*) cat <<'EOJ'
+[{"date":"2026-11-10","name":"gate","n":3,"p50":5.0,"p95":9.0,"cut":0,"offered":0,"quiet":2,"denied":1,"nudged":0,"errors":0,"session":"SECRET-SESSION-1"},
+{"date":"2026-11-11","name":"gate","n":2,"p50":6.0,"p95":8.0,"cut":1,"offered":0,"quiet":1,"denied":1,"nudged":0,"errors":0},
+{"date":"2026-11-10","name":"rules-offer","n":2,"p50":30.0,"p95":3500.0,"cut":0,"offered":1,"quiet":1,"denied":0,"nudged":0,"errors":0},
+{"date":"2026-11-12","name":"hook-post","n":2,"p50":4.0,"p95":7.0,"cut":0,"offered":0,"quiet":0,"denied":0,"nudged":1,"errors":1}]
+EOJ
+;;
+*tag:harness*) echo '[{"harness":"claude","n":6},{"harness":"unknown","n":3}]' ;;
+*tag:week*) echo '[{"name":"gate","n":5,"p50":5.0,"p95":9.0,"max":9,"cut":1,"errors":0},{"name":"rules-offer","n":2,"p50":30.0,"p95":3500.0,"max":3500,"cut":0,"errors":0}]' ;;
+*) echo "fakeduck: unknown query: $3" >&2; exit 3 ;;
+esac
+EOS
+chmod +x "$T/fakeduck"
+CTX_DUCKDB="$T/fakeduck" "$CTX" telemetry page > "$T/pg.out" || fail "telemetry page with a fake duckdb runs"
+PG="$TEL/index.html"
+[ "$(cat "$T/pg.out")" = "$PG" ] && [ -s "$PG" ] || fail "page is written to the telemetry dir and its path printed: $(cat "$T/pg.out")"
+[ "$(fmode "$PG")" = 600 ] || fail "page mode: $(fmode "$PG")"
+for w in gate rules-offer hook-post claude unknown 9.9.9-fake 2026-11-10 '<svg' 'stroke-dasharray'; do grep -q -- "$w" "$PG" || fail "page lacks $w"; done
+if grep -q 'No finished days yet' "$PG"; then fail "page with data has no empty state"; fi
+if grep -Eq 'SECRET-SESSION|sess-a|https?://' "$PG"; then fail "page carries a session id or an external URL"; fi
+[ -z "$(find "$TEL" -name '*.tmp*')" ] || fail "no temp page left"
+if CTX_DUCKDB="$T/fakeduck" "$CTX" telemetry page --bogus >/dev/null 2>&1; then fail "telemetry page rejects unknown options"; fi
+if [ -n "$DUCK" ]; then
+  CTX_DUCKDB="$DUCK" "$CTX" telemetry page --out "$T/real-page.html" > "$T/pg2.out" || fail "telemetry page with real duckdb runs"
+  [ "$(cat "$T/pg2.out")" = "$T/real-page.html" ] && [ "$(fmode "$T/real-page.html")" = 600 ] || fail "--out writes there: $(cat "$T/pg2.out")"
+  for w in gate rules-offer claude '<svg' "$DAY1" "$DAY2"; do grep -q -- "$w" "$T/real-page.html" || fail "real page lacks $w"; done
+  if grep -Eq 'sess-a|No finished days yet' "$T/real-page.html"; then fail "real page leaks a session or is empty"; fi
+  [ -z "${CTX_PAGE_SAMPLE:-}" ] || cp "$T/real-page.html" "$CTX_PAGE_SAMPLE"
+  PATH="$PGMIN:$(dirname "$DUCK")" "$CTX" telemetry page --out "$T/real-page2.html" >/dev/null || fail "duckdb is found on PATH"
+else
+  echo "SKIP: duckdb not found; telemetry page not checked against real data" >&2
+fi
+# no finished days: the page says so, and needs no duckdb to do it
+export CTX_DB="$T/telempty/ctx.sqlite"
+mkdir -p "$T/telempty"
+"$CTX" init >/dev/null
+CTX_DUCKDB="$T/no-such-duckdb" PATH="$PGMIN" "$CTX" telemetry page > "$T/pg3.out" || fail "empty telemetry page renders"
+grep -q 'No finished days yet: the first file is written after today ends in UTC.' "$T/telempty/telemetry/index.html" || fail "empty state text"
 # ctx status --json: the same facts for one project, from the folder it is run in.
 HUDHERE=$(pwd)
 export CTX_DB="$T/hud.sqlite"
