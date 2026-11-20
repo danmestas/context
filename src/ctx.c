@@ -45,8 +45,11 @@ static long rules_import(sqlite3 *db);
 char *fsl_sha3sum_cstr(const char *in, long long len);
 void fsl_free(void *p);
 
+static int call_status = -1; /* how this call ended, for the call log; -1 until known */
+
 static void die(const char *fmt, ...) {
   va_list ap;
+  call_status = 1;
   fputs("ctx: ", stderr);
   va_start(ap, fmt);
   vfprintf(stderr, fmt, ap);
@@ -1584,9 +1587,31 @@ static char *sidecar(const char *suffix);
 static const char *call_name;
 static pid_t call_pid;
 static struct timespec call_start;
+/* What the end line says besides how long: the decision the command made (offered, quiet, denied,
+ * nudged, archived), the bytes it wrote to stdout, and who ran it. Nothing here is the prompt, the
+ * tool's input or output, or any file text. */
+static const char *call_outcome;
+static long call_bytes;
+static char call_harness[16], call_session[64];
+
+/* A hook's JSON to stdout; the counter and the outcome ride along where the decision is made. */
+static void call_say(const char *json, const char *outcome) {
+  puts(json);
+  call_bytes += (long)strlen(json) + 1;
+  call_outcome = outcome;
+}
+
+/* Records who ran the hook, from input the command has already parsed. Spaces would break the line. */
+static void call_note(const char *harness, const char *session) {
+  const char *env = getenv("PIC_HOOK"); /* pic also says so in the environment, as hook_from_pic reads it */
+  snprintf(call_harness, sizeof call_harness, "%s", harness && *harness ? harness : env && !strcmp(env, "1") ? "pic" : "");
+  snprintf(call_session, sizeof call_session, "%s", session ? session : "");
+  for (char *c = call_harness; *c; c++) if ((unsigned char)*c <= ' ') *c = '_';
+  for (char *c = call_session; *c; c++) if ((unsigned char)*c <= ' ') *c = '_';
+}
 
 static void call_line(char kind, long ms) {
-  char *path = sidecar(".calls"), line[160];
+  char *path = sidecar(".calls"), line[320];
   struct stat st;
   if (stat(path, &st) == 0 && st.st_size > CALLS_MAX) {
     char *old = sidecar(".calls.1");
@@ -1594,7 +1619,16 @@ static void call_line(char kind, long ms) {
     free(old);
   }
   int n = kind == 'B' ? snprintf(line, sizeof line, "B %lld %d %s\n", (long long)time(NULL), (int)call_pid, call_name)
-                      : snprintf(line, sizeof line, "E %lld %d %s %ld\n", (long long)time(NULL), (int)call_pid, call_name, ms);
+                      : 0;
+  if (kind == 'E') {
+    int hook = strcmp(call_name, "search") && strcmp(call_name, "turn"); /* only a hook has a decision to log */
+    char code[16] = "-", bytes[24] = "-";
+    if (call_status >= 0) snprintf(code, sizeof code, "%d", call_status);
+    if (hook) snprintf(bytes, sizeof bytes, "%ld", call_bytes);
+    n = snprintf(line, sizeof line, "E %lld %d %s %ld %s %s %s %s %s\n", (long long)time(NULL), (int)call_pid, call_name, ms, code,
+                 call_outcome ? call_outcome : !hook ? "-" : call_status > 0 ? "error" : "quiet", bytes, *call_harness ? call_harness : "-",
+                 *call_session ? call_session : "-");
+  }
   int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
   if (fd >= 0) {
     if (write(fd, line, (size_t)n) < 0) {} /* a log that cannot be written is not worth failing a hook for */
@@ -1692,6 +1726,442 @@ static size_t calls_read(time_t since, call_stat *out, size_t cap) {
   }
   for (size_t k = 0; k < names; k++) sort_some(out[k].ms, out[k].n, sizeof *out[k].ms, by_long); /* a hook with starts only has no list */
   return names;
+}
+
+/* Telemetry: the call log rolled into one Parquet file per UTC day, for anything that reads
+ * Parquet (DuckDB, pandas) to query. The log is the source and is not changed; a day's file is
+ * written once, after the day is over, and never rewritten. Only what the call log holds goes in:
+ * names, times, outcomes, sizes. Never a prompt, a tool's input or output, or file text. */
+typedef struct {
+  long long ts, ms, bytes;
+  int pid, exit, ended, live;
+  size_t seq;
+  char name[24], outcome[16], harness[16], session[64];
+} tel_row; /* ms, exit and bytes are -1 when unknown; empty strings are null */
+
+typedef struct {
+  tel_row *p;
+  size_t n, cap;
+} tel_rows;
+
+static tel_row *tel_add(tel_rows *r) {
+  if (r->n == r->cap) {
+    r->cap = r->cap ? r->cap * 2 : 1024;
+    r->p = realloc(r->p, r->cap * sizeof *r->p);
+    if (!r->p) die("out of memory");
+  }
+  tel_row *t = &r->p[r->n];
+  memset(t, 0, sizeof *t);
+  t->ms = t->exit = t->bytes = -1;
+  t->seq = r->n++;
+  return t;
+}
+
+/* Reads one log into rows, pairing an end with the start that has the same pid and name. `open`
+ * holds the rows still waiting for an end. A start left open for over a minute is a hook that was
+ * cut off; a younger one may still be running, so its day waits (`live`). */
+static void tel_read(const char *path, tel_rows *rows, size_t **open, size_t *nopen, size_t *capopen) {
+  FILE *in = fopen(path, "r");
+  if (!in) return;
+  char line[400], kind, name[24], outcome[16], harness[16], session[64];
+  long long at, ms, bytes;
+  int pid, code;
+  while (fgets(line, sizeof line, in)) {
+    outcome[0] = harness[0] = session[0] = 0;
+    int got = sscanf(line, "%c %lld %d %23s %lld %d %15s %lld %15s %63s", &kind, &at, &pid, name, &ms, &code, outcome, &bytes, harness, session);
+    if (got < 4 || (kind != 'B' && kind != 'E')) continue;
+    size_t k = *nopen;
+    while (k-- > 0) {
+      tel_row *o = &rows->p[(*open)[k]];
+      if (o->pid == pid && !strcmp(o->name, name)) break;
+    }
+    int found = k != (size_t)-1 && *nopen;
+    if (kind == 'B') {
+      if (found) (*open)[k] = (*open)[--*nopen]; /* a pid reused before its end: the old start stays unended */
+      tel_row *t = tel_add(rows);
+      t->ts = at;
+      t->pid = pid;
+      snprintf(t->name, sizeof t->name, "%s", name);
+      if (*nopen == *capopen) {
+        *capopen = *capopen ? *capopen * 2 : 64;
+        *open = realloc(*open, *capopen * sizeof **open);
+        if (!*open) die("out of memory");
+      }
+      (*open)[(*nopen)++] = t->seq;
+      continue;
+    }
+    tel_row *t;
+    if (found) {
+      t = &rows->p[(*open)[k]];
+      (*open)[k] = (*open)[--*nopen];
+    } else { /* the start was rotated away: the row begins when the call did */
+      t = tel_add(rows);
+      t->ts = at - (got >= 5 ? ms : 0) / 1000;
+      t->pid = pid;
+      snprintf(t->name, sizeof t->name, "%s", name);
+    }
+    t->ended = 1;
+    if (got >= 5) t->ms = ms;
+    if (got >= 6) t->exit = code;
+    if (got >= 7 && strcmp(outcome, "-")) snprintf(t->outcome, sizeof t->outcome, "%s", outcome);
+    if (got >= 8) t->bytes = bytes;
+    if (got >= 9 && strcmp(harness, "-")) snprintf(t->harness, sizeof t->harness, "%s", harness);
+    if (got >= 10 && strcmp(session, "-")) snprintf(t->session, sizeof t->session, "%s", session);
+  }
+  fclose(in);
+}
+
+/* Thrift compact protocol, the little of it a Parquet footer needs. */
+enum { T_TRUE = 1, T_FALSE = 2, T_I32 = 5, T_I64 = 6, T_BIN = 8, T_LIST = 9, T_STRUCT = 12 };
+
+static void t_varint(buf *b, unsigned long long v) {
+  char c;
+  while (v >= 0x80) {
+    c = (char)(v | 0x80);
+    buf_add(b, &c, 1);
+    v >>= 7;
+  }
+  c = (char)v;
+  buf_add(b, &c, 1);
+}
+
+static void t_zigzag(buf *b, long long v) { t_varint(b, ((unsigned long long)v << 1) ^ (unsigned long long)(v >> 63)); }
+
+/* A field header; `last` is the id of the previous field in this struct. */
+static void t_field(buf *b, int *last, int id, int type) {
+  char c = (char)type;
+  if (id - *last > 0 && id - *last < 16) {
+    c = (char)(((id - *last) << 4) | type);
+    buf_add(b, &c, 1);
+  } else {
+    buf_add(b, &c, 1);
+    t_zigzag(b, id);
+  }
+  *last = id;
+}
+
+static void t_i32(buf *b, int *last, int id, int v) { t_field(b, last, id, T_I32); t_zigzag(b, v); }
+static void t_i64(buf *b, int *last, int id, long long v) { t_field(b, last, id, T_I64); t_zigzag(b, v); }
+static void t_str(buf *b, int *last, int id, const char *s) { t_field(b, last, id, T_BIN); t_varint(b, strlen(s)); buf_str(b, s); }
+static void t_list(buf *b, int *last, int id, int type, size_t n) {
+  t_field(b, last, id, T_LIST);
+  char c = (char)(n < 15 ? (n << 4) | type : 0xF0 | type);
+  buf_add(b, &c, 1);
+  if (n >= 15) t_varint(b, n);
+}
+static void t_stop(buf *b) { buf_add(b, "", 1); }
+
+static void le32(buf *b, unsigned v) {
+  char c[4] = {(char)v, (char)(v >> 8), (char)(v >> 16), (char)(v >> 24)};
+  buf_add(b, c, 4);
+}
+
+static void le64(buf *b, unsigned long long v) {
+  le32(b, (unsigned)v);
+  le32(b, (unsigned)(v >> 32));
+}
+
+/* The columns, in file order. A column is optional when some rows have no value for it. */
+enum { P_BOOL = 0, P_I32 = 1, P_I64 = 2, P_BYTES = 6 };
+static const struct { const char *name; int type, optional, utf8; } tel_cols[] = {
+    {"ts", P_I64, 0, 0},     {"name", P_BYTES, 0, 1},    {"pid", P_I32, 0, 0},      {"ms", P_I64, 1, 0},
+    {"ended", P_BOOL, 0, 0}, {"exit", P_I32, 1, 0},      {"outcome", P_BYTES, 1, 1}, {"bytes_out", P_I64, 1, 0},
+    {"harness", P_BYTES, 1, 1}, {"session", P_BYTES, 1, 1}, {"ctx_version", P_BYTES, 0, 1}};
+#define TEL_NCOLS ((int)(sizeof tel_cols / sizeof *tel_cols))
+
+static int tel_null(const tel_row *r, int c) {
+  switch (c) {
+  case 3: return r->ms < 0;
+  case 5: return r->exit < 0;
+  case 6: return !*r->outcome;
+  case 7: return r->bytes < 0;
+  case 8: return !*r->harness;
+  case 9: return !*r->session;
+  }
+  return 0;
+}
+
+static void tel_bytes(buf *b, const char *s) {
+  le32(b, (unsigned)strlen(s));
+  buf_str(b, s);
+}
+
+/* One column's page body, PLAIN: for an optional column the definition levels first (RLE runs of
+ * one bit, behind a length), then only the values that are present. */
+static void tel_column(buf *out, const tel_row *r, size_t n, int c) {
+  if (tel_cols[c].optional) {
+    buf lv = {0};
+    for (size_t i = 0; i < n;) {
+      size_t j = i;
+      while (j < n && tel_null(&r[j], c) == tel_null(&r[i], c)) j++;
+      t_varint(&lv, (unsigned long long)(j - i) << 1);
+      char v = !tel_null(&r[i], c);
+      buf_add(&lv, &v, 1);
+      i = j;
+    }
+    le32(out, (unsigned)lv.n);
+    if (lv.n) buf_add(out, lv.p, lv.n);
+    free(lv.p);
+  }
+  if (tel_cols[c].type == P_BOOL) {
+    for (size_t i = 0; i < n; i += 8) {
+      char byte = 0;
+      for (size_t j = 0; j < 8 && i + j < n; j++) byte |= (char)((r[i + j].ended ? 1 : 0) << j);
+      buf_add(out, &byte, 1);
+    }
+    return;
+  }
+  for (size_t i = 0; i < n; i++) {
+    if (tel_null(&r[i], c)) continue;
+    switch (c) {
+    case 0: le64(out, (unsigned long long)r[i].ts); break;
+    case 1: tel_bytes(out, r[i].name); break;
+    case 2: le32(out, (unsigned)r[i].pid); break;
+    case 3: le64(out, (unsigned long long)r[i].ms); break;
+    case 5: le32(out, (unsigned)r[i].exit); break;
+    case 6: tel_bytes(out, r[i].outcome); break;
+    case 7: le64(out, (unsigned long long)r[i].bytes); break;
+    case 8: tel_bytes(out, r[i].harness); break;
+    case 9: tel_bytes(out, r[i].session); break;
+    case 10: tel_bytes(out, CTX_VERSION); break;
+    }
+  }
+}
+
+/* gzip, as Parquet's GZIP codec wants it. Returns 0 when zlib fails. */
+static int tel_gzip(const buf *in, buf *out) {
+  z_stream z;
+  memset(&z, 0, sizeof z);
+  if (deflateInit2(&z, 6, Z_DEFLATED, 31, 8, Z_DEFAULT_STRATEGY) != Z_OK) return 0;
+  size_t cap = deflateBound(&z, (uLong)in->n) + 32;
+  char *p = malloc(cap);
+  if (!p) die("out of memory");
+  z.next_in = (Bytef *)(in->p ? in->p : "");
+  z.avail_in = (uInt)in->n;
+  z.next_out = (Bytef *)p;
+  z.avail_out = (uInt)cap;
+  int ok = deflate(&z, Z_FINISH) == Z_STREAM_END;
+  if (ok) buf_add(out, p, cap - z.avail_out);
+  deflateEnd(&z);
+  free(p);
+  return ok;
+}
+
+/* The whole file for one day's rows: PAR1, one row group with a page per column, the footer. */
+static int tel_file(buf *f, const tel_row *r, size_t n) {
+  size_t start[TEL_NCOLS], comp[TEL_NCOLS], raw[TEL_NCOLS];
+  buf_add(f, "PAR1", 4);
+  for (int c = 0; c < TEL_NCOLS; c++) {
+    buf body = {0}, zipped = {0}, head = {0};
+    tel_column(&body, r, n, c);
+    if (!tel_gzip(&body, &zipped)) {
+      free(body.p);
+      free(zipped.p);
+      return 0;
+    }
+    int last = 0;
+    t_i32(&head, &last, 1, 0); /* DATA_PAGE */
+    t_i32(&head, &last, 2, (int)body.n);
+    t_i32(&head, &last, 3, (int)zipped.n);
+    t_field(&head, &last, 5, T_STRUCT);
+    int in = 0;
+    t_i32(&head, &in, 1, (int)n); /* values, nulls included */
+    t_i32(&head, &in, 2, 0);      /* PLAIN */
+    t_i32(&head, &in, 3, 3);      /* definition levels: RLE */
+    t_i32(&head, &in, 4, 3);      /* repetition levels: RLE */
+    t_stop(&head);
+    t_stop(&head);
+    start[c] = f->n;
+    raw[c] = head.n + body.n;
+    comp[c] = head.n + zipped.n;
+    buf_add(f, head.p, head.n);
+    buf_add(f, zipped.p, zipped.n);
+    free(body.p);
+    free(zipped.p);
+    free(head.p);
+  }
+  buf m = {0};
+  int last = 0;
+  t_i32(&m, &last, 1, 1); /* version */
+  t_list(&m, &last, 2, T_STRUCT, (size_t)TEL_NCOLS + 1);
+  int top = 0;
+  t_str(&m, &top, 4, "ctx");
+  t_i32(&m, &top, 5, TEL_NCOLS);
+  t_stop(&m);
+  for (int c = 0; c < TEL_NCOLS; c++) {
+    int s = 0;
+    t_i32(&m, &s, 1, tel_cols[c].type);
+    t_i32(&m, &s, 3, tel_cols[c].optional);
+    t_str(&m, &s, 4, tel_cols[c].name);
+    if (tel_cols[c].utf8) t_i32(&m, &s, 6, 0); /* UTF8 */
+    t_stop(&m);
+  }
+  t_i64(&m, &last, 3, (long long)n);
+  t_list(&m, &last, 4, T_STRUCT, 1);
+  int rg = 0;
+  t_list(&m, &rg, 1, T_STRUCT, (size_t)TEL_NCOLS);
+  long long total = 0;
+  for (int c = 0; c < TEL_NCOLS; c++) {
+    int cc = 0;
+    t_i64(&m, &cc, 2, (long long)start[c]);
+    t_field(&m, &cc, 3, T_STRUCT);
+    int md = 0;
+    t_i32(&m, &md, 1, tel_cols[c].type);
+    t_list(&m, &md, 2, T_I32, 2); /* PLAIN, RLE */
+    t_zigzag(&m, 0);
+    t_zigzag(&m, 3);
+    t_list(&m, &md, 3, T_BIN, 1);
+    t_varint(&m, strlen(tel_cols[c].name));
+    buf_str(&m, tel_cols[c].name);
+    t_i32(&m, &md, 4, 2); /* GZIP */
+    t_i64(&m, &md, 5, (long long)n);
+    t_i64(&m, &md, 6, (long long)raw[c]);
+    t_i64(&m, &md, 7, (long long)comp[c]);
+    t_i64(&m, &md, 9, (long long)start[c]);
+    t_stop(&m);
+    t_stop(&m);
+    total += (long long)raw[c];
+  }
+  t_i64(&m, &rg, 2, total);
+  t_i64(&m, &rg, 3, (long long)n);
+  t_stop(&m);
+  t_str(&m, &last, 6, "ctx " CTX_VERSION);
+  t_stop(&m);
+  buf_add(f, m.p, m.n);
+  le32(f, (unsigned)m.n);
+  buf_add(f, "PAR1", 4);
+  free(m.p);
+  return 1;
+}
+
+static int tel_cmp(const void *a, const void *b) {
+  const tel_row *x = a, *y = b;
+  long long dx = x->ts / 86400, dy = y->ts / 86400;
+  if (dx != dy) return dx < dy ? -1 : 1;
+  if (x->ts != y->ts) return x->ts < y->ts ? -1 : 1;
+  return (x->seq > y->seq) - (x->seq < y->seq);
+}
+
+/* The telemetry directory: beside the database, so a scratch CTX_DB keeps it all in its own folder. */
+static char *telemetry_dir(void) {
+  char *db = db_path();
+  char *slash = strrchr(db, '/');
+  size_t n = slash ? (size_t)(slash - db) : 0;
+  char *p = malloc(n + sizeof "/telemetry" + 1);
+  if (!p) die("out of memory");
+  if (slash) snprintf(p, n + sizeof "/telemetry", "%.*s/telemetry", (int)n, db);
+  else snprintf(p, sizeof "telemetry", "telemetry");
+  free(db);
+  return p;
+}
+
+static int mkdir_private(const char *path) { return mkdir(path, 0700) == 0 || errno == EEXIST ? 0 : -1; }
+
+/* Writes the file to a temporary name in its own directory and renames it, so a reader sees all of
+ * a day or none of it. */
+static int tel_write(const char *dir, const char *path, const buf *f) {
+  char tmp[4400];
+  snprintf(tmp, sizeof tmp, "%s/.tmp%d", dir, (int)getpid());
+  int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+  if (fd < 0) return -1;
+  size_t off = 0;
+  while (off < f->n) {
+    ssize_t w = write(fd, f->p + off, f->n - off);
+    if (w < 0 && errno == EINTR) continue;
+    if (w <= 0) break;
+    off += (size_t)w;
+  }
+  int ok = off == f->n && fsync(fd) == 0;
+  ok = close(fd) == 0 && ok;
+  if (!ok || rename(tmp, path)) {
+    unlink(tmp);
+    return -1;
+  }
+  return 0;
+}
+
+/* Writes a file for every UTC day before today that the call log holds and that has none yet;
+ * a day that has a file is left as it is. Prints each day written when `say`. Returns how many. */
+static int telemetry_roll(int say) {
+  tel_rows rows = {0};
+  size_t *open = NULL, nopen = 0, capopen = 0;
+  for (int f = 1; f >= 0; f--) { /* the older log first, so a start and its end meet */
+    char *path = sidecar(f ? ".calls.1" : ".calls");
+    tel_read(path, &rows, &open, &nopen, &capopen);
+    free(path);
+  }
+  time_t now = time(NULL);
+  for (size_t i = 0; i < nopen; i++) rows.p[open[i]].live = now - rows.p[open[i]].ts <= 60;
+  free(open);
+  if (rows.n) qsort(rows.p, rows.n, sizeof *rows.p, tel_cmp);
+  char *root = telemetry_dir();
+  int wrote = 0;
+  for (size_t i = 0; i < rows.n;) {
+    long long day = rows.p[i].ts / 86400;
+    size_t j = i;
+    int live = 0;
+    for (; j < rows.n && rows.p[j].ts / 86400 == day; j++) live |= rows.p[j].live;
+    if (day < (long long)now / 86400 && !live) { /* a day with a call still running waits for the next roll */
+      time_t t = (time_t)(day * 86400);
+      struct tm tm;
+      gmtime_r(&t, &tm);
+      char calls[4200], dir[4300], file[4400], name[16];
+      strftime(name, sizeof name, "%Y-%m-%d", &tm);
+      snprintf(calls, sizeof calls, "%s/calls", root);
+      snprintf(dir, sizeof dir, "%s/date=%s", calls, name);
+      snprintf(file, sizeof file, "%s/calls.parquet", dir);
+      struct stat st;
+      if (stat(file, &st)) {
+        buf out = {0};
+        if (!mkdir_private(root) && !mkdir_private(calls) && !mkdir_private(dir) && tel_file(&out, rows.p + i, j - i) && !tel_write(dir, file, &out)) {
+          wrote++;
+          if (say) printf("%s  %zu calls  %s\n", name, j - i, file);
+        } else die("cannot write %s", file);
+        free(out.p);
+      }
+    }
+    i = j;
+  }
+  free(root);
+  free(rows.p);
+  return wrote;
+}
+
+/* The archive hook's detached child calls this on every run; it does the work at most hourly,
+ * by a marker file's age, so a hook costs one stat. Hourly is far inside the time the call log
+ * takes to rotate, which is what keeps a day from being lost. */
+static void telemetry_roll_hourly(void) {
+  char *root = telemetry_dir(), marker[4300];
+  snprintf(marker, sizeof marker, "%s/.rolled", root);
+  struct stat st;
+  if (stat(marker, &st) == 0 && time(NULL) - st.st_mtime < SCAN_EVERY_SECS) {
+    free(root);
+    return;
+  }
+  char *calls = sidecar(".calls");
+  int have = stat(calls, &st) == 0; /* no call log, nothing to roll */
+  free(calls);
+  if (have) {
+    telemetry_roll(0);
+    int fd = open(marker, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd >= 0) close(fd);
+  }
+  free(root);
+}
+
+static int cmd_telemetry(int argc, char **argv) {
+  if (argc == 1 && !strcmp(argv[0], "path")) {
+    char *dir = telemetry_dir();
+    puts(dir);
+    free(dir);
+    return 0;
+  }
+  if (argc == 1 && !strcmp(argv[0], "roll")) {
+    telemetry_roll(1);
+    return 0;
+  }
+  fputs("usage: ctx telemetry roll | path\n", stderr);
+  return 2;
 }
 
 /* How many sessions the gate turned back in the last `days`: its marks are the ones with something
@@ -1965,7 +2435,7 @@ static int cmd_hook(void) {
   sqlite3 *mem = db_open(":memory:");
   sqlite3_stmt *q = db_prepare(mem,
       "SELECT json_extract(?1,'$.transcript_path'), json_extract(?1,'$.hook_event_name'),"
-      " coalesce(json_extract(?1,'$.harness'), '') WHERE json_valid(?1)");
+      " coalesce(json_extract(?1,'$.harness'), ''), coalesce(json_extract(?1,'$.session_id'), '') WHERE json_valid(?1)");
   sqlite3_bind_text(q, 1, in.p, (int)in.n, SQLITE_STATIC);
   char *path = NULL;
   int scan = 0, pic = 0;
@@ -1977,12 +2447,14 @@ static int cmd_hook(void) {
     /* pic's transcript_path names its database, which is no transcript: its rows are read
      * directly, and they are committed before pic runs the hook */
     pic = !strcmp((const char *)sqlite3_column_text(q, 2), "pic");
+    call_note((const char *)sqlite3_column_text(q, 2), (const char *)sqlite3_column_text(q, 3));
     if (!pic && sqlite3_column_text(q, 0)) path = dup_text(sqlite3_column_text(q, 0));
   }
   sqlite3_finalize(q);
   sqlite3_close(mem);
   free(in.p);
   if (pic) {
+    call_outcome = "archived";
     pid_t pid = fork(); /* return to pic at once; the reading continues detached */
     if (pid != 0) return 0;
     setsid();
@@ -1995,9 +2467,11 @@ static int cmd_hook(void) {
     }
     run_self("scan", "--pic"); /* cheap when nothing changed: pic's database is skipped unseen */
     drain(scan);
+    telemetry_roll_hourly();
     _exit(0);
   }
   if (!path || !*path) return 0;
+  call_outcome = "archived";
 
   char *spool = sidecar(".spool");
   int fd = open(spool, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0600);
@@ -2023,6 +2497,7 @@ static int cmd_hook(void) {
     dup2(null, 2);
   }
   drain(scan);
+  telemetry_roll_hourly();
   _exit(0);
 }
 
@@ -3297,7 +3772,7 @@ static int ticket_offer(void) {
     sqlite3_stmt *j = NULL;
     if (sqlite3_prepare_v2(db, "SELECT json_object('hookSpecificOutput', json_object('hookEventName', 'SessionStart', 'additionalContext', ?1))", -1, &j, NULL) == SQLITE_OK) {
       sqlite3_bind_text(j, 1, all.p, (int)all.n, SQLITE_STATIC);
-      if (sqlite3_step(j) == SQLITE_ROW) puts((const char *)sqlite3_column_text(j, 0));
+      if (sqlite3_step(j) == SQLITE_ROW) call_say((const char *)sqlite3_column_text(j, 0), "offered");
       sqlite3_finalize(j);
     }
   }
@@ -6200,9 +6675,9 @@ static int cmd_recall(void) {
   if (head[0] == '<' || head[0] == '/') return 0; /* harness text and slash commands */
   for (int i = 0; cues[i]; i++)
     if (strstr(head, cues[i])) {
-      puts("{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":"
-           "\"This prompt refers to earlier work. Before answering from memory or asking the user, search the session archive: "
-           "`ctx search` with two or three exact words from it, then `ctx turn ID 2 5` around the best hit.\"}}");
+      call_say("{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":"
+               "\"This prompt refers to earlier work. Before answering from memory or asking the user, search the session archive: "
+               "`ctx search` with two or three exact words from it, then `ctx turn ID 2 5` around the best hit.\"}}", "offered");
       break;
     }
   return 0;
@@ -6645,11 +7120,13 @@ static int cmd_gate(void) {
   sqlite3_stmt *q = NULL;
   char tool[64] = "", session[128] = "", *cwd = NULL, *cmd = NULL;
   if (sqlite3_prepare_v2(db, "SELECT coalesce(json_extract(?1, '$.tool_name'), ''), coalesce(json_extract(?1, '$.session_id'), ''),"
-                             " json_extract(?1, '$.cwd'), json_extract(?1, '$.tool_input.command') WHERE json_valid(?1)", -1, &q, NULL) == SQLITE_OK) {
+                             " json_extract(?1, '$.cwd'), json_extract(?1, '$.tool_input.command'), coalesce(json_extract(?1, '$.harness'), '')"
+                             " WHERE json_valid(?1)", -1, &q, NULL) == SQLITE_OK) {
     sqlite3_bind_text(q, 1, in.p, (int)in.n, SQLITE_STATIC);
     if (sqlite3_step(q) == SQLITE_ROW) {
       tool_canon((const char *)sqlite3_column_text(q, 0), tool, sizeof tool);
       snprintf(session, sizeof session, "%s", sqlite3_column_text(q, 1));
+      call_note((const char *)sqlite3_column_text(q, 4), session);
       if (sqlite3_column_text(q, 2)) cwd = dup_text(sqlite3_column_text(q, 2));
       if (sqlite3_column_text(q, 3)) cmd = dup_text(sqlite3_column_text(q, 3));
     }
@@ -6677,7 +7154,7 @@ static int cmd_gate(void) {
                                " This notice appears once.'))", -1, &q, NULL) == SQLITE_OK) {
       sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
       sqlite3_bind_int(q, 2, sessions);
-      if (sqlite3_step(q) == SQLITE_ROW) puts((const char *)sqlite3_column_text(q, 0));
+      if (sqlite3_step(q) == SQLITE_ROW) call_say((const char *)sqlite3_column_text(q, 0), "denied");
       sqlite3_finalize(q);
     }
     free(project);
@@ -6708,6 +7185,7 @@ static int cmd_inject(void) {
       prompt = dup_text(sqlite3_column_text(q, 0));
       if (sqlite3_column_text(q, 1)) cwd = dup_text(sqlite3_column_text(q, 1));
       if (sqlite3_column_text(q, 2)) session = dup_text(sqlite3_column_text(q, 2));
+      call_note("", session);
     }
     sqlite3_finalize(q);
   }
@@ -6793,7 +7271,7 @@ static int cmd_inject(void) {
     sqlite3_stmt *j = NULL;
     if (sqlite3_prepare_v2(db, "SELECT json_object('hookSpecificOutput', json_object('hookEventName', 'UserPromptSubmit', 'additionalContext', ?1))", -1, &j, NULL) == SQLITE_OK) {
       sqlite3_bind_text(j, 1, all.p, (int)all.n, SQLITE_STATIC);
-      if (sqlite3_step(j) == SQLITE_ROW) puts((const char *)sqlite3_column_text(j, 0));
+      if (sqlite3_step(j) == SQLITE_ROW) call_say((const char *)sqlite3_column_text(j, 0), "offered");
       sqlite3_finalize(j);
     }
     free(all.p);
@@ -8509,6 +8987,7 @@ static void hook_input(char *source, size_t scap, char *session, size_t ncap) {
         snprintf(session, ncap, "%s", sqlite3_column_text(q, 1));
         snprintf(hook_event, sizeof hook_event, "%s", sqlite3_column_text(q, 2));
         snprintf(hook_harness, sizeof hook_harness, "%s", sqlite3_column_text(q, 3));
+        call_note(hook_harness, session);
       }
       sqlite3_finalize(q);
     }
@@ -8542,7 +9021,7 @@ static int rules_offer(void) {
                                " around a hit.')) FROM ctx_doc WHERE kind = 'session' AND project = ?1 HAVING count(*) > 0", -1, &q, NULL) == SQLITE_OK) {
       sqlite3_bind_text(q, 1, project, -1, SQLITE_STATIC);
       if (sqlite3_step(q) == SQLITE_ROW) {
-        puts((const char *)sqlite3_column_text(q, 0));
+        call_say((const char *)sqlite3_column_text(q, 0), "offered");
         noted_mark(session, 0); /* told: ctx gate leaves this session alone */
       }
       sqlite3_finalize(q);
@@ -8738,7 +9217,7 @@ static int rules_offer(void) {
     sqlite3_stmt *j = NULL;
     if (sqlite3_prepare_v2(db, "SELECT json_object('hookSpecificOutput', json_object('hookEventName', 'SessionStart', 'additionalContext', ?1))", -1, &j, NULL) == SQLITE_OK) {
       sqlite3_bind_text(j, 1, all.p, (int)all.n, SQLITE_STATIC);
-      if (sqlite3_step(j) == SQLITE_ROW) puts((const char *)sqlite3_column_text(j, 0));
+      if (sqlite3_step(j) == SQLITE_ROW) call_say((const char *)sqlite3_column_text(j, 0), "offered");
       sqlite3_finalize(j);
     }
     free(all.p);
@@ -9287,7 +9766,7 @@ static int hook_post(int post) {
   int tool = 0;
   if (sqlite3_prepare_v2(db, "SELECT coalesce(json_extract(?1, '$.tool_name'), ''), coalesce(json_extract(?1, '$.tool_input.file_path'), ''),"
                              " coalesce(json_extract(?1, '$.session_id'), ''), coalesce(json_extract(?1, '$.cwd'), ''),"
-                             " json_extract(?1, '$.tool_input.command') WHERE json_valid(?1)", -1, &q, NULL) == SQLITE_OK) {
+                             " json_extract(?1, '$.tool_input.command'), coalesce(json_extract(?1, '$.harness'), '') WHERE json_valid(?1)", -1, &q, NULL) == SQLITE_OK) {
     sqlite3_bind_text(q, 1, in.p, (int)in.n, SQLITE_STATIC);
     if (sqlite3_step(q) == SQLITE_ROW) {
       char name[64];
@@ -9296,6 +9775,7 @@ static int hook_post(int post) {
       snprintf(given, sizeof given, "%s", sqlite3_column_text(q, 1));
       snprintf(session, sizeof session, "%s", sqlite3_column_text(q, 2));
       snprintf(cwd, sizeof cwd, "%s", sqlite3_column_text(q, 3));
+      call_note((const char *)sqlite3_column_text(q, 5), session);
       if (!strcmp(name, "bash") && sqlite3_column_text(q, 4)) cmd = dup_text(sqlite3_column_text(q, 4));
     }
     sqlite3_finalize(q);
@@ -9377,7 +9857,7 @@ static int hook_post(int post) {
   if (any) {
     if (sqlite3_prepare_v2(db, "SELECT json_object('hookSpecificOutput', json_object('hookEventName', 'PostToolUse', 'additionalContext', ?1))", -1, &q, NULL) == SQLITE_OK) {
       sqlite3_bind_text(q, 1, note.p, (int)note.n, SQLITE_STATIC);
-      if (sqlite3_step(q) == SQLITE_ROW) puts((const char *)sqlite3_column_text(q, 0));
+      if (sqlite3_step(q) == SQLITE_ROW) call_say((const char *)sqlite3_column_text(q, 0), "nudged");
       sqlite3_finalize(q);
     }
   }
@@ -13274,6 +13754,7 @@ static int usage(void) {
         "       ctx decisions [--open] [--all] [--limit N]\n"
         "       ctx page [--open] [--out FILE]\n"
         "       ctx page apply [FILE] [--yes]\n"
+        "       ctx telemetry roll | path\n"
         "       ctx exclude [DIR | --remove DIR | --project P | --remove --project P]\n"
         "       ctx forget [SESSION | --project P]\n"
         "       ctx artifacts [--all] [--limit N] [WORDS...] | show URL | keep\n"
@@ -13288,9 +13769,7 @@ static int usage(void) {
 }
 
 #ifndef CTX_NO_MAIN /* the fuzz targets include this file for its parsers */
-int main(int argc, char **argv) {
-  self_path = argv[0];
-  call_begin(argc, argv);
+static int run(int argc, char **argv) {
   if (argc == 2 && !strcmp(argv[1], "status")) return cmd_status();
   if (argc == 3 && !strcmp(argv[1], "status") && !strcmp(argv[2], "--json")) return status_json();
   if (sqlite3_auto_extension((void (*)(void))fsl_sqlext_init) != SQLITE_OK)
@@ -13329,6 +13808,13 @@ int main(int argc, char **argv) {
   if (argc >= 2 && !strcmp(argv[1], "artifacts")) return cmd_artifacts(argc - 2, argv + 2);
   if (argc >= 2 && !strcmp(argv[1], "rules")) return cmd_rules(argc - 2, argv + 2);
   if (argc >= 2 && !strcmp(argv[1], "page")) return cmd_page(argc - 2, argv + 2);
+  if (argc >= 2 && !strcmp(argv[1], "telemetry")) return cmd_telemetry(argc - 2, argv + 2);
   return usage();
+}
+
+int main(int argc, char **argv) {
+  self_path = argv[0];
+  call_begin(argc, argv);
+  return call_status = run(argc, argv);
 }
 #endif

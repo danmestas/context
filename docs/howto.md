@@ -1109,6 +1109,31 @@ with no docs ticket), `tentative` rules the judge added this week, `searches` ma
 among them since local midnight, and a `warn` string that is empty unless hooks were cut off,
 a hook took over a second, or the scan is late. It uses indexed queries only, about 20 ms on an archive of 400,000 turns.
 
+## Keep the call log as Parquet
+
+The call log is short-lived: it rotates at 1 MB and keeps about two days. Each end line also
+says how the call went: `E UNIX PID NAME MS EXIT OUTCOME BYTES HARNESS SESSION`, with `-` for what
+is not known. `OUTCOME` is `offered`, `quiet`, `denied`, `nudged`, `archived` or `error`; `BYTES` is
+what the hook wrote to stdout. Lines from older versions, which end after `MS`, still read.
+No prompt, tool input or output, or file text is ever recorded.
+
+Once a UTC day is over, `ctx telemetry roll` writes it to one Parquet file (gzip, one row group)
+beside the database, and never rewrites a day that has a file. The archive hook does this in
+the background at most once an hour, so nothing slows a hook down and no day is lost to rotation.
+
+```sh
+ctx telemetry path    # ~/.ctx/telemetry
+ctx telemetry roll    # writes the days not yet written, and says which
+duckdb -c "SELECT date, name, outcome, count(*), median(ms)
+           FROM read_parquet('$HOME/.ctx/telemetry/calls/*/calls.parquet', hive_partitioning=true)
+           GROUP BY ALL ORDER BY ALL"
+```
+
+Files are `telemetry/calls/date=YYYY-MM-DD/calls.parquet` (directories 0700, files 0600). Columns:
+`ts` (unix seconds), `name`, `pid`, `ms` (null when the hook never ended), `ended`, `exit`,
+`outcome`, `bytes_out`, `harness`, `session`, `ctx_version`. A start with no end for over a minute
+is a row with `ended` false.
+
 ## Decide what is waiting on you
 
 ctx collects things only you can settle: rules it proposed from what you typed,
