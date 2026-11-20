@@ -1681,11 +1681,13 @@ static int by_long(const void *a, const void *b) {
   return (x > y) - (x < y);
 }
 
+/* The time each hook is held to, in ms; a call over it counts as slow. */
+static const struct { const char *name; long limit; } call_limits[] = {
+    {"rules-offer", 3000}, {"ticket-offer", 3000}, {"artifacts-keep", 5000}, {"inject", 3000}, {"recall", 3000}, {NULL, 0}};
+
 /* Reads the log from `since` on into per-name tallies; returns how many names. A start
  * in the last minute may still be running, so it is not counted as started. */
 static size_t calls_read(time_t since, call_stat *out, size_t cap) {
-  static const struct { const char *name; long limit; } limits[] = {
-      {"rules-offer", 3000}, {"ticket-offer", 3000}, {"artifacts-keep", 5000}, {"inject", 3000}, {"recall", 3000}, {NULL, 0}};
   size_t names = 0;
   time_t now = time(NULL);
   for (int f = 1; f >= 0; f--) {
@@ -1718,8 +1720,8 @@ static size_t calls_read(time_t since, call_stat *out, size_t cap) {
           if (!out[k].ms) die("out of memory");
         }
         out[k].ms[out[k].n++] = ms;
-        for (int l = 0; limits[l].name; l++)
-          if (!strcmp(limits[l].name, name) && ms > limits[l].limit) out[k].over++;
+        for (int l = 0; call_limits[l].name; l++)
+          if (!strcmp(call_limits[l].name, name) && ms > call_limits[l].limit) out[k].over++;
       }
     }
     fclose(in);
@@ -2149,6 +2151,8 @@ static void telemetry_roll_hourly(void) {
   free(root);
 }
 
+static int telemetry_page(int argc, char **argv);
+
 static int cmd_telemetry(int argc, char **argv) {
   if (argc == 1 && !strcmp(argv[0], "path")) {
     char *dir = telemetry_dir();
@@ -2160,7 +2164,8 @@ static int cmd_telemetry(int argc, char **argv) {
     telemetry_roll(1);
     return 0;
   }
-  fputs("usage: ctx telemetry roll | path\n", stderr);
+  if (argc >= 1 && !strcmp(argv[0], "page")) return telemetry_page(argc - 1, argv + 1);
+  fputs("usage: ctx telemetry roll | path | page [--open] [--out FILE]\n", stderr);
   return 2;
 }
 
@@ -13039,6 +13044,29 @@ static void page_rewrite(const char *path, sqlite3 *db, const char *project, int
   free(html.p);
 }
 
+/* Opens a file with the system's opener, started directly with the path as its one argument. */
+static int open_in_browser(const char *path) {
+  const char *opener = getenv("CTX_OPENER");
+#ifdef __APPLE__
+  if (!opener || !*opener) opener = "open";
+#else
+  if (!opener || !*opener) opener = "xdg-open";
+#endif
+  fflush(stdout);
+  pid_t pid = fork();
+  if (pid == 0) {
+    execlp(opener, opener, path, (char *)NULL);
+    _exit(127);
+  }
+  int st = 0;
+  while (pid > 0 && waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+  if (pid < 0 || !WIFEXITED(st) || WEXITSTATUS(st)) {
+    fprintf(stderr, "ctx: the page was written but %s could not open it\n", opener);
+    return 1;
+  }
+  return 0;
+}
+
 /* ctx page [--all | --project NAME] [--open] [--out FILE]: writes the page to FILE, by default beside the
  * database, and prints where. Inside a known project's folder it is that project's page. */
 static int cmd_page_write(int argc, char **argv) {
@@ -13070,26 +13098,7 @@ static int cmd_page_write(int argc, char **argv) {
   if (page_put(path, &html)) die("cannot write %s: %s", path, strerror(errno));
   puts(path);
   int rc = 0;
-  if (show) { /* the system's opener, started directly with the path as its one argument */
-    const char *opener = getenv("CTX_OPENER");
-#ifdef __APPLE__
-    if (!opener || !*opener) opener = "open";
-#else
-    if (!opener || !*opener) opener = "xdg-open";
-#endif
-    fflush(stdout);
-    pid_t pid = fork();
-    if (pid == 0) {
-      execlp(opener, opener, path, (char *)NULL);
-      _exit(127);
-    }
-    int st = 0;
-    while (pid > 0 && waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
-    if (pid < 0 || !WIFEXITED(st) || WEXITSTATUS(st)) {
-      fprintf(stderr, "ctx: the page was written but %s could not open it\n", opener);
-      rc = 1;
-    }
-  }
+  if (show) rc = open_in_browser(path);
   free(dflt);
   free(project);
   free(html.p);
@@ -13383,6 +13392,498 @@ static int cmd_page_apply(int argc, char **argv) {
   printf("%zu of %zu actions done\n", done, na);
   sqlite3_close(db);
   return 0;
+}
+
+/* ctx telemetry page: the Parquet files as one HTML page of charts. The duckdb program does the
+ * querying (ctx has no Parquet reader); its JSON is read with SQLite's json functions. The page shows
+ * hook names, outcomes, harness names, numbers and dates, and never a session id. */
+static char *duck_program(void) {
+  const char *set = getenv("CTX_DUCKDB");
+  if (set && *set) return access(set, X_OK) ? NULL : dup_text((const unsigned char *)set);
+  const char *path = getenv("PATH");
+  while (path && *path) {
+    size_t n = strcspn(path, ":");
+    char cand[4400];
+    snprintf(cand, sizeof cand, "%.*s/duckdb", (int)n, path);
+    if (n && !access(cand, X_OK)) return dup_text((const unsigned char *)cand);
+    path += n + (path[n] == ':');
+  }
+  const char *home = "/opt/homebrew/bin/duckdb";
+  return access(home, X_OK) ? NULL : dup_text((const unsigned char *)home);
+}
+
+/* Runs `duckdb -json -c SQL` without a shell and returns what it printed; dies when it fails. */
+static char *duck_run(const char *prog, const char *sql) {
+  int fd[2];
+  if (pipe(fd)) die("cannot start %s: %s", prog, strerror(errno));
+  fflush(NULL);
+  pid_t pid = fork();
+  if (pid < 0) die("cannot start %s: %s", prog, strerror(errno));
+  if (pid == 0) {
+    dup2(fd[1], 1);
+    close(fd[0]);
+    close(fd[1]);
+    char *argv[] = {(char *)prog, "-json", "-c", (char *)sql, NULL};
+    execvp(prog, argv);
+    _exit(127);
+  }
+  close(fd[1]);
+  buf out = {0};
+  char chunk[4096];
+  ssize_t r;
+  while ((r = read(fd[0], chunk, sizeof chunk)) > 0 || (r < 0 && errno == EINTR))
+    if (r > 0) buf_add(&out, chunk, (size_t)r);
+  close(fd[0]);
+  int st = 0;
+  while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+  if (!WIFEXITED(st) || WEXITSTATUS(st)) die("%s failed; its query was:\n%s", prog, sql);
+  if (!out.n) buf_str(&out, "[]");
+  return out.p;
+}
+
+/* The rows of one query as a statement over its JSON; `cols` are the object keys to read. */
+static sqlite3_stmt *duck_rows(sqlite3 *mem, const char *json, const char *cols) {
+  buf q = {0};
+  buf_str(&q, "SELECT ");
+  for (const char *c = cols; *c;) {
+    size_t n = strcspn(c, ",");
+    buf_fmt(&q, "%sjson_extract(value, '$.%.*s')", c == cols ? "" : ", ", (int)n, c);
+    c += n + (c[n] == ',');
+  }
+  buf_str(&q, " FROM json_each(?1)");
+  sqlite3_stmt *ok = db_prepare(mem, "SELECT json_valid(?1)");
+  sqlite3_bind_text(ok, 1, json, -1, SQLITE_TRANSIENT);
+  if (sqlite3_step(ok) != SQLITE_ROW || !sqlite3_column_int(ok, 0)) die("duckdb printed something that is not JSON");
+  sqlite3_finalize(ok);
+  sqlite3_stmt *s = db_prepare(mem, q.p);
+  sqlite3_bind_text(s, 1, json, -1, SQLITE_TRANSIENT);
+  free(q.p);
+  return s;
+}
+
+static double tp_num(sqlite3_stmt *s, int i) { return sqlite3_column_type(s, i) == SQLITE_NULL ? NAN : sqlite3_column_double(s, i); }
+
+static void tp_esc(buf *b, const char *s) {
+  for (; *s; s++) {
+    if (*s == '<') buf_str(b, "&lt;");
+    else if (*s == '>') buf_str(b, "&gt;");
+    else if (*s == '&') buf_str(b, "&amp;");
+    else if (*s == '"') buf_str(b, "&quot;");
+    else buf_add(b, s, 1);
+  }
+}
+
+static void tp_ms(char *out, size_t cap, double ms) {
+  if (isnan(ms)) snprintf(out, cap, "-");
+  else if (ms < 1000) snprintf(out, cap, "%.0f ms", ms);
+  else snprintf(out, cap, "%.1f s", ms / 1000);
+}
+
+typedef struct {
+  double n, p50, p95, cut, offered, quiet, denied, nudged, errors;
+} tp_cell;
+#define TP_HOOKS 24
+#define TP_DAYS 130
+
+#define TP_L 34.0 /* the plot's left edge and width inside a 320 by 124 chart */
+#define TP_W 278.0
+#define TP_T 10.0
+#define TP_H 86.0
+
+static void tp_open(buf *b, const char *hook, const char *what, const char *topl, const char *first, const char *last) {
+  buf_str(b, "<figure class=\"ch\"><figcaption>");
+  tp_esc(b, hook);
+  buf_str(b, "</figcaption><svg viewBox=\"0 0 320 124\" role=\"img\" aria-label=\"");
+  tp_esc(b, hook);
+  buf_fmt(b, " %s\"><line class=\"ax\" x1=\"%.0f\" y1=\"%.0f\" x2=\"%.0f\" y2=\"%.0f\"/>", what, TP_L, TP_T + TP_H, TP_L + TP_W, TP_T + TP_H);
+  buf_fmt(b, "<text class=\"tk\" x=\"%.0f\" y=\"%.0f\" text-anchor=\"end\">%s</text>", TP_L - 4, TP_T + 4, topl);
+  buf_fmt(b, "<text class=\"tk\" x=\"%.0f\" y=\"%.0f\" text-anchor=\"end\">0</text>", TP_L - 4, TP_T + TP_H + 4);
+  buf_fmt(b, "<text class=\"tk\" x=\"%.0f\" y=\"118\">%s</text>", TP_L, first);
+  buf_fmt(b, "<text class=\"tk\" x=\"%.0f\" y=\"118\" text-anchor=\"end\">%s</text>", TP_L + TP_W, last);
+}
+
+/* One bar per day; a day the hook has no row for is a gap. With `track`, each bar sits in a full-height track. */
+static void tp_bars(buf *b, const char *hook, const char *what, char (*days)[11], size_t nd, const double *v, char (*tip)[96], double ymax, const char *topl, int track, const char *cls) {
+  tp_open(b, hook, what, topl, days[0], days[nd - 1]);
+  double step = TP_W / (double)nd, w = step * 0.72 < 1 ? 1 : step * 0.72;
+  for (size_t d = 0; d < nd; d++) {
+    if (isnan(v[d])) continue;
+    double x = TP_L + step * (double)d + (step - w) / 2, h = ymax > 0 ? v[d] / ymax * TP_H : 0;
+    if (h > TP_H) h = TP_H;
+    if (track) buf_fmt(b, "<rect class=\"trk\" x=\"%.2f\" y=\"%.1f\" width=\"%.2f\" height=\"%.1f\"><title>%s</title></rect>", x, TP_T, w, TP_H, tip[d]);
+    if (h < 0.5 && v[d] > 0) h = 0.5;
+    buf_fmt(b, "<rect class=\"%s\" x=\"%.2f\" y=\"%.2f\" width=\"%.2f\" height=\"%.2f\"><title>%s</title></rect>", cls, x, TP_T + TP_H - h, w, h, tip[d]);
+  }
+  buf_str(b, "</svg></figure>");
+}
+
+/* p50 (solid) and p95 (lighter) as lines, with the hook's limit dashed when it has one. */
+static void tp_lines(buf *b, const char *hook, char (*days)[11], size_t nd, const double *p50, const double *p95, double limit) {
+  double ymax = 1;
+  for (size_t d = 0; d < nd; d++) {
+    if (!isnan(p95[d]) && p95[d] > ymax) ymax = p95[d];
+    if (!isnan(p50[d]) && p50[d] > ymax) ymax = p50[d];
+  }
+  int draw = limit > 0 && limit <= ymax * 4; /* far above the data, a drawn limit flattens the lines to the floor */
+  if (draw && limit > ymax) ymax = limit;
+  ymax *= 1.08;
+  char topl[24];
+  tp_ms(topl, sizeof topl, ymax);
+  tp_open(b, hook, "p50 and p95 time per day", topl, days[0], days[nd - 1]);
+  double step = TP_W / (double)nd;
+  if (limit > 0 && !draw) {
+    char lim[24];
+    tp_ms(lim, sizeof lim, limit);
+    buf_fmt(b, "<text class=\"tk lt\" x=\"%.0f\" y=\"%.1f\" text-anchor=\"end\">limit %s, far above</text>", TP_L + TP_W, TP_T + 8, lim);
+  }
+  if (draw) {
+    double y = TP_T + TP_H - limit / ymax * TP_H;
+    char lim[24];
+    tp_ms(lim, sizeof lim, limit);
+    buf_fmt(b, "<line class=\"lim\" stroke-dasharray=\"4 3\" x1=\"%.0f\" y1=\"%.1f\" x2=\"%.0f\" y2=\"%.1f\"><title>limit %s</title></line>", TP_L, y, TP_L + TP_W, y, lim);
+    buf_fmt(b, "<text class=\"tk lt\" x=\"%.0f\" y=\"%.1f\" text-anchor=\"end\">limit %s</text>", TP_L + TP_W, y - 3, lim);
+  }
+  for (int k = 0; k < 2; k++) {
+    const double *v = k ? p50 : p95;
+    const char *cls = k ? "p50" : "p95";
+    buf pts = {0};
+    for (size_t d = 0; d <= nd; d++) {
+      if (d < nd && !isnan(v[d])) {
+        buf_fmt(&pts, "%s%.1f,%.1f", pts.n ? " " : "", TP_L + step * ((double)d + 0.5), TP_T + TP_H - v[d] / ymax * TP_H);
+      } else if (pts.n) {
+        if (strchr(pts.p, ' ')) buf_fmt(b, "<polyline class=\"%s\" points=\"%s\"/>", cls, pts.p);
+        pts.n = 0;
+        pts.p[0] = 0;
+      }
+    }
+    free(pts.p);
+    for (size_t d = 0; d < nd; d++) {
+      if (isnan(v[d])) continue;
+      char t[24];
+      tp_ms(t, sizeof t, v[d]);
+      buf_fmt(b, "<circle class=\"%s\" cx=\"%.1f\" cy=\"%.1f\" r=\"2.4\"><title>%s %s: %s</title></circle>", cls, TP_L + step * ((double)d + 0.5), TP_T + TP_H - v[d] / ymax * TP_H, days[d], k ? "p50" : "p95", t);
+    }
+  }
+  buf_str(b, "</svg></figure>");
+}
+
+static const char tp_css[] =
+    ":root{--bg:#f7f8f7;--surface:#eef1ef;--fg:#1a1e1c;--muted:#5d6863;--line:#d3dad6;--accent:#1f5f8a;--yes:#23724a;--no:#a8321f;--mid:#8a6410;"
+    "--font-body:\"Instrument Sans\",system-ui,-apple-system,\"Segoe UI\",sans-serif;--font-mono:\"IBM Plex Mono\",ui-monospace,Menlo,Consolas,monospace;color-scheme:light}\n"
+    "@media (prefers-color-scheme:dark){:root:not([data-theme=\"light\"]){--bg:#121514;--surface:#1a1e1c;--fg:#e7eae8;--muted:#98a39e;--line:#303734;--accent:#7fb6de;"
+    "--yes:#73c797;--no:#f0907f;--mid:#dfb45a;color-scheme:dark}}\n"
+    ":root[data-theme=\"dark\"]{--bg:#121514;--surface:#1a1e1c;--fg:#e7eae8;--muted:#98a39e;--line:#303734;--accent:#7fb6de;--yes:#73c797;--no:#f0907f;--mid:#dfb45a;color-scheme:dark}\n"
+    "*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font-body);line-height:1.45;font-size:15px}\n"
+    "main{max-width:1080px;margin:0 auto;padding:28px 16px 60px;display:flex;flex-direction:column;gap:30px}\n"
+    ".kicker{font-size:.78rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}\n"
+    "h1{font-size:clamp(1.5rem,3.4vw,2.1rem);line-height:1.15;margin:6px 0 10px}h2{font-size:1.2rem;margin:0 0 4px}p{margin:0}.lede,.note{color:var(--muted);max-width:68ch}.note{font-size:.88rem}\n"
+    "section{display:flex;flex-direction:column;gap:10px}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:14px}\n"
+    ".ch{margin:0;border:1px solid var(--line);border-radius:10px;padding:8px 10px 4px;background:var(--surface)}figcaption{font-weight:600;font-size:.9rem}\n"
+    "svg{display:block;width:100%;height:auto}.ax{stroke:var(--line);stroke-width:1}.tk{fill:var(--muted);font-size:9px;font-family:var(--font-mono)}\n"
+    ".bar{fill:var(--accent)}.cut{fill:var(--no)}.yes{fill:var(--yes)}.trk{fill:var(--line);opacity:.55}\n"
+    ".p50{fill:var(--accent);stroke:var(--accent);stroke-width:1.6}polyline.p50,polyline.p95{fill:none}.p95{fill:var(--mid);stroke:var(--mid);stroke-width:1.4}\n"
+    ".lim{stroke:var(--no);stroke-width:1}.lt{fill:var(--no)}.key{font-size:.84rem;color:var(--muted)}\n"
+    "table{border-collapse:collapse;width:100%;font-size:.92rem}th,td{padding:6px 10px;border-top:1px solid var(--line);text-align:right;font-variant-numeric:tabular-nums}\n"
+    "th:first-child,td:first-child{text-align:left}thead th{border-top:0;color:var(--muted);font-weight:600;font-size:.82rem}\n"
+    ".empty{border:1px dashed var(--line);border-radius:10px;padding:18px;color:var(--muted)}\n";
+
+static int tp_has_files(const char *root) {
+  char calls[4300];
+  snprintf(calls, sizeof calls, "%s/calls", root);
+  DIR *d = opendir(calls);
+  if (!d) return 0;
+  struct dirent *e;
+  int found = 0;
+  while (!found && (e = readdir(d))) {
+    char f[4600];
+    struct stat st;
+    snprintf(f, sizeof f, "%s/%s/calls.parquet", calls, e->d_name);
+    found = !strncmp(e->d_name, "date=", 5) && !stat(f, &st) && S_ISREG(st.st_mode);
+  }
+  closedir(d);
+  return found;
+}
+
+static int tp_hook_rank(const char *name, int seen) {
+  for (size_t h = 0; h < sizeof hook_info / sizeof *hook_info; h++)
+    if (!strcmp(hook_info[h].id, name)) return (int)h;
+  return 1000 + seen;
+}
+
+static void telemetry_page_body(const char *root, const char *prog, buf *h) {
+  char *src = NULL;
+  {
+    buf p = {0};
+    for (const char *c = root; *c; c++) {
+      if (*c == '\'') buf_str(&p, "''");
+      else buf_add(&p, c, 1);
+    }
+    buf s = {0};
+    buf_fmt(&s, "read_parquet('%s/calls/*/calls.parquet', hive_partitioning=true)", p.p ? p.p : "");
+    src = s.p;
+    free(p.p);
+  }
+  buf q = {0};
+  char first[16] = "", last[16] = "", versions[200] = "";
+  long total = 0;
+  sqlite3 *mem;
+  if (sqlite3_open(":memory:", &mem) != SQLITE_OK) die("cannot start");
+  buf_fmt(&q, "-- tag:meta\nSELECT cast(min(date) AS VARCHAR) AS \"first\", cast(max(date) AS VARCHAR) AS \"last\", count(*) AS total,"
+              " string_agg(DISTINCT ctx_version, ', ') AS versions FROM %s", src);
+  char *js = duck_run(prog, q.p);
+  sqlite3_stmt *s = duck_rows(mem, js, "first,last,total,versions");
+  if (sqlite3_step(s) == SQLITE_ROW) {
+    snprintf(first, sizeof first, "%s", sqlite3_column_text(s, 0) ? (const char *)sqlite3_column_text(s, 0) : "");
+    snprintf(last, sizeof last, "%s", sqlite3_column_text(s, 1) ? (const char *)sqlite3_column_text(s, 1) : "");
+    total = (long)sqlite3_column_int64(s, 2);
+    snprintf(versions, sizeof versions, "%s", sqlite3_column_text(s, 3) ? (const char *)sqlite3_column_text(s, 3) : "");
+  }
+  sqlite3_finalize(s);
+  free(js);
+  if (!total) {
+    buf_str(h, "<div class=\"empty\">No finished days yet: the first file is written after today ends in UTC.</div>");
+    free(q.p);
+    free(src);
+    sqlite3_close(mem);
+    return;
+  }
+
+  /* per day and hook */
+  static char days[TP_DAYS][11];
+  static char names[TP_HOOKS][24];
+  static tp_cell cell[TP_HOOKS][TP_DAYS];
+  size_t nd = 0, nh = 0;
+  memset(cell, 0, sizeof cell);
+  for (size_t i = 0; i < TP_HOOKS; i++)
+    for (size_t j = 0; j < TP_DAYS; j++) cell[i][j].n = NAN;
+  q.n = 0;
+  buf_fmt(&q, "-- tag:daily\nSELECT cast(date AS VARCHAR) AS \"date\", name, count(*) AS n, quantile_cont(ms, 0.5) AS p50, quantile_cont(ms, 0.95) AS p95,"
+              " count(*) FILTER (WHERE NOT ended) AS cut, count(*) FILTER (WHERE outcome = 'offered') AS offered,"
+              " count(*) FILTER (WHERE outcome = 'quiet') AS quiet, count(*) FILTER (WHERE outcome = 'denied') AS denied,"
+              " count(*) FILTER (WHERE outcome = 'nudged') AS nudged, count(*) FILTER (WHERE outcome = 'error') AS errors"
+              " FROM %s WHERE date > (SELECT max(date) FROM %s) - %d GROUP BY 1, 2 ORDER BY 1, 2", src, src, TP_DAYS - 10);
+  js = duck_run(prog, q.p);
+  s = duck_rows(mem, js, "date,name,n,p50,p95,cut,offered,quiet,denied,nudged,errors");
+  while (sqlite3_step(s) == SQLITE_ROW) {
+    const char *dt = (const char *)sqlite3_column_text(s, 0), *nm = (const char *)sqlite3_column_text(s, 1);
+    if (!dt || !nm) continue;
+    size_t d = 0, k = 0;
+    while (d < nd && strcmp(days[d], dt)) d++;
+    if (d == nd) {
+      if (nd == TP_DAYS) continue;
+      snprintf(days[nd++], sizeof days[0], "%.10s", dt);
+    }
+    while (k < nh && strcmp(names[k], nm)) k++;
+    if (k == nh) {
+      if (nh == TP_HOOKS) continue;
+      snprintf(names[nh++], sizeof names[0], "%s", nm);
+    }
+    tp_cell *c = &cell[k][d];
+    *c = (tp_cell){tp_num(s, 2), tp_num(s, 3), tp_num(s, 4), tp_num(s, 5), tp_num(s, 6), tp_num(s, 7), tp_num(s, 8), tp_num(s, 9), tp_num(s, 10)};
+  }
+  sqlite3_finalize(s);
+  free(js);
+  size_t order[TP_HOOKS];
+  for (size_t i = 0; i < nh; i++) order[i] = i;
+  for (size_t i = 1; i < nh; i++) /* the order the hooks are met in; unknown names after, as first seen */
+    for (size_t j = i; j > 0 && tp_hook_rank(names[order[j]], (int)order[j]) < tp_hook_rank(names[order[j - 1]], (int)order[j - 1]); j--) {
+      size_t t = order[j];
+      order[j] = order[j - 1];
+      order[j - 1] = t;
+    }
+
+  size_t ndays = nd;
+  buf_fmt(h, "<p class=\"lede\">%s to %s: %zu day%s with calls, %ld calls", first, last, ndays, ndays == 1 ? "" : "s", total);
+  if (*versions) {
+    buf_str(h, ", ctx ");
+    tp_esc(h, versions);
+  }
+  buf_str(h, ".</p>");
+  /* a day the page cannot place (days arrive sorted from the query, so only a malformed answer fails this) */
+  double v[TP_DAYS], v2[TP_DAYS];
+  static char tip[TP_DAYS][96];
+
+  buf_str(h, "<section><h2>Calls per day</h2><p class=\"note\">Every call a hook made, by UTC day.</p><div class=\"grid\">");
+  for (size_t oi = 0; oi < nh; oi++) {
+    size_t k = order[oi];
+    double mx = 1;
+    for (size_t d = 0; d < nd; d++) {
+      v[d] = cell[k][d].n;
+      if (!isnan(v[d]) && v[d] > mx) mx = v[d];
+      snprintf(tip[d], sizeof tip[0], "%s: %.0f calls", days[d], isnan(v[d]) ? 0 : v[d]);
+    }
+    char top[16];
+    snprintf(top, sizeof top, "%.0f", mx);
+    tp_bars(h, names[k], "calls per day", days, nd, v, tip, mx, top, 0, "bar");
+  }
+  buf_str(h, "</div></section>");
+
+  buf_str(h, "<section><h2>Time per hook per day</h2><p class=\"note\"><span class=\"key\">Lower line: median (p50). Upper line: p95. Dashed red line: the time budget ctx holds that hook to, where it has one; a budget far above the times is named instead of drawn.</span></p><div class=\"grid\">");
+  for (size_t oi = 0; oi < nh; oi++) {
+    size_t k = order[oi];
+    double lim = 0;
+    for (int l = 0; call_limits[l].name; l++)
+      if (!strcmp(call_limits[l].name, names[k])) lim = (double)call_limits[l].limit;
+    int any = 0;
+    for (size_t d = 0; d < nd; d++) {
+      v[d] = cell[k][d].p50;
+      v2[d] = cell[k][d].p95;
+      any |= !isnan(v[d]) || !isnan(v2[d]);
+    }
+    if (any) tp_lines(h, names[k], days, nd, v, v2, lim);
+  }
+  buf_str(h, "</div></section>");
+
+  buf_str(h, "<section><h2>Cut off per day</h2><p class=\"note\">Calls that started and never ended: the hook ran out of time or was stopped.</p><div class=\"grid\">");
+  int cuts = 0;
+  for (size_t oi = 0; oi < nh; oi++) {
+    size_t k = order[oi];
+    double mx = 0;
+    for (size_t d = 0; d < nd; d++) {
+      v[d] = cell[k][d].cut;
+      if (!isnan(v[d]) && v[d] > mx) mx = v[d];
+      snprintf(tip[d], sizeof tip[0], "%s: %.0f cut off", days[d], isnan(v[d]) ? 0 : v[d]);
+    }
+    if (mx <= 0) continue;
+    char top[16];
+    snprintf(top, sizeof top, "%.0f", mx);
+    tp_bars(h, names[k], "calls cut off per day", days, nd, v, tip, mx, top, 0, "cut");
+    cuts++;
+  }
+  buf_str(h, "</div>");
+  if (!cuts) buf_str(h, "<div class=\"empty\">No call was cut off on any day.</div>");
+  buf_str(h, "</section>");
+
+  buf_str(h, "<section><h2>Decisions per day</h2><p class=\"note\">The share of a hook's calls that ended one way. Each bar is the day's calls; the filled part is the share.</p><div class=\"grid\">");
+  static const struct { const char *hook, *word, *rest; } decide[] = {
+      {"rules-offer", "offered", "quiet"}, {"gate", "denied", "let through"}, {"hook-post", "nudged", "quiet"}, {"docs-nudge", "nudged", "quiet"}};
+  int shown = 0;
+  for (size_t oi = 0; oi < nh; oi++) {
+    size_t k = order[oi];
+    for (size_t x = 0; x < sizeof decide / sizeof *decide; x++) {
+      if (strcmp(decide[x].hook, names[k])) continue;
+      int any = 0;
+      for (size_t d = 0; d < nd; d++) {
+        const tp_cell *c = &cell[k][d];
+        double part = x == 0 ? c->offered : x == 1 ? c->denied : c->nudged;
+        double known = isnan(c->n) ? 0 : c->offered + c->quiet + c->denied + c->nudged + c->errors; /* calls logged before decisions were */
+        v[d] = known <= 0 ? NAN : part / known * 100;
+        snprintf(tip[d], sizeof tip[0], "%s: %.0f of %.0f calls %s (%.0f%%); the rest %s", days[d], known > 0 ? part : 0, known, decide[x].word,
+                 isnan(v[d]) ? 0 : v[d], decide[x].rest);
+        any |= !isnan(v[d]);
+      }
+      if (!any) continue;
+      char what[64];
+      snprintf(what, sizeof what, "share %s per day", decide[x].word);
+      char cap[48];
+      snprintf(cap, sizeof cap, "%s: %s", names[k], decide[x].word);
+      tp_bars(h, cap, what, days, nd, v, tip, 100, "100%", 1, "yes");
+      shown++;
+    }
+  }
+  buf_str(h, "</div>");
+  if (!shown) buf_str(h, "<div class=\"empty\">No finished day has decisions on record yet. ctx began logging them on 2026-11-20; days before that have times only.</div>");
+  buf_str(h, "</section>");
+
+  /* by harness */
+  q.n = 0;
+  buf_fmt(&q, "-- tag:harness\nSELECT coalesce(nullif(harness, ''), 'unknown') AS harness, count(*) AS n FROM %s GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 12", src);
+  js = duck_run(prog, q.p);
+  s = duck_rows(mem, js, "harness,n");
+  buf_str(h, "<section><h2>By harness</h2><p class=\"note\">Calls, over every day on disk, by the program that ran the hook.</p><div class=\"ch\"><svg viewBox=\"0 0 480 ");
+  {
+    buf rows = {0};
+    double mx = 1, vals[12];
+    char label[12][40];
+    size_t nr = 0;
+    while (nr < 12 && sqlite3_step(s) == SQLITE_ROW) {
+      snprintf(label[nr], sizeof label[0], "%s", sqlite3_column_text(s, 0) ? (const char *)sqlite3_column_text(s, 0) : "unknown");
+      vals[nr] = sqlite3_column_double(s, 1);
+      if (vals[nr] > mx) mx = vals[nr];
+      nr++;
+    }
+    for (size_t i = 0; i < nr; i++) {
+      double w = vals[i] / mx * 300;
+      buf_fmt(&rows, "<text class=\"tk\" x=\"96\" y=\"%zu\" text-anchor=\"end\" style=\"font-size:11px\">", i * 26 + 17);
+      tp_esc(&rows, label[i]);
+      buf_fmt(&rows, "</text><rect class=\"bar\" x=\"102\" y=\"%zu\" width=\"%.1f\" height=\"18\"><title>", i * 26 + 4, w < 1 ? 1 : w);
+      tp_esc(&rows, label[i]);
+      buf_fmt(&rows, ": %.0f calls</title></rect><text class=\"tk\" x=\"%.1f\" y=\"%zu\" style=\"font-size:11px\">%.0f</text>", vals[i], 102 + w + 6, i * 26 + 17, vals[i]);
+    }
+    buf_fmt(h, "%zu\" role=\"img\" aria-label=\"calls per harness\">%s</svg></div></section>", nr * 26 + 6, rows.p ? rows.p : "");
+    free(rows.p);
+  }
+  sqlite3_finalize(s);
+  free(js);
+
+  /* the last seven days on disk */
+  q.n = 0;
+  buf_fmt(&q, "-- tag:week\nSELECT name, count(*) AS n, quantile_cont(ms, 0.5) AS p50, quantile_cont(ms, 0.95) AS p95, max(ms) AS max,"
+              " count(*) FILTER (WHERE NOT ended) AS cut, count(*) FILTER (WHERE outcome = 'error') AS errors"
+              " FROM %s WHERE date > (SELECT max(date) FROM %s) - 7 GROUP BY 1 ORDER BY 2 DESC, 1", src, src);
+  js = duck_run(prog, q.p);
+  s = duck_rows(mem, js, "name,n,p50,p95,max,cut,errors");
+  buf_fmt(h, "<section><h2>Last 7 days</h2><p class=\"note\">The seven UTC days up to %s.</p><table><thead><tr><th>hook</th><th>calls</th><th>p50</th><th>p95</th><th>max</th><th>cut off</th><th>errors</th></tr></thead><tbody>", last);
+  while (sqlite3_step(s) == SQLITE_ROW) {
+    char a[24], b2[24], c[24];
+    tp_ms(a, sizeof a, tp_num(s, 2));
+    tp_ms(b2, sizeof b2, tp_num(s, 3));
+    tp_ms(c, sizeof c, tp_num(s, 4));
+    buf_str(h, "<tr><td>");
+    tp_esc(h, sqlite3_column_text(s, 0) ? (const char *)sqlite3_column_text(s, 0) : "");
+    buf_fmt(h, "</td><td>%.0f</td><td>%s</td><td>%s</td><td>%s</td><td>%.0f</td><td>%.0f</td></tr>", sqlite3_column_double(s, 1), a, b2, c, sqlite3_column_double(s, 5),
+            sqlite3_column_double(s, 6));
+  }
+  buf_str(h, "</tbody></table></section>");
+  sqlite3_finalize(s);
+  free(js);
+  free(q.p);
+  free(src);
+  sqlite3_close(mem);
+}
+
+/* ctx telemetry page [--open] [--out FILE] */
+static int telemetry_page(int argc, char **argv) {
+  const char *out = NULL;
+  int show = 0;
+  for (int i = 0; i < argc; i++) {
+    if (!strcmp(argv[i], "--out") && i + 1 < argc && !out) out = argv[++i];
+    else if (!strcmp(argv[i], "--open")) show = 1;
+    else die("usage: ctx telemetry page [--open] [--out FILE]");
+  }
+  telemetry_roll(0);
+  char *root = telemetry_dir();
+  buf body = {0};
+  if (tp_has_files(root)) {
+    char *prog = duck_program();
+    if (!prog) die("telemetry page needs the duckdb program (https://duckdb.org); none found");
+    telemetry_page_body(root, prog, &body);
+    free(prog);
+  } else {
+    buf_str(&body, "<div class=\"empty\">No finished days yet: the first file is written after today ends in UTC.</div>");
+  }
+  buf html = {0};
+  buf_str(&html, "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>ctx telemetry</title>\n<style>\n");
+  buf_str(&html, tp_css);
+  buf_str(&html, "</style>\n</head>\n<body>\n<main>\n<header><div class=\"kicker\">ctx telemetry</div><h1>What ctx's hooks did</h1></header>\n");
+  buf_add(&html, body.p ? body.p : "", body.n);
+  buf_str(&html, "\n</main>\n</body>\n</html>\n");
+  char *dflt = NULL;
+  if (!out) {
+    mkdir_private(root);
+    buf p = {0};
+    buf_fmt(&p, "%s/index.html", root);
+    dflt = p.p;
+  }
+  const char *path = out ? out : dflt;
+  if (page_put(path, &html)) die("cannot write %s: %s", path, strerror(errno));
+  puts(path);
+  int rc = show ? open_in_browser(path) : 0;
+  free(dflt);
+  free(root);
+  free(body.p);
+  free(html.p);
+  return rc;
 }
 
 static int cmd_page(int argc, char **argv) {
@@ -13754,7 +14255,7 @@ static int usage(void) {
         "       ctx decisions [--open] [--all] [--limit N]\n"
         "       ctx page [--open] [--out FILE]\n"
         "       ctx page apply [FILE] [--yes]\n"
-        "       ctx telemetry roll | path\n"
+        "       ctx telemetry roll | path | page [--open] [--out FILE]\n"
         "       ctx exclude [DIR | --remove DIR | --project P | --remove --project P]\n"
         "       ctx forget [SESSION | --project P]\n"
         "       ctx artifacts [--all] [--limit N] [WORDS...] | show URL | keep\n"

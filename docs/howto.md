@@ -1124,6 +1124,7 @@ the background at most once an hour, so nothing slows a hook down and no day is 
 ```sh
 ctx telemetry path    # ~/.ctx/telemetry
 ctx telemetry roll    # writes the days not yet written, and says which
+ctx telemetry page --open   # charts of the files, in ~/.ctx/telemetry/index.html (or --out FILE)
 duckdb -c "SELECT date, name, outcome, count(*), median(ms)
            FROM read_parquet('$HOME/.ctx/telemetry/calls/*/calls.parquet', hive_partitioning=true)
            GROUP BY ALL ORDER BY ALL"
@@ -1133,6 +1134,13 @@ Files are `telemetry/calls/date=YYYY-MM-DD/calls.parquet` (directories 0700, fil
 `ts` (unix seconds), `name`, `pid`, `ms` (null when the hook never ended), `ended`, `exit`,
 `outcome`, `bytes_out`, `harness`, `session`, `ctx_version`. A start with no end for over a minute
 is a row with `ended` false.
+
+`ctx telemetry page` rolls any finished days, asks the `duckdb` program (`$CTX_DUCKDB`, else
+`duckdb` on your PATH, else `/opt/homebrew/bin/duckdb`) for the numbers, and writes one HTML page
+with inline charts, light and dark: calls per day, median and p95 time per hook with its limit,
+calls cut off, how often each hook offered, denied or nudged, calls by harness, and a table for
+the last seven days. It shows hook names, outcomes, harness names, numbers and dates, never a
+session id. With no finished day yet it says so, and needs no duckdb.
 
 ## Decide what is waiting on you
 
