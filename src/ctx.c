@@ -1964,21 +1964,39 @@ static int cmd_hook(void) {
 
   sqlite3 *mem = db_open(":memory:");
   sqlite3_stmt *q = db_prepare(mem,
-      "SELECT json_extract(?1,'$.transcript_path'), json_extract(?1,'$.hook_event_name')"
-      " WHERE json_valid(?1)");
+      "SELECT json_extract(?1,'$.transcript_path'), json_extract(?1,'$.hook_event_name'),"
+      " coalesce(json_extract(?1,'$.harness'), '') WHERE json_valid(?1)");
   sqlite3_bind_text(q, 1, in.p, (int)in.n, SQLITE_STATIC);
   char *path = NULL;
-  int scan = 0;
-  if (sqlite3_step(q) == SQLITE_ROW && sqlite3_column_text(q, 0)) {
-    path = dup_text(sqlite3_column_text(q, 0));
+  int scan = 0, pic = 0;
+  if (sqlite3_step(q) == SQLITE_ROW) {
     const char *ev = (const char *)sqlite3_column_text(q, 1);
     /* the scan is rate-limited to hourly, so it may ride on any turn: a session can run
      * for days and start only once */
     scan = ev && (!strcmp(ev, "SessionStart") || !strcmp(ev, "Stop"));
+    /* pic's transcript_path names its database, which is no transcript: its rows are read
+     * directly, and they are committed before pic runs the hook */
+    pic = !strcmp((const char *)sqlite3_column_text(q, 2), "pic");
+    if (!pic && sqlite3_column_text(q, 0)) path = dup_text(sqlite3_column_text(q, 0));
   }
   sqlite3_finalize(q);
   sqlite3_close(mem);
   free(in.p);
+  if (pic) {
+    pid_t pid = fork(); /* return to pic at once; the reading continues detached */
+    if (pid != 0) return 0;
+    setsid();
+    alarm(DRAIN_DEADLINE_SECS);
+    int null = open("/dev/null", O_RDWR);
+    if (null >= 0) {
+      dup2(null, 0);
+      dup2(null, 1);
+      dup2(null, 2);
+    }
+    run_self("scan", "--pic"); /* cheap when nothing changed: pic's database is skipped unseen */
+    drain(scan);
+    _exit(0);
+  }
   if (!path || !*path) return 0;
 
   char *spool = sidecar(".spool");
@@ -2633,7 +2651,16 @@ static int cmd_scan(const char *root_arg) {
   sqlite3 *db = ctx_open();
   sqlite3_stmt *q = db_prepare(db, "SELECT offset FROM ctx_capture WHERE session = ?1");
   long ran = 0;
-  if (root_arg) {
+  if (root_arg && !strcmp(root_arg, "--pic")) { /* pic's database only: what a hook from pic asks for */
+    const char *picdb = getenv("CTX_PIC_DB"), *home = getenv("HOME");
+    char root[4200];
+    if (picdb) {
+      if (*picdb) ran += pic_scan(db, picdb);
+    } else if (home && *home) {
+      snprintf(root, sizeof root, "%s/.pic/pic.sqlite", home);
+      ran += pic_scan(db, root);
+    }
+  } else if (root_arg) {
     ran += scan_root(db, q, root_arg, 0);
   } else {
     char root[4200];

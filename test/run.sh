@@ -1758,6 +1758,18 @@ before=$(pq "SELECT count(*) FROM ctx_chunk")
 [ "$(pq "SELECT session || ' ' || project FROM ctx_capture WHERE session = 'pi-picdb01'")" = "pi-picdb01 picdb-proj" ] || fail "a pic conversation's project is its workspace"
 "$CTX" search --all aardvark | grep -q 'picdb-proj session user' || fail "ctx search finds a deflated line's text: $("$CTX" search --all aardvark)"
 "$CTX" search --all pangolin | grep -q 'picdb-proj session assistant' || fail "ctx search finds a raw line's text: $("$CTX" search --all pangolin)"
+# pic runs ctx's hooks itself. Its transcript_path names pic.sqlite, which is no transcript, so a
+# hook from pic reads that conversation's rows at once and never queues the path.
+picrows "$PICDB" picdbhk1 /w/picdb-proj 0 - <<'EOF'
+{"type":"session","version":3,"id":"picdbhk1","timestamp":"2026-06-07T08:00:00.000Z","cwd":"/w/picdb-proj"}
+{"type":"message","id":"hk1","parentId":null,"timestamp":"2026-06-07T08:00:01.000Z","message":{"role":"user","content":"is the okapi striped"}}
+EOF
+printf '{"hook_event_name":"Stop","session_id":"picdbhk1","cwd":"/w/picdb-proj","harness":"pic","transcript_path":"%s"}' "$PICDB" \
+  | (unset CTX_PI_ROOTS CTX_PIC_DB; HOME="$PH" CLAUDE_CONFIG_DIR="$T/pi-noclaude" "$CTX" hook)
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do [ "$(pq "SELECT count(*) FROM ctx_chunk WHERE turn = 'pi-picdbhk1/hk1'")" = 1 ] && break; sleep 0.5; done
+[ "$(pq "SELECT count(*) FROM ctx_chunk WHERE turn = 'pi-picdbhk1/hk1'")" = 1 ] || fail "a hook from pic archives that conversation's new rows"
+while pgrep -f "$CTX hook" >/dev/null 2>&1 || pgrep -f "$CTX scan" >/dev/null 2>&1; do sleep 0.2; done
+[ "$(pq "SELECT count(*) FROM ctx_capture WHERE path = '$PICDB'")" = 0 ] || fail "pic.sqlite is never read as a transcript"
 before=$(pq "SELECT count(*) FROM ctx_chunk")
 [ "$(picscan)" = "0 transcripts read" ] && [ "$(pq "SELECT count(*) FROM ctx_chunk")" = "$before" ] || fail "scanning pic's rows again adds nothing"
 # A new row adds one turn; a row that cannot be inflated, or claims a huge size, is skipped.

@@ -139,7 +139,9 @@ pic can run the same hooks as Claude Code, from `~/.pic/hooks.json` in the same
 shape. pic marks each run with `"harness": "pic"` in the hook's input and
 `PIC_HOOK=1` in its environment. At session start ctx then also offers the memory
 notes of the directory pic started in, which Claude Code would have loaded itself
-and pic does not.
+and pic does not. When pic runs `ctx hook` (after each reply, and when it exits),
+ctx reads pic's new rows at once instead of waiting for the hourly scan, and it
+never reads pic's `transcript_path`, which names the database, not a transcript.
 
 In Claude Code the model kept memory by writing notes itself, and the whole
 MEMORY.md index came with every session. pic does neither, so the session-start
