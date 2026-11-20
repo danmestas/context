@@ -2567,6 +2567,77 @@ EVE=$(( $(date +%s) - 82800 )) # 23 hours ago: inside the last day at any hour, 
 printf 'B %s 13 rules-offer\n' "$EVE" >> "$CTX_DB.calls"
 "$CTX" status | grep -q '3 cut off' || fail "status counts a hook cut off before midnight: $("$CTX" status)"
 CTX_DB="$T/nocalls.sqlite" "$CTX" recall </dev/null; [ ! -e "$T/nocalls.sqlite.calls" ] || fail "nothing is logged without an archive"
+
+# The end line also says how the call went: exit status, outcome, bytes written, harness and session
+# ("-" when unknown). Old lines, with only a duration, still read.
+export CTX_DB="$T/tel/ctx.sqlite"
+mkdir -p "$T/tel"
+"$CTX" init >/dev/null
+echo '{"session_id":"s-9","hook_event_name":"SessionStart","harness":"pic"}' | "$CTX" rules offer > "$T/tel.out"
+E=$(grep '^E ' "$CTX_DB.calls" | tail -1)
+BYTES=$(wc -c < "$T/tel.out" | tr -d ' ')
+echo "$E" | grep -Eq "^E [0-9]+ [0-9]+ rules-offer [0-9]+ 0 (offered|quiet) $BYTES pic s-9\$" || fail "the end line carries exit, outcome, bytes, harness, session: $E (wrote $BYTES)"
+echo '{"hook_event_name":"SessionStart"}' | "$CTX" rules offer >/dev/null
+grep '^E ' "$CTX_DB.calls" | tail -1 | grep -Eq ' - -$' || fail "no harness named, none logged: $(tail -1 "$CTX_DB.calls")"
+echo '{"transcript_path":"'"$T"'/none.jsonl","session_id":"s-8","harness":"pic"}' | "$CTX" hook
+E=$(grep ' hook ' "$CTX_DB.calls" | grep '^E ' | tail -1)
+echo "$E" | grep -Eq '^E [0-9]+ [0-9]+ hook [0-9]+ 0 archived 0 pic s-8$' || fail "the archive hook logs archived: $E"
+"$CTX" search heron >/dev/null 2>&1 || true
+grep '^E ' "$CTX_DB.calls" | tail -1 | grep -Eq '^E [0-9]+ [0-9]+ search [0-9]+ 0 - - - -$' || fail "a search logs dashes for what it does not know: $(tail -1 "$CTX_DB.calls")"
+NOW=$(date +%s)
+printf 'B %s 31 gate\nE %s 31 gate 5 0 quiet 0 claude s-1\nB %s 32 gate\nE %s 32 gate 6\n' $((NOW-3600)) $((NOW-3600)) $((NOW-3500)) $((NOW-3500)) >> "$CTX_DB.calls"
+"$CTX" stats --hooks | awk '$1 == "gate" && $2 >= 2 { ok = 1 } END { exit !ok }' || fail "new and old end lines both count in stats --hooks"
+
+# ctx telemetry roll: every complete UTC day in the call log becomes one Parquet file,
+# once. A start with no end is a row with ended = false and nulls.
+utcday() { date -u -r "$1" +%F 2>/dev/null || date -u -d "@$1" +%F; }
+# GNU first: on Linux, stat -f is file-system status. Only the permission digits count: a
+# directory made inside a setgid one inherits that bit (2700), and stays private.
+fmode() { m=$(stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"); echo "${m#"${m%???}"}"; }
+export CTX_DB="$T/roll/ctx.sqlite"
+mkdir -p "$T/roll"
+"$CTX" init >/dev/null
+rm -f "$CTX_DB.calls"
+MID=$(( $(date -u +%s) / 86400 * 86400 ))
+D2=$((MID - 172800 + 100)); D1=$((MID - 86400 + 100))
+DAY2=$(utcday $D2); DAY1=$(utcday $D1)
+{
+  printf 'B %s 1 gate\nE %s 1 gate 5 0 quiet 0 claude s1\n' $D2 $D2
+  printf 'B %s 2 rules-offer\nE %s 2 rules-offer 30\n' $D2 $D2
+  printf 'B %s 3 hook\n' $D2
+  printf 'B %s 4 gate\nE %s 4 gate 9 0 denied 321 claude sess-a\n' $D1 $D1
+  printf 'B %s 9 gate\nE %s 9 gate 1 0 quiet 0 claude s2\n' "$(date +%s)" "$(date +%s)"
+} > "$CTX_DB.calls"
+TEL=$("$CTX" telemetry path)
+[ "$TEL" = "$T/roll/telemetry" ] || fail "telemetry path is beside the database: $TEL"
+"$CTX" telemetry roll > "$T/roll.out"
+P2="$TEL/calls/date=$DAY2/calls.parquet"; P1="$TEL/calls/date=$DAY1/calls.parquet"
+[ -s "$P2" ] && [ -s "$P1" ] || fail "each complete day gets a file: $(cat "$T/roll.out")"
+[ "$(ls "$TEL/calls" | wc -l | tr -d ' ')" = 2 ] || fail "today is not rolled: $(ls "$TEL/calls")"
+[ "$(head -c 4 "$P1")" = PAR1 ] && [ "$(tail -c 4 "$P1")" = PAR1 ] || fail "parquet magic at both ends"
+grep -q "$DAY2" "$T/roll.out" && grep -q "$DAY1" "$T/roll.out" || fail "roll prints what it wrote: $(cat "$T/roll.out")"
+[ "$(fmode "$P1")" = 600 ] && [ "$(fmode "$TEL/calls/date=$DAY1")" = 700 ] && [ "$(fmode "$TEL")" = 700 ] || fail "modes: file $(fmode "$P1") dir $(fmode "$TEL/calls/date=$DAY1")"
+DUCK=$(command -v duckdb || true); [ -n "$DUCK" ] || { [ -x /opt/homebrew/bin/duckdb ] && DUCK=/opt/homebrew/bin/duckdb; }
+if [ -n "$DUCK" ]; then
+  Q() { "$DUCK" -csv -noheader -nullvalue "" -c "SELECT $1 FROM read_parquet('$TEL/calls/*/calls.parquet', hive_partitioning=true) ${2:-}"; }
+  [ "$(Q 'count(*)')" = 4 ] || fail "four rows rolled: $(Q 'count(*)')"
+  [ "$(Q 'count(DISTINCT date)')" = 2 ] || fail "date partition column"
+  GOT=$(Q "date, name, pid, ts, ms, ended, \"exit\", outcome, bytes_out, harness, session, ctx_version" 'ORDER BY ts, pid')
+  V=$("$CTX" version | awk 'NR == 1 { print $2 }')
+  WANT="$DAY2,gate,1,$D2,5,true,0,quiet,0,claude,s1,$V
+$DAY2,rules-offer,2,$D2,30,true,,,,,,$V
+$DAY2,hook,3,$D2,,false,,,,,,$V
+$DAY1,gate,4,$D1,9,true,0,denied,321,claude,sess-a,$V"
+  [ "$GOT" = "$WANT" ] || fail "rows round-trip: $GOT"
+  [ "$(Q 'count(*)' "WHERE ms IS NULL AND NOT ended AND outcome IS NULL")" = 1 ] || fail "a cut-off hook has nulls"
+else
+  echo "SKIP: duckdb not found; parquet contents not checked" >&2
+fi
+SUM=$(cksum "$P1" "$P2"); MT=$(ls -l "$P1" "$P2")
+"$CTX" telemetry roll > "$T/roll2.out"
+[ ! -s "$T/roll2.out" ] || fail "a second roll writes nothing: $(cat "$T/roll2.out")"
+[ "$SUM" = "$(cksum "$P1" "$P2")" ] && [ "$MT" = "$(ls -l "$P1" "$P2")" ] || fail "an existing day is not rewritten"
+[ -z "$(find "$TEL" -name '.tmp*')" ] || fail "no temp files left"
 # ctx status --json: the same facts for one project, from the folder it is run in.
 HUDHERE=$(pwd)
 export CTX_DB="$T/hud.sqlite"
