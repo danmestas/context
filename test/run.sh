@@ -2591,7 +2591,7 @@ printf 'B %s 31 gate\nE %s 31 gate 5 0 quiet 0 claude s-1\nB %s 32 gate\nE %s 32
 # ctx telemetry roll: every complete UTC day in the call log becomes one Parquet file,
 # once. A start with no end is a row with ended = false and nulls.
 utcday() { date -u -r "$1" +%F 2>/dev/null || date -u -d "@$1" +%F; }
-fmode() { stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1"; }
+fmode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; } # GNU first: on Linux, stat -f is file-system status
 export CTX_DB="$T/roll/ctx.sqlite"
 mkdir -p "$T/roll"
 "$CTX" init >/dev/null
