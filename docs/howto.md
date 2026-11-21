@@ -1247,3 +1247,4 @@ ctx sql "SELECT project, count(*) FROM ctx_capture GROUP BY 1"
 | `CTX_PIC_DB` | pic's database of conversations, instead of `~/.pic/pic.sqlite`; empty skips it |
 | `USER` | the name on check-ins, claims and sources |
 | `CTX_SESSION` | the session `ctx wiki save` records a page against |
+| `CTX_NOW` | a date or time (`2026-10-11T15:45:48Z`) ctx treats as now in every query, so a replay of a past moment, on a copy of the archive cut at that moment, gets the brief it would have had then |
