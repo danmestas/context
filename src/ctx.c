@@ -98,6 +98,44 @@ static char *db_path(void) {
   return p;
 }
 
+/* $CTX_NOW: run as if the clock read this time, so a replay of a past moment gets the brief it
+   would have had then. SQLite's 'now' asks the VFS for the time, so a default VFS that answers
+   with this moment moves every 'now' in every query at once. */
+static sqlite3_int64 ctx_now_ms; /* julian day, in milliseconds */
+static int ctx_now_int64(sqlite3_vfs *vfs, sqlite3_int64 *t) {
+  (void)vfs;
+  *t = ctx_now_ms;
+  return SQLITE_OK;
+}
+static int ctx_now_double(sqlite3_vfs *vfs, double *t) {
+  (void)vfs;
+  *t = (double)ctx_now_ms / 86400000.0;
+  return SQLITE_OK;
+}
+static void ctx_now_install(void) {
+  const char *when = getenv("CTX_NOW");
+  if (!when || !*when) return;
+  sqlite3 *db = NULL;
+  sqlite3_stmt *q = NULL;
+  if (sqlite3_open(":memory:", &db) != SQLITE_OK ||
+      sqlite3_prepare_v2(db, "SELECT CAST(round(julianday(?1) * 86400000) AS INTEGER)", -1, &q, NULL) != SQLITE_OK)
+    die("cannot read CTX_NOW");
+  sqlite3_bind_text(q, 1, when, -1, SQLITE_STATIC);
+  int ok = sqlite3_step(q) == SQLITE_ROW && sqlite3_column_type(q, 0) != SQLITE_NULL;
+  ctx_now_ms = ok ? sqlite3_column_int64(q, 0) : 0;
+  sqlite3_finalize(q);
+  sqlite3_close(db);
+  if (!ok) die("CTX_NOW is not a date or time SQLite can read: %s (try 2026-10-11T15:45:48Z)", when);
+  static sqlite3_vfs vfs;
+  sqlite3_vfs *base = sqlite3_vfs_find(NULL);
+  if (!base || base->iVersion < 2) die("cannot set CTX_NOW: no default SQLite VFS");
+  vfs = *base;
+  vfs.zName = "ctx-now";
+  vfs.xCurrentTime = ctx_now_double;
+  vfs.xCurrentTimeInt64 = ctx_now_int64;
+  if (sqlite3_vfs_register(&vfs, 1) != SQLITE_OK) die("cannot set CTX_NOW");
+}
+
 static int cmd_version(void) {
   sqlite3 *db = db_open(":memory:");
   int fossil = db_int(db, "SELECT count(*) FROM pragma_function_list WHERE name='fsl_open'");
@@ -14316,6 +14354,7 @@ static int run(int argc, char **argv) {
 int main(int argc, char **argv) {
   self_path = argv[0];
   call_begin(argc, argv);
+  ctx_now_install();
   return call_status = run(argc, argv);
 }
 #endif

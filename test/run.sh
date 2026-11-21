@@ -2588,6 +2588,14 @@ NOW=$(date +%s)
 printf 'B %s 31 gate\nE %s 31 gate 5 0 quiet 0 claude s-1\nB %s 32 gate\nE %s 32 gate 6\n' $((NOW-3600)) $((NOW-3600)) $((NOW-3500)) $((NOW-3500)) >> "$CTX_DB.calls"
 "$CTX" stats --hooks | awk '$1 == "gate" && $2 >= 2 { ok = 1 } END { exit !ok }' || fail "new and old end lines both count in stats --hooks"
 
+# CTX_NOW: ctx runs as if the clock read that time, so a replay of a past moment gets the
+# brief it would have had then. Every 'now' in SQL moves; an unreadable value is refused.
+[ "$(CTX_NOW=2020-01-11T08:30:00Z "$CTX" sql "SELECT datetime('now')")" = "2020-01-11 08:30:00" ] || fail "CTX_NOW moves SQL's now"
+[ "$(CTX_NOW=2020-01-11 "$CTX" sql "SELECT date('now', '-7 days')")" = "2020-01-04" ] || fail "CTX_NOW takes a bare date"
+[ "$("$CTX" sql "SELECT date('now') = date('$(date -u +%F)')")" = 1 ] || fail "without CTX_NOW the clock is real"
+CTX_NOW=yesterday "$CTX" sql "SELECT 1" >/dev/null 2>"$T/now.err" && fail "an unreadable CTX_NOW is refused"
+grep -q 'CTX_NOW' "$T/now.err" || fail "the refusal names CTX_NOW: $(cat "$T/now.err")"
+
 # ctx telemetry roll: every complete UTC day in the call log becomes one Parquet file,
 # once. A start with no end is a row with ended = false and nulls.
 utcday() { date -u -r "$1" +%F 2>/dev/null || date -u -d "@$1" +%F; }
