@@ -235,6 +235,12 @@ ctx docs remove ~/code/myproj/docs               # stop, and take its documents 
 ctx docs check [--project P]                     # what one document says of another that is not so
 ```
 
+Every docs check compares documents with each other. None of them reads the
+code, so a README that no longer matches the program, or leaves out a command,
+is not caught here. Catch that in the project's own tests: a check that every
+command its `--help` lists is documented, and that every command the documents
+name exists, fails as soon as the two drift apart.
+
 It reads text files ending in `.md`, `.markdown`, `.txt`, `.rst`, `.adoc`, `.org`
 or `.wiki`, up to 2 MB each, split by heading. It skips hidden folders and
 `node_modules`, `vendor`, `target`, `build` and `dist`. Each file is tracked by
