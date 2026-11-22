@@ -3758,4 +3758,17 @@ PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" 
 # A missing file is an error.
 if "$CTX" extract "$T/none.jsonl" 2>/dev/null; then fail "missing file"; fi
 
+# The docs and the program agree: every command the usage lists is documented,
+# and every `ctx X` the README names is a command. (Run from the source tree.)
+if [ -f README.md ] && [ -d docs ]; then
+    cmds=$("$CTX" 2>&1 | awk '$1 == "ctx" && $2 ~ /^[a-z]/ { print $2 }' | sort -u)
+    [ -n "$cmds" ] || fail "docs check: no commands in the usage"
+    for c in $cmds; do
+        grep -qE "ctx $c([^a-z-]|\$)" README.md docs/*.md || fail "docs check: ctx $c is in the usage but in no document"
+    done
+    for c in $(grep -oE '`ctx [a-z]+' README.md | awk '{ print $2 }' | sort -u); do
+        printf '%s\n' "$cmds" | grep -qx "$c" || fail "docs check: README names ctx $c, which is not a command"
+    done
+fi
+
 echo "all tests passed"

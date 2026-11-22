@@ -13,24 +13,37 @@ file per machine.
 ## What it does
 
 - **Archives sessions.** Hooks capture each Claude Code session as it runs; a
-  periodic scan catches anything missed, and Pi and pic sessions too. Tool output is kept, trimmed, and known secret shapes
-  are replaced with `[REDACTED]` before anything is stored.
+  periodic scan catches anything missed, and Pi and pic sessions too. Tool
+  output is kept, trimmed, and known secret shapes are replaced with
+  `[REDACTED]` before anything is stored.
 - **Searches them.** `ctx search` ranks turns with SQLite's FTS5, this project
   first; `ctx turn` reads around a hit. The `ctx` skill teaches agents to do both.
   `ctx mcp` offers the same two as tools to clients that cannot run commands.
+- **Reminds agents the archive exists.** `ctx gate`, run as a hook before an
+  agent's first search in a session, tells it once that past sessions can be
+  searched, then stays quiet.
 - **Indexes a repository's documents.** `ctx docs add DIR` makes design notes,
   decision records and RFCs searchable where they sit, re-read when they change.
+  Its checks compare documents with each other (dead links, a record that
+  contradicts another); nothing compares documents with the code.
 - **Audits the archive** for secret-shaped strings that redaction missed, and
   for values you already know are secret.
 - **Keeps standing rules.** `ctx remember` records an instruction for future
-  sessions, with an optional end date, and every scan imports each coding agent's instruction
-  files (CLAUDE.md, AGENTS.md, GEMINI.md) and Claude Code's memory files as rules. Rules keep their history, sync, and can be
-  replaced or retired.
+  sessions, with an optional end date, and every scan imports each coding
+  agent's instruction files (CLAUDE.md, AGENTS.md, GEMINI.md) and Claude Code's
+  memory files as rules. Rules keep their history, sync, and can be replaced or
+  retired.
+- **Learns rules from what you say.** An instruction you give in two different
+  sessions becomes a tentative rule, offered at the start of each session, and
+  lapses 30 days after you last said it. `ctx rules` lists them,
+  `ctx rules undo N` removes one, and `ctx rules proposed` holds the ones that
+  wait for your yes.
 - **Records decisions.** `ctx decisions` lists each question an agent asked you
   and your answer. After a compaction the agent is told where the session stood:
   questions still waiting, recent answers, messages from other sessions, and the
   pages it published. `ctx artifacts` lists every published page and the version
-  you approved.
+  you approved. `ctx page --open` gathers everything waiting on you into one
+  page, and `ctx page apply` acts on the choices you hand back.
 - **Tracks tickets** for each project, offered to agents at the start of a
   session.
 - **Keeps sources with provenance.** Each source records where it came from, its
