@@ -6,9 +6,9 @@
 #define FSL_AMALGAMATION_BUILD 1
 #define FSL_PACKAGE_NAME "libfossil"
 #define FSL_LIBRARY_VERSION "0.6.1"
-#define FSL_LIB_VERSION_HASH "7d9634ac5c980131e24dce37ca62b592e4077b820850fbceeb43bb928643e31c"
-#define FSL_LIB_VERSION_TIMESTAMP "2026-11-12 15:35:09.917 UTC"
-#define FSL_LIB_CONFIG_TIMESTAMP "2026-11-12 15:36 GMT"
+#define FSL_LIB_VERSION_HASH "8aa1823ae1d0ad08c0408cada7c77035220b187e23aa713a69f24278f1da528b"
+#define FSL_LIB_VERSION_TIMESTAMP "2026-11-22 11:49:10.526 UTC"
+#define FSL_LIB_CONFIG_TIMESTAMP "2026-11-22 12:02 GMT"
 #define FSL_AUX_SCHEMA "2015-01-24"
 #define FSL_CONTENT_SCHEMA "2"
 #define FOSSIL_RELEASE_VERSION_NUMBER 22700
@@ -9023,8 +9023,14 @@ FSL_EXPORT fsl_id_t fsl_cx_last_insert_id(fsl_cx * f);
 
    See fsl_stat() for more details regarding the tgt parameter.
 
-   TODO: fossil-specific symlink support. Currently it does not
-   distinguish between symlinks and non-links.
+   Symlinks are handled as fossil(1) handles checkout files: if
+   fsl_cx_allows_symlinks() is true, a symlink is stat()ed itself
+   and reported as FSL_FSTAT_TYPE_LINK. If it is false, the link is
+   followed, so the result describes whatever it points to, and a
+   dangling link fails with FSL_RC_NOT_FOUND. Either way, a symlink
+   in the name's directory part is followed. fsl_stat() takes an
+   explicit flag for callers which need one behaviour regardless of
+   that setting.
 
    @see fsl_cx_stat2()
 */
@@ -9047,8 +9053,7 @@ FSL_EXPORT int fsl_cx_stat( fsl_cx * f, bool relativeToCwd,
    If zName ends with a trailing slash, that slash is retained in
    nameOut.
 
-   This function DOES NOT resolve symlinks, stat()ing the link instead
-   of what it points to.
+   Symlinks are resolved, or not, as described for fsl_cx_stat().
 
    @see fsl_cx_stat()
 */
@@ -17927,7 +17932,10 @@ struct fsl_ckout_manage_opt {
      fsl_reserved_fn_check()) and...
 
      - If checkIgnoreGlobs is false or the name does not match one of
-     the ignore-globs values.
+     the ignore-globs values and...
+
+     - No part of the name's directory part is a symlink or other
+     non-directory. As in fossil(1), such files are never added.
 
      The name it is passed is relative to the checkout root.
 
@@ -17954,10 +17962,12 @@ struct fsl_ckout_manage_opt {
     uint32_t added;
     /**
        Number of files which were requested to be added but were only
-       updated because they had previously been added. Updates set the
-       vfile table entry's current mtime, executable-bit state, and
-       is-it-a-symlink state. (That said, this code currently ignores
-       symlinks altogether!)
+       updated because they had previously been added. An update
+       un-deletes the vfile table entry and sets its mtime, but does
+       not currently change its executable-bit or is-it-a-symlink
+       state. A new entry records both. A symlink is added as a
+       symlink if the allow-symlinks setting is on, else as the file
+       it points to, as fossil(1) does.
     */
     uint32_t updated;
     /**
@@ -17968,6 +17978,10 @@ struct fsl_ckout_manage_opt {
 
        - If the checkIgnoreGlobs option is true and a filename matches
          any of those globs.
+
+       - Part of the name's directory part is a symlink or other
+         non-directory, e.g. "ld/f" where "ld" is a symlink to a
+         directory.
 
        - The client-provided callback says not to include the file.
     */
@@ -18070,6 +18084,10 @@ struct fsl_ckout_unmanage_state {
      // fail if the file does not exist, so this error can
      // normally be ignored.
      ```
+
+     Without allow-symlinks, fsl_cx_stat2() follows a symlink, so it
+     also fails for a dangling one. A client which wants to unlink
+     the file should stat() the link itself instead.
   */
   char const * filename;
 };
@@ -18294,7 +18312,16 @@ FSL_CKOUT_CHANGE_MISSING,
 /**
    Indicates that a file was renamed.
 */
-FSL_CKOUT_CHANGE_RENAMED
+FSL_CKOUT_CHANGE_RENAMED,
+/**
+   Indicates that the name of a managed file exists in the local
+   checkout but is neither a file nor a symlink, e.g. it is a
+   directory. With the allow-symlinks setting off, a symlink to a
+   directory falls into this category. A dangling symlink is
+   reported as FSL_CKOUT_CHANGE_MISSING. This corresponds to
+   fossil(1)'s NOT_A_FILE status.
+*/
+FSL_CKOUT_CHANGE_NOT_A_FILE
 };
 
 typedef enum fsl_ckout_change_e fsl_ckout_change_e;
@@ -18944,6 +18971,16 @@ FSL_EXPORT const fsl_checkin_opt fsl_checkin_opt_empty;
 
    Non-file inputs are provided via the opt parameter.
 
+   As in fossil(1), except on Windows, the permissions (executable
+   bit or symlink) of each selected file are taken from the
+   filesystem. Those of unselected files, and on Windows those of all
+   files, are carried over from the current checkout version. With
+   the allow-symlinks setting on (fsl_cx_allows_symlinks()), a
+   symlink is committed as a symlink, its content being the name it
+   points to, and is not checked for merge conflict markers. With the
+   setting off, a symlink is followed and committed as the file it
+   points to.
+
    On success, it returns 0 and...
 
    - If newRid is not NULL, it is assigned the new checkin's RID
@@ -19231,9 +19268,13 @@ struct fsl_repo_open_ckout_opt {
      -shm files, however they are spelled through symbolic links, are
      reserved names (fsl_reserved_fn_check()). The main
      db's settings are left as they are: its application_id is not
-     set, and its journal mode is not changed (a check-in fails if it
-     is not a rollback journal mode). Closing the checkout drops none
-     of the tables.
+     set, and its journal mode is not changed. If the repository's
+     tables are in the same db (fsl_repo_open_host()), a check-in
+     needs no particular journal mode. If the repository is a
+     separate db, a check-in fails unless the main db uses a rollback
+     journal mode with synchronous on, because SQLite would not commit
+     the two dbs together. Closing the checkout drops none of the
+     tables.
 
      The schema's REFERENCES clauses name the prefixed tables, but
      foreign keys are not enforced: libfossil requires PRAGMA
@@ -22446,6 +22487,437 @@ FSL_EXPORT bool fsl_bisect_option_is_on(fsl_cx * const f,
 #endif
 /* ORG_FOSSIL_SCM_FSL_BISECT_H_INCLUDED */
 /* end of file include/fossil-scm/bisect.h */
+/* start of file include/fossil-scm/patch.h */
+/* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=2 et sw=2 tw=80: */
+#if !defined(ORG_FOSSIL_SCM_FSL_PATCH_H_INCLUDED)
+#define ORG_FOSSIL_SCM_FSL_PATCH_H_INCLUDED
+/*
+  Copyright 2026 The Libfossil Authors, see LICENSES/BSD-2-Clause.txt
+
+  SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+  SPDX-FileCopyrightText: 2026 The Libfossil Authors
+  SPDX-FileType: Code
+
+  Heavily indebted to the Fossil SCM project (https://fossil-scm.org).
+*/
+/** @file patch.h
+
+    patch.h declares APIs for fossil(1)-compatible binary patches, as
+    with (fossil patch). A patch is a single file which captures all
+    of the uncommitted changes of a checkout so that they can be
+    applied to another checkout of the same repository, typically on
+    another machine.
+
+    A patch file is an SQLite database with these tables, as defined
+    by fossil(1)'s src/patch.c:
+
+    - cfg(key,value): metadata. See fsl_patch_info.
+
+    - chng(pathname,origname,hash,isexe,islink,delta): one row per
+      changed file. pathname is the file's name at the next check-in
+      and origname its name before a rename, else NULL. hash is the
+      baseline version's hash of the file, or NULL for a new file.
+      delta is NULL for a removed file, the compressed full content
+      for a new file, else a compressed fossil delta from the baseline
+      content, with a length of 0 if the content is unchanged.
+
+    - patchmerge(type,mhash): optional. One row per pending merge,
+      where type is one of "merge", "cherrypick", "backout" or
+      "integrate".
+
+    Patches created by these APIs can be applied by fossil(1) and vice
+    versa.
+
+    Not yet supported: undo of an applied patch.
+*/
+
+
+#if defined(__cplusplus)
+extern "C" {
+#endif
+
+/**
+   Options for fsl_patch_create().
+*/
+struct fsl_patch_create_opt {
+  /**
+     The file to write the patch to. If this is NULL, the patch is
+     passed to this->out instead.
+  */
+  char const * filename;
+  /**
+     If true and this->filename already exists, it is overwritten,
+     else fsl_patch_create() fails with FSL_RC_ALREADY_EXISTS.
+  */
+  bool overwrite;
+  /**
+     Output channel for the patch if this->filename is NULL. The
+     patch is binary and is passed to it in one or more calls.
+  */
+  fsl_output_f out;
+  /**
+     State for this->out.
+  */
+  void * outState;
+  /**
+     The name of the machine the patch is created on, recorded in the
+     patch for informational purposes only. May be NULL, in which
+     case it is not recorded. The library does not look this up
+     itself.
+  */
+  char const * hostname;
+};
+typedef struct fsl_patch_create_opt fsl_patch_create_opt;
+
+/** Initialized-with-defaults fsl_patch_create_opt instance,
+    intended for use in const-copy initialization. */
+#define fsl_patch_create_opt_empty_m { \
+  NULL/*filename*/, false/*overwrite*/, NULL/*out*/, \
+  NULL/*outState*/, NULL/*hostname*/ \
+}
+
+/** Initialized-with-defaults fsl_patch_create_opt instance,
+    intended for use in non-const copy initialization. */
+FSL_EXPORT const fsl_patch_create_opt fsl_patch_create_opt_empty;
+
+/**
+   Creates a patch of all uncommitted changes in f's checkout,
+   including pending merges, as with (fossil patch create). See
+   fsl_patch_create_opt for the options.
+
+   The checkout is scanned for changes first, so the caller need not
+   do so.
+
+   Unlike fossil(1), each file's executable bit and symlink state are
+   taken from the file itself. fossil(1) takes them from the checkout
+   db, which a changes scan does not update when only they change, so
+   its patches lose such a change.
+
+   The patch is built in memory and written only once it is complete,
+   so an error does not leave a partial patch file behind. It is
+   written even if there are no changes, as fossil(1) does.
+
+   Returns 0 on success, FSL_RC_NOT_A_CKOUT if no checkout is opened,
+   FSL_RC_MISUSE if opt->filename and opt->out are both NULL,
+   FSL_RC_ALREADY_EXISTS if opt->filename exists and opt->overwrite
+   is false, FSL_RC_TYPE if opt->filename exists but is not a file,
+   any result code returned by opt->out, or any number of db or I/O
+   errors.
+*/
+FSL_EXPORT int fsl_patch_create(fsl_cx * const f,
+                                fsl_patch_create_opt const * opt);
+
+/**
+   Opaque handle to an opened patch. It is created by
+   fsl_patch_open_file() or fsl_patch_open_mem() and freed by
+   fsl_patch_close(). It must not outlive the fsl_cx it was opened
+   with.
+*/
+typedef struct fsl_patch fsl_patch;
+
+/**
+   Opens the patch file zFile, read-only, and assigns *pOut to a new
+   handle to it, which the caller must eventually pass to
+   fsl_patch_close(). Neither a repository nor a checkout need be
+   opened.
+
+   The patch is validated before it is accepted: it must be a
+   well-formed SQLite database which passes SQLite's quick_check and
+   has the tables and columns described in this file's docs. Note
+   that a patch is untrusted input, so the database is opened in
+   SQLite's defensive mode with untrusted-schema handling. The file
+   names in it are not checked here but by fsl_patch_apply().
+
+   Returns 0 on success, FSL_RC_NOT_FOUND if zFile does not exist,
+   FSL_RC_SYNTAX if it is not a valid patch, FSL_RC_OOM, or a db
+   error. On error *pOut is not modified.
+*/
+FSL_EXPORT int fsl_patch_open_file(fsl_cx * const f, char const * zFile,
+                                   fsl_patch ** pOut);
+
+/**
+   Works like fsl_patch_open_file() but reads the patch from the n
+   bytes of memory at src, e.g. a patch read from stdin or from a
+   remote command. The memory is copied, so the caller still owns
+   src and need not keep it alive.
+
+   In addition to the errors fsl_patch_open_file() can return, this
+   returns FSL_RC_SYNTAX if n is less than 512, the smallest possible
+   SQLite database.
+*/
+FSL_EXPORT int fsl_patch_open_mem(fsl_cx * const f, void const * src,
+                                  fsl_size_t n, fsl_patch ** pOut);
+
+/**
+   Frees all resources owned by p. A no-op if p is NULL.
+*/
+FSL_EXPORT void fsl_patch_close(fsl_patch * p);
+
+/**
+   Metadata from a patch's cfg table. Any member may be NULL if the
+   patch does not have that entry. All strings are owned by the
+   fsl_patch they come from and are valid until it is closed.
+*/
+struct fsl_patch_info {
+  /** Hash of the check-in the patch's changes are relative to. */
+  char const * baseline;
+  /** The repository's project code. */
+  char const * projectCode;
+  /** The repository's project name. */
+  char const * projectName;
+  /** The user who created the patch. */
+  char const * user;
+  /** The machine the patch was created on. */
+  char const * hostname;
+  /** The absolute path of the checkout the patch was created in. */
+  char const * ckoutDir;
+  /** The absolute path of the repository it was created in. */
+  char const * repoDb;
+  /** When the patch was created, as a Julian day, or 0 if unknown. */
+  double date;
+};
+typedef struct fsl_patch_info fsl_patch_info;
+
+/**
+   Returns p's metadata. It is read when p is opened, so this cannot
+   fail. The result is owned by p.
+*/
+FSL_EXPORT fsl_patch_info const * fsl_patch_info_get(fsl_patch const * p);
+
+/**
+   One changed file in a patch, as passed to fsl_patch_each_f.
+*/
+struct fsl_patch_entry {
+  /** The file's checkout-relative name at the next check-in. */
+  char const * name;
+  /** The file's name before it was renamed, or NULL if it was not
+      renamed. */
+  char const * origName;
+  /** The file's hash in the baseline version, or NULL if the file is
+      new. */
+  char const * baselineHash;
+  /** True if the file is new (not in the baseline). */
+  bool isNew;
+  /** True if the file is removed. */
+  bool isDeleted;
+  /** True if an existing file's content changed. Always false for a
+      new or removed file, and for one which is only renamed or whose
+      permissions changed. */
+  bool isModified;
+  /** True if the file is executable. */
+  bool isExe;
+  /** True if the file is a symlink. */
+  bool isLink;
+};
+typedef struct fsl_patch_entry fsl_patch_entry;
+
+/**
+   Callback type for fsl_patch_each(). e and the memory it points to
+   are valid only for the duration of the call. If it returns non-0,
+   iteration stops and that result is returned from fsl_patch_each(),
+   except that FSL_RC_BREAK stops iteration and fsl_patch_each()
+   returns 0.
+*/
+typedef int (*fsl_patch_each_f)(fsl_patch_entry const * e, void * state);
+
+/**
+   Callback type for fsl_patch_each_merge(), passed the type and hash
+   of one pending merge. It works as fsl_patch_each_f does.
+*/
+typedef int (*fsl_patch_merge_f)(fsl_merge_type_e type,
+                                 char const * zHash, void * state);
+
+/**
+   Calls cb once for each changed file in p, ordered by name, passing
+   it state. Returns 0 on success, the result of cb as described for
+   fsl_patch_each_f, or a db error.
+*/
+FSL_EXPORT int fsl_patch_each(fsl_patch * const p, fsl_patch_each_f cb,
+                              void * state);
+
+/**
+   Calls cb once for each pending merge recorded in p, in the order in
+   which they are recorded, passing it state. Entries with an unknown
+   merge type or a malformed hash are skipped, as fossil(1) does.
+   Returns 0 on success, including if p has no merges, the result of
+   cb as described for fsl_patch_each_f, or a db error.
+*/
+FSL_EXPORT int fsl_patch_each_merge(fsl_patch * const p,
+                                    fsl_patch_merge_f cb, void * state);
+
+/**
+   Reconstructs one file of patch p, for example to show the patch as a
+   diff, as (fossil patch diff) does. p's context must have a
+   repository opened, which must hold the patch's baseline versions.
+   zName is the file's name as fsl_patch_entry::name has it.
+
+   If tgt is not NULL, it is reset, then the file's content as the
+   patch leaves it is written to it: empty for a removed file, and
+   the baseline content for a file which is only renamed or whose
+   permissions changed.
+
+   If baseline is not NULL, it is reset, then the file's content in
+   the patch's baseline is written to it: empty for a new file. Unlike
+   fossil(1), which shows a removed file as an empty diff because its
+   patches record no hash for it, a removed file's baseline content
+   is looked up in the baseline check-in.
+
+   Returns 0 on success, FSL_RC_NOT_A_REPO if no repository is opened,
+   FSL_RC_NOT_FOUND if p has no file named zName or a baseline version
+   which is needed is not in the repository, FSL_RC_SYNTAX for a
+   malformed hash or file content, FSL_RC_DELTA_INVALID_xxx for a
+   malformed delta, or a db error.
+*/
+FSL_EXPORT int fsl_patch_content(fsl_patch * const p, char const * zName,
+                                 fsl_b * const tgt, fsl_b * const baseline);
+
+/**
+   The steps reported by fsl_patch_apply()'s callback.
+*/
+enum fsl_patch_apply_e {
+/** Sentinel value. */
+FSL_PATCH_APPLY_NONE = 0,
+/**
+   A pre-existing local change was reverted, because
+   fsl_patch_apply_opt::force was true. The name is that of the
+   reverted file.
+*/
+FSL_PATCH_APPLY_REVERT,
+/**
+   The checkout was updated to the patch's baseline. The name is the
+   baseline's hash.
+*/
+FSL_PATCH_APPLY_BASELINE,
+/**
+   A pending merge was re-done. The name is the merged version's
+   hash.
+*/
+FSL_PATCH_APPLY_MERGE,
+/**
+   A file which a merge changed but the patch does not mention was
+   reverted, as fossil(1) does.
+*/
+FSL_PATCH_APPLY_UNMERGE,
+/** A file was removed. */
+FSL_PATCH_APPLY_DELETE,
+/** A file was renamed. origName is its former name. */
+FSL_PATCH_APPLY_RENAME,
+/** A file's content or permissions were changed. */
+FSL_PATCH_APPLY_EDIT,
+/** A new file was written and queued for adding. */
+FSL_PATCH_APPLY_NEW
+};
+typedef enum fsl_patch_apply_e fsl_patch_apply_e;
+
+/**
+   Callback type for fsl_patch_apply(). It is called after each step
+   is done, or in place of doing it in a dry run. zName is the
+   checkout-relative file name or a hash, as documented for each
+   fsl_patch_apply_e value. zOrigName is the file's former name for
+   FSL_PATCH_APPLY_RENAME, else NULL.
+
+   If it returns non-0, applying stops and that result is returned,
+   noting that files written so far stay written.
+*/
+typedef int (*fsl_patch_apply_f)(fsl_patch_apply_e step,
+                                 char const * zName,
+                                 char const * zOrigName,
+                                 void * state);
+
+/**
+   Options for fsl_patch_apply().
+*/
+struct fsl_patch_apply_opt {
+  /**
+     If true and the checkout has uncommitted changes, they are
+     reverted, and permanently lost, before the patch is applied. If
+     false, a checkout with changes is an error.
+  */
+  bool force;
+  /**
+     If true, nothing is changed, but the callback is told what
+     would have been done.
+  */
+  bool dryRun;
+  /**
+     Optional per-step callback.
+  */
+  fsl_patch_apply_f callback;
+  /**
+     State for this->callback.
+  */
+  void * callbackState;
+};
+typedef struct fsl_patch_apply_opt fsl_patch_apply_opt;
+
+/** Initialized-with-defaults fsl_patch_apply_opt instance,
+    intended for use in const-copy initialization. */
+#define fsl_patch_apply_opt_empty_m { \
+  false/*force*/, false/*dryRun*/, NULL/*callback*/, \
+  NULL/*callbackState*/ \
+}
+
+/** Initialized-with-defaults fsl_patch_apply_opt instance,
+    intended for use in non-const copy initialization. */
+FSL_EXPORT const fsl_patch_apply_opt fsl_patch_apply_opt_empty;
+
+/**
+   Applies patch p to f's checkout, as with (fossil patch apply), in
+   this order:
+
+   1. If the checkout has changes and opt->force is true, they are
+      reverted.
+
+   2. If the checkout is not at the patch's baseline, it is updated
+      to it.
+
+   3. The patch's pending merges, if any, are re-done, then any file
+      which they changed but which the patch does not mention is
+      reverted. That follows fossil(1) (2024-12-16): such changes were
+      not part of the original checkout's state.
+
+   4. Removed files are removed, renamed files are renamed, and
+      changed and new files are written, with new ones queued for
+      adding.
+
+   Unlike fossil(1), a new empty file is added, and a change to only a
+   file's executable or symlink state is applied. fossil(1) drops both.
+
+   Before anything is changed, the patch is checked: a file name which
+   is not a simple relative path or is a reserved name, a hash which
+   is not a full artifact hash, or a baseline (of the patch or of any
+   file) which is not in the repository causes the whole patch to be
+   rejected. When a file is written, removed or renamed, its path is
+   also checked against symlinked or non-directory parent directories
+   at that time.
+
+   In a dry run, the callback is not told which files step 3 would
+   revert, as that depends on the outcome of merges which are not
+   done.
+
+   Returns 0 on success. Returns FSL_RC_NOT_A_CKOUT if no checkout is
+   opened, FSL_RC_REPO_MISMATCH if the patch's project code differs
+   from the repository's, FSL_RC_CONFLICT if the checkout has changes
+   and opt->force is false, FSL_RC_NOT_FOUND or FSL_RC_PHANTOM if the
+   baseline or a file's baseline version is not in the repository
+   (it may need to be synced first), FSL_RC_RANGE for an unsafe file
+   name, FSL_RC_SYNTAX for a malformed hash or file content,
+   FSL_RC_DELTA_INVALID_xxx for a malformed delta, the result of
+   opt->callback, or any number of db or I/O errors.
+
+   The db side runs in a transaction, which is rolled back on error
+   or in a dry run, but files written before an error stay written.
+*/
+FSL_EXPORT int fsl_patch_apply(fsl_cx * const f, fsl_patch * const p,
+                               fsl_patch_apply_opt const * opt);
+
+#if defined(__cplusplus)
+} /*extern "C"*/
+#endif
+#endif
+/* ORG_FOSSIL_SCM_FSL_PATCH_H_INCLUDED */
+/* end of file include/fossil-scm/patch.h */
 /* start of file include/fossil-scm/auth.h */
 /* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* vim: set ts=2 et sw=2 tw=80: */
@@ -22824,6 +23296,20 @@ enum fsl_sc_F_lib_e {
   FSL_SC_F_TLS_ACCEPT_ANY_CERT = 0x04000000,
 
   /**
+     For channels which do not speak HTTP. The library does not parse
+     HTTP headers from the reply, so submit() must not make read()
+     return any. Instead, submit() sets fsl_sc::reply to describe the
+     reply body, which read() then returns from its first byte. The
+     flag says nothing about the request: it may be combined with
+     FSL_SC_F_REQUEST_HEADERS, for a channel which speaks HTTP to its
+     peer but delimits the reply itself, and the library then builds
+     fsl_sc::requestHeaders as it does without this flag. Without
+     FSL_SC_F_REQUEST_HEADERS the channel carries the login card
+     passed to submit() in whatever way it likes.
+  */
+  FSL_SC_F_NO_HTTP = 0x02000000,
+
+  /**
      The mask of FSL_SC_F_... bits which are reserved for use by
      library-level options.
   */
@@ -22933,12 +23419,31 @@ enum fsl_sc_init_e {
    - Its cleanup() method is called to clean it up.
 
 
-   Open design issues:
+   A client applies a channel of its own to a sync or a clone through
+   fsl_xfer_config::channel. What the library requires of it:
 
-   - The current public API does not give clients anywhere to
-     apply their own channel to a sync request. It's not anticipated
-     that any clients would really want to, except perhaps to enable
-     tracing.
+   - init(), append(), submit() and read() must not be NULL and
+     impl.p must not be NULL. A channel which lacks any of them is
+     refused with FSL_RC_MISUSE and a message which names what it
+     lacks. cleanup() is optional, and self() defaults to
+     fsl_sc_self().
+
+   - A method has failed if it returns non-0 or if it set the
+     transfer's error state with fsl_xfer_error() or one of its
+     siblings. If it set that state, the library reports that error as
+     it is, whatever the method returned, so a method which fails
+     should set a message and return the same code. If it returned
+     non-0 without setting it, the library sets it to that code with a
+     message which names the channel and the method. A read() which
+     reaches the end of its input returns FSL_RC_BREAK, which is not a
+     failure.
+
+   - A read() asked for a positive number of bytes must append exactly
+     that many, and a read() asked for FSL_SC_READ_LINE must append at
+     least one byte. If it returns 0 having appended anything else
+     the library fails the transfer with FSL_RC_MISUSE and a message
+     which names the channel and says how many bytes were asked for
+     and how many were appended.
 */
 struct fsl_sc {
   /**
@@ -23090,8 +23595,11 @@ struct fsl_sc {
      and is never called after any call to init() fails.
 
      If loginCard is not NULL, it contains the full content of a login
-     card for the request. Implementations must emit these bytes
-     as an HTTP header in this form:
+     card for the request. A channel which uses
+     FSL_SC_F_REQUEST_HEADERS must not add it to the request: the
+     library has put it in requestHeaders already, in the Cookie
+     header shown below. Any other channel must carry these bytes to
+     the remote. An HTTP channel emits them as a header in this form:
 
      ```
      Cookie: x-f-l-c=UrlEncodedValueOfTheCard
@@ -23105,6 +23613,11 @@ struct fsl_sc {
      ...
      fsl_free(z);
      ```
+
+     A channel which uses FSL_SC_F_NO_HTTP and does not use
+     FSL_SC_F_REQUEST_HEADERS carries the card in whatever way suits
+     its transport, and its peer must present it to the remote as that
+     header.
 
      (Sidebar: that approach to authentication only works with fossil
      versions newer than 2025-07-27, so the library cannot log in
@@ -23169,6 +23682,30 @@ struct fsl_sc {
      capability ever becomes useful. For future compatibility's sake,
      it's legal to simply return 0 if howMuch is 0, but it's also
      legal to assert(howMuch!=0) until that happens.
+
+     How the end of a reply body is determined. The library never
+     tells read() the length of the body and does not stop reading
+     once it has read that many bytes, so read() must end the body
+     itself, in HTTP mode and in FSL_SC_F_NO_HTTP mode alike. The
+     length the library knows is the Content-Length header in HTTP
+     mode and fsl_sc::reply.length in FSL_SC_F_NO_HTTP mode. It is
+     used afterwards, to check what was read:
+
+     - If the reply is not compressed, the library reads cards with
+       FSL_SC_READ_LINE and with sized reads, and the body ends
+       where a FSL_SC_READ_LINE read returns FSL_RC_BREAK. So read()
+       must return FSL_RC_BREAK right after the last byte of the
+       body and must not return any byte which follows it, as that
+       belongs to the next reply. When the body has ended, the library
+       fails the transfer with "truncated" or "longer than its
+       Content-Length" if it read another number of bytes than the
+       length.
+
+     - If the reply is compressed, the library calls read() once, with
+       FSL_SC_READ_ALL, which must append the whole body and no more:
+       the library fails the transfer if that is not the length. It
+       then decompresses the body and serves the cards from memory
+       without calling read() again before the next submit().
 
      Must return 0 on success, non-0 on error, and should use one of
      the fsl_xfer_error() family of functions to to provide any error
@@ -23259,6 +23796,17 @@ struct fsl_sc {
      and the library internals.
   */
   fsl_b scratch;
+  /**
+     For channels with FSL_SC_F_NO_HTTP: what submit() must set to
+     describe the reply, in place of the Content-Length and
+     Content-Type headers. A length of 0 is an error.
+  */
+  struct {
+    /** Size of the reply body in bytes. */
+    fsl_size_t length;
+    /** True if the body is fossil-compressed, as for FSL_SC_F_COMPRESSED. */
+    bool compressed;
+  } reply;
 }/*fsl_sc*/;
 
 /**
@@ -23422,6 +23970,33 @@ FSL_EXPORT void fsl_xfer_debug(fsl_xfer * xf, char const * zMsg);
 FSL_EXPORT fsl_cx * fsl_xfer_cx(fsl_xfer * xf);
 
 /**
+   Returns the most bytes xf's transfer accepts in one reply body,
+   compressed or uncompressed: fsl_xfer_config::maxResponseBytes if it
+   is positive, else 256 MiB. The library checks a reply against it
+   when it knows its length. A channel which reads a reply of unknown
+   length should stop and fail when the reply gets longer.
+
+   xf may be NULL, as for a channel used outside of a transfer, and
+   then the result is the default.
+
+   fsl_sc::xfer is set before fsl_sc::init() is first called, so
+   this may be used from there.
+*/
+FSL_EXPORT fsl_size_t fsl_xfer_max_response(fsl_xfer const * xf);
+
+/**
+   Returns the number of seconds a channel should let a read or write
+   make no progress before failing the transfer:
+   fsl_xfer_config::socketTimeoutSeconds if it is positive, else 120.
+   The library does not enforce this itself: it is for channels which
+   do their own I/O, as the native socket channel does.
+
+   xf may be NULL, as for fsl_xfer_max_response(), and fsl_sc::xfer is
+   set before fsl_sc::init() is first called.
+*/
+FSL_EXPORT int fsl_xfer_socket_timeout(fsl_xfer const * xf);
+
+/**
    Sets xf's (persistent) error state to the given information
    and propagates it through to xf's fsl_cx. After this,
    further calls to fsl_xf-taking APIs will fail.
@@ -23431,6 +24006,11 @@ FSL_EXPORT fsl_cx * fsl_xfer_cx(fsl_xfer * xf);
 
    This function prefixes the message with some form of ch->name and
    the fsl_rc_cstr() value of the given result code.
+
+   The format is fsl_appendf()'s, not the C library's. In it %z is not
+   a size modifier: it prints a (char *) like %s and then frees it, as
+   in SQLite, so "%zu" with a size_t crashes. Print sizes with
+   FSL_SIZE_T_PFMT, e.g. "%" FSL_SIZE_T_PFMT.
 
    Returns the given code, or FSL_RC_ERROR if code is 0. i.e.
    it never returns 0. A code value of 0 is semantically illegal in
@@ -23882,6 +24462,122 @@ extern const fsl_sc fsl_sc_socket;
 FSL_EXPORT int fsl_sc_socket_state_init(fsl_sc *ch);
 
 /**
+   What read() returns when no byte arrived within
+   fsl_xfer_socket_timeout() seconds. See fsl_sc_stream_ops.
+*/
+#define FSL_SC_STREAM_TIMEOUT ((fsl_int_t)-2)
+
+/**
+   What read() returns at the end of a stream which was not closed
+   cleanly, as when a TLS peer closes the connection without a
+   close_notify alert. See fsl_sc_stream_ops.
+*/
+#define FSL_SC_STREAM_UNCLEAN ((fsl_int_t)-3)
+
+/**
+   The callbacks of a stream channel, which gives a caller who has
+   only a byte stream (a TCP or TLS connection, a Unix socket, a
+   tunnel) the library's HTTP handling, so that the caller writes none
+   of it: the request line and headers, the HTTP/1.1 upgrade with
+   "Connection: close", replies with a Content-Length, close-delimited
+   replies, chunked replies, the reply size limit and the timeout.
+   The library's own http: and https: channel is this same channel
+   with sockets and OpenSSL as its callbacks.
+
+   The channel makes one request per connection. For each round
+   trip it calls connect(), then write() until the request is sent,
+   then read() until it returns 0 and then close(). It also calls
+   close() when the transfer ends with the connection open, as after
+   a failed write(). The calls all come from the thread which runs the
+   transfer.
+
+   Every callback which can fail receives the transfer, xf, to report
+   the failure to. A failing callback sets the error state with
+   fsl_xfer_errorf() or one of its siblings, naming what failed, and
+   returns as described below. The channel then fails the transfer
+   with that error, as for the methods of fsl_sc. If a callback fails
+   without setting one, the channel sets a message which names the
+   channel and the callback.
+
+   The callbacks must make progress or fail: the library cannot
+   interrupt a blocked callback.
+*/
+struct fsl_sc_stream_ops {
+  /**
+     Opens the connection to the host in url: url->host, url->port
+     (0 if the URL has none), url->scheme and url->path. The library
+     does not interpret the scheme, so a caller may use any. If it
+     does TLS, it also does all of its certificate handling. Returns
+     0 on success. The callback should not let a later read() or
+     write() wait longer than fsl_xfer_socket_timeout(xf) seconds
+     for progress.
+  */
+  int (*connect)(void * state, fsl_url const * url, fsl_xfer * xf);
+
+  /**
+     Reads up to n bytes into dest and returns how many it read. It
+     returns at least one byte, waiting for it if need be, unless the
+     stream has ended, when it returns 0 if the peer closed the
+     connection cleanly, with a TCP FIN or a TLS close_notify, and
+     FSL_SC_STREAM_UNCLEAN if it did not, as a TLS peer which just
+     closes the connection. Both end the reply, and the library
+     checks it against its Content-Length. A reply which has neither a
+     Content-Length nor chunks ends where the connection does, and is
+     accepted only after a clean close, as it could otherwise be cut
+     short. If no byte arrives within
+     fsl_xfer_socket_timeout(xf) seconds it returns
+     FSL_SC_STREAM_TIMEOUT. The library treats that as the end of the
+     reply if the peer had already sent some of it, and otherwise
+     fails with "No response from HOST within N seconds". Any other
+     negative result is a failure.
+  */
+  fsl_int_t (*read)(void * state, void * dest, fsl_size_t n,
+                    fsl_xfer * xf);
+
+  /**
+     Writes up to n bytes from src and returns how many it wrote,
+     which is at least one, or a value less than 1 on failure.
+     The library calls it again for the rest.
+  */
+  fsl_int_t (*write)(void * state, void const * src, fsl_size_t n,
+                     fsl_xfer * xf);
+
+  /**
+     Closes the connection and releases whatever connect() acquired.
+     It is optional.
+  */
+  void (*close)(void * state);
+
+  /**
+     The first argument of all of the callbacks. It is the caller's.
+  */
+  void * state;
+};
+typedef struct fsl_sc_stream_ops fsl_sc_stream_ops;
+
+/**
+   Initializes ch as a stream channel which calls ops, ready to be
+   assigned to fsl_xfer_config::channel. ops must have its connect(),
+   read() and write() set, and it and what its state points to must
+   outlive every transfer which uses ch, because ch points to ops
+   until a transfer starts and copies it. Each transfer takes its own
+   copy of ch, which allocates and frees the buffers it needs, so
+   nothing has to be cleaned up afterwards and ch may serve any number
+   of transfers one after another.
+
+   The URL of the transfer is parsed into the channel's copy and
+   passed to ops->connect(). Its scheme, such as https, has no
+   meaning to the channel.
+
+   ch->name is "stream", which prefixes the channel's error
+   messages. A caller may change it after this returns.
+
+   Returns 0 on success and FSL_RC_MISUSE if ch or ops is NULL or ops
+   lacks a required callback.
+*/
+FSL_EXPORT int fsl_sc_stream_init(fsl_sc * ch, fsl_sc_stream_ops const * ops);
+
+/**
    Expands to a mapping of all fsl_sc_tracer_e types by invoking
    E(NAME,VALUE) for each one. NAME is the suffix part of the name,
    e.g. init instead of FSL_SC_TRACER_init. VALUE is its integer
@@ -24251,20 +24947,33 @@ struct fsl_xfer_config {
   int8_t maxResponseSeconds;
 
   /**
-     For fsl_sync_client(), the hard maximum compressed and
-     uncompressed response size, in bytes. It is also the approximate
-     maximum outbound request payload size, which may be exceeded by
-     one artifact. Values less than 1 disable the inbound bound and
-     apply a built-in default to the outbound payload size. The
-     default is disabled. Clone mode currently ignores the inbound
-     bound for compatibility with existing clone responses.
+     For fsl_sync_client() and fsl_clone(), the hard maximum
+     compressed and uncompressed response size, in bytes. Values less
+     than 1 mean 256 MiB. A fossil(1) server stops adding artifacts to
+     a reply once the reply reaches its max-download setting (default
+     5000000 bytes), so a reply can be max-download + 1 artifact.
+     Replies from a fossil(1) server should be smaller than FSL_BLOB_MAX_SIZE.
+
+     The native socket channel and the popen channels stop reading a
+     reply once the reply is longer than:
+
+        maxResponseBytes + (the formula in src/sc.c:fsl__sc_reply_max)
+
+     It is also the approximate maximum outbound request payload size,
+     which may also be exceeded by one artifact. Values less than 1 apply a
+     built-in default to the outbound payload size.
+
+     A channel supplied through channel reads the effective value with
+     fsl_xfer_max_response().
   */
   int32_t maxResponseBytes;
 
   /**
      Seconds the HTTP socket channel waits for each read of a reply (or
      write of a request) to make progress before failing the
-     transfer. Values less than 1 mean the default of 120.
+     transfer. Values less than 1 mean the default of 120. A channel
+     supplied through channel reads the effective value with
+     fsl_xfer_socket_timeout() and must apply it itself.
   */
   int32_t socketTimeoutSeconds;
 
@@ -24388,6 +25097,20 @@ struct fsl_xfer_config {
     */
     bool ignoreSaved;
   } password;
+
+  /**
+     If not NULL, a copy of this channel is used for the transfer,
+     instead of one chosen from the URL scheme. The caller initializes
+     it from fsl_sc_empty and sets its methods, flags and impl state
+     (see fsl_sc for what it must provide; the library refuses a
+     channel which lacks a required member). The library sets the
+     copy's xfer member and parses the URL, which is still required,
+     into the copy's url, so that the channel can read its host and
+     path. The caller keeps ownership of what impl.p points to, which
+     must outlive the transfer, and of the original, which the library
+     does not clean up.
+  */
+  fsl_sc const * channel;
 };
 
 
@@ -24424,7 +25147,8 @@ struct fsl_xfer_config {
     .state = NULL,                   \
     .save = false,                   \
     .ignoreSaved = false             \
-  }                                  \
+  },                                 \
+  .channel = NULL                    \
 }
 
 /**
@@ -24438,7 +25162,10 @@ enum fsl_sync_flags_e {
      setting "fcli.autosync" or "autosync" is set, preferring the
      former. "autosync" is fossil(1) standard flag for this, but clients
      may use "fcli.autosync" to trump that without changing fossil's
-     behavior.
+     behavior. With neither setting, autosync is on, as in fossil(1).
+     "pullonly" and the "dont-push" setting drop FSL_SYNC_PUSH. If
+     neither FSL_SYNC_PULL nor FSL_SYNC_PUSH is set, both are
+     assumed.
   */
   FSL_SYNC_AUTO     =     0x01,
   /** Perform a pull (read-only) sync. */
@@ -26213,7 +26940,9 @@ FSL_EXPORT const char * fcli_next_arg(bool remove);
 /**
    If fcli.argv contains what looks like any flag arguments, this
    updates the fossil error state and returns FSL_RC_MISUSE, else
-   returns 0. If outputError is true and an unused flag is found then
+   returns 0. A "-" by itself is not considered to be a flag, as it
+   conventionally names stdin or stdout. If outputError is true and an
+   unused flag is found then
    the error state is immediately output (but not cleared).  If
    outputError is false then the next call to fcli_err_report2() will
    emit it the error, typically indirectly via fcli_end_of_main().
@@ -29087,17 +29816,18 @@ bool fsl__is_reserved_fn_windows(const char *zPath, fsl_int_t nameLen);
 /** @internal
 
    Modes for fsl__ckout_clear_merge_state(), describing the caller's
-   intent so that cherry-pick/backout markers (vmerge.id IN (-1,-2))
-   are only discarded when the user has plausibly abandoned them.
+   intent so that the checkout-level merge markers (vmerge.id<=0:
+   merge, cherry-pick, backout, integrate) are only discarded when the
+   user has plausibly abandoned them.
 */
 enum fsl__ckout_merge_clear_e {
 /**
    Partial wipe for state-refresh scans (fsl_vfile_changes_scan()):
-   clears regular per-file merge state for unchanged files and sweeps
-   genuinely-stale merge state, but never removes cherry-pick/backout
-   markers. A scan performed on behalf of some other operation must
-   not unilaterally decide that a pending cherry-pick/backout has
-   been abandoned.
+   clears per-file merge state (vmerge.id>0) for unchanged files but
+   never removes the checkout-level markers. A scan performed on
+   behalf of some other operation must not unilaterally decide that a
+   pending merge has been abandoned. fossil(1)'s scan never touches
+   vmerge.
 */
 FSL__MERGE_CLEAR_SCAN = 0,
 /**
@@ -29319,14 +30049,13 @@ int fsl__undo_end(fsl_cx * const f, int rc, bool owner);
 int fsl__undo_keep_stash(fsl_cx * const f, fsl_id_t stashId);
 
 /** @internal
-   UNTESTED!
-
-   Creates a file named zLinkFile and populates its contents with a
-   single line: zTgtFile. This behaviour corresponds to how fossil
-   manages SCM'd symlink entries on Windows and on other platforms
-   when the 'allow-symlinks' repo-level config setting is disabled.
-   (In late 2020 fossil defaulted that setting to disabled and made it
-   non-versionable.)
+   Creates zLinkFile as a symlink to zTgtFile, as fossil(1)'s
+   symlink_create() does: a real symlink if f's 'allow-symlinks'
+   setting is on and the platform and f's checkout filesystem support
+   them, else a regular file holding the single line zTgtFile (which
+   is how fossil manages symlinks on Windows and, since late 2020,
+   by default). Whatever was at zLinkFile is removed first, so this
+   never writes through an existing symlink.
 
    zLinkFile may be an absolute path rooted at f's current checkout or
    may be a checkout-relative path.
@@ -29340,16 +30069,8 @@ int fsl__undo_keep_stash(fsl_cx * const f, fsl_id_t stashId);
 
    - FSL_RC_OOM on allocation error.
 
-   - The result of fsl_b_to_filename() if writing zLinkFile fails, in
-   which case f's error state names the file.
-
-   Potential TODO (maybe!): handle symlinks as described above or
-   "properly" on systems which natively support them iff f's
-   'allow-symlinks' repo-level config setting is true. That said: the
-   addition of symlinks support into fossil was, IMHO, a poor decision
-   for $REASONS. That might (might) be reflected long-term in this API
-   by only supporting them in the way fossil does for platforms which
-   do not support symlinks.
+   - The result of fsl__cfs_symlink_create() if creating zLinkFile
+   fails, in which case f's error state names the file.
 */
 int fsl__ckout_symlink_create(fsl_cx * f, char const *zTgtFile,
                               char const * zLinkFile);
@@ -31315,6 +32036,32 @@ int fsl__cfs_symlink_create(fsl_cx * const f, char const *zTarget,
                             char const *zLink, bool realLink);
 int fsl__cfs_symlink_copy(fsl_cx * const f, char const *zFrom,
                           char const *zTo, bool realLink);
+
+/** @internal
+
+   Reads checkout file zName into tgt as fossil(1)'s
+   blob_read_from_file(...,RepoFILE) does: with the allow-symlinks
+   setting on, a symlink's content is its target name, else the
+   symlink is followed. If isLink is not NULL, *isLink is set to
+   whether zName was read as a symlink.
+
+   Returns 0 on success or the non-0 result of fsl__cfs_read() or
+   fsl__cfs_symlink_read(), e.g. FSL_RC_NOT_FOUND. It does not set
+   f's error state.
+*/
+int fsl__cfs_read_repofile(fsl_cx * const f, fsl_b * const tgt,
+                           char const *zName, bool * isLink);
+
+/** @internal
+
+   Returns the permission of a checkout file as fossil(1)'s
+   file_perm(...,RepoFILE) does, given its fsl_fstat. fst must come
+   from a successful fsl__cfs_stat() which dereferenced symlinks
+   unless allowSymlinks, which must be the allow-symlinks setting
+   (fsl_cx_allows_symlinks()). A symlink is FSL_FILE_PERM_LINK, and
+   never also executable.
+*/
+fsl_fileperm_e fsl__fstat_perm(fsl_fstat const * fst, bool allowSymlinks);
 
 
 #if defined(__cplusplus)
