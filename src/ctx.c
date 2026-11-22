@@ -2293,6 +2293,64 @@ static int cmd_status(void) {
 
 /* ctx stats [--weeks N]: how agents used ctx, per week and per project, from the
  * archive alone. A miss is a search answered with "no matches". */
+/* What pic measured its lapse compaction to save, from `pic usage --lapse` on pic's journal
+ * (CTX_PIC_DB, by default ~/.pic/pic.sqlite): pic owns that measure and its interval, so its
+ * report is passed on as it is. Nothing is printed when the journal is missing, CTX_PIC_DB is
+ * empty, or pic is absent or fails. */
+static void stats_pic(void) {
+  const char *picdb = getenv("CTX_PIC_DB"), *home = getenv("HOME");
+  char path[4200];
+  if (picdb) {
+    if (!*picdb) return;
+    snprintf(path, sizeof path, "%s", picdb);
+  } else if (home && *home) {
+    snprintf(path, sizeof path, "%s/.pic/pic.sqlite", home);
+  } else {
+    return;
+  }
+  struct stat st;
+  if (stat(path, &st) != 0) return;
+  int fd[2];
+  if (pipe(fd) != 0) return;
+  fflush(stdout);
+  pid_t pid = fork();
+  if (pid < 0) {
+    close(fd[0]);
+    close(fd[1]);
+    return;
+  }
+  if (pid == 0) {
+    int null = open("/dev/null", O_WRONLY);
+    dup2(fd[1], 1);
+    if (null >= 0) dup2(null, 2);
+    close(fd[0]);
+    close(fd[1]);
+    alarm(30); /* a pic waiting on its journal's lock does not hold up stats */
+    execlp("pic", "pic", "--db", path, "usage", "--lapse", (char *)NULL);
+    _exit(127);
+  }
+  close(fd[1]);
+  buf out = {0};
+  char chunk[4096];
+  ssize_t n;
+  while ((n = read(fd[0], chunk, sizeof chunk)) != 0) {
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      break;
+    }
+    if (out.n < 65536) buf_add(&out, chunk, (size_t)n);
+  }
+  close(fd[0]);
+  int status = 0;
+  while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+  if (WIFEXITED(status) && WEXITSTATUS(status) == 0 && out.n) {
+    printf("\npic: compaction on a cold resume (pic usage --lapse)\n");
+    char *save = NULL;
+    for (char *line = strtok_r(out.p, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) printf("  %s\n", line);
+  }
+  free(out.p);
+}
+
 static int cmd_stats(int argc, char **argv) {
   int weeks = 8, hooks = 0, days = 7;
   for (int i = 0; i < argc; i++) {
@@ -2335,6 +2393,7 @@ static int cmd_stats(int argc, char **argv) {
     sqlite3_finalize(q);
   }
   sqlite3_close(db);
+  stats_pic();
   return 0;
 }
 
