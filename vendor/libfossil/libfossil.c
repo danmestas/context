@@ -16,9 +16,9 @@
 #define FSL_AMALGAMATION_BUILD 1
 #define FSL_PACKAGE_NAME "libfossil"
 #define FSL_LIBRARY_VERSION "0.6.1"
-#define FSL_LIB_VERSION_HASH "7d9634ac5c980131e24dce37ca62b592e4077b820850fbceeb43bb928643e31c"
-#define FSL_LIB_VERSION_TIMESTAMP "2026-11-12 15:35:09.917 UTC"
-#define FSL_LIB_CONFIG_TIMESTAMP "2026-11-12 15:36 GMT"
+#define FSL_LIB_VERSION_HASH "8aa1823ae1d0ad08c0408cada7c77035220b187e23aa713a69f24278f1da528b"
+#define FSL_LIB_VERSION_TIMESTAMP "2026-11-22 11:49:10.526 UTC"
+#define FSL_LIB_CONFIG_TIMESTAMP "2026-11-22 12:02 GMT"
 #define FSL_AUX_SCHEMA "2015-01-24"
 #define FSL_CONTENT_SCHEMA "2"
 #define FOSSIL_RELEASE_VERSION_NUMBER 22700
@@ -9033,8 +9033,14 @@ FSL_EXPORT fsl_id_t fsl_cx_last_insert_id(fsl_cx * f);
 
    See fsl_stat() for more details regarding the tgt parameter.
 
-   TODO: fossil-specific symlink support. Currently it does not
-   distinguish between symlinks and non-links.
+   Symlinks are handled as fossil(1) handles checkout files: if
+   fsl_cx_allows_symlinks() is true, a symlink is stat()ed itself
+   and reported as FSL_FSTAT_TYPE_LINK. If it is false, the link is
+   followed, so the result describes whatever it points to, and a
+   dangling link fails with FSL_RC_NOT_FOUND. Either way, a symlink
+   in the name's directory part is followed. fsl_stat() takes an
+   explicit flag for callers which need one behaviour regardless of
+   that setting.
 
    @see fsl_cx_stat2()
 */
@@ -9057,8 +9063,7 @@ FSL_EXPORT int fsl_cx_stat( fsl_cx * f, bool relativeToCwd,
    If zName ends with a trailing slash, that slash is retained in
    nameOut.
 
-   This function DOES NOT resolve symlinks, stat()ing the link instead
-   of what it points to.
+   Symlinks are resolved, or not, as described for fsl_cx_stat().
 
    @see fsl_cx_stat()
 */
@@ -17937,7 +17942,10 @@ struct fsl_ckout_manage_opt {
      fsl_reserved_fn_check()) and...
 
      - If checkIgnoreGlobs is false or the name does not match one of
-     the ignore-globs values.
+     the ignore-globs values and...
+
+     - No part of the name's directory part is a symlink or other
+     non-directory. As in fossil(1), such files are never added.
 
      The name it is passed is relative to the checkout root.
 
@@ -17964,10 +17972,12 @@ struct fsl_ckout_manage_opt {
     uint32_t added;
     /**
        Number of files which were requested to be added but were only
-       updated because they had previously been added. Updates set the
-       vfile table entry's current mtime, executable-bit state, and
-       is-it-a-symlink state. (That said, this code currently ignores
-       symlinks altogether!)
+       updated because they had previously been added. An update
+       un-deletes the vfile table entry and sets its mtime, but does
+       not currently change its executable-bit or is-it-a-symlink
+       state. A new entry records both. A symlink is added as a
+       symlink if the allow-symlinks setting is on, else as the file
+       it points to, as fossil(1) does.
     */
     uint32_t updated;
     /**
@@ -17978,6 +17988,10 @@ struct fsl_ckout_manage_opt {
 
        - If the checkIgnoreGlobs option is true and a filename matches
          any of those globs.
+
+       - Part of the name's directory part is a symlink or other
+         non-directory, e.g. "ld/f" where "ld" is a symlink to a
+         directory.
 
        - The client-provided callback says not to include the file.
     */
@@ -18080,6 +18094,10 @@ struct fsl_ckout_unmanage_state {
      // fail if the file does not exist, so this error can
      // normally be ignored.
      ```
+
+     Without allow-symlinks, fsl_cx_stat2() follows a symlink, so it
+     also fails for a dangling one. A client which wants to unlink
+     the file should stat() the link itself instead.
   */
   char const * filename;
 };
@@ -18304,7 +18322,16 @@ FSL_CKOUT_CHANGE_MISSING,
 /**
    Indicates that a file was renamed.
 */
-FSL_CKOUT_CHANGE_RENAMED
+FSL_CKOUT_CHANGE_RENAMED,
+/**
+   Indicates that the name of a managed file exists in the local
+   checkout but is neither a file nor a symlink, e.g. it is a
+   directory. With the allow-symlinks setting off, a symlink to a
+   directory falls into this category. A dangling symlink is
+   reported as FSL_CKOUT_CHANGE_MISSING. This corresponds to
+   fossil(1)'s NOT_A_FILE status.
+*/
+FSL_CKOUT_CHANGE_NOT_A_FILE
 };
 
 typedef enum fsl_ckout_change_e fsl_ckout_change_e;
@@ -18954,6 +18981,16 @@ FSL_EXPORT const fsl_checkin_opt fsl_checkin_opt_empty;
 
    Non-file inputs are provided via the opt parameter.
 
+   As in fossil(1), except on Windows, the permissions (executable
+   bit or symlink) of each selected file are taken from the
+   filesystem. Those of unselected files, and on Windows those of all
+   files, are carried over from the current checkout version. With
+   the allow-symlinks setting on (fsl_cx_allows_symlinks()), a
+   symlink is committed as a symlink, its content being the name it
+   points to, and is not checked for merge conflict markers. With the
+   setting off, a symlink is followed and committed as the file it
+   points to.
+
    On success, it returns 0 and...
 
    - If newRid is not NULL, it is assigned the new checkin's RID
@@ -19241,9 +19278,13 @@ struct fsl_repo_open_ckout_opt {
      -shm files, however they are spelled through symbolic links, are
      reserved names (fsl_reserved_fn_check()). The main
      db's settings are left as they are: its application_id is not
-     set, and its journal mode is not changed (a check-in fails if it
-     is not a rollback journal mode). Closing the checkout drops none
-     of the tables.
+     set, and its journal mode is not changed. If the repository's
+     tables are in the same db (fsl_repo_open_host()), a check-in
+     needs no particular journal mode. If the repository is a
+     separate db, a check-in fails unless the main db uses a rollback
+     journal mode with synchronous on, because SQLite would not commit
+     the two dbs together. Closing the checkout drops none of the
+     tables.
 
      The schema's REFERENCES clauses name the prefixed tables, but
      foreign keys are not enforced: libfossil requires PRAGMA
@@ -22456,6 +22497,437 @@ FSL_EXPORT bool fsl_bisect_option_is_on(fsl_cx * const f,
 #endif
 /* ORG_FOSSIL_SCM_FSL_BISECT_H_INCLUDED */
 /* end of file include/fossil-scm/bisect.h */
+/* start of file include/fossil-scm/patch.h */
+/* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=2 et sw=2 tw=80: */
+#if !defined(ORG_FOSSIL_SCM_FSL_PATCH_H_INCLUDED)
+#define ORG_FOSSIL_SCM_FSL_PATCH_H_INCLUDED
+/*
+  Copyright 2026 The Libfossil Authors, see LICENSES/BSD-2-Clause.txt
+
+  SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+  SPDX-FileCopyrightText: 2026 The Libfossil Authors
+  SPDX-FileType: Code
+
+  Heavily indebted to the Fossil SCM project (https://fossil-scm.org).
+*/
+/** @file patch.h
+
+    patch.h declares APIs for fossil(1)-compatible binary patches, as
+    with (fossil patch). A patch is a single file which captures all
+    of the uncommitted changes of a checkout so that they can be
+    applied to another checkout of the same repository, typically on
+    another machine.
+
+    A patch file is an SQLite database with these tables, as defined
+    by fossil(1)'s src/patch.c:
+
+    - cfg(key,value): metadata. See fsl_patch_info.
+
+    - chng(pathname,origname,hash,isexe,islink,delta): one row per
+      changed file. pathname is the file's name at the next check-in
+      and origname its name before a rename, else NULL. hash is the
+      baseline version's hash of the file, or NULL for a new file.
+      delta is NULL for a removed file, the compressed full content
+      for a new file, else a compressed fossil delta from the baseline
+      content, with a length of 0 if the content is unchanged.
+
+    - patchmerge(type,mhash): optional. One row per pending merge,
+      where type is one of "merge", "cherrypick", "backout" or
+      "integrate".
+
+    Patches created by these APIs can be applied by fossil(1) and vice
+    versa.
+
+    Not yet supported: undo of an applied patch.
+*/
+
+
+#if defined(__cplusplus)
+extern "C" {
+#endif
+
+/**
+   Options for fsl_patch_create().
+*/
+struct fsl_patch_create_opt {
+  /**
+     The file to write the patch to. If this is NULL, the patch is
+     passed to this->out instead.
+  */
+  char const * filename;
+  /**
+     If true and this->filename already exists, it is overwritten,
+     else fsl_patch_create() fails with FSL_RC_ALREADY_EXISTS.
+  */
+  bool overwrite;
+  /**
+     Output channel for the patch if this->filename is NULL. The
+     patch is binary and is passed to it in one or more calls.
+  */
+  fsl_output_f out;
+  /**
+     State for this->out.
+  */
+  void * outState;
+  /**
+     The name of the machine the patch is created on, recorded in the
+     patch for informational purposes only. May be NULL, in which
+     case it is not recorded. The library does not look this up
+     itself.
+  */
+  char const * hostname;
+};
+typedef struct fsl_patch_create_opt fsl_patch_create_opt;
+
+/** Initialized-with-defaults fsl_patch_create_opt instance,
+    intended for use in const-copy initialization. */
+#define fsl_patch_create_opt_empty_m { \
+  NULL/*filename*/, false/*overwrite*/, NULL/*out*/, \
+  NULL/*outState*/, NULL/*hostname*/ \
+}
+
+/** Initialized-with-defaults fsl_patch_create_opt instance,
+    intended for use in non-const copy initialization. */
+FSL_EXPORT const fsl_patch_create_opt fsl_patch_create_opt_empty;
+
+/**
+   Creates a patch of all uncommitted changes in f's checkout,
+   including pending merges, as with (fossil patch create). See
+   fsl_patch_create_opt for the options.
+
+   The checkout is scanned for changes first, so the caller need not
+   do so.
+
+   Unlike fossil(1), each file's executable bit and symlink state are
+   taken from the file itself. fossil(1) takes them from the checkout
+   db, which a changes scan does not update when only they change, so
+   its patches lose such a change.
+
+   The patch is built in memory and written only once it is complete,
+   so an error does not leave a partial patch file behind. It is
+   written even if there are no changes, as fossil(1) does.
+
+   Returns 0 on success, FSL_RC_NOT_A_CKOUT if no checkout is opened,
+   FSL_RC_MISUSE if opt->filename and opt->out are both NULL,
+   FSL_RC_ALREADY_EXISTS if opt->filename exists and opt->overwrite
+   is false, FSL_RC_TYPE if opt->filename exists but is not a file,
+   any result code returned by opt->out, or any number of db or I/O
+   errors.
+*/
+FSL_EXPORT int fsl_patch_create(fsl_cx * const f,
+                                fsl_patch_create_opt const * opt);
+
+/**
+   Opaque handle to an opened patch. It is created by
+   fsl_patch_open_file() or fsl_patch_open_mem() and freed by
+   fsl_patch_close(). It must not outlive the fsl_cx it was opened
+   with.
+*/
+typedef struct fsl_patch fsl_patch;
+
+/**
+   Opens the patch file zFile, read-only, and assigns *pOut to a new
+   handle to it, which the caller must eventually pass to
+   fsl_patch_close(). Neither a repository nor a checkout need be
+   opened.
+
+   The patch is validated before it is accepted: it must be a
+   well-formed SQLite database which passes SQLite's quick_check and
+   has the tables and columns described in this file's docs. Note
+   that a patch is untrusted input, so the database is opened in
+   SQLite's defensive mode with untrusted-schema handling. The file
+   names in it are not checked here but by fsl_patch_apply().
+
+   Returns 0 on success, FSL_RC_NOT_FOUND if zFile does not exist,
+   FSL_RC_SYNTAX if it is not a valid patch, FSL_RC_OOM, or a db
+   error. On error *pOut is not modified.
+*/
+FSL_EXPORT int fsl_patch_open_file(fsl_cx * const f, char const * zFile,
+                                   fsl_patch ** pOut);
+
+/**
+   Works like fsl_patch_open_file() but reads the patch from the n
+   bytes of memory at src, e.g. a patch read from stdin or from a
+   remote command. The memory is copied, so the caller still owns
+   src and need not keep it alive.
+
+   In addition to the errors fsl_patch_open_file() can return, this
+   returns FSL_RC_SYNTAX if n is less than 512, the smallest possible
+   SQLite database.
+*/
+FSL_EXPORT int fsl_patch_open_mem(fsl_cx * const f, void const * src,
+                                  fsl_size_t n, fsl_patch ** pOut);
+
+/**
+   Frees all resources owned by p. A no-op if p is NULL.
+*/
+FSL_EXPORT void fsl_patch_close(fsl_patch * p);
+
+/**
+   Metadata from a patch's cfg table. Any member may be NULL if the
+   patch does not have that entry. All strings are owned by the
+   fsl_patch they come from and are valid until it is closed.
+*/
+struct fsl_patch_info {
+  /** Hash of the check-in the patch's changes are relative to. */
+  char const * baseline;
+  /** The repository's project code. */
+  char const * projectCode;
+  /** The repository's project name. */
+  char const * projectName;
+  /** The user who created the patch. */
+  char const * user;
+  /** The machine the patch was created on. */
+  char const * hostname;
+  /** The absolute path of the checkout the patch was created in. */
+  char const * ckoutDir;
+  /** The absolute path of the repository it was created in. */
+  char const * repoDb;
+  /** When the patch was created, as a Julian day, or 0 if unknown. */
+  double date;
+};
+typedef struct fsl_patch_info fsl_patch_info;
+
+/**
+   Returns p's metadata. It is read when p is opened, so this cannot
+   fail. The result is owned by p.
+*/
+FSL_EXPORT fsl_patch_info const * fsl_patch_info_get(fsl_patch const * p);
+
+/**
+   One changed file in a patch, as passed to fsl_patch_each_f.
+*/
+struct fsl_patch_entry {
+  /** The file's checkout-relative name at the next check-in. */
+  char const * name;
+  /** The file's name before it was renamed, or NULL if it was not
+      renamed. */
+  char const * origName;
+  /** The file's hash in the baseline version, or NULL if the file is
+      new. */
+  char const * baselineHash;
+  /** True if the file is new (not in the baseline). */
+  bool isNew;
+  /** True if the file is removed. */
+  bool isDeleted;
+  /** True if an existing file's content changed. Always false for a
+      new or removed file, and for one which is only renamed or whose
+      permissions changed. */
+  bool isModified;
+  /** True if the file is executable. */
+  bool isExe;
+  /** True if the file is a symlink. */
+  bool isLink;
+};
+typedef struct fsl_patch_entry fsl_patch_entry;
+
+/**
+   Callback type for fsl_patch_each(). e and the memory it points to
+   are valid only for the duration of the call. If it returns non-0,
+   iteration stops and that result is returned from fsl_patch_each(),
+   except that FSL_RC_BREAK stops iteration and fsl_patch_each()
+   returns 0.
+*/
+typedef int (*fsl_patch_each_f)(fsl_patch_entry const * e, void * state);
+
+/**
+   Callback type for fsl_patch_each_merge(), passed the type and hash
+   of one pending merge. It works as fsl_patch_each_f does.
+*/
+typedef int (*fsl_patch_merge_f)(fsl_merge_type_e type,
+                                 char const * zHash, void * state);
+
+/**
+   Calls cb once for each changed file in p, ordered by name, passing
+   it state. Returns 0 on success, the result of cb as described for
+   fsl_patch_each_f, or a db error.
+*/
+FSL_EXPORT int fsl_patch_each(fsl_patch * const p, fsl_patch_each_f cb,
+                              void * state);
+
+/**
+   Calls cb once for each pending merge recorded in p, in the order in
+   which they are recorded, passing it state. Entries with an unknown
+   merge type or a malformed hash are skipped, as fossil(1) does.
+   Returns 0 on success, including if p has no merges, the result of
+   cb as described for fsl_patch_each_f, or a db error.
+*/
+FSL_EXPORT int fsl_patch_each_merge(fsl_patch * const p,
+                                    fsl_patch_merge_f cb, void * state);
+
+/**
+   Reconstructs one file of patch p, for example to show the patch as a
+   diff, as (fossil patch diff) does. p's context must have a
+   repository opened, which must hold the patch's baseline versions.
+   zName is the file's name as fsl_patch_entry::name has it.
+
+   If tgt is not NULL, it is reset, then the file's content as the
+   patch leaves it is written to it: empty for a removed file, and
+   the baseline content for a file which is only renamed or whose
+   permissions changed.
+
+   If baseline is not NULL, it is reset, then the file's content in
+   the patch's baseline is written to it: empty for a new file. Unlike
+   fossil(1), which shows a removed file as an empty diff because its
+   patches record no hash for it, a removed file's baseline content
+   is looked up in the baseline check-in.
+
+   Returns 0 on success, FSL_RC_NOT_A_REPO if no repository is opened,
+   FSL_RC_NOT_FOUND if p has no file named zName or a baseline version
+   which is needed is not in the repository, FSL_RC_SYNTAX for a
+   malformed hash or file content, FSL_RC_DELTA_INVALID_xxx for a
+   malformed delta, or a db error.
+*/
+FSL_EXPORT int fsl_patch_content(fsl_patch * const p, char const * zName,
+                                 fsl_b * const tgt, fsl_b * const baseline);
+
+/**
+   The steps reported by fsl_patch_apply()'s callback.
+*/
+enum fsl_patch_apply_e {
+/** Sentinel value. */
+FSL_PATCH_APPLY_NONE = 0,
+/**
+   A pre-existing local change was reverted, because
+   fsl_patch_apply_opt::force was true. The name is that of the
+   reverted file.
+*/
+FSL_PATCH_APPLY_REVERT,
+/**
+   The checkout was updated to the patch's baseline. The name is the
+   baseline's hash.
+*/
+FSL_PATCH_APPLY_BASELINE,
+/**
+   A pending merge was re-done. The name is the merged version's
+   hash.
+*/
+FSL_PATCH_APPLY_MERGE,
+/**
+   A file which a merge changed but the patch does not mention was
+   reverted, as fossil(1) does.
+*/
+FSL_PATCH_APPLY_UNMERGE,
+/** A file was removed. */
+FSL_PATCH_APPLY_DELETE,
+/** A file was renamed. origName is its former name. */
+FSL_PATCH_APPLY_RENAME,
+/** A file's content or permissions were changed. */
+FSL_PATCH_APPLY_EDIT,
+/** A new file was written and queued for adding. */
+FSL_PATCH_APPLY_NEW
+};
+typedef enum fsl_patch_apply_e fsl_patch_apply_e;
+
+/**
+   Callback type for fsl_patch_apply(). It is called after each step
+   is done, or in place of doing it in a dry run. zName is the
+   checkout-relative file name or a hash, as documented for each
+   fsl_patch_apply_e value. zOrigName is the file's former name for
+   FSL_PATCH_APPLY_RENAME, else NULL.
+
+   If it returns non-0, applying stops and that result is returned,
+   noting that files written so far stay written.
+*/
+typedef int (*fsl_patch_apply_f)(fsl_patch_apply_e step,
+                                 char const * zName,
+                                 char const * zOrigName,
+                                 void * state);
+
+/**
+   Options for fsl_patch_apply().
+*/
+struct fsl_patch_apply_opt {
+  /**
+     If true and the checkout has uncommitted changes, they are
+     reverted, and permanently lost, before the patch is applied. If
+     false, a checkout with changes is an error.
+  */
+  bool force;
+  /**
+     If true, nothing is changed, but the callback is told what
+     would have been done.
+  */
+  bool dryRun;
+  /**
+     Optional per-step callback.
+  */
+  fsl_patch_apply_f callback;
+  /**
+     State for this->callback.
+  */
+  void * callbackState;
+};
+typedef struct fsl_patch_apply_opt fsl_patch_apply_opt;
+
+/** Initialized-with-defaults fsl_patch_apply_opt instance,
+    intended for use in const-copy initialization. */
+#define fsl_patch_apply_opt_empty_m { \
+  false/*force*/, false/*dryRun*/, NULL/*callback*/, \
+  NULL/*callbackState*/ \
+}
+
+/** Initialized-with-defaults fsl_patch_apply_opt instance,
+    intended for use in non-const copy initialization. */
+FSL_EXPORT const fsl_patch_apply_opt fsl_patch_apply_opt_empty;
+
+/**
+   Applies patch p to f's checkout, as with (fossil patch apply), in
+   this order:
+
+   1. If the checkout has changes and opt->force is true, they are
+      reverted.
+
+   2. If the checkout is not at the patch's baseline, it is updated
+      to it.
+
+   3. The patch's pending merges, if any, are re-done, then any file
+      which they changed but which the patch does not mention is
+      reverted. That follows fossil(1) (2024-12-16): such changes were
+      not part of the original checkout's state.
+
+   4. Removed files are removed, renamed files are renamed, and
+      changed and new files are written, with new ones queued for
+      adding.
+
+   Unlike fossil(1), a new empty file is added, and a change to only a
+   file's executable or symlink state is applied. fossil(1) drops both.
+
+   Before anything is changed, the patch is checked: a file name which
+   is not a simple relative path or is a reserved name, a hash which
+   is not a full artifact hash, or a baseline (of the patch or of any
+   file) which is not in the repository causes the whole patch to be
+   rejected. When a file is written, removed or renamed, its path is
+   also checked against symlinked or non-directory parent directories
+   at that time.
+
+   In a dry run, the callback is not told which files step 3 would
+   revert, as that depends on the outcome of merges which are not
+   done.
+
+   Returns 0 on success. Returns FSL_RC_NOT_A_CKOUT if no checkout is
+   opened, FSL_RC_REPO_MISMATCH if the patch's project code differs
+   from the repository's, FSL_RC_CONFLICT if the checkout has changes
+   and opt->force is false, FSL_RC_NOT_FOUND or FSL_RC_PHANTOM if the
+   baseline or a file's baseline version is not in the repository
+   (it may need to be synced first), FSL_RC_RANGE for an unsafe file
+   name, FSL_RC_SYNTAX for a malformed hash or file content,
+   FSL_RC_DELTA_INVALID_xxx for a malformed delta, the result of
+   opt->callback, or any number of db or I/O errors.
+
+   The db side runs in a transaction, which is rolled back on error
+   or in a dry run, but files written before an error stay written.
+*/
+FSL_EXPORT int fsl_patch_apply(fsl_cx * const f, fsl_patch * const p,
+                               fsl_patch_apply_opt const * opt);
+
+#if defined(__cplusplus)
+} /*extern "C"*/
+#endif
+#endif
+/* ORG_FOSSIL_SCM_FSL_PATCH_H_INCLUDED */
+/* end of file include/fossil-scm/patch.h */
 /* start of file include/fossil-scm/auth.h */
 /* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* vim: set ts=2 et sw=2 tw=80: */
@@ -22834,6 +23306,20 @@ enum fsl_sc_F_lib_e {
   FSL_SC_F_TLS_ACCEPT_ANY_CERT = 0x04000000,
 
   /**
+     For channels which do not speak HTTP. The library does not parse
+     HTTP headers from the reply, so submit() must not make read()
+     return any. Instead, submit() sets fsl_sc::reply to describe the
+     reply body, which read() then returns from its first byte. The
+     flag says nothing about the request: it may be combined with
+     FSL_SC_F_REQUEST_HEADERS, for a channel which speaks HTTP to its
+     peer but delimits the reply itself, and the library then builds
+     fsl_sc::requestHeaders as it does without this flag. Without
+     FSL_SC_F_REQUEST_HEADERS the channel carries the login card
+     passed to submit() in whatever way it likes.
+  */
+  FSL_SC_F_NO_HTTP = 0x02000000,
+
+  /**
      The mask of FSL_SC_F_... bits which are reserved for use by
      library-level options.
   */
@@ -22943,12 +23429,31 @@ enum fsl_sc_init_e {
    - Its cleanup() method is called to clean it up.
 
 
-   Open design issues:
+   A client applies a channel of its own to a sync or a clone through
+   fsl_xfer_config::channel. What the library requires of it:
 
-   - The current public API does not give clients anywhere to
-     apply their own channel to a sync request. It's not anticipated
-     that any clients would really want to, except perhaps to enable
-     tracing.
+   - init(), append(), submit() and read() must not be NULL and
+     impl.p must not be NULL. A channel which lacks any of them is
+     refused with FSL_RC_MISUSE and a message which names what it
+     lacks. cleanup() is optional, and self() defaults to
+     fsl_sc_self().
+
+   - A method has failed if it returns non-0 or if it set the
+     transfer's error state with fsl_xfer_error() or one of its
+     siblings. If it set that state, the library reports that error as
+     it is, whatever the method returned, so a method which fails
+     should set a message and return the same code. If it returned
+     non-0 without setting it, the library sets it to that code with a
+     message which names the channel and the method. A read() which
+     reaches the end of its input returns FSL_RC_BREAK, which is not a
+     failure.
+
+   - A read() asked for a positive number of bytes must append exactly
+     that many, and a read() asked for FSL_SC_READ_LINE must append at
+     least one byte. If it returns 0 having appended anything else
+     the library fails the transfer with FSL_RC_MISUSE and a message
+     which names the channel and says how many bytes were asked for
+     and how many were appended.
 */
 struct fsl_sc {
   /**
@@ -23100,8 +23605,11 @@ struct fsl_sc {
      and is never called after any call to init() fails.
 
      If loginCard is not NULL, it contains the full content of a login
-     card for the request. Implementations must emit these bytes
-     as an HTTP header in this form:
+     card for the request. A channel which uses
+     FSL_SC_F_REQUEST_HEADERS must not add it to the request: the
+     library has put it in requestHeaders already, in the Cookie
+     header shown below. Any other channel must carry these bytes to
+     the remote. An HTTP channel emits them as a header in this form:
 
      ```
      Cookie: x-f-l-c=UrlEncodedValueOfTheCard
@@ -23115,6 +23623,11 @@ struct fsl_sc {
      ...
      fsl_free(z);
      ```
+
+     A channel which uses FSL_SC_F_NO_HTTP and does not use
+     FSL_SC_F_REQUEST_HEADERS carries the card in whatever way suits
+     its transport, and its peer must present it to the remote as that
+     header.
 
      (Sidebar: that approach to authentication only works with fossil
      versions newer than 2025-07-27, so the library cannot log in
@@ -23179,6 +23692,30 @@ struct fsl_sc {
      capability ever becomes useful. For future compatibility's sake,
      it's legal to simply return 0 if howMuch is 0, but it's also
      legal to assert(howMuch!=0) until that happens.
+
+     How the end of a reply body is determined. The library never
+     tells read() the length of the body and does not stop reading
+     once it has read that many bytes, so read() must end the body
+     itself, in HTTP mode and in FSL_SC_F_NO_HTTP mode alike. The
+     length the library knows is the Content-Length header in HTTP
+     mode and fsl_sc::reply.length in FSL_SC_F_NO_HTTP mode. It is
+     used afterwards, to check what was read:
+
+     - If the reply is not compressed, the library reads cards with
+       FSL_SC_READ_LINE and with sized reads, and the body ends
+       where a FSL_SC_READ_LINE read returns FSL_RC_BREAK. So read()
+       must return FSL_RC_BREAK right after the last byte of the
+       body and must not return any byte which follows it, as that
+       belongs to the next reply. When the body has ended, the library
+       fails the transfer with "truncated" or "longer than its
+       Content-Length" if it read another number of bytes than the
+       length.
+
+     - If the reply is compressed, the library calls read() once, with
+       FSL_SC_READ_ALL, which must append the whole body and no more:
+       the library fails the transfer if that is not the length. It
+       then decompresses the body and serves the cards from memory
+       without calling read() again before the next submit().
 
      Must return 0 on success, non-0 on error, and should use one of
      the fsl_xfer_error() family of functions to to provide any error
@@ -23269,6 +23806,17 @@ struct fsl_sc {
      and the library internals.
   */
   fsl_b scratch;
+  /**
+     For channels with FSL_SC_F_NO_HTTP: what submit() must set to
+     describe the reply, in place of the Content-Length and
+     Content-Type headers. A length of 0 is an error.
+  */
+  struct {
+    /** Size of the reply body in bytes. */
+    fsl_size_t length;
+    /** True if the body is fossil-compressed, as for FSL_SC_F_COMPRESSED. */
+    bool compressed;
+  } reply;
 }/*fsl_sc*/;
 
 /**
@@ -23432,6 +23980,33 @@ FSL_EXPORT void fsl_xfer_debug(fsl_xfer * xf, char const * zMsg);
 FSL_EXPORT fsl_cx * fsl_xfer_cx(fsl_xfer * xf);
 
 /**
+   Returns the most bytes xf's transfer accepts in one reply body,
+   compressed or uncompressed: fsl_xfer_config::maxResponseBytes if it
+   is positive, else 256 MiB. The library checks a reply against it
+   when it knows its length. A channel which reads a reply of unknown
+   length should stop and fail when the reply gets longer.
+
+   xf may be NULL, as for a channel used outside of a transfer, and
+   then the result is the default.
+
+   fsl_sc::xfer is set before fsl_sc::init() is first called, so
+   this may be used from there.
+*/
+FSL_EXPORT fsl_size_t fsl_xfer_max_response(fsl_xfer const * xf);
+
+/**
+   Returns the number of seconds a channel should let a read or write
+   make no progress before failing the transfer:
+   fsl_xfer_config::socketTimeoutSeconds if it is positive, else 120.
+   The library does not enforce this itself: it is for channels which
+   do their own I/O, as the native socket channel does.
+
+   xf may be NULL, as for fsl_xfer_max_response(), and fsl_sc::xfer is
+   set before fsl_sc::init() is first called.
+*/
+FSL_EXPORT int fsl_xfer_socket_timeout(fsl_xfer const * xf);
+
+/**
    Sets xf's (persistent) error state to the given information
    and propagates it through to xf's fsl_cx. After this,
    further calls to fsl_xf-taking APIs will fail.
@@ -23441,6 +24016,11 @@ FSL_EXPORT fsl_cx * fsl_xfer_cx(fsl_xfer * xf);
 
    This function prefixes the message with some form of ch->name and
    the fsl_rc_cstr() value of the given result code.
+
+   The format is fsl_appendf()'s, not the C library's. In it %z is not
+   a size modifier: it prints a (char *) like %s and then frees it, as
+   in SQLite, so "%zu" with a size_t crashes. Print sizes with
+   FSL_SIZE_T_PFMT, e.g. "%" FSL_SIZE_T_PFMT.
 
    Returns the given code, or FSL_RC_ERROR if code is 0. i.e.
    it never returns 0. A code value of 0 is semantically illegal in
@@ -23892,6 +24472,122 @@ extern const fsl_sc fsl_sc_socket;
 FSL_EXPORT int fsl_sc_socket_state_init(fsl_sc *ch);
 
 /**
+   What read() returns when no byte arrived within
+   fsl_xfer_socket_timeout() seconds. See fsl_sc_stream_ops.
+*/
+#define FSL_SC_STREAM_TIMEOUT ((fsl_int_t)-2)
+
+/**
+   What read() returns at the end of a stream which was not closed
+   cleanly, as when a TLS peer closes the connection without a
+   close_notify alert. See fsl_sc_stream_ops.
+*/
+#define FSL_SC_STREAM_UNCLEAN ((fsl_int_t)-3)
+
+/**
+   The callbacks of a stream channel, which gives a caller who has
+   only a byte stream (a TCP or TLS connection, a Unix socket, a
+   tunnel) the library's HTTP handling, so that the caller writes none
+   of it: the request line and headers, the HTTP/1.1 upgrade with
+   "Connection: close", replies with a Content-Length, close-delimited
+   replies, chunked replies, the reply size limit and the timeout.
+   The library's own http: and https: channel is this same channel
+   with sockets and OpenSSL as its callbacks.
+
+   The channel makes one request per connection. For each round
+   trip it calls connect(), then write() until the request is sent,
+   then read() until it returns 0 and then close(). It also calls
+   close() when the transfer ends with the connection open, as after
+   a failed write(). The calls all come from the thread which runs the
+   transfer.
+
+   Every callback which can fail receives the transfer, xf, to report
+   the failure to. A failing callback sets the error state with
+   fsl_xfer_errorf() or one of its siblings, naming what failed, and
+   returns as described below. The channel then fails the transfer
+   with that error, as for the methods of fsl_sc. If a callback fails
+   without setting one, the channel sets a message which names the
+   channel and the callback.
+
+   The callbacks must make progress or fail: the library cannot
+   interrupt a blocked callback.
+*/
+struct fsl_sc_stream_ops {
+  /**
+     Opens the connection to the host in url: url->host, url->port
+     (0 if the URL has none), url->scheme and url->path. The library
+     does not interpret the scheme, so a caller may use any. If it
+     does TLS, it also does all of its certificate handling. Returns
+     0 on success. The callback should not let a later read() or
+     write() wait longer than fsl_xfer_socket_timeout(xf) seconds
+     for progress.
+  */
+  int (*connect)(void * state, fsl_url const * url, fsl_xfer * xf);
+
+  /**
+     Reads up to n bytes into dest and returns how many it read. It
+     returns at least one byte, waiting for it if need be, unless the
+     stream has ended, when it returns 0 if the peer closed the
+     connection cleanly, with a TCP FIN or a TLS close_notify, and
+     FSL_SC_STREAM_UNCLEAN if it did not, as a TLS peer which just
+     closes the connection. Both end the reply, and the library
+     checks it against its Content-Length. A reply which has neither a
+     Content-Length nor chunks ends where the connection does, and is
+     accepted only after a clean close, as it could otherwise be cut
+     short. If no byte arrives within
+     fsl_xfer_socket_timeout(xf) seconds it returns
+     FSL_SC_STREAM_TIMEOUT. The library treats that as the end of the
+     reply if the peer had already sent some of it, and otherwise
+     fails with "No response from HOST within N seconds". Any other
+     negative result is a failure.
+  */
+  fsl_int_t (*read)(void * state, void * dest, fsl_size_t n,
+                    fsl_xfer * xf);
+
+  /**
+     Writes up to n bytes from src and returns how many it wrote,
+     which is at least one, or a value less than 1 on failure.
+     The library calls it again for the rest.
+  */
+  fsl_int_t (*write)(void * state, void const * src, fsl_size_t n,
+                     fsl_xfer * xf);
+
+  /**
+     Closes the connection and releases whatever connect() acquired.
+     It is optional.
+  */
+  void (*close)(void * state);
+
+  /**
+     The first argument of all of the callbacks. It is the caller's.
+  */
+  void * state;
+};
+typedef struct fsl_sc_stream_ops fsl_sc_stream_ops;
+
+/**
+   Initializes ch as a stream channel which calls ops, ready to be
+   assigned to fsl_xfer_config::channel. ops must have its connect(),
+   read() and write() set, and it and what its state points to must
+   outlive every transfer which uses ch, because ch points to ops
+   until a transfer starts and copies it. Each transfer takes its own
+   copy of ch, which allocates and frees the buffers it needs, so
+   nothing has to be cleaned up afterwards and ch may serve any number
+   of transfers one after another.
+
+   The URL of the transfer is parsed into the channel's copy and
+   passed to ops->connect(). Its scheme, such as https, has no
+   meaning to the channel.
+
+   ch->name is "stream", which prefixes the channel's error
+   messages. A caller may change it after this returns.
+
+   Returns 0 on success and FSL_RC_MISUSE if ch or ops is NULL or ops
+   lacks a required callback.
+*/
+FSL_EXPORT int fsl_sc_stream_init(fsl_sc * ch, fsl_sc_stream_ops const * ops);
+
+/**
    Expands to a mapping of all fsl_sc_tracer_e types by invoking
    E(NAME,VALUE) for each one. NAME is the suffix part of the name,
    e.g. init instead of FSL_SC_TRACER_init. VALUE is its integer
@@ -24261,20 +24957,33 @@ struct fsl_xfer_config {
   int8_t maxResponseSeconds;
 
   /**
-     For fsl_sync_client(), the hard maximum compressed and
-     uncompressed response size, in bytes. It is also the approximate
-     maximum outbound request payload size, which may be exceeded by
-     one artifact. Values less than 1 disable the inbound bound and
-     apply a built-in default to the outbound payload size. The
-     default is disabled. Clone mode currently ignores the inbound
-     bound for compatibility with existing clone responses.
+     For fsl_sync_client() and fsl_clone(), the hard maximum
+     compressed and uncompressed response size, in bytes. Values less
+     than 1 mean 256 MiB. A fossil(1) server stops adding artifacts to
+     a reply once the reply reaches its max-download setting (default
+     5000000 bytes), so a reply can be max-download + 1 artifact.
+     Replies from a fossil(1) server should be smaller than FSL_BLOB_MAX_SIZE.
+
+     The native socket channel and the popen channels stop reading a
+     reply once the reply is longer than:
+
+        maxResponseBytes + (the formula in src/sc.c:fsl__sc_reply_max)
+
+     It is also the approximate maximum outbound request payload size,
+     which may also be exceeded by one artifact. Values less than 1 apply a
+     built-in default to the outbound payload size.
+
+     A channel supplied through channel reads the effective value with
+     fsl_xfer_max_response().
   */
   int32_t maxResponseBytes;
 
   /**
      Seconds the HTTP socket channel waits for each read of a reply (or
      write of a request) to make progress before failing the
-     transfer. Values less than 1 mean the default of 120.
+     transfer. Values less than 1 mean the default of 120. A channel
+     supplied through channel reads the effective value with
+     fsl_xfer_socket_timeout() and must apply it itself.
   */
   int32_t socketTimeoutSeconds;
 
@@ -24398,6 +25107,20 @@ struct fsl_xfer_config {
     */
     bool ignoreSaved;
   } password;
+
+  /**
+     If not NULL, a copy of this channel is used for the transfer,
+     instead of one chosen from the URL scheme. The caller initializes
+     it from fsl_sc_empty and sets its methods, flags and impl state
+     (see fsl_sc for what it must provide; the library refuses a
+     channel which lacks a required member). The library sets the
+     copy's xfer member and parses the URL, which is still required,
+     into the copy's url, so that the channel can read its host and
+     path. The caller keeps ownership of what impl.p points to, which
+     must outlive the transfer, and of the original, which the library
+     does not clean up.
+  */
+  fsl_sc const * channel;
 };
 
 
@@ -24434,7 +25157,8 @@ struct fsl_xfer_config {
     .state = NULL,                   \
     .save = false,                   \
     .ignoreSaved = false             \
-  }                                  \
+  },                                 \
+  .channel = NULL                    \
 }
 
 /**
@@ -24448,7 +25172,10 @@ enum fsl_sync_flags_e {
      setting "fcli.autosync" or "autosync" is set, preferring the
      former. "autosync" is fossil(1) standard flag for this, but clients
      may use "fcli.autosync" to trump that without changing fossil's
-     behavior.
+     behavior. With neither setting, autosync is on, as in fossil(1).
+     "pullonly" and the "dont-push" setting drop FSL_SYNC_PUSH. If
+     neither FSL_SYNC_PULL nor FSL_SYNC_PUSH is set, both are
+     assumed.
   */
   FSL_SYNC_AUTO     =     0x01,
   /** Perform a pull (read-only) sync. */
@@ -26223,7 +26950,9 @@ FSL_EXPORT const char * fcli_next_arg(bool remove);
 /**
    If fcli.argv contains what looks like any flag arguments, this
    updates the fossil error state and returns FSL_RC_MISUSE, else
-   returns 0. If outputError is true and an unused flag is found then
+   returns 0. A "-" by itself is not considered to be a flag, as it
+   conventionally names stdin or stdout. If outputError is true and an
+   unused flag is found then
    the error state is immediately output (but not cleared).  If
    outputError is false then the next call to fcli_err_report2() will
    emit it the error, typically indirectly via fcli_end_of_main().
@@ -29097,17 +29826,18 @@ bool fsl__is_reserved_fn_windows(const char *zPath, fsl_int_t nameLen);
 /** @internal
 
    Modes for fsl__ckout_clear_merge_state(), describing the caller's
-   intent so that cherry-pick/backout markers (vmerge.id IN (-1,-2))
-   are only discarded when the user has plausibly abandoned them.
+   intent so that the checkout-level merge markers (vmerge.id<=0:
+   merge, cherry-pick, backout, integrate) are only discarded when the
+   user has plausibly abandoned them.
 */
 enum fsl__ckout_merge_clear_e {
 /**
    Partial wipe for state-refresh scans (fsl_vfile_changes_scan()):
-   clears regular per-file merge state for unchanged files and sweeps
-   genuinely-stale merge state, but never removes cherry-pick/backout
-   markers. A scan performed on behalf of some other operation must
-   not unilaterally decide that a pending cherry-pick/backout has
-   been abandoned.
+   clears per-file merge state (vmerge.id>0) for unchanged files but
+   never removes the checkout-level markers. A scan performed on
+   behalf of some other operation must not unilaterally decide that a
+   pending merge has been abandoned. fossil(1)'s scan never touches
+   vmerge.
 */
 FSL__MERGE_CLEAR_SCAN = 0,
 /**
@@ -29329,14 +30059,13 @@ int fsl__undo_end(fsl_cx * const f, int rc, bool owner);
 int fsl__undo_keep_stash(fsl_cx * const f, fsl_id_t stashId);
 
 /** @internal
-   UNTESTED!
-
-   Creates a file named zLinkFile and populates its contents with a
-   single line: zTgtFile. This behaviour corresponds to how fossil
-   manages SCM'd symlink entries on Windows and on other platforms
-   when the 'allow-symlinks' repo-level config setting is disabled.
-   (In late 2020 fossil defaulted that setting to disabled and made it
-   non-versionable.)
+   Creates zLinkFile as a symlink to zTgtFile, as fossil(1)'s
+   symlink_create() does: a real symlink if f's 'allow-symlinks'
+   setting is on and the platform and f's checkout filesystem support
+   them, else a regular file holding the single line zTgtFile (which
+   is how fossil manages symlinks on Windows and, since late 2020,
+   by default). Whatever was at zLinkFile is removed first, so this
+   never writes through an existing symlink.
 
    zLinkFile may be an absolute path rooted at f's current checkout or
    may be a checkout-relative path.
@@ -29350,16 +30079,8 @@ int fsl__undo_keep_stash(fsl_cx * const f, fsl_id_t stashId);
 
    - FSL_RC_OOM on allocation error.
 
-   - The result of fsl_b_to_filename() if writing zLinkFile fails, in
-   which case f's error state names the file.
-
-   Potential TODO (maybe!): handle symlinks as described above or
-   "properly" on systems which natively support them iff f's
-   'allow-symlinks' repo-level config setting is true. That said: the
-   addition of symlinks support into fossil was, IMHO, a poor decision
-   for $REASONS. That might (might) be reflected long-term in this API
-   by only supporting them in the way fossil does for platforms which
-   do not support symlinks.
+   - The result of fsl__cfs_symlink_create() if creating zLinkFile
+   fails, in which case f's error state names the file.
 */
 int fsl__ckout_symlink_create(fsl_cx * f, char const *zTgtFile,
                               char const * zLinkFile);
@@ -31325,6 +32046,32 @@ int fsl__cfs_symlink_create(fsl_cx * const f, char const *zTarget,
                             char const *zLink, bool realLink);
 int fsl__cfs_symlink_copy(fsl_cx * const f, char const *zFrom,
                           char const *zTo, bool realLink);
+
+/** @internal
+
+   Reads checkout file zName into tgt as fossil(1)'s
+   blob_read_from_file(...,RepoFILE) does: with the allow-symlinks
+   setting on, a symlink's content is its target name, else the
+   symlink is followed. If isLink is not NULL, *isLink is set to
+   whether zName was read as a symlink.
+
+   Returns 0 on success or the non-0 result of fsl__cfs_read() or
+   fsl__cfs_symlink_read(), e.g. FSL_RC_NOT_FOUND. It does not set
+   f's error state.
+*/
+int fsl__cfs_read_repofile(fsl_cx * const f, fsl_b * const tgt,
+                           char const *zName, bool * isLink);
+
+/** @internal
+
+   Returns the permission of a checkout file as fossil(1)'s
+   file_perm(...,RepoFILE) does, given its fsl_fstat. fst must come
+   from a successful fsl__cfs_stat() which dereferenced symlinks
+   unless allowSymlinks, which must be the allow-symlinks setting
+   (fsl_cx_allows_symlinks()). A symlink is FSL_FILE_PERM_LINK, and
+   never also executable.
+*/
+fsl_fileperm_e fsl__fstat_perm(fsl_fstat const * fst, bool allowSymlinks);
 
 
 #if defined(__cplusplus)
@@ -41815,6 +42562,7 @@ static int fsl__checkin_import_file( fsl_cx * const f,
   int rc;
   fsl_id_t fnid = 0;
   fsl_id_t rcRid = 0;
+  bool isLink = false;
 
   //TODO (2025-08-06): assert( fsl_cx_txn_level(f)>0 );
   assert(!fbuf->used && "Misuse of f->fileContent");
@@ -41827,12 +42575,14 @@ static int fsl__checkin_import_file( fsl_cx * const f,
   nbuf->used = oldSize;
   if(rc) goto end;
   fn = fsl_b_cstr(nbuf) + oldSize;
-  rc = fsl__cfs_read(f, fbuf, fn );
+  /* As fossil(1)'s commit_cmd(): read as RepoFILE, and don't look for
+     merge markers in a symlink's target name. */
+  rc = fsl__cfs_read_repofile(f, fbuf, fn, &isLink);
   if(rc){
     fsl_cx_err_set(f, rc, "Error %s importing file: %s",
                    fsl_rc_cstr(rc), fn);
     goto end;
-  }else if(!allowMergeConflict &&
+  }else if(!allowMergeConflict && !isLink &&
            fsl_b_contains_merge_marker(fbuf)){
     rc = fsl_cx_err_set(f, FSL_RC_CONFLICT,
                         "File contains a merge conflict marker: %s",
@@ -42160,9 +42910,14 @@ int fsl__checkin_calc_F_cards2( fsl_cx * f, fsl_deck * d,
   char * fUuid = NULL;
   fsl_card_F const * pFile = NULL;
   fsl_size_t changeCounter = 0;
+  fsl_b * fullName = NULL;
+  bool allowSymlinks;
   if(!f) return FSL_RC_MISUSE;
   else if(!dbR) return FSL_RC_NOT_A_REPO;
   else if(!dbC) return FSL_RC_NOT_A_CKOUT;
+  fullName = fsl_cx_b_borrow(f);
+  if(!fullName) return f->error.code;
+  allowSymlinks = fsl_cx_allows_symlinks(f, false);
   assert( (!pBaseline || !pBaseline->B.uuid) && "Baselines must not have a baseline." );
   assert( d->B.baseline ? (!pBaseline || pBaseline==d->B.baseline) : 1 );
   assert(vid>=0);
@@ -42258,26 +43013,27 @@ int fsl__checkin_calc_F_cards2( fsl_cx * f, fsl_deck * d,
               id, isExe, changed));
     }
     if(isExe){
-      if( FSL_VFILE_CHANGE_NOT_EXEC==changed ){
-        perm = FSL_FILE_PERM_REGULAR;
-      }else{
-        perm = FSL_FILE_PERM_EXE;
-      }
+      perm = FSL_FILE_PERM_EXE;
     }else if(isLink){
-      rc = fsl_cx_err_set(f, FSL_RC_NYI, "This code does not yet deal "
-                          "with symlinks. file: %s", zName);
-      break;
-      /*
-        TODO: symlinks
-      */
-    }else{
-      assert( !isExe );
-      if( FSL_VFILE_CHANGE_IS_EXEC==changed ){
-        perm = FSL_FILE_PERM_EXE;
-      }else{
-        assert( FSL_FILE_PERM_REGULAR==perm );
-      }
+      perm = FSL_FILE_PERM_LINK;
     }
+#if !defined(_WIN32)
+    if(isSel && !deleted){
+      /* As fossil(1)'s create_manifest(): a selected file's perms
+         come from disk, which is how exec-bit and symlink changes
+         (vfile.chnged 6..9) get committed. vfile.isexe and
+         vfile.islink describe the baseline, so the perms of other
+         files, and all files on Windows, are left as they were. */
+      fsl_fstat fst = fsl_fstat_empty;
+      fsl_b_reuse(fullName);
+      rc = fsl_b_appendf(fullName, "%s%s", f->db.ckout.dir, zName);
+      RC;
+      perm = 0==fsl__cfs_stat(f, fsl_b_cstr(fullName), &fst,
+                              !allowSymlinks)
+        ? fsl__fstat_perm(&fst, allowSymlinks)
+        : FSL_FILE_PERM_REGULAR;
+    }
+#endif
 
     if(!f->cache.markPrivate){
       rc = fsl_content_make_public(f, frid);
@@ -42397,6 +43153,7 @@ int fsl__checkin_calc_F_cards2( fsl_cx * f, fsl_deck * d,
   end:
 #undef RC
   fsl_free(fUuid);
+  fsl_cx_b_return(f, fullName);
   fsl_stmt_finalize(q);
   fsl_stmt_finalize(&stUpdateFileRid);
   if(!rc && changeCount) *changeCount = changeCounter;
@@ -43482,6 +44239,11 @@ int fsl_ckout_changes_visit( fsl_cx * f, fsl_id_t vid,
         coChange = FSL_CKOUT_CHANGE_MISSING;
         fsl_cx_err_reset(f) /* keep FSL_RC_NOT_FOUND from bubbling
                                up to the client! */;
+      }else if(FSL_FSTAT_TYPE_FILE!=fstat.type
+               && FSL_FSTAT_TYPE_LINK!=fstat.type){
+        /* As fossil(1)'s status_report(): it exists but is not
+           a file or link. */
+        coChange = FSL_CKOUT_CHANGE_NOT_A_FILE;
       }else if(!changed){
         continue;
       }else{
@@ -43600,6 +44362,9 @@ static int fsl_dircrawl_f_add(fsl_dircrawl_state const *);
    current repository. isCrawling must be true if this is a
    fsl__cfs_dircrawl(f, )-invoked call, else false.
 */
+static int fsl__ckout_nondir_file_check(fsl_cx *f, char const * zFilename,
+                                        fsl_size_t * errLen)
+  /* Documented and defined further down. */;
 static int co_add_one(CoAddState * const cas, bool isCrawling){
   int rc = 0;
   fsl_b_reuse(cas->coRelBuf);
@@ -43608,7 +44373,29 @@ static int co_add_one(CoAddState * const cas, bool isCrawling){
                     fsl_b_reuse(cas->coRelBuf), false)
     /* Reminder: will fail if file is outside of the checkout tree */;
   if(rc) return rc;
+  if(FSL_FSTAT_TYPE_DIR==cas->fst.type
+     && !fsl_cx_allows_symlinks(cas->f, false)){
+    /* Without allow-symlinks, fsl_cx_stat2() reports a symlink to a
+       directory as that directory. fossil(1) refuses to add anything
+       beneath a symlink (file_nondir_objects_on_path()), so don't
+       crawl it. */
+    fsl_b * const full = fsl_cx_b_borrow(cas->f);
+    bool isLink = false;
+    if(!full) return cas->f->error.code;
+    rc = fsl_b_appendf(full, "%s%b", cas->f->db.ckout.dir, cas->coRelBuf);
+    if(!rc) isLink = fsl__cfs_is_symlink(cas->f, fsl_b_cstr(full));
+    fsl_cx_b_return(cas->f, full);
+    if(rc) return rc;
+    if(isLink){
+      return fsl_cx_err_set(cas->f, FSL_RC_TYPE, "Cannot add symlink %b: "
+                            "the allow-symlinks setting is off and it "
+                            "points to a directory.", cas->coRelBuf);
+    }
+  }
   switch(cas->fst.type){
+    case FSL_FSTAT_TYPE_LINK:
+      /* fsl_cx_stat2() reports a link only with allow-symlinks, and
+         then it is added as itself. */
     case FSL_FSTAT_TYPE_FILE:{
       bool skipped = false;
       /**
@@ -43636,6 +44423,25 @@ static int co_add_one(CoAddState * const cas, bool isCrawling){
           char const * m =
             fsl_cx_glob_matches(cas->f, FSL_GLOBS_IGNORE, zCoRel);
           if(m) skipped = true;
+        }
+        if(!skipped){
+          /* As fossil(1)'s add_one_file(): skip a file which has a
+             symlink, or any other non-directory, in its directory
+             part (file_nondir_objects_on_path()). */
+          fsl_size_t errLen = 0;
+          fsl_b * const full = fsl_cx_b_borrow(cas->f);
+          if(!full){
+            rc = cas->f->error.code;
+            goto end;
+          }
+          rc = fsl_b_appendf(full, "%s%s", cas->f->db.ckout.dir, zCoRel);
+          if(!rc){
+            rc = fsl__ckout_nondir_file_check(cas->f, fsl_b_cstr(full),
+                                              &errLen);
+          }
+          fsl_cx_b_return(cas->f, full);
+          if(rc) goto end;
+          if(errLen) skipped = true;
         }
         if(!skipped && cas->opt->callback){
           bool yes = false;
@@ -43705,6 +44511,7 @@ static int co_add_one(CoAddState * const cas, bool isCrawling){
 static int fsl_dircrawl_f_add(fsl_dircrawl_state const *dst){
   switch(dst->entryType){
     case FSL_FSTAT_TYPE_DIR:
+    case FSL_FSTAT_TYPE_LINK:
     case FSL_FSTAT_TYPE_FILE:{
       CoAddState * const cas = (CoAddState*)dst->callbackState;
       int const rc = fsl_b_appendf(fsl_b_reuse(cas->absBuf),
@@ -43715,6 +44522,20 @@ static int fsl_dircrawl_f_add(fsl_dircrawl_state const *dst){
           return fsl_is_top_of_ckout(fsl_b_cstr(cas->absBuf))
             /* Never recurse into nested checkouts */
             ? FSL_RC_NOOP : 0;
+        case FSL_FSTAT_TYPE_LINK:
+          if(!fsl_cx_allows_symlinks(cas->f, false)){
+            /* Without allow-symlinks, fossil(1)'s vfile_scan() and
+               add_one_file() add a link to a file as that file,
+               ignore a dangling link, and refuse everything beneath
+               a link to a directory. Skipping the other links here
+               adds the same files. */
+            fsl_fstat tgt = fsl_fstat_empty;
+            if(fsl__cfs_stat(cas->f, fsl_b_cstr(cas->absBuf), &tgt, true)
+               || FSL_FSTAT_TYPE_FILE!=tgt.type){
+              return 0;
+            }
+          }
+          /* fall through */
         case FSL_FSTAT_TYPE_FILE:
           return co_add_one(cas, true);
         default:
@@ -43753,7 +44574,8 @@ int fsl_ckout_manage( fsl_cx * const f, fsl_ckout_manage_opt * const opt_ ){
       opt_ from a callback. */;
   cas.absBuf = fsl__cx_scratchpad(f);
   cas.coRelBuf = fsl__cx_scratchpad(f);
-  rc = fsl_file_canonical_name(opt.filename, cas.absBuf, false);
+  rc = fsl_file_canonical_name2(opt.relativeToCwd ? NULL : f->db.ckout.dir,
+                                opt.filename, cas.absBuf, false);
   if(rc){
     if(FSL_RC_OOM!=rc){
       rc = fsl_cx_err_set(f, rc, "Error %R canonicalizing file name: %s",
@@ -44023,27 +44845,25 @@ bool fsl_ckout_has_changes(fsl_cx *f){
 /**
    Clears the vmerge table per the given mode. FSL__MERGE_CLEAR_ALL
    wipes all contents. The other modes perform a partial wipe: only
-   contents related to unchanged vfile entries, plus a sweep of
-   genuinely-stale merge state once nothing shows active merge
-   involvement.
+   the per-file rows (vmerge.id>0) of unchanged vfile entries.
 
-   In FSL__MERGE_CLEAR_SCAN mode the stale-state sweep leaves
-   cherry-pick/backout markers (vmerge.id IN (-1,-2)) alone. Those
-   aren't tied to any single vfile row the way a regular merge's id>0
-   rows are, so they must survive an unrelated file-change rescan
-   intact until the pending commit consumes them into a Q-card (or
-   FSL__MERGE_CLEAR_ALL runs at the end of a real commit). Without
-   that exclusion, hand-editing the one file a cherry-pick touched
-   demotes its vfile.chnged from MERGE_MOD(2) to MOD(1), which
-   silently satisfies the sweep's "no chnged>1 left" condition and
-   erases the cherry-pick record before the manifest is built --
-   dropping its Q-card with no error.
+   FSL__MERGE_CLEAR_SCAN stops there. The checkout-level markers
+   (vmerge.id<=0: merge, cherry-pick, backout, integrate) are not tied
+   to any single vfile row, so they must survive a file-change rescan
+   until a commit consumes them (FSL__MERGE_CLEAR_ALL). A scan cannot
+   tell from vfile.chnged whether merge involvement is left: it
+   demotes a hand-edited merged file from MERGE_MOD(2) to MOD(1), and
+   one which became or stopped being a symlink to BECAME_SYMLINK(7)
+   or NOT_SYMLINK(9). Sweeping on that basis silently dropped the
+   pending commit's merge parent or Q-card.
 
-   In FSL__MERGE_CLEAR_REVERT mode the sweep may also remove those
-   markers: a revert which leaves no vfile entry with chnged>1 and no
-   per-file merge state is the user abandoning the pending
-   cherry-pick/backout, and keeping the marker would attach a bogus
-   Q-card to whatever unrelated change gets committed next.
+   In FSL__MERGE_CLEAR_REVERT mode those markers are also swept once
+   no vfile entry has a merge-related chnged
+   (FSL_VFILE_CHANGE_MERGE_MOD through FSL_VFILE_CHANGE_INTEGRATE_ADD)
+   and no per-file merge state is left: that is the user abandoning
+   the pending merge, and keeping the marker would attach a bogus
+   merge parent or Q-card to whatever unrelated change gets committed
+   next.
 
    Returns non-0 on db error.
 */
@@ -44053,22 +44873,28 @@ int fsl__ckout_clear_merge_state( fsl_cx * const f,
   if(FSL__MERGE_CLEAR_ALL==mode){
     rc = fsl_cx_exec(f,"DELETE FROM {{dbname.ckout}}.vmerge /*%s()*/", __func__);
   }else{
-    rc = fsl_cx_exec_multi(f,
+    rc = fsl_cx_exec(f,
                      "DELETE FROM {{dbname.ckout}}.vmerge WHERE id IN("
                      "SELECT vm.id FROM {{dbname.ckout}}.vmerge vm, {{dbname.ckout}}.vfile vf "
                      "WHERE vm.id=vf.id AND vf.chnged=0"
-                     ");"
-                     "DELETE FROM {{dbname.ckout}}.vmerge WHERE %s"
+                     ") /*%s()*/", __func__);
+  }
+  if(0==rc && FSL__MERGE_CLEAR_REVERT==mode){
+    rc = fsl_cx_exec(f,
+                     "DELETE FROM {{dbname.ckout}}.vmerge WHERE "
                      "NOT EXISTS("
                      "SELECT 1 FROM {{dbname.ckout}}.vmerge WHERE id>0"
                      ") AND NOT EXISTS ("
-                     "SELECT 1 FROM {{dbname.ckout}}.vfile WHERE chnged>1"
-                     ");"
+                     /* Only these chnged values are merge involvement:
+                        higher ones are executable-bit and symlink
+                        changes. */
+                     "SELECT 1 FROM {{dbname.ckout}}.vfile"
+                     " WHERE chnged BETWEEN %d AND %d"
+                     ")"
                      "/*%s()*/",
-                     (FSL__MERGE_CLEAR_SCAN==mode
-                      ? "id NOT IN(-1,-2) AND " : ""),
+                     (int)FSL_VFILE_CHANGE_MERGE_MOD,
+                     (int)FSL_VFILE_CHANGE_INTEGRATE_ADD,
                      __func__ );
-
   }
   return rc;
 }
@@ -46378,18 +47204,16 @@ int fsl__ckout_symlink_create(fsl_cx * const f, char const *zTgtFile,
   }else if(0!=(rc = fsl_is_rooted_in_ckout2(f, zLinkFile))){
     goto end;
   }
-  fsl_b * const b = fsl_cx_b_borrow(f);
-  rc = b ? fsl_b_append(b, zTgtFile, -1) : f->error.code;
-  if(!rc){
-    rc = fsl__cfs_write(f, b, zLinkFile)
-      /* zLinkFile, not fn: fn is empty when zLinkFile was passed in
-         as an absolute path. */;
-    if(rc){
-      rc = fsl_cx_err_set(f, rc, "Error %R writing symlink "
-                          "as file: %s", rc, zLinkFile);
-    }
+  /* As fossil(1)'s vfile_to_disk(): remove whatever is there first,
+     as symlink(2) will not replace it and writing a file would write
+     through a link. */
+  fsl__cfs_unlink(f, zLinkFile);
+  rc = fsl__cfs_symlink_create(f, zTgtFile, zLinkFile,
+                               fsl_cx_allows_symlinks(f, false));
+  if(rc){
+    rc = fsl_cx_err_set(f, rc, "Error %R writing symlink: %s",
+                        rc, zLinkFile);
   }
-  fsl_cx_b_return(f, b);
   end:
   fsl_cx_b_return(f, fn);
   return rc;
@@ -47724,6 +48548,26 @@ int fsl__cfs_symlink_read(fsl_cx * const f, fsl_b * const tgt,
   return s->xSymlinkRead(s->state, zName, tgt);
 }
 
+int fsl__cfs_read_repofile(fsl_cx * const f, fsl_b * const tgt,
+                           char const *zName, bool * isLink){
+  bool const link = fsl_cx_allows_symlinks(f, false)
+    && fsl__cfs_is_symlink(f, zName);
+  if( isLink ) *isLink = link;
+  return link
+    ? fsl__cfs_symlink_read(f, tgt, zName)
+    : fsl__cfs_read(f, tgt, zName);
+}
+
+fsl_fileperm_e fsl__fstat_perm(fsl_fstat const * fst, bool allowSymlinks){
+  if( allowSymlinks && FSL_FSTAT_TYPE_LINK==fst->type ){
+    return FSL_FILE_PERM_LINK;
+  }else if( FSL_FSTAT_TYPE_FILE==fst->type
+            && FSL_FSTAT_PERM_EXE==fst->perm ){
+    return FSL_FILE_PERM_EXE;
+  }
+  return FSL_FILE_PERM_REGULAR;
+}
+
 int fsl__cfs_symlink_create(fsl_cx * const f, char const *zTarget,
                             char const *zLink, bool realLink){
   int rc;
@@ -47889,13 +48733,7 @@ static int fsl__stash_resolve(fsl_cx * const f, fsl_db * const db,
 */
 static int fsl__stash_read_file(fsl_cx * const f, char const * zPath,
                                 fsl_b * const tgt){
-  int rc;
-  fsl_b_reuse(tgt);
-  if(fsl_cx_allows_symlinks(f, false) && fsl__cfs_is_symlink(f, zPath)){
-    rc = fsl__cfs_symlink_read(f, tgt, zPath);
-  }else{
-    rc = fsl__cfs_read(f, tgt, zPath);
-  }
+  int rc = fsl__cfs_read_repofile(f, tgt, zPath, NULL);
   if(FSL_RC_NOT_FOUND==rc){
     fsl_b_reuse(tgt);
     rc = 0;
@@ -47940,6 +48778,7 @@ static int fsl__stash_save_impl(fsl_cx * const f,
   char const * const * zNames =
     (opt->filenames && opt->filenames[0]) ? opt->filenames : NULL;
   bool inTxn = false;
+  bool const allowSymlinks = fsl_cx_allows_symlinks(f, false);
   int rc;
   fsl_b * const sql = fsl_cx_b_borrow(f);
   fsl_b * const fname = fsl_cx_b_borrow(f);
@@ -48004,7 +48843,7 @@ static int fsl__stash_save_impl(fsl_cx * const f,
   while(fsl__cx_stmt_step_each(f, &q, &rc)){
     fsl_id_t const id = fsl_stmt_g_id(&q, 0);
     bool const deleted = !!fsl_stmt_g_int32(&q, 1);
-    bool const isExe = !!fsl_stmt_g_int32(&q, 2);
+    bool isExe = !!fsl_stmt_g_int32(&q, 2);
     fsl_id_t const mrid = fsl_stmt_g_id(&q, 4);
     char const * const zName = fsl_stmt_g_text(&q, 5, NULL);
     char const * const zOrig = fsl_stmt_g_text(&q, 6, NULL);
@@ -48018,6 +48857,16 @@ static int fsl__stash_save_impl(fsl_cx * const f,
     rc = fsl_b_appendf(absPath, "%s%s", f->db.ckout.dir, zName);
     if( rc ) break;
     char const * const zPath = fsl_b_cstr(absPath);
+#if !defined(_WIN32)
+    if(!deleted){
+      /* vfile.isexe is the baseline's bit, so take the file's own, as
+         fsl_checkin_commit() does. fossil(1)'s stash_add_file_or_dir()
+         uses vfile.isexe, losing an exec-bit change. */
+      fsl_fstat fst = fsl_fstat_empty;
+      isExe = 0==fsl__cfs_stat(f, zPath, &fst, !allowSymlinks)
+        && FSL_FILE_PERM_EXE==fsl__fstat_perm(&fst, allowSymlinks);
+    }
+#endif
     if(0==mrid){
       /* An added file: the whole content. */
       rc = fsl__stash_read_file(f, zPath, disk);
@@ -48037,7 +48886,7 @@ static int fsl__stash_save_impl(fsl_cx * const f,
     if(!rc) rc = fsl_stmt_bind_int32(&ins, 2, deleted);
     if(!rc) rc = fsl_stmt_bind_int32(&ins, 3, isExe);
     if(!rc) rc = fsl_stmt_bind_int32(&ins, 4,
-                                     fsl_cx_allows_symlinks(f, false)
+                                     allowSymlinks
                                      && fsl__cfs_is_symlink(f, zPath));
     if(!rc) rc = fsl_stmt_bind_id(&ins, 5, mrid);
     if(!rc) rc = fsl_stmt_bind_text(&ins, 6, zOrig, -1, false);
@@ -48116,13 +48965,15 @@ static int fsl__stash_add_files(fsl_cx * const f){
 /**
    Applies one modified stash entry to its file, as fossil(1)'s
    stash_apply() does: overwrite the file if it is unchanged since
-   the baseline, else merge the stashed changes into it. Sets
-   *change and *nConflict.
+   the baseline, else merge the stashed changes into it. isLink is
+   whether the stashed version is a symlink and wasLink whether the
+   baseline version is one. Sets *change and *nConflict.
 */
 static int fsl__stash_apply_modified(fsl_cx * const f, fsl_id_t rid,
                                      fsl_b const * delta,
                                      char const * zOPath,
                                      char const * zNPath,
+                                     bool wasLink,
                                      bool isLink, bool isExec,
                                      fsl_stash_e * const change,
                                      unsigned * const nConflict){
@@ -48131,7 +48982,7 @@ static int fsl__stash_apply_modified(fsl_cx * const f, fsl_id_t rid,
   fsl_b out = fsl_b_empty;
   fsl_b * const disk = fsl_cx_b_borrow(f);
   if( !disk ) return f->error.code;
-  bool const isNewLink = fsl_cx_allows_symlinks(f, false)
+  bool const isDiskLink = fsl_cx_allows_symlinks(f, false)
     && fsl__cfs_is_symlink(f, zOPath);
   int rc = fsl__stash_read_file(f, zOPath, disk);
   if(!rc) rc = fsl_content_get(f, rid, &a);
@@ -48146,11 +48997,14 @@ static int fsl__stash_apply_modified(fsl_cx * const f, fsl_id_t rid,
   }
   if(rc) goto end;
   *nConflict = 0;
-  if(isLink==isNewLink && 0==fsl_b_compare(disk, &a)){
-    if(isLink || isNewLink) fsl__cfs_unlink(f, zNPath);
+  if(wasLink==isDiskLink && 0==fsl_b_compare(disk, &a)){
+    /* Unchanged since the baseline. Compare the disk's link state
+       with the baseline's, not the stash's: a stashed change to or
+       from a link is otherwise never restored. */
+    if(isLink || isDiskLink) fsl__cfs_unlink(f, zNPath);
     rc = fsl__stash_write_file(f, zNPath, &b, isLink, isExec);
     *change = FSL_STASH_UPDATE;
-  }else if(isLink || isNewLink){
+  }else if(wasLink || isLink || isDiskLink){
     *change = FSL_STASH_UNMERGEABLE;
   }else{
     unsigned int nc = 0;
@@ -48201,6 +49055,7 @@ static int fsl__stash_apply_impl(fsl_cx * const f,
   fsl_stmt q = fsl_stmt_empty;
   unsigned nConflict = 0;
   bool haveSfile = false;
+  fsl_deck dBase = fsl_deck_empty;
   int rc;
   if(!db) return FSL_RC_NOT_A_CKOUT;
   rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_CKOUT);
@@ -48270,7 +49125,14 @@ static int fsl__stash_apply_impl(fsl_cx * const f,
       if(!rc) rc = fsl__stash_write_file(f, zNPath, &delta, false, isExec);
       change = FSL_STASH_ADD;
     }else if(isRemoved){
+      /* The save's revert un-deleted it, so mark it removed again, as
+         (fossil rm) does. The stash does not record whether the file
+         was left on disk, so remove it, as fossil(1) does. */
       fsl__cfs_unlink(f, zOPath);
+      rc = fsl_cx_exec(f,
+        "UPDATE {{dbname.ckout}}.vfile SET deleted=1"
+        " WHERE pathname=%Q %s AND vid=%" FSL_ID_T_PFMT,
+        zOrig, fsl_cx_filename_collation(f), f->db.ckout.rid);
       change = FSL_STASH_DELETE;
     }else if((rc = fsl__ckout_safe_file_check(f, zNPath))){
       if(FSL_RC_OOM!=rc){
@@ -48279,8 +49141,28 @@ static int fsl__stash_apply_impl(fsl_cx * const f,
         change = FSL_STASH_UNSAFE;
       }
     }else{
-      rc = fsl__stash_apply_modified(f, rid, &delta, zOPath, zNPath,
-                                     isLink, isExec, &change, &nc);
+      bool wasLink = false;
+      if(fsl_cx_allows_symlinks(f, false)){
+        /* With the setting off, a link is a regular file on disk, so
+           there is no need to know. */
+        fsl_card_F const * fc = NULL;
+        if(!dBase.rid){
+          fsl_id_t const baseRid = fsl_db_g_id(db, 0,
+            "SELECT blob.rid FROM {{dbname.ckout}}.stash, {{dbname.repo}}.blob"
+            " WHERE stashid=%" FSL_ID_T_PFMT " AND blob.uuid=stash.hash",
+            sid);
+          rc = baseRid>0
+            ? fsl_deck_load_rid(f, &dBase, baseRid, FSL_SATYPE_CHECKIN)
+            : fsl_cx_err_set(f, FSL_RC_NOT_FOUND, "The baseline of stash %"
+                             FSL_ID_T_PFMT " is not in the repository.",
+                             sid);
+        }
+        if(!rc) rc = fsl_deck_F_search2(&dBase, zOrig, &fc);
+        wasLink = fc && FSL_FILE_PERM_LINK==fc->perm;
+      }
+      if(!rc) rc = fsl__stash_apply_modified(f, rid, &delta, zOPath,
+                                             zNPath, wasLink, isLink,
+                                             isExec, &change, &nc);
       if(!rc && (FSL_STASH_CONFLICT==change
                  || FSL_STASH_UNMERGEABLE==change)) ++nConflict;
     }
@@ -48315,6 +49197,7 @@ static int fsl__stash_apply_impl(fsl_cx * const f,
   if(!rc && opt->pop) rc = fsl_stash_drop(f, sid);
   end:
   fsl_stmt_finalize(&q);
+  fsl_deck_finalize(&dBase);
   if(haveSfile) fsl__db_temp_drop(db, "fx_stash_sfile");
   {
     int const rc2 = fsl_cx_txn_end(f, !!rc);
@@ -49649,6 +50532,1178 @@ int fsl_bisect_next(fsl_cx * const f, fsl_ckup_opt const * uOpt,
   return rc;
 }
 /* end of file src/bisect.c */
+/* start of file src/patch.c */
+/* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=2 et sw=2 tw=80: */
+/*
+  Copyright 2026 The Libfossil Authors, see LICENSES/BSD-2-Clause.txt
+
+  SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+  SPDX-FileCopyrightText: 2026 The Libfossil Authors
+  SPDX-FileType: Code
+
+  Heavily indebted to the Fossil SCM project (https://fossil-scm.org).
+*/
+/**
+   fossil(1)-compatible binary patches (see patch.h). This is a port
+   of fossil(1)'s src/patch.c.
+
+   A patch is held in its own in-memory fsl_db, separate from f's
+   databases: create builds it there and serializes it, and open
+   deserializes a copy of the patch into it. That keeps an untrusted
+   patch away from f's connection and leaves no journal files next to
+   a patch file.
+*/
+#include <assert.h>
+#include <string.h>
+
+const fsl_patch_create_opt fsl_patch_create_opt_empty =
+  fsl_patch_create_opt_empty_m;
+const fsl_patch_apply_opt fsl_patch_apply_opt_empty =
+  fsl_patch_apply_opt_empty_m;
+
+/**
+   fossil(1)'s patch schema, from its patch_create(). The page size is
+   that of fossil(1)'s patches, the smallest SQLite allows, which keeps
+   small patches small.
+*/
+static char const * const fsl__patch_schema =
+  "PRAGMA page_size=512;"
+  "CREATE TABLE chng("
+  "  pathname TEXT,"
+  "  origname TEXT,"
+  "  hash TEXT,"
+  "  isexe BOOL,"
+  "  islink BOOL,"
+  "  delta BLOB"
+  ");"
+  "CREATE TABLE cfg("
+  "  key TEXT,"
+  "  value ANY"
+  ");";
+
+/** Indexes into fsl_patch::aStr, one per string in fsl_patch_info. */
+enum fsl__patch_str_e {
+  FSL__PATCH_BASELINE = 0,
+  FSL__PATCH_PCODE,
+  FSL__PATCH_PNAME,
+  FSL__PATCH_USER,
+  FSL__PATCH_HOST,
+  FSL__PATCH_CKOUT,
+  FSL__PATCH_REPO,
+  FSL__PATCH_STR_COUNT
+};
+
+/** The cfg keys for the fsl__patch_str_e entries, in the same order. */
+static char const * const fsl__patch_cfg_keys[FSL__PATCH_STR_COUNT] = {
+  "baseline", "project-code", "project-name", "user", "hostname",
+  "ckout", "repo"
+};
+
+struct fsl_patch {
+  /** The context the patch was opened with, for error reporting. */
+  fsl_cx * f;
+  /** The patch's db, deserialized into memory. */
+  fsl_db db;
+  /** True if the patch has a patchmerge table. */
+  bool hasMerges;
+  /** Owned strings which this->info points to. */
+  char * aStr[FSL__PATCH_STR_COUNT];
+  fsl_patch_info info;
+};
+
+static const fsl_patch fsl__patch_empty = {
+  NULL/*f*/, fsl_db_empty_m/*db*/, false/*hasMerges*/,
+  {NULL}/*aStr*/,
+  {NULL,NULL,NULL,NULL,NULL,NULL,NULL,0.0}/*info*/
+};
+
+/**
+   Reads a checkout file as fossil(1)'s patch_create() does, via
+   blob_read_from_file(...,RepoFILE): with the allow-symlinks setting
+   on, a symlink's content is its target name, else the symlink is
+   followed. Unlike fsl_stash_save(), a missing file is an error, as
+   it is in fossil(1).
+*/
+static int fsl__patch_read_file(fsl_cx * const f, char const * zPath,
+                                fsl_b * const tgt){
+  int const rc = fsl__cfs_read_repofile(f, tgt, zPath, NULL);
+  return rc ? fsl_cx_err_set(f, rc, "Error %R reading file: %s",
+                             rc, zPath) : 0;
+}
+
+/**
+   Inserts (zKey,zVal) into pdb's cfg table, unless zVal is NULL, in
+   which case fossil(1) would not have a value for it either.
+*/
+static int fsl__patch_cfg_set(fsl_cx * const f, fsl_db * const pdb,
+                              char const * zKey, char const * zVal){
+  int rc = 0;
+  if(zVal){
+    rc = fsl_db_exec(pdb, "INSERT INTO cfg(key,value) VALUES(%Q,%Q)",
+                     zKey, zVal);
+    if(rc) rc = fsl_cx_uplift_db_error2(f, pdb, rc);
+  }
+  return rc;
+}
+
+/**
+   Fills pdb's cfg table, as fossil(1)'s patch_create() does. fossil(1)
+   also records a "fossil-date", the build date of the fossil(1)
+   binary, which has no libfossil equivalent, so it is left out.
+*/
+static int fsl__patch_create_cfg(fsl_cx * const f, fsl_db * const pdb,
+                                 fsl_patch_create_opt const * opt){
+  int rc;
+  fsl_uuid_cstr zBaseline = NULL;
+  char * zUser = NULL;
+  char * zPCode = NULL;
+  char * zPName = NULL;
+  fsl_b * const ckDir = fsl_cx_b_borrow(f);
+  if(!ckDir) return f->error.code;
+
+  fsl_ckout_version_info(f, NULL, &zBaseline);
+  rc = fsl_b_append(ckDir, fsl_cx_ckout_dir_name(f, NULL), -1);
+  if(rc) goto end;
+  fsl_b_strip_slashes(ckDir);
+  zUser = fsl_cx_user_get(f)
+    ? fsl_strdup(fsl_cx_user_get(f))
+    : fsl_user_name_guess();
+  zPCode = fsl_config_get_text(f, FSL_CONFDB_REPO, "project-code", NULL);
+  zPName = fsl_config_get_text(f, FSL_CONFDB_REPO, "project-name", NULL);
+  rc = fsl__patch_cfg_set(f, pdb, "baseline", zBaseline);
+  if(!rc) rc = fsl__patch_cfg_set(f, pdb, "ckout", fsl_b_cstr(ckDir));
+  if(!rc) rc = fsl__patch_cfg_set(f, pdb, "repo",
+                                  fsl_cx_db_file_repo(f, NULL));
+  if(!rc) rc = fsl__patch_cfg_set(f, pdb, "user", zUser);
+  if(!rc){
+    rc = fsl_db_exec(pdb, "INSERT INTO cfg(key,value)"
+                     " VALUES('date',julianday('now'))");
+    if(rc) rc = fsl_cx_uplift_db_error2(f, pdb, rc);
+  }
+  if(!rc) rc = fsl__patch_cfg_set(f, pdb, "project-code", zPCode);
+  if(!rc) rc = fsl__patch_cfg_set(f, pdb, "project-name", zPName);
+  if(!rc) rc = fsl__patch_cfg_set(f, pdb, "hostname", opt->hostname);
+  end:
+  fsl_cx_b_return(f, ckDir);
+  fsl_free(zUser);
+  fsl_free(zPCode);
+  fsl_free(zPName);
+  return rc;
+}
+
+/**
+   Fills pdb's chng table from the checkout's vfile table, as the
+   "New files", "Deleted files" and "Changed files" queries in
+   fossil(1)'s patch_create() do. The checkout must have been scanned
+   for changes.
+*/
+static int fsl__patch_create_chng(fsl_cx * const f, fsl_db * const pdb){
+  fsl_id_t vid = 0;
+  fsl_stmt q = fsl_stmt_empty;
+  fsl_stmt ins = fsl_stmt_empty;
+  fsl_b orig = fsl_b_empty;
+  fsl_b delta = fsl_b_empty;
+  fsl_b * const disk = fsl_cx_b_borrow(f);
+  fsl_b * const absPath = fsl_cx_b_borrow(f);
+  fsl_b * const zipped = fsl_cx_b_borrow(f);
+  int rc;
+  if(!disk || !absPath || !zipped){
+    rc = f->error.code;
+    assert(rc);
+    goto end;
+  }
+  fsl_ckout_version_info(f, &vid, NULL);
+  /* Column 0 is the kind of change: 1=new, 2=deleted, 3=changed. */
+  rc = fsl_cx_prepare(f, &q,
+    "SELECT 1, pathname, NULL, NULL, isexe, islink, 0"
+    "  FROM {{dbname.ckout}}.vfile"
+    " WHERE vid=%" FSL_ID_T_PFMT " AND rid==0"
+    " UNION ALL"
+    " SELECT 2, pathname, NULL, NULL, 0, 0, 0"
+    "  FROM {{dbname.ckout}}.vfile"
+    " WHERE vid=%" FSL_ID_T_PFMT " AND deleted"
+    " UNION ALL"
+    " SELECT 3, pathname, nullif(origname,pathname), b.uuid,"
+    "        isexe, islink, v.rid"
+    "  FROM {{dbname.ckout}}.vfile v, {{dbname.repo}}.blob b"
+    " WHERE v.vid=%" FSL_ID_T_PFMT " AND b.rid=v.rid"
+    "   AND NOT deleted AND (chnged OR origname<>pathname)",
+    vid, vid, vid);
+  if(!rc){
+    rc = fsl_db_prepare(pdb, &ins,
+      "INSERT INTO chng(pathname,origname,hash,isexe,islink,delta)"
+      " VALUES(?1,?2,?3,?4,?5,?6)");
+    if(rc) rc = fsl_cx_uplift_db_error2(f, pdb, rc);
+  }
+  if(rc) goto end;
+  while(fsl__cx_stmt_step_each(f, &q, &rc)){
+    int const kind = fsl_stmt_g_int32(&q, 0);
+    char const * const zName = fsl_stmt_g_text(&q, 1, NULL);
+    fsl_id_t const rid = fsl_stmt_g_id(&q, 6);
+    int isExe = 0;
+    int isLink = 0;
+    fsl_b_reuse(absPath);
+    rc = fsl_b_appendf(absPath, "%s%s", f->db.ckout.dir, zName);
+    if(rc) break;
+    if(2!=kind){
+      /* Unlike fossil(1), which copies vfile.isexe and vfile.islink,
+         take these from the file: a changes scan records a change of
+         either only in vfile.chnged, so the vfile columns still hold
+         the baseline's state, and fossil(1)'s patches lose such
+         changes. */
+      isLink = fsl_cx_allows_symlinks(f, false)
+        && fsl__cfs_is_symlink(f, fsl_b_cstr(absPath));
+      isExe = !isLink && fsl__cfs_isexec(f, fsl_b_cstr(absPath));
+    }
+    switch(kind){
+      case 1:
+        /* A new file: its whole content, compressed. */
+        rc = fsl__patch_read_file(f, fsl_b_cstr(absPath), disk);
+        if(!rc) rc = fsl_b_compress(disk, zipped);
+        if(!rc) rc = fsl_stmt_bind_blob(&ins, 6, zipped->mem,
+                                        zipped->used, false);
+        break;
+      case 2:
+        rc = fsl_stmt_bind_null(&ins, 6);
+        break;
+      default:
+        /* A changed file: a compressed delta from its baseline
+           version, or an empty blob if only its name or permissions
+           changed, as fossil(1)'s mkdelta() makes it. */
+        rc = fsl__patch_read_file(f, fsl_b_cstr(absPath), disk);
+        if(!rc) rc = fsl_content_get(f, rid, &orig);
+        if(rc) break;
+        if(orig.used==disk->used
+           && (0==orig.used || 0==memcmp(orig.mem, disk->mem, orig.used))){
+          rc = fsl_stmt_bind_blob(&ins, 6, "", 0, false);
+        }else{
+          rc = fsl_b_delta_create(&orig, disk, &delta);
+          if(!rc) rc = fsl_b_compress(&delta, zipped);
+          if(!rc) rc = fsl_stmt_bind_blob(&ins, 6, zipped->mem,
+                                          zipped->used, false);
+        }
+        break;
+    }
+    if(!rc) rc = fsl_stmt_bind_text(&ins, 1, zName, -1, false);
+    if(!rc) rc = fsl_stmt_bind_text(&ins, 2,
+                                    fsl_stmt_g_text(&q, 2, NULL), -1, false);
+    if(!rc) rc = fsl_stmt_bind_text(&ins, 3,
+                                    fsl_stmt_g_text(&q, 3, NULL), -1, false);
+    if(!rc) rc = fsl_stmt_bind_int32(&ins, 4, isExe);
+    if(!rc) rc = fsl_stmt_bind_int32(&ins, 5, isLink);
+    if(!rc) rc = fsl_stmt_step(&ins)==FSL_RC_STEP_DONE
+      ? 0 : fsl_cx_uplift_db_error2(f, pdb, FSL_RC_DB);
+    fsl_stmt_reset(&ins);
+  }
+  end:
+  fsl_stmt_finalize(&q);
+  fsl_stmt_finalize(&ins);
+  fsl_b_clear(&orig);
+  fsl_b_clear(&delta);
+  fsl_cx_b_return(f, disk);
+  fsl_cx_b_return(f, absPath);
+  fsl_cx_b_return(f, zipped);
+  return rc;
+}
+
+/**
+   Copies the checkout's pending merges into a patchmerge table in
+   pdb, creating that table only if there are any, as fossil(1)'s
+   patch_create() does.
+*/
+static int fsl__patch_create_merges(fsl_cx * const f, fsl_db * const pdb){
+  fsl_stmt q = fsl_stmt_empty;
+  fsl_stmt ins = fsl_stmt_empty;
+  int rc = fsl_cx_prepare(f, &q,
+    "SELECT CASE id WHEN 0 THEN 'merge' WHEN -1 THEN 'cherrypick'"
+    "  WHEN -2 THEN 'backout' WHEN -4 THEN 'integrate' END, mhash"
+    "  FROM {{dbname.ckout}}.vmerge WHERE id IN (0,-1,-2,-4)");
+  while(fsl__cx_stmt_step_each(f, &q, &rc)){
+    if(!ins.stmt){
+      rc = fsl_db_exec(pdb, "CREATE TABLE patchmerge(type TEXT,mhash TEXT)");
+      if(!rc) rc = fsl_db_prepare(pdb, &ins,
+        "INSERT INTO patchmerge(type,mhash) VALUES(?1,?2)");
+      if(rc){
+        rc = fsl_cx_uplift_db_error2(f, pdb, rc);
+        break;
+      }
+    }
+    rc = fsl_stmt_bind_text(&ins, 1, fsl_stmt_g_text(&q, 0, NULL), -1, false);
+    if(!rc) rc = fsl_stmt_bind_text(&ins, 2, fsl_stmt_g_text(&q, 1, NULL),
+                                    -1, false);
+    if(!rc) rc = fsl_stmt_step(&ins)==FSL_RC_STEP_DONE
+      ? 0 : fsl_cx_uplift_db_error2(f, pdb, FSL_RC_DB);
+    fsl_stmt_reset(&ins);
+  }
+  fsl_stmt_finalize(&q);
+  fsl_stmt_finalize(&ins);
+  return rc;
+}
+
+/**
+   Writes the n bytes at src to opt->filename or opt->out.
+*/
+static int fsl__patch_write(fsl_cx * const f,
+                            fsl_patch_create_opt const * opt,
+                            void const * src, fsl_size_t n){
+  int rc = 0;
+  if(opt->filename){
+    FILE * const fp = fsl_fopen(opt->filename, "wb");
+    if(!fp){
+      return fsl_cx_err_set(f, FSL_RC_IO, "Cannot open for writing: %s",
+                            opt->filename);
+    }
+    if(n!=fwrite(src, 1, (size_t)n, fp)) rc = FSL_RC_IO;
+    if(0!=fflush(fp)) rc = FSL_RC_IO;
+    fsl_fclose(fp);
+    if(rc){
+      rc = fsl_cx_err_set(f, rc, "Error writing patch file: %s",
+                          opt->filename);
+    }
+  }else{
+    rc = opt->out(opt->outState, src, n);
+    if(rc && !f->error.code){
+      rc = fsl_cx_err_set(f, rc, "Error %R writing patch.", rc);
+    }
+  }
+  return rc;
+}
+
+int fsl_patch_create(fsl_cx * const f, fsl_patch_create_opt const * opt){
+  fsl_db pdb = fsl_db_empty;
+  bool inTxn = false;
+  unsigned char * pData = NULL;
+  sqlite3_int64 nData = 0;
+  int rc;
+  if(!opt->filename && !opt->out){
+    return fsl_cx_err_set(f, FSL_RC_MISUSE,
+                          "A patch needs a file name or an output channel.");
+  }
+  if(!fsl_needs_ckout(f)) return f->error.code;
+  if(opt->filename){
+    int const dc = fsl_dir_check(opt->filename);
+    if(dc>0){
+      return fsl_cx_err_set(f, FSL_RC_TYPE, "Patch file is a directory: %s",
+                            opt->filename);
+    }else if(dc<0 && !opt->overwrite){
+      return fsl_cx_err_set(f, FSL_RC_ALREADY_EXISTS,
+                            "Patch file already exists: %s", opt->filename);
+    }
+  }
+  rc = fsl_cx_txn_begin(f);
+  if(rc) goto end;
+  inTxn = true;
+  rc = fsl_ckout_changes_scan(f);
+  if(rc) goto end;
+  rc = fsl_db_open(&pdb, ":memory:", FSL_DB_OPEN_RWC);
+  if(!rc) rc = fsl_db_exec_multi(&pdb, "%s", fsl__patch_schema);
+  if(rc){
+    rc = fsl_cx_uplift_db_error2(f, &pdb, rc);
+    goto end;
+  }
+  rc = fsl__patch_create_cfg(f, &pdb, opt);
+  if(!rc) rc = fsl__patch_create_chng(f, &pdb);
+  if(!rc) rc = fsl__patch_create_merges(f, &pdb);
+  if(rc) goto end;
+  /* The checkout db side is done: commit the changes scan. */
+  inTxn = false;
+  rc = fsl_cx_txn_end(f, false);
+  if(rc) goto end;
+  pData = sqlite3_serialize(pdb.dbh, "main", &nData, 0);
+  if(!pData){
+    rc = fsl_cx_err_set(f, FSL_RC_OOM, NULL);
+    goto end;
+  }
+  rc = fsl__patch_write(f, opt, pData, (fsl_size_t)nData);
+  end:
+  sqlite3_free(pData);
+  fsl_db_close(&pdb);
+  if(inTxn) fsl_cx_txn_end(f, true);
+  return rc;
+}
+
+/**
+   Returns true if pdb has a table named zTable with the given
+   comma-separated columns.
+*/
+static bool fsl__patch_has_table(fsl_db * const pdb, char const * zTable,
+                                 char const * zCols){
+  fsl_stmt q = fsl_stmt_empty;
+  bool ok = fsl_db_exists(pdb, "SELECT 1 FROM sqlite_schema"
+                          " WHERE type='table' AND name=%Q", zTable);
+  if(ok){
+    ok = 0==fsl_db_prepare(pdb, &q, "SELECT %s FROM %s LIMIT 0",
+                           zCols, zTable);
+    fsl_stmt_finalize(&q);
+    fsl_db_err_reset(pdb);
+  }
+  return ok;
+}
+
+/**
+   Validates p's db as a patch and reads its cfg table into p->info.
+   Returns 0 or FSL_RC_SYNTAX, with p->f's error state set, if p is
+   not a well-formed patch.
+*/
+static int fsl__patch_load(fsl_patch * const p, char const * zLabel){
+  fsl_cx * const f = p->f;
+  fsl_stmt q = fsl_stmt_empty;
+  int rc = fsl_db_prepare(&p->db, &q, "PRAGMA quick_check");
+  while(fsl__cx_stmt_step_each(f, &q, &rc)){
+    if(0!=fsl_strcmp("ok", fsl_stmt_g_text(&q, 0, NULL))){
+      rc = FSL_RC_SYNTAX;
+    }
+  }
+  fsl_stmt_finalize(&q);
+  if(rc
+     || !fsl__patch_has_table(&p->db, "chng",
+                              "pathname,origname,hash,isexe,islink,delta")
+     || !fsl__patch_has_table(&p->db, "cfg", "key,value")){
+    fsl_db_err_reset(&p->db);
+    return fsl_cx_err_set(f, FSL_RC_SYNTAX,
+                          "Not a well-formed fossil patch: %s", zLabel);
+  }
+  p->hasMerges = fsl__patch_has_table(&p->db, "patchmerge", "type,mhash");
+  rc = fsl_db_prepare(&p->db, &q, "SELECT key, value FROM cfg");
+  if(rc) return fsl_cx_uplift_db_error2(f, &p->db, rc);
+  while(fsl__cx_stmt_step_each(f, &q, &rc)){
+    char const * const zKey = fsl_stmt_g_text(&q, 0, NULL);
+    if(0==fsl_strcmp("date", zKey)){
+      p->info.date = fsl_stmt_g_double(&q, 1);
+      continue;
+    }
+    for(int i = 0; i < FSL__PATCH_STR_COUNT; ++i){
+      if(0==fsl_strcmp(fsl__patch_cfg_keys[i], zKey)){
+        char const * const zVal = fsl_stmt_g_text(&q, 1, NULL);
+        fsl_free(p->aStr[i]);
+        p->aStr[i] = zVal ? fsl_strdup(zVal) : NULL;
+        if(zVal && !p->aStr[i]) rc = fsl_cx_err_set(f, FSL_RC_OOM, NULL);
+        break;
+      }
+    }
+  }
+  fsl_stmt_finalize(&q);
+  if(rc) return rc;
+  p->info.baseline = p->aStr[FSL__PATCH_BASELINE];
+  p->info.projectCode = p->aStr[FSL__PATCH_PCODE];
+  p->info.projectName = p->aStr[FSL__PATCH_PNAME];
+  p->info.user = p->aStr[FSL__PATCH_USER];
+  p->info.hostname = p->aStr[FSL__PATCH_HOST];
+  p->info.ckoutDir = p->aStr[FSL__PATCH_CKOUT];
+  p->info.repoDb = p->aStr[FSL__PATCH_REPO];
+  return 0;
+}
+
+/**
+   The guts of fsl_patch_open_mem(). zLabel names the patch in error
+   messages.
+*/
+static int fsl__patch_open(fsl_cx * const f, void const * src,
+                           fsl_size_t n, char const * zLabel,
+                           fsl_patch ** pOut){
+  fsl_patch * p = NULL;
+  unsigned char * pCopy = NULL;
+  int rc;
+  if(n<512){
+    /* The smallest page size, so the smallest possible db. */
+    return fsl_cx_err_set(f, FSL_RC_SYNTAX,
+                          "Too small to be a fossil patch: %s", zLabel);
+  }
+  p = fsl_malloc(sizeof(fsl_patch));
+  if(!p) return fsl_cx_err_set(f, FSL_RC_OOM, NULL);
+  *p = fsl__patch_empty;
+  p->f = f;
+  rc = fsl_db_open(&p->db, ":memory:", FSL_DB_OPEN_RWC);
+  if(rc){
+    rc = fsl_cx_uplift_db_error2(f, &p->db, rc);
+    goto end;
+  }
+  /* A patch is untrusted input: forbid writes to its schema and the
+     use of functions with side effects from its views or triggers. */
+  sqlite3_db_config(p->db.dbh, SQLITE_DBCONFIG_DEFENSIVE, 1, NULL);
+  sqlite3_db_config(p->db.dbh, SQLITE_DBCONFIG_TRUSTED_SCHEMA, 0, NULL);
+  pCopy = sqlite3_malloc64((sqlite3_uint64)n);
+  if(!pCopy){
+    rc = fsl_cx_err_set(f, FSL_RC_OOM, NULL);
+    goto end;
+  }
+  memcpy(pCopy, src, (size_t)n);
+  /* sqlite3_deserialize() takes ownership of pCopy, even on error. */
+  if(SQLITE_OK!=sqlite3_deserialize(p->db.dbh, "main", pCopy,
+                                    (sqlite3_int64)n, (sqlite3_int64)n,
+                                    SQLITE_DESERIALIZE_FREEONCLOSE
+                                    | SQLITE_DESERIALIZE_READONLY)){
+    rc = fsl_cx_err_set(f, FSL_RC_SYNTAX, "Cannot open patch %s: %s",
+                        zLabel, sqlite3_errmsg(p->db.dbh));
+    goto end;
+  }
+  rc = fsl__patch_load(p, zLabel);
+  end:
+  if(rc){
+    fsl_patch_close(p);
+  }else{
+    *pOut = p;
+  }
+  return rc;
+}
+
+int fsl_patch_open_mem(fsl_cx * const f, void const * src,
+                       fsl_size_t n, fsl_patch ** pOut){
+  return fsl__patch_open(f, src, n, "<memory>", pOut);
+}
+
+int fsl_patch_open_file(fsl_cx * const f, char const * zFile,
+                        fsl_patch ** pOut){
+  fsl_b content = fsl_b_empty;
+  int rc;
+  if(!fsl_is_file(zFile)){
+    return fsl_cx_err_set(f, FSL_RC_NOT_FOUND, "No such file: %s", zFile);
+  }
+  /* The file is read into memory, rather than opened as a db, so that
+     SQLite never writes beside it or holds it open. */
+  rc = fsl_b_fill_from_filename(&content, zFile);
+  if(rc){
+    rc = fsl_cx_err_set(f, rc, "Error %R reading patch file: %s", rc, zFile);
+  }else{
+    rc = fsl__patch_open(f, content.mem, content.used, zFile, pOut);
+  }
+  fsl_b_clear(&content);
+  return rc;
+}
+
+void fsl_patch_close(fsl_patch * p){
+  if(p){
+    fsl_db_close(&p->db);
+    for(int i = 0; i < FSL__PATCH_STR_COUNT; ++i) fsl_free(p->aStr[i]);
+    *p = fsl__patch_empty;
+    fsl_free(p);
+  }
+}
+
+fsl_patch_info const * fsl_patch_info_get(fsl_patch const * p){
+  return &p->info;
+}
+
+int fsl_patch_each(fsl_patch * const p, fsl_patch_each_f cb, void * state){
+  fsl_cx * const f = p->f;
+  fsl_stmt q = fsl_stmt_empty;
+  /* Classified as fossil(1)'s patch_view() does. An empty origname is
+     treated as no rename, as patch_view() does. */
+  int rc = fsl_db_prepare(&p->db, &q,
+    "SELECT pathname, nullif(nullif(origname,''),pathname), hash,"
+    "       isexe, islink, delta IS NULL, length(delta)>0"
+    "  FROM chng ORDER BY pathname");
+  if(rc) return fsl_cx_uplift_db_error2(f, &p->db, rc);
+  while(fsl__cx_stmt_step_each(f, &q, &rc)){
+    fsl_patch_entry e = {NULL, NULL, NULL, false, false, false, false, false};
+    e.name = fsl_stmt_g_text(&q, 0, NULL);
+    if(!e.name || !*e.name){
+      rc = fsl_cx_err_set(f, FSL_RC_SYNTAX,
+                          "Patch has a file entry with no name.");
+      break;
+    }
+    e.origName = fsl_stmt_g_text(&q, 1, NULL);
+    e.baselineHash = fsl_stmt_g_text(&q, 2, NULL);
+    e.isExe = !!fsl_stmt_g_int32(&q, 3);
+    e.isLink = !!fsl_stmt_g_int32(&q, 4);
+    e.isDeleted = !!fsl_stmt_g_int32(&q, 5);
+    e.isNew = !e.baselineHash && !e.isDeleted;
+    e.isModified = !e.isNew && !e.isDeleted && !!fsl_stmt_g_int32(&q, 6);
+    rc = cb(&e, state);
+  }
+  fsl_stmt_finalize(&q);
+  return FSL_RC_BREAK==rc ? 0 : rc;
+}
+
+int fsl_patch_each_merge(fsl_patch * const p, fsl_patch_merge_f cb,
+                         void * state){
+  fsl_cx * const f = p->f;
+  fsl_stmt q = fsl_stmt_empty;
+  int rc;
+  if(!p->hasMerges) return 0;
+  /* The same filter as in fossil(1)'s patch_apply(). */
+  rc = fsl_db_prepare(&p->db, &q,
+    "SELECT CASE type WHEN 'merge' THEN %d WHEN 'cherrypick' THEN %d"
+    "  WHEN 'backout' THEN %d WHEN 'integrate' THEN %d END, mhash"
+    "  FROM patchmerge"
+    " WHERE type IN ('merge','cherrypick','backout','integrate')"
+    "   AND length(mhash)>0 AND mhash NOT GLOB '*[^a-fA-F0-9]*'"
+    " ORDER BY rowid",
+    (int)FSL_MERGE_TYPE_NORMAL, (int)FSL_MERGE_TYPE_CHERRYPICK,
+    (int)FSL_MERGE_TYPE_BACKOUT, (int)FSL_MERGE_TYPE_INTEGRATE);
+  if(rc) return fsl_cx_uplift_db_error2(f, &p->db, rc);
+  while(fsl__cx_stmt_step_each(f, &q, &rc)){
+    rc = cb((fsl_merge_type_e)fsl_stmt_g_int32(&q, 0),
+            fsl_stmt_g_text(&q, 1, NULL), state);
+  }
+  fsl_stmt_finalize(&q);
+  return FSL_RC_BREAK==rc ? 0 : rc;
+}
+
+/**
+   Returns 0 if zName is safe to use as a checkout-relative file name
+   from a patch, else sets f's error state and returns FSL_RC_RANGE.
+*/
+static int fsl__patch_name_check(fsl_cx * const f, char const * zName){
+  if(!zName || !*zName || !fsl_is_simple_pathname(zName, true)){
+    return fsl_cx_err_set(f, FSL_RC_RANGE,
+                          "Patch has an unsafe file name: %s",
+                          zName ? zName : "<NULL>");
+  }else if(fsl_is_reserved_fn(zName, -1)){
+    return fsl_cx_err_set(f, FSL_RC_RANGE,
+                          "Patch has a reserved file name: %s", zName);
+  }
+  return 0;
+}
+
+/**
+   Resolves zHash, which must be a full artifact hash, to its RID in
+   f's repository. zWhat describes the artifact in error messages.
+*/
+static int fsl__patch_rid(fsl_cx * const f, char const * zHash,
+                          char const * zWhat, fsl_id_t * const rid){
+  if(!zHash || !fsl_is_uuid(zHash)){
+    return fsl_cx_err_set(f, FSL_RC_SYNTAX, "Patch has a malformed "
+                          "hash for %s: %s", zWhat, zHash ? zHash : "<NULL>");
+  }
+  *rid = fsl_uuid_to_rid(f, zHash);
+  if(*rid<=0){
+    return f->error.code ? f->error.code
+      : fsl_cx_err_set(f, FSL_RC_NOT_FOUND, "The %s (%.16s) is not in "
+                       "this repository. It may need to be synced first.",
+                       zWhat, zHash);
+  }
+  return 0;
+}
+
+/**
+   Checks everything in p which can be checked before the checkout is
+   changed: file names, the project code, and that the baseline and
+   every file's baseline version are in the repository. Writes the
+   baseline's RID to *baseRid.
+*/
+static int fsl__patch_apply_check(fsl_cx * const f, fsl_patch * const p,
+                                  fsl_id_t * const baseRid){
+  fsl_stmt q = fsl_stmt_empty;
+  char * zPCode = NULL;
+  int rc = 0;
+  if(p->info.projectCode){
+    zPCode = fsl_config_get_text(f, FSL_CONFDB_REPO, "project-code", NULL);
+    if(zPCode && fsl_strcmp(zPCode, p->info.projectCode)){
+      rc = fsl_cx_err_set(f, FSL_RC_REPO_MISMATCH, "The patch is for a "
+                          "different project (project code %.16s).",
+                          p->info.projectCode);
+    }
+    fsl_free(zPCode);
+    if(rc) return rc;
+  }
+  rc = fsl__patch_rid(f, p->info.baseline, "patch's baseline", baseRid);
+  if(rc) return rc;
+  rc = fsl_db_prepare(&p->db, &q, "SELECT pathname, origname, hash"
+                      " FROM chng");
+  if(rc) return fsl_cx_uplift_db_error2(f, &p->db, rc);
+  while(fsl__cx_stmt_step_each(f, &q, &rc)){
+    char const * const zName = fsl_stmt_g_text(&q, 0, NULL);
+    char const * const zOrig = fsl_stmt_g_text(&q, 1, NULL);
+    char const * const zHash = fsl_stmt_g_text(&q, 2, NULL);
+    fsl_id_t rid = 0;
+    rc = fsl__patch_name_check(f, zName);
+    if(!rc && zOrig) rc = fsl__patch_name_check(f, zOrig);
+    if(!rc && zHash) rc = fsl__patch_rid(f, zHash, "baseline version "
+                                         "of a patched file", &rid);
+  }
+  fsl_stmt_finalize(&q);
+  return rc;
+}
+
+/** State for fsl__patch_revert_f(). */
+struct fsl__patch_revert_state {
+  fsl_patch_apply_opt const * opt;
+  fsl_patch_apply_e step;
+};
+
+/** fsl_ckout_revert_f() which reports each reverted file to the
+    fsl_patch_apply() callback. */
+static int fsl__patch_revert_f(char const *zFilename,
+                               fsl_ckout_revert_e changeType,
+                               void * state){
+  struct fsl__patch_revert_state const * const st = state;
+  (void)changeType;
+  return st->opt->callback
+    ? st->opt->callback(st->step, zFilename, NULL,
+                        st->opt->callbackState)
+    : 0;
+}
+
+/** Calls opt->callback, if set. */
+static int fsl__patch_report(fsl_patch_apply_opt const * opt,
+                             fsl_patch_apply_e step, char const * zName,
+                             char const * zOrigName){
+  return opt->callback
+    ? opt->callback(step, zName, zOrigName, opt->callbackState)
+    : 0;
+}
+
+/**
+   Reverts every change in the checkout, for fsl_patch_apply_opt::force,
+   or in a dry run reports what would be reverted.
+*/
+static int fsl__patch_apply_revert(fsl_cx * const f,
+                                   fsl_patch_apply_opt const * opt){
+  struct fsl__patch_revert_state st = {opt, FSL_PATCH_APPLY_REVERT};
+  fsl_ckout_revert_opt ropt = fsl_ckout_revert_opt_empty;
+  fsl_stmt q = fsl_stmt_empty;
+  int rc;
+  if(!opt->dryRun){
+    ropt.scanForChanges = false;
+    ropt.callback = fsl__patch_revert_f;
+    ropt.callbackState = &st;
+    return fsl_ckout_revert(f, &ropt);
+  }
+  rc = fsl_cx_prepare(f, &q,
+    "SELECT pathname FROM {{dbname.ckout}}.vfile"
+    " WHERE vid=%" FSL_ID_T_PFMT
+    " AND (chnged OR deleted OR rid=0 OR coalesce(origname<>pathname,0))"
+    " ORDER BY pathname", f->db.ckout.rid);
+  while(fsl__cx_stmt_step_each(f, &q, &rc)){
+    rc = fsl__patch_report(opt, FSL_PATCH_APPLY_REVERT,
+                           fsl_stmt_g_text(&q, 0, NULL), NULL);
+  }
+  fsl_stmt_finalize(&q);
+  return rc;
+}
+
+/** State for fsl__patch_merge_f(). */
+struct fsl__patch_merge_state {
+  fsl_cx * f;
+  fsl_patch_apply_opt const * opt;
+  unsigned nMerge;
+};
+
+/** fsl_patch_merge_f() which re-does one of a patch's merges. */
+static int fsl__patch_merge_f(fsl_merge_type_e type, char const * zHash,
+                              void * state){
+  struct fsl__patch_merge_state * const st = state;
+  fsl_merge_opt mopt = fsl_merge_opt_empty;
+  int rc = fsl__patch_rid(st->f, zHash, "merged version",
+                          &mopt.mergeRid);
+  if(rc) return rc;
+  ++st->nMerge;
+  if(!st->opt->dryRun){
+    mopt.mergeType = type;
+    rc = fsl_ckout_merge(st->f, &mopt);
+  }
+  return rc ? rc
+    : fsl__patch_report(st->opt, FSL_PATCH_APPLY_MERGE, zHash, NULL);
+}
+
+/**
+   After the merges are re-done, reverts each file which they changed
+   but which p does not mention, as fossil(1)'s patch_apply() does
+   since 2024-12-16 (https://fossil-scm.org/forum/forumpost/51a37054):
+   such changes were not in the checkout the patch was made from.
+*/
+static int fsl__patch_apply_unmerge(fsl_cx * const f, fsl_patch * const p,
+                                    fsl_patch_apply_opt const * opt){
+  struct fsl__patch_revert_state st = {opt, FSL_PATCH_APPLY_UNMERGE};
+  fsl_id_bag ids = fsl_id_bag_empty;
+  fsl_stmt q = fsl_stmt_empty;
+  int rc = fsl_cx_prepare(f, &q,
+    "SELECT id, pathname FROM {{dbname.ckout}}.vfile"
+    " WHERE vid=%" FSL_ID_T_PFMT " AND chnged", f->db.ckout.rid);
+  while(fsl__cx_stmt_step_each(f, &q, &rc)){
+    if(!fsl_db_exists(&p->db, "SELECT 1 FROM chng WHERE pathname=%Q",
+                      fsl_stmt_g_text(&q, 1, NULL))){
+      rc = fsl_id_bag_insert(&ids, fsl_stmt_g_id(&q, 0));
+    }
+  }
+  fsl_stmt_finalize(&q);
+  if(!rc && fsl_id_bag_count(&ids)){
+    fsl_ckout_revert_opt ropt = fsl_ckout_revert_opt_empty;
+    ropt.vfileIds = &ids;
+    ropt.scanForChanges = false;
+    ropt.callback = fsl__patch_revert_f;
+    ropt.callbackState = &st;
+    rc = fsl_ckout_revert(f, &ropt);
+  }
+  fsl_id_bag_clear(&ids);
+  return rc;
+}
+
+/**
+   Checks, with fsl__ckout_safe_file_check(), every path which the
+   rest of fsl_patch_apply() will write, remove or rename, so that a
+   path through a symlink or a non-directory fails the apply before
+   any file is touched. It has to wait until the update and merges are
+   done, as they can change what is on disk. The paths are checked
+   again as they are used.
+*/
+static int fsl__patch_apply_safe(fsl_cx * const f, fsl_patch * const p){
+  fsl_stmt q = fsl_stmt_empty;
+  fsl_b * const absPath = fsl_cx_b_borrow(f);
+  int rc;
+  if(!absPath) return f->error.code;
+  rc = fsl_db_prepare(&p->db, &q, "SELECT pathname FROM chng UNION"
+                      " SELECT origname FROM chng WHERE origname IS NOT NULL");
+  if(rc) rc = fsl_cx_uplift_db_error2(f, &p->db, rc);
+  while(fsl__cx_stmt_step_each(f, &q, &rc)){
+    fsl_b_reuse(absPath);
+    rc = fsl_b_appendf(absPath, "%s%s", f->db.ckout.dir,
+                       fsl_stmt_g_text(&q, 0, NULL));
+    if(!rc) rc = fsl__ckout_safe_file_check(f, fsl_b_cstr(absPath));
+  }
+  fsl_stmt_finalize(&q);
+  fsl_cx_b_return(f, absPath);
+  return rc;
+}
+
+/**
+   Removes the patch's removed files from the checkout and the disk,
+   as fossil(1)'s patch_apply() does with (fossil rm --hard).
+*/
+static int fsl__patch_apply_deletes(fsl_cx * const f, fsl_patch * const p,
+                                    fsl_patch_apply_opt const * opt){
+  fsl_stmt q = fsl_stmt_empty;
+  fsl_b * const absPath = fsl_cx_b_borrow(f);
+  int rc;
+  if(!absPath) return f->error.code;
+  rc = fsl_db_prepare(&p->db, &q, "SELECT pathname FROM chng"
+                      " WHERE origname IS NULL AND delta IS NULL"
+                      " ORDER BY pathname");
+  if(rc) rc = fsl_cx_uplift_db_error2(f, &p->db, rc);
+  while(fsl__cx_stmt_step_each(f, &q, &rc)){
+    char const * const zName = fsl_stmt_g_text(&q, 0, NULL);
+    if(!opt->dryRun){
+      fsl_ckout_unmanage_opt uopt = fsl_ckout_unmanage_opt_empty;
+      fsl_b_reuse(absPath);
+      rc = fsl_b_appendf(absPath, "%s%s", f->db.ckout.dir, zName);
+      if(!rc) rc = fsl__ckout_safe_file_check(f, fsl_b_cstr(absPath));
+      if(rc) break;
+      uopt.filename = zName;
+      uopt.relativeToCwd = false;
+      uopt.scanForChanges = false;
+      rc = fsl_ckout_unmanage(f, &uopt);
+      if(!rc && fsl__cfs_is_file_or_link(f, fsl_b_cstr(absPath))){
+        rc = fsl__cfs_unlink(f, fsl_b_cstr(absPath));
+        if(rc) rc = fsl_cx_err_set(f, rc, "Error %R removing file: %b",
+                                   rc, absPath);
+      }
+    }
+    if(!rc) rc = fsl__patch_report(opt, FSL_PATCH_APPLY_DELETE, zName, NULL);
+  }
+  fsl_stmt_finalize(&q);
+  fsl_cx_b_return(f, absPath);
+  return rc;
+}
+
+/**
+   Renames the patch's renamed files in the checkout and on disk, as
+   fossil(1)'s patch_apply() does with (fossil mv --hard).
+*/
+static int fsl__patch_apply_renames(fsl_cx * const f, fsl_patch * const p,
+                                    fsl_patch_apply_opt const * opt){
+  fsl_stmt q = fsl_stmt_empty;
+  int rc = fsl_db_prepare(&p->db, &q, "SELECT origname, pathname FROM chng"
+                          " WHERE origname IS NOT NULL"
+                          " AND origname<>pathname ORDER BY pathname");
+  if(rc) rc = fsl_cx_uplift_db_error2(f, &p->db, rc);
+  while(fsl__cx_stmt_step_each(f, &q, &rc)){
+    char const * const zOrig = fsl_stmt_g_text(&q, 0, NULL);
+    char const * const zName = fsl_stmt_g_text(&q, 1, NULL);
+    if(!opt->dryRun){
+      fsl_ckout_rename_opt ropt = fsl_ckout_rename_opt_empty;
+      fsl_list src = fsl_list_empty;
+      rc = fsl_list_append(&src, (void*)zOrig);
+      if(rc){
+        rc = fsl_cx_err_set(f, rc, NULL);
+        break;
+      }
+      ropt.src = &src;
+      ropt.dest = zName;
+      ropt.relativeToCwd = false;
+      ropt.doFsMv = true;
+      rc = fsl_ckout_rename(f, &ropt);
+      fsl_list_reserve(&src, 0);
+    }
+    if(!rc) rc = fsl__patch_report(opt, FSL_PATCH_APPLY_RENAME, zName,
+                                   zOrig);
+  }
+  fsl_stmt_finalize(&q);
+  return rc;
+}
+
+/**
+   Uncompresses column iCol of q, a patch's chng.delta, into tgt.
+   A zero-length blob is left as an empty tgt.
+*/
+static int fsl__patch_blob(fsl_cx * const f, fsl_stmt * const q, int iCol,
+                           char const * zName, fsl_b * const tgt){
+  void const * pMem = NULL;
+  fsl_size_t n = 0;
+  int rc;
+  fsl_b_reuse(tgt);
+  rc = fsl_stmt_get_blob(q, iCol, &pMem, &n);
+  if(rc) return fsl_cx_uplift_db_error2(f, q->db, rc);
+  if(0==n) return 0;
+  if(!fsl_data_is_compressed((unsigned char const *)pMem, n)){
+    return fsl_cx_err_set(f, FSL_RC_SYNTAX, "Patch data for %s is not "
+                          "compressed.", zName);
+  }else{
+    fsl_b in = fsl_b_empty;
+    fsl_b_external(&in, pMem, (fsl_int_t)n);
+    rc = fsl_b_uncompress(&in, tgt);
+    return rc ? fsl_cx_err_set(f, rc, "Error %R uncompressing patch data "
+                               "for %s.", rc, zName) : 0;
+  }
+}
+
+/**
+   Writes content to zPath as a regular file, or as a symlink to the
+   name in content if isLink is true, and sets its executable bit, as
+   fossil(1)'s patch_apply() does. Without the allow-symlinks setting,
+   a symlink is written as a regular file containing its target's
+   name, as fossil(1) does.
+*/
+static int fsl__patch_write_file(fsl_cx * const f, char const * zPath,
+                                 fsl_b const * content, bool isLink,
+                                 bool isExe){
+  int rc = fsl__cfs_mkdir_for_file(f, zPath, true);
+  if(!rc && (isLink || fsl__cfs_is_symlink(f, zPath))){
+    /* Replace, rather than write through, any symlink in the way. */
+    fsl__cfs_unlink(f, zPath);
+  }
+  if(rc){
+    /* Reported below. */
+  }else if(isLink){
+    rc = fsl__cfs_symlink_create(f, fsl_b_cstr(content), zPath,
+                                 fsl_cx_allows_symlinks(f, false));
+  }else{
+    rc = fsl__cfs_write(f, content, zPath);
+    if(!rc) rc = fsl__cfs_exec_set(f, zPath, isExe);
+  }
+  return rc ? fsl_cx_err_set(f, rc, "Error %R writing file: %s",
+                             rc, zPath) : 0;
+}
+
+/**
+   Writes the patch's new and changed files, queueing the new ones for
+   adding, as fossil(1)'s patch_apply() does, except that, unlike
+   fossil(1), an empty new file is added and a change to only a file's
+   permissions is applied.
+*/
+static int fsl__patch_apply_edits(fsl_cx * const f, fsl_patch * const p,
+                                  fsl_patch_apply_opt const * opt){
+  fsl_stmt q = fsl_stmt_empty;
+  fsl_b data = fsl_b_empty;
+  fsl_b base = fsl_b_empty;
+  fsl_b content = fsl_b_empty;
+  fsl_b * const absPath = fsl_cx_b_borrow(f);
+  bool const allowLinks = fsl_cx_allows_symlinks(f, false);
+  int rc;
+  if(!absPath) return f->error.code;
+  rc = fsl_db_prepare(&p->db, &q, "SELECT pathname, hash, isexe, islink,"
+                      " delta FROM chng WHERE delta IS NOT NULL"
+                      " ORDER BY pathname");
+  if(rc) rc = fsl_cx_uplift_db_error2(f, &p->db, rc);
+  while(fsl__cx_stmt_step_each(f, &q, &rc)){
+    char const * const zName = fsl_stmt_g_text(&q, 0, NULL);
+    char const * const zHash = fsl_stmt_g_text(&q, 1, NULL);
+    bool const isExe = !!fsl_stmt_g_int32(&q, 2);
+    bool const isLink = !!fsl_stmt_g_int32(&q, 3);
+    fsl_patch_apply_e step = zHash
+      ? FSL_PATCH_APPLY_EDIT : FSL_PATCH_APPLY_NEW;
+    fsl_b_reuse(absPath);
+    rc = fsl_b_appendf(absPath, "%s%s", f->db.ckout.dir, zName);
+    if(!rc) rc = fsl__patch_blob(f, &q, 4, zName, &data);
+    if(rc) break;
+    char const * const zPath = fsl_b_cstr(absPath);
+    if(zHash){
+      fsl_id_t rid = 0;
+      rc = fsl__patch_rid(f, zHash, "baseline version of a patched file",
+                          &rid);
+      if(!rc) rc = fsl_content_get(f, rid, &base);
+      if(rc) break;
+      if(data.used){
+        fsl_error err = fsl_error_empty;
+        rc = fsl_b_delta_apply2(&base, &data, &content, &err);
+        if(rc){
+          rc = fsl_cx_err_set(f, rc, "Error %R applying the patch's delta "
+                              "for %s: %b", rc, zName, &err.msg);
+        }
+        fsl_error_clear(&err);
+        if(rc) break;
+      }else{
+        /* Unchanged content: a rename, which has already happened, or
+           a change of permissions, which fossil(1) does not apply. */
+        bool const diskLink = fsl__cfs_is_symlink(f, zPath);
+        if(diskLink==(isLink && allowLinks)
+           && (diskLink || isExe==fsl__cfs_isexec(f, zPath))){
+          continue;
+        }
+        fsl_b_swap(&base, &content);
+      }
+    }else{
+      fsl_b_swap(&data, &content);
+    }
+    if(!opt->dryRun){
+      rc = fsl__ckout_safe_file_check(f, zPath);
+      if(!rc) rc = fsl__patch_write_file(f, zPath, &content, isLink, isExe);
+      if(!rc && !zHash){
+        fsl_ckout_manage_opt mopt = fsl_ckout_manage_opt_empty;
+        mopt.filename = zName;
+        mopt.relativeToCwd = false;
+        mopt.checkIgnoreGlobs = false;
+        rc = fsl_ckout_manage(f, &mopt);
+      }
+      if(!rc){
+        /* Make the next changes scan look at the file: one written in
+           the same second as its recorded mtime would otherwise look
+           unchanged, as in fsl_stash_apply(). */
+        rc = fsl_cx_exec(f, "UPDATE {{dbname.ckout}}.vfile SET mtime=0"
+                         " WHERE vid=%" FSL_ID_T_PFMT " AND pathname=%Q %s",
+                         f->db.ckout.rid, zName,
+                         fsl_cx_filename_collation(f));
+      }
+    }
+    if(!rc) rc = fsl__patch_report(opt, step, zName, NULL);
+  }
+  fsl_stmt_finalize(&q);
+  fsl_b_clear(&data);
+  fsl_b_clear(&base);
+  fsl_b_clear(&content);
+  fsl_cx_b_return(f, absPath);
+  return rc;
+}
+
+int fsl_patch_apply(fsl_cx * const f, fsl_patch * const p,
+                    fsl_patch_apply_opt const * opt){
+  fsl_id_t baseRid = 0;
+  struct fsl__patch_merge_state mst = {f, opt, 0};
+  int rc;
+  if(!fsl_needs_ckout(f)) return FSL_RC_NOT_A_CKOUT;
+  rc = fsl__patch_apply_check(f, p, &baseRid);
+  if(rc) return rc;
+  rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_CKOUT);
+  if(rc) return rc;
+  rc = fsl_ckout_changes_scan(f);
+  if(!rc && fsl_ckout_has_changes(f)){
+    rc = opt->force
+      ? fsl__patch_apply_revert(f, opt)
+      : fsl_cx_err_set(f, FSL_RC_CONFLICT, "Cannot apply the patch: the "
+                       "checkout has uncommitted changes.");
+  }
+  if(!rc && f->db.ckout.rid!=baseRid){
+    /* Unlike fossil(1), which always runs the update, this only does
+       so if the checkout is not at the baseline. */
+    if(!opt->dryRun){
+      fsl_ckup_opt uopt = fsl_ckup_opt_empty;
+      uopt.checkinRid = baseRid;
+      uopt.scanForChanges = true;
+      rc = fsl_ckout_update(f, &uopt);
+    }
+    if(!rc) rc = fsl__patch_report(opt, FSL_PATCH_APPLY_BASELINE,
+                                   p->info.baseline, NULL);
+  }
+  if(!rc) rc = fsl_patch_each_merge(p, fsl__patch_merge_f, &mst);
+  if(!rc && mst.nMerge && !opt->dryRun){
+    rc = fsl__patch_apply_unmerge(f, p, opt);
+  }
+  if(!rc) rc = fsl__patch_apply_safe(f, p);
+  if(!rc) rc = fsl__patch_apply_deletes(f, p, opt);
+  if(!rc) rc = fsl__patch_apply_renames(f, p, opt);
+  if(!rc) rc = fsl__patch_apply_edits(f, p, opt);
+  {
+    int const rc2 = fsl_cx_txn_end(f, !!rc || opt->dryRun);
+    if(!rc) rc = rc2;
+  }
+  return rc;
+}
+
+/**
+   Writes to tgt the content of zName in check-in baseRid, for a file
+   which a patch removes: fossil(1)'s patches record no hash for
+   those.
+*/
+static int fsl__patch_removed_base(fsl_cx * const f, fsl_id_t baseRid,
+                                   char const * zName, fsl_b * const tgt){
+  fsl_deck d = fsl_deck_empty;
+  fsl_card_F const * fc = NULL;
+  fsl_id_t rid = 0;
+  int rc = fsl_deck_load_rid(f, &d, baseRid, FSL_SATYPE_CHECKIN);
+  if(!rc) rc = fsl_deck_F_search2(&d, zName, &fc);
+  if(!rc && (!fc || !fc->uuid)){
+    rc = fsl_cx_err_set(f, FSL_RC_NOT_FOUND, "The patch removes %s, "
+                        "which is not in its baseline.", zName);
+  }
+  if(!rc) rc = fsl__patch_rid(f, fc->uuid, "baseline version of a "
+                              "removed file", &rid);
+  if(!rc) rc = fsl_content_get(f, rid, tgt);
+  fsl_deck_finalize(&d);
+  return rc;
+}
+
+int fsl_patch_content(fsl_patch * const p, char const * zName,
+                      fsl_b * const tgt, fsl_b * const baseline){
+  fsl_cx * const f = p->f;
+  fsl_stmt q = fsl_stmt_empty;
+  fsl_b base = fsl_b_empty;
+  fsl_b data = fsl_b_empty;
+  int rc;
+  if(!fsl_needs_repo(f)) return f->error.code;
+  if(tgt) fsl_b_reuse(tgt);
+  if(baseline) fsl_b_reuse(baseline);
+  rc = fsl_db_prepare(&p->db, &q, "SELECT hash, delta IS NULL, delta"
+                      " FROM chng WHERE pathname=%Q", zName);
+  if(rc) return fsl_cx_uplift_db_error2(f, &p->db, rc);
+  rc = fsl_stmt_step(&q);
+  if(FSL_RC_STEP_ROW!=rc){
+    rc = FSL_RC_STEP_DONE==rc
+      ? fsl_cx_err_set(f, FSL_RC_NOT_FOUND, "The patch has no file "
+                       "named %s.", zName)
+      : fsl_cx_uplift_db_error2(f, &p->db, rc);
+    goto end;
+  }
+  rc = 0;
+  {
+    char const * const zHash = fsl_stmt_g_text(&q, 0, NULL);
+    bool const isDeleted = !!fsl_stmt_g_int32(&q, 1);
+    if(zHash){
+      fsl_id_t rid = 0;
+      rc = fsl__patch_rid(f, zHash, "baseline version of a patched file",
+                          &rid);
+      if(!rc) rc = fsl_content_get(f, rid, &base);
+    }else if(isDeleted && baseline){
+      fsl_id_t baseRid = 0;
+      rc = fsl__patch_rid(f, p->info.baseline, "patch's baseline", &baseRid);
+      if(!rc) rc = fsl__patch_removed_base(f, baseRid, zName, &base);
+    }
+    if(!rc && !isDeleted) rc = fsl__patch_blob(f, &q, 2, zName, &data);
+    if(rc) goto end;
+    if(tgt && !isDeleted){
+      if(!zHash){
+        fsl_b_swap(&data, tgt);
+      }else if(data.used){
+        fsl_error err = fsl_error_empty;
+        rc = fsl_b_delta_apply2(&base, &data, tgt, &err);
+        if(rc){
+          rc = fsl_cx_err_set(f, rc, "Error %R applying the patch's delta "
+                              "for %s: %b", rc, zName, &err.msg);
+        }
+        fsl_error_clear(&err);
+      }else{
+        rc = fsl_b_copy(tgt, &base);
+      }
+    }
+    if(!rc && baseline) fsl_b_swap(&base, baseline);
+  }
+  end:
+  fsl_stmt_finalize(&q);
+  fsl_b_clear(&base);
+  fsl_b_clear(&data);
+  return rc;
+}
+/* end of file src/patch.c */
 /* start of file src/cli.c */
 /* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* vim: set ts=2 et sw=2 tw=80: */
@@ -50788,7 +52843,8 @@ int fcli_has_unused_flags(bool outputError){
   int i;
   for( i = 0; i < fcli.argc; ++i ){
     char const * arg = fcli.argv[i];
-    if('-'==*arg){
+    if('-'==*arg && arg[1]/* "-" by itself conventionally means
+                             stdin or stdout, not a flag */){
       int rc = fcli_err_set(FSL_RC_MISUSE,
                             "Unhandled/unknown flag or missing value: %s",
                             arg);
@@ -54623,7 +56679,12 @@ static fsl_config_ctrl const fslConfigCtrl[] = {
                                              "off"                 },
   { "auto-captcha",  "autocaptcha",    0, 0, "on"                  },
   { "auto-hyperlink",0,                0, 0, "on"                  },
-  { "auto-shun",     0,                0, 0, "on"                  },
+  { "auto-shun",     0,                0, 0, "off"
+    /* When auto-shun is on, every pull requests this list.  As of
+       2026-11-13 sqlite.org/src sends 500-odd cards on every pull.
+       fossil(1) defaults auto-shun to off, help text to the
+       contrary (somebody ought to patch that... oh, wait). */
+  },
   { "autosync",      0,                0, 0, "on"                  },
   { "binary-glob",   0,               40, 1, ""                    },
   { "clearsign",     0,                0, 0, "off"                 },
@@ -58895,7 +60956,10 @@ int fsl_cx_stat2( fsl_cx * const f, bool relativeToCwd,
     rc = fsl_b_appendf(b, "%s%s", f->db.ckout.dir, zName);
   }
   if(!rc){
-    rc = fsl__cfs_stat(f, fsl_b_cstr(b), tgt, false );
+    /* As fossil(1)'s fossil_stat() for RepoFILE: look at a symlink
+       itself only if allow-symlinks is on. */
+    rc = fsl__cfs_stat(f, fsl_b_cstr(b), tgt,
+                       !fsl_cx_allows_symlinks(f, false));
     if(rc){
       if(FSL_RC_NOT_FOUND==rc){
         fsl_cx_err_set(f, rc, "File not found: %b", b);
@@ -59981,10 +62045,10 @@ int fsl__db_errcode(fsl_db * const db, int sqliteCode){
     case SQLITE_FULL:
     case SQLITE_RANGE: rc = FSL_RC_RANGE; break;
     case SQLITE_NOTFOUND: rc = FSL_RC_NOT_FOUND; break;
-    case SQLITE_PERM:
-    case SQLITE_AUTH:
     case SQLITE_BUSY:
     case SQLITE_LOCKED: rc = FSL_RC_LOCKED; break;
+    case SQLITE_PERM:
+    case SQLITE_AUTH:
     case SQLITE_READONLY: rc = FSL_RC_ACCESS; break;
     case SQLITE_CORRUPT: rc = FSL_RC_CONSISTENCY; break;
     case SQLITE_CANTOPEN:
@@ -60342,12 +62406,29 @@ char const * fsl__db_schema(fsl_db const * const db, fsl_dbrole_e r){
 }
 
 int fsl__db_main_write_lock(fsl_db * const db){
-  /* Writing a header field, even its own value, opens a write
-     transaction on main alone. BEGIN IMMEDIATE would also lock every
-     attached db, and fail if one file is attached twice. */
-  int32_t v = 0;
-  int rc = fsl_db_get_int32(db, &v, "PRAGMA main.user_version");
-  if( 0==rc ) rc = fsl_db_exec(db, "PRAGMA main.user_version=%d", (int)v);
+  /* Writing a header field opens a write transaction on main alone.
+     BEGIN IMMEDIATE would also lock every attached db, and fail if
+     one file is attached twice. The write comes first, with no read
+     before it, so that SQLite's busy handler waits for another
+     connection's lock: upgrading a read transaction fails at once.
+     Rolling back to the savepoint undoes the write but keeps the
+     lock. */
+  int rc = fsl_db_exec(db, "SAVEPOINT fsl__main_write_lock");
+  if( 0==rc ){
+    fsl_error err = fsl_error_empty;
+    int const rc2 = fsl_db_exec(db, "PRAGMA main.user_version=0");
+    if( rc2 ) fsl_error_copy(&db->error, &err);
+    fsl_db_err_reset(db);
+    rc = fsl_db_exec_multi(db, "ROLLBACK TO fsl__main_write_lock;"
+                           "RELEASE fsl__main_write_lock");
+    if( rc2 ){
+      /* Report the lock failure, not the cleanup. */
+      fsl_db_err_reset(db);
+      fsl_error_copy(&err, &db->error);
+      rc = rc2;
+    }
+    fsl_error_clear(&err);
+  }
   return rc;
 }
 
@@ -66658,7 +68739,8 @@ static int fsl_deck_xlink_f_checkin(fsl_deck * const d,
     /* The comment as it now is, which a tag may have changed. */
     char * const zCom =
       fsl_db_g_text(db, NULL, "SELECT coalesce(ecomment,comment) "
-                    "FROM {{dbname.repo}}.event WHERE objid=%"FSL_ID_T_PFMT, d->rid);
+                    "FROM {{dbname.repo}}.event "
+                    "WHERE objid=%"FSL_ID_T_PFMT, d->rid);
     if(zCom){
       rc = fsl__backlink_extract(d->f, zCom, FSL_BKLNK_MT_NONE, d->rid,
                                  FSL_BKLNK_COMMENT, d->D, true);
@@ -66685,6 +68767,7 @@ static int fsl_deck_xlink_f_control(fsl_deck * const d,
   const char *zName;
   const char *zValue;
   const char *zUuid;
+  fsl_size_t nName;
   int branchMove = 0;
   int const uuidLen = 8;
   fsl_card_T const * tag = NULL;
@@ -66733,6 +68816,7 @@ static int fsl_deck_xlink_f_control(fsl_deck * const d,
     isCancel = FSL_TAGTYPE_CANCEL==tag->type;
     assert(isProp || isAdd || isCancel);
     zName = tag->name;
+    nName = fsl_strlen(zName);
     zValue = tag->value;
     if( isProp && 0==fsl_strcmp(zName, "branch")){
       rc = fsl_b_appendf(comment,
@@ -66754,17 +68838,17 @@ static int fsl_deck_xlink_f_control(fsl_deck * const d,
       rc = fsl_b_appendf(comment, " Change user to \"%h\".", zValue);
     }else if( isAdd && fsl_strcmp(zName, "date")==0 ){
       rc = fsl_b_appendf(comment, " Timestamp %h.", zValue);
-    }else if( isCancel && memcmp(zName, "sym-",4)==0 ){
+    }else if( isCancel && nName>4 && fsl_strncmp(zName, "sym-",4)==0 ){
       if( !branchMove ){
         rc = fsl_b_appendf(comment, " Cancel tag %h.", zName+4);
       }
-    }else if( isProp && memcmp(zName, "sym-",4)==0 ){
+    }else if( isProp && nName>4 && fsl_strncmp(zName, "sym-",4)==0 ){
       if( !branchMove ){
         rc = fsl_b_appendf(comment, " Add propagating tag \"%h\".", zName+4);
       }
-    }else if( isAdd && memcmp(zName, "sym-",4)==0 ){
+    }else if( isAdd && nName>4 && fsl_strncmp(zName, "sym-",4)==0 ){
       rc = fsl_b_appendf(comment, " Add tag \"%h\".", zName+4);
-    }else if( isCancel && memcmp(zName, "sym-",4)==0 ){
+    }else if( isCancel && nName>4 && fsl_strncmp(zName, "sym-",4)==0 ){
       rc = fsl_b_appendf(comment, " Cancel tag \"%h\".", zName+4);
     }else if( isAdd && fsl_strcmp(zName, "closed")==0 ){
       rc = fsl_b_append(comment, " Marked \"Closed\"", -1);
@@ -84019,6 +86103,50 @@ void fsl_sc_cleanup(fsl_sc * const ch){
   }
 }
 
+/**
+   Returns the most bytes ch reads for one reply
+
+   This is the max response + framing + headers
+*/
+static fsl_size_t fsl__sc_reply_max(fsl_sc * const ch){
+  fsl_size_t const n = fsl_xfer_max_response(ch->xfer);
+  return n + n/16 + 64*1024;
+}
+
+/**
+   Sets ch->xfer's error state for a reply longer than
+   fsl__sc_reply_max() and returns FSL_RC_RANGE.
+*/
+static int fsl__sc_reply_too_long(fsl_sc * const ch){
+  return fsl_xfer_errorf(ch->xfer, FSL_RC_RANGE,
+                         "Reply is longer than %" FSL_SIZE_T_PFMT
+                         " bytes", fsl__sc_reply_max(ch));
+}
+
+/**
+   State for fsl_input_f_sc_capped().
+*/
+typedef struct {
+  fsl_input_f in;
+  void * inState;
+  fsl_size_t n;    /* bytes read so far */
+  fsl_size_t max;
+} fsl__sc_capped;
+
+/**
+   A fsl_input_f which reads from state->in, and fails with
+   FSL_RC_RANGE once it has read more than state->max bytes in all.
+   state is a fsl__sc_capped.
+*/
+static int fsl_input_f_sc_capped(void * state, void * dest,
+                                 fsl_size_t * n){
+  fsl__sc_capped * const c = state;
+  int const rc = c->in(c->inState, dest, n);
+  if( rc ) return rc;
+  c->n += *n;
+  return c->n>c->max ? FSL_RC_RANGE : 0;
+}
+
 #define fsl__sc_popen_decl \
   assert(ch->impl.type == fsl_sc_popen.impl.type); \
   fsl_sc_popen_state * const st = ch->impl.p; \
@@ -84228,10 +86356,17 @@ static int fsl_sc_popen_no_reply(fsl_sc * const ch, int status){
                            "%s was killed by signal %d and sent no reply",
                            zBin, -status);
   }
-  return fsl_xfer_errorf(ch->xfer, FSL_RC_IO,
-                         "%s exited with status %d%s and sent no reply",
-                         zBin, status,
-                         127==status ? " (command not found)" : "");
+  if( 127==status /*assume command-not found for fossil*/ ){
+    return fsl_xfer_errorf(ch->xfer, FSL_RC_NOT_FOUND,
+                           "%s exited with status %d (command not found). "
+                           "Try adding ?fossil=/remote/path/to/fossil to the "
+                           "sync URL.", zBin, status);
+  }else{
+    return fsl_xfer_errorf(ch->xfer, FSL_RC_IO,
+                           "%s exited with status %d%s and sent no reply",
+                           zBin, status,
+                           127==status ? " (command not found)" : "");
+  }
 }
 
 static int fsl_sc_popen_xSubmit(fsl_sc * const ch,
@@ -84339,10 +86474,14 @@ static int fsl_sc_popen_xSubmit(fsl_sc * const ch,
     case fsl_sc_popen_e_membuf:{
       /* Buffer the response. */
       int status;
+      fsl__sc_capped in = {
+        fsl_input_f_fd, &st->process.fdStdOut, 0, fsl__sc_reply_max(ch)
+      };
       fsl_b_reuse(&st->response.b);
-      rc = fsl_b_fill_from(&st->response.b, fsl_input_f_fd,
-                                &st->process.fdStdOut);
-      if( rc && FSL_RC_OOM!=rc ){
+      rc = fsl_b_fill_from(&st->response.b, fsl_input_f_sc_capped, &in);
+      if( in.n>in.max ){
+        rc = fsl__sc_reply_too_long(ch);
+      }else if( rc && FSL_RC_OOM!=rc ){
         rc = fsl_xfer_errorf(ch->xfer, rc, "Error reading the output of %s",
                              st->bin.name ? st->bin.name : ch->name);
       }
@@ -84371,10 +86510,15 @@ static int fsl_sc_popen_xSubmit(fsl_sc * const ch,
           break;
         }
         fsl__tmpchmod( st->request.filename );
-        rc = fsl_stream( fsl_input_f_fd, &st->process.fdStdOut,
+        fsl__sc_capped in = {
+          fsl_input_f_fd, &st->process.fdStdOut, 0, fsl__sc_reply_max(ch)
+        };
+        rc = fsl_stream( fsl_input_f_sc_capped, &in,
                          fsl_output_f_FILE, fp );
         int const status = fsl_sc_popen_pclose(ch, false);
-        if( rc && FSL_RC_OOM!=rc ){
+        if( in.n>in.max ){
+          rc = fsl__sc_reply_too_long(ch);
+        }else if( rc && FSL_RC_OOM!=rc ){
           rc = fsl_xfer_errorf(ch->xfer, rc,
                                "Error copying the output of %s to %s",
                                st->bin.name ? st->bin.name : ch->name,
@@ -84569,17 +86713,20 @@ static int fsl_sc_popen_xRead(fsl_sc * const ch, fsl_b * tgt, fsl_int_t howMuch)
           break;
         }
 
-        case FSL_SC_READ_ALL:
-          if( fp ){
-            rc = fsl_stream(fsl_input_f_FILE, fp, fsl_output_f_b, tgt);
-          }else{
-            rc = fsl_stream(fsl_input_f_fd, (void *)&fdIn,
-                            fsl_output_f_b, tgt);
-          }
-          if( rc && FSL_RC_OOM!=rc ){
+        case FSL_SC_READ_ALL:{
+          fsl__sc_capped in = {
+            fp ? fsl_input_f_FILE : fsl_input_f_fd,
+            fp ? (void *)fp : (void *)&fdIn,
+            0, fsl__sc_reply_max(ch)
+          };
+          rc = fsl_stream(fsl_input_f_sc_capped, &in, fsl_output_f_b, tgt);
+          if( in.n>in.max ){
+            rc = fsl__sc_reply_too_long(ch);
+          }else if( rc && FSL_RC_OOM!=rc ){
             rc = fsl_xfer_error(ch->xfer, rc, "Read from response failed");
           }
           break;
+        }
 
         default:
           /* Read an absolute amount */
@@ -84800,7 +86947,9 @@ static int fsl_sc_popen_ssh_buildCommandLine(fsl_sc * ch,
                                              fsl_b * const b,
                                              fsl_b const * bLoginCard){
   fsl_error * const err = fsl_cx_err_e(fsl_xfer_cx(ch->xfer));
-  char const *zRemoteFossil = "fossil" /* remote fossil binary */;
+  char const *zRemoteFossil = "fossil"
+    /* remote fossil binary, overridden via url
+       ?fossil=/path/to/fossil */;
   fsl__sc_popen_decl;
   assert( st->bin.location );
   assert( ch->url.raw );
@@ -85145,12 +87294,20 @@ static void fsl__sock_errno(void){
 
 /* Per-channel private state, hung off fsl_sc::impl.p. */
 typedef struct fsl_sc_socket_state {
-  int fd;                  /* connected socket, or -1 */
-  bool tls;                /* https? */
+  fsl_sc_stream_ops ops;   /* the I/O: ours, or the caller's */
+  bool connected;          /* ops.connect() succeeded, ops.close() not yet */
   fsl_b out;          /* outbound request body, built via append() */
   fsl_b in;           /* inbound response: full HTTP reply */
   fsl_size_t inCursor;     /* read offset into `in` */
   bool responseLoaded;     /* submit() has populated `in` */
+  bool eof;                /* the peer ended `in` by closing it cleanly */
+  /* The rest is for the sockets and TLS of the callbacks in this
+     file, which this channel passes itself to as ops.state. */
+  fsl_sc * ch;             /* the channel, for its flags and URL */
+  bool native;             /* ops are ours: the URL must be http(s) */
+  int fd;                  /* connected socket, or -1 */
+  bool tls;                /* https? */
+  bool uncleanEof;         /* a TLS read ended with no close_notify */
 #if defined(FSL_NATIVE_TLS_OPENSSL)
   SSL_CTX * sslCtx;
   SSL * ssl;
@@ -85159,20 +87316,14 @@ typedef struct fsl_sc_socket_state {
 
 /* impl.type marker for semi-typesafety, per the fsl_sc convention. */
 static const int fsl_sc_socket_type_marker = 0;
+/* impl.type of a channel from fsl_sc_stream_init(), whose impl.p is the
+   caller's fsl_sc_stream_ops until init(INITIAL) allocates the state. Its
+   value differs from the socket marker's so that they cannot share an
+   address. */
+static const int fsl_sc_stream_type_marker = 1;
 #define SOCK_STATE(ch) \
   fsl_sc_socket_state * const st = (fsl_sc_socket_state*)(ch)->impl.p; \
   assert((ch)->impl.type == &fsl_sc_socket_type_marker)
-
-/* Default seconds a read or write on the socket may make no progress. */
-#define FSL__SC_SOCKET_TIMEOUT 120
-
-/* Seconds a read or write may make no progress: the xfer config's
-   socketTimeoutSeconds, else the default. */
-static int fsl_sc_socket_timeout(fsl_sc const * const ch){
-  return ch->xfer && ch->xfer->config
-    && ch->xfer->config->socketTimeoutSeconds>0
-    ? ch->xfer->config->socketTimeoutSeconds : FSL__SC_SOCKET_TIMEOUT;
-}
 
 /*
 ** Describes errno value e. The socket's SO_RCVTIMEO and SO_SNDTIMEO
@@ -85417,12 +87568,14 @@ static fsl_int_t fsl_sc_tls_result(fsl_sc_socket_state *st, int rc,
   }
   if( SSL_ERROR_SYSCALL==e && !ee ){
     errno = sysErr;
+    if( !sysErr ) st->uncleanEof = true;
     return sysErr ? -1 : 0;
   }
 #ifdef SSL_R_UNEXPECTED_EOF_WHILE_READING
   if( SSL_ERROR_SSL==e
       && SSL_R_UNEXPECTED_EOF_WHILE_READING==ERR_GET_REASON(ee) ){
     ERR_clear_error();
+    st->uncleanEof = true;
     return 0;
   }
 #endif
@@ -85508,10 +87661,9 @@ static void fsl_sc_sigpipe_restore(fsl_sc_sigpipe_state const *s){
 ** Open a TCP connection to host:port, set TCP_NODELAY, and (for https)
 ** perform the TLS handshake.
 */
-static int fsl_sc_socket_connect(fsl_sc *ch){
-  SOCK_STATE(ch);
-  fsl_sc * const self = ch->self(ch);
-  fsl_url const * const url = &self->url;
+static int fsl_sc_sock_connect(void * const state, fsl_url const * const url,
+                               fsl_xfer * const xf){
+  fsl_sc_socket_state * const st = (fsl_sc_socket_state*)state;
   char zPort[16];
   char zHost[64];
   char const * zAddr = url->host;
@@ -85531,7 +87683,7 @@ static int fsl_sc_socket_connect(fsl_sc *ch){
        getaddrinfo() and the TLS layer do not accept. */
     fsl_size_t const n = fsl_strlen(url->host);
     if( n<3 || n-2>=sizeof(zHost) ){
-      return fsl_xfer_errorf(ch->xfer, FSL_RC_RANGE,
+      return fsl_xfer_errorf(xf, FSL_RC_RANGE,
                              "Invalid IP literal host: %s", url->host);
     }
     memcpy(zHost, url->host+1, n-2);
@@ -85540,7 +87692,7 @@ static int fsl_sc_socket_connect(fsl_sc *ch){
   }
   gai = getaddrinfo(zAddr, zPort, &hints, &ai);
   if( gai!=0 ){
-    return fsl_xfer_errorf(ch->xfer, FSL_RC_IO,
+    return fsl_xfer_errorf(xf, FSL_RC_IO,
                            "getaddrinfo(%s:%s) failed: %s%s",
                            url->host, zPort, gai_strerror(gai),
                            fsl_sc_host_is_non_ascii(url->host)
@@ -85563,12 +87715,12 @@ static int fsl_sc_socket_connect(fsl_sc *ch){
       /* Bounds every read and write, including the TLS handshake
          and the TLS reads, which do not poll(). */
 #if defined(_WIN32)
-      DWORD const ms = (DWORD)fsl_sc_socket_timeout(ch) * 1000;
+      DWORD const ms = (DWORD)fsl_xfer_socket_timeout(xf) * 1000;
       setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (char const*)&ms, sizeof(ms));
       setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, (char const*)&ms, sizeof(ms));
 #else
       struct timeval tv;
-      tv.tv_sec = fsl_sc_socket_timeout(ch);
+      tv.tv_sec = fsl_xfer_socket_timeout(xf);
       tv.tv_usec = 0;
       setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (void*)&tv, sizeof(tv));
       setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, (void*)&tv, sizeof(tv));
@@ -85579,7 +87731,7 @@ static int fsl_sc_socket_connect(fsl_sc *ch){
   }
   freeaddrinfo(ai);
   if( st->fd<0 ){
-    return fsl_xfer_errorf(ch->xfer, FSL_RC_IO,
+    return fsl_xfer_errorf(xf, FSL_RC_IO,
                            "Could not connect to %s:%s: %s", url->host,
                            zPort, lastErrno
                            ? strerror(lastErrno) : "no usable address");
@@ -85588,8 +87740,8 @@ static int fsl_sc_socket_connect(fsl_sc *ch){
 #if defined(FSL_NATIVE_TLS_OPENSSL)
     char zErr[256];
     int const rc = fsl_sc_tls_handshake(
-      ch->xfer ? fsl_xfer_cx(ch->xfer) : NULL, st, zAddr,
-      0==(self->flags & FSL_SC_F_TLS_ACCEPT_ANY_CERT),
+      xf ? fsl_xfer_cx(xf) : NULL, st, zAddr,
+      0==(st->ch->flags & FSL_SC_F_TLS_ACCEPT_ANY_CERT),
       zErr, sizeof(zErr));
     if( rc ){
       /* Else a later submit() would find the socket connected and
@@ -85598,53 +87750,154 @@ static int fsl_sc_socket_connect(fsl_sc *ch){
       st->fd = -1;
     }
     if( FSL_RC_ACCESS==rc ){
-      return fsl_xfer_errorf(ch->xfer, rc,
+      return fsl_xfer_errorf(xf, rc,
                              "Unable to verify SSL cert from %s: %s",
                              url->host, zErr);
     }else if( rc ){
-      return fsl_xfer_errorf(ch->xfer, rc,
+      return fsl_xfer_errorf(xf, rc,
                              "TLS handshake with %s:%s failed: %s",
                              url->host, zPort, zErr);
     }
 #else
     fsl__sock_close(st->fd);
     st->fd = -1;
-    return fsl_xfer_error(ch->xfer, FSL_RC_MISUSE,
+    return fsl_xfer_error(xf, FSL_RC_MISUSE,
                           "https requires building with FSL_NATIVE_TLS_OPENSSL.");
 #endif
   }
   return 0;
 }
 
-/* Write n bytes, looping over partial writes; EINTR retried. */
-static int fsl_sc_socket_write_all(fsl_sc *ch, void const *p, fsl_size_t n){
-  SOCK_STATE(ch);
-  char const *z = (char const *)p;
+/* ops.write() of the sockets: one write, EINTR retried. */
+static fsl_int_t fsl_sc_sock_write(void * const state, void const * const p,
+                                   fsl_size_t const n, fsl_xfer * const xf){
+  fsl_sc_socket_state * const st = (fsl_sc_socket_state*)state;
   char zErr[256];
-  while( n>0 ){
-    fsl_int_t got;
+  fsl_int_t got;
+  for(;;){
     zErr[0] = 0;
     if( st->tls ){
 #if defined(FSL_NATIVE_TLS_OPENSSL)
-      got = fsl_sc_tls_write(st, z, n, zErr, sizeof(zErr));
+      got = fsl_sc_tls_write(st, p, n, zErr, sizeof(zErr));
 #else
       got = -1;
       errno = 0;
       fsl_snprintf(zErr, sizeof(zErr), "TLS write failed");
 #endif
     }else{
-      got = (fsl_int_t)send(st->fd, z, FSL__SOCK_LEN(n), 0);
+      got = (fsl_int_t)send(st->fd, p, FSL__SOCK_LEN(n), 0);
       if( got<0 ) fsl__sock_errno();
     }
     if( got<0 && errno==EINTR ) continue;
-    if( got<=0 ){
-      fsl_url const * const url = &ch->self(ch)->url;
-      return fsl_xfer_errorf(ch->xfer, FSL_RC_IO,
-                             "Short write to socket for %s: %s",
-                             url->host,
-                             0==got ? "connection closed"
-                             : (zErr[0] ? zErr
-                                : fsl_sc_errno_str(errno)));
+    break;
+  }
+  if( got<=0 ){
+    fsl_xfer_errorf(xf, FSL_RC_IO, "Short write to socket for %s: %s",
+                    st->ch->self(st->ch)->url.host,
+                    0==got ? "connection closed"
+                    : (zErr[0] ? zErr : fsl_sc_errno_str(errno)));
+    return -1;
+  }
+  return got;
+}
+
+/*
+** ops.read() of the sockets. A bounded poll() keeps a silent peer
+** from wedging the sync.
+*/
+static fsl_int_t fsl_sc_sock_read(void * const state, void * const dest,
+                                  fsl_size_t const n, fsl_xfer * const xf){
+  fsl_sc_socket_state * const st = (fsl_sc_socket_state*)state;
+  char zErr[256];
+  fsl_int_t got = -1;
+  char const * const zHost = st->ch->self(st->ch)->url.host;
+  st->uncleanEof = false;
+  for(;;){
+    zErr[0] = 0;
+    if( st->tls ){
+#if defined(FSL_NATIVE_TLS_OPENSSL)
+      got = fsl_sc_tls_read(st, dest, n, zErr, sizeof(zErr));
+#else
+      got = -1;
+      errno = 0;
+      fsl_snprintf(zErr, sizeof(zErr), "TLS read failed");
+#endif
+      if( got<0 && errno==EINTR ) continue;
+      if( got<0 && (EAGAIN==errno || EWOULDBLOCK==errno) ){
+        return FSL_SC_STREAM_TIMEOUT;
+      }
+    }else{
+      struct pollfd pfd;
+      int nPoll;
+      pfd.fd = st->fd; pfd.events = POLLIN;
+      nPoll = poll(&pfd, 1, fsl_xfer_socket_timeout(xf)*1000);
+      if( nPoll<0 ) fsl__sock_errno();
+      if( nPoll<0 && errno==EINTR ) continue;
+      if( nPoll<0 ){
+        fsl_xfer_errorf(xf, FSL_RC_IO,
+                        "poll() on socket for %s failed: %s",
+                        zHost, strerror(errno));
+        return -1;
+      }
+      if( 0==nPoll ) return FSL_SC_STREAM_TIMEOUT;
+      got = (fsl_int_t)recv(st->fd, dest, FSL__SOCK_LEN(n), 0);
+      if( got<0 ) fsl__sock_errno();
+      if( got<0 && errno==EINTR ) continue;
+    }
+    break;
+  }
+  if( got<0 ){
+    fsl_xfer_errorf(xf, FSL_RC_IO, "Read error from socket for %s: %s",
+                    zHost, zErr[0] ? zErr : strerror(errno));
+    return -1;
+  }
+  return 0==got && st->uncleanEof ? FSL_SC_STREAM_UNCLEAN : got;
+}
+
+/* ops.close() of the sockets. */
+static void fsl_sc_sock_close(void * const state){
+  fsl_sc_socket_state * const st = (fsl_sc_socket_state*)state;
+#if defined(FSL_NATIVE_TLS_OPENSSL)
+  if( st->tls ) fsl_sc_tls_close(st);
+#endif
+  if( st->fd>=0 ){ fsl__sock_close(st->fd); st->fd = -1; }
+}
+
+/*
+** The three calls below are the channel's use of its ops. A callback
+** which failed has set the error state, or has not, and either way
+** the transfer must fail with a message: fsl_sc_stream_failed()
+** returns the code of the error in the state and, if there is none,
+** sets one which names the callback.
+*/
+static int fsl_sc_stream_failed(fsl_sc * const ch, char const * zCallback){
+  fsl_error const * const err = fsl_cx_err_e(fsl_xfer_cx(ch->xfer));
+  if( err->code ) return err->code;
+  return fsl_xfer_errorf(ch->xfer, FSL_RC_IO,
+                         "%s() failed for %s and set no error message",
+                         zCallback, ch->self(ch)->url.host);
+}
+
+/* Closes the connection if there is one. */
+static void fsl_sc_stream_close(fsl_sc_socket_state * const st){
+  if( st->connected ){
+    st->connected = false;
+    if( st->ops.close ) st->ops.close(st->ops.state);
+  }
+}
+
+/* Writes all n bytes via ops.write(). */
+static int fsl_sc_socket_write_all(fsl_sc *ch, void const *p, fsl_size_t n){
+  SOCK_STATE(ch);
+  char const *z = (char const *)p;
+  while( n>0 ){
+    fsl_int_t const got = st->ops.write(st->ops.state, z, n, ch->xfer);
+    if( got<1 ) return fsl_sc_stream_failed(ch, "write");
+    if( (fsl_size_t)got>n ){
+      return fsl_xfer_errorf(ch->xfer, FSL_RC_MISUSE,
+                             "write() reported %" FSL_SIZE_T_PFMT
+                             " bytes written of %" FSL_SIZE_T_PFMT,
+                             (fsl_size_t)got, n);
     }
     z += got; n -= (fsl_size_t)got;
   }
@@ -85767,6 +88020,17 @@ static int fsl_sc_socket_dechunk_if_needed(fsl_sc *ch){
        body is left for the HTTP parser to report. */
     if( lengthOk && n-hdrEnd > contentLength ){
       st->in.used = hdrEnd + contentLength;
+    }else if( !haveContentLength && st->eof ){
+      /* A reply with neither Content-Length nor chunks ends where the
+         connection did. Say how long it is, which the HTTP parser
+         wants. */
+      fsl_b bHead = fsl_b_empty;
+      fsl_b_append(&bHead, m, hdrEnd-2);
+      fsl_b_appendf(&bHead, "Content-Length: %" FSL_SIZE_T_PFMT "\r\n\r\n",
+                    n-hdrEnd);
+      rc = fsl_b_append(&bHead, m+hdrEnd, n-hdrEnd);
+      if( 0==rc ) fsl_b_swap(&st->in, &bHead);
+      fsl_b_clear(&bHead);
     }
     goto end;
   }
@@ -85961,44 +88225,13 @@ end:
 static int fsl_sc_socket_slurp_response(fsl_sc *ch){
   SOCK_STATE(ch);
   char buf[16384];
-  char zErr[256];
+  fsl_size_t const maxReply = fsl__sc_reply_max(ch);
   int rc = 0;
+  st->eof = false;
   for(;;){
-    fsl_int_t got = -1;
-    bool timedOut = false;
-    zErr[0] = 0;
-    if( st->tls ){
-#if defined(FSL_NATIVE_TLS_OPENSSL)
-      got = fsl_sc_tls_read(st, buf, (fsl_size_t)sizeof(buf),
-                            zErr, sizeof(zErr));
-#else
-      got = -1;
-      errno = 0;
-      fsl_snprintf(zErr, sizeof(zErr), "TLS read failed");
-#endif
-      if( got<0 && errno==EINTR ) continue;
-      timedOut = got<0 && (EAGAIN==errno || EWOULDBLOCK==errno);
-    }else{
-      struct pollfd pfd;
-      int nPoll;
-      pfd.fd = st->fd; pfd.events = POLLIN;
-      nPoll = poll(&pfd, 1, fsl_sc_socket_timeout(ch)*1000);
-      if( nPoll<0 ) fsl__sock_errno();
-      if( nPoll<0 && errno==EINTR ) continue;
-      if( nPoll<0 ){
-        rc = fsl_xfer_errorf(ch->xfer, FSL_RC_IO,
-                             "poll() on socket for %s failed: %s",
-                             ch->self(ch)->url.host, strerror(errno));
-        break;
-      }
-      timedOut = 0==nPoll;
-      if( !timedOut ){
-        got = (fsl_int_t)recv(st->fd, buf, FSL__SOCK_LEN(sizeof(buf)), 0);
-        if( got<0 ) fsl__sock_errno();
-        if( got<0 && errno==EINTR ) continue;
-      }
-    }
-    if( timedOut ){
+    fsl_int_t const got = st->ops.read(st->ops.state, buf,
+                                       (fsl_size_t)sizeof(buf), ch->xfer);
+    if( FSL_SC_STREAM_TIMEOUT==got ){
       if( st->in.used ){
         /* A peer which keeps the connection open after its reply. The
            HTTP parser checks the reply against its Content-Length. */
@@ -86007,30 +88240,38 @@ static int fsl_sc_socket_slurp_response(fsl_sc *ch){
       rc = fsl_xfer_errorf(ch->xfer, FSL_RC_IO,
                            "No response from %s within %d seconds",
                            ch->self(ch)->url.host,
-                           fsl_sc_socket_timeout(ch));
+                           fsl_xfer_socket_timeout(ch->xfer));
       break;
     }
-    if( got<0 ){
-      rc = fsl_xfer_errorf(ch->xfer, FSL_RC_IO,
-                           "Read error from socket for %s: %s",
-                           ch->self(ch)->url.host,
-                           zErr[0] ? zErr : strerror(errno));
+    if( got<0 && FSL_SC_STREAM_UNCLEAN!=got ){
+      rc = fsl_sc_stream_failed(ch, "read");
       break;
     }
-    if( got==0 ) break; /* peer closed: end of response */
+    if( got==0 || FSL_SC_STREAM_UNCLEAN==got ){
+      st->eof = 0==got; /* peer closed: end of response */
+      break;
+    }
+    if( (fsl_size_t)got>sizeof(buf) ){
+      rc = fsl_xfer_errorf(ch->xfer, FSL_RC_MISUSE,
+                           "read() reported %" FSL_SIZE_T_PFMT
+                           " bytes read of %" FSL_SIZE_T_PFMT,
+                           (fsl_size_t)got, (fsl_size_t)sizeof(buf));
+      break;
+    }
     rc = fsl_b_append(&st->in, buf, (fsl_size_t)got);
     if( rc ) break;
+    if( st->in.used>maxReply ){
+      rc = fsl__sc_reply_too_long(ch);
+      break;
+    }
   }
   /* The response was read close-delimited (HTTP/1.0): the peer has
-     closed its side. Tear our side down too and reset st->fd so the
-     next request (e.g. the next clone round-trip) opens a fresh
-     connection instead of writing to a dead socket. The full response
-     is already buffered in st->in, which read() serves from memory, so
-     closing the socket here is safe. */
-#if defined(FSL_NATIVE_TLS_OPENSSL)
-  if( st->tls ) fsl_sc_tls_close(st);
-#endif
-  if( st->fd>=0 ){ fsl__sock_close(st->fd); st->fd = -1; }
+     closed its side. Tear our side down too, so that the next request
+     (e.g. the next clone round-trip) opens a fresh connection instead
+     of writing to a dead socket. The full response is already
+     buffered in st->in, which read() serves from memory, so closing
+     the connection here is safe. */
+  fsl_sc_stream_close(st);
   if( 0==rc ) rc = fsl_sc_socket_dechunk_if_needed(ch);
   st->inCursor = 0;
   st->responseLoaded = true;
@@ -86040,17 +88281,34 @@ static int fsl_sc_socket_slurp_response(fsl_sc *ch){
 /* ---- fsl_sc vtable ---- */
 
 static int fsl_sc_socket_xInit(fsl_sc *ch, enum fsl_sc_init_e mode){
-  SOCK_STATE(ch);
   fsl_sc * const self = ch->self(ch);
+  fsl_sc_socket_state * st;
+  if( FSL_SC_INIT_INITIAL==mode
+      && ch->impl.type==&fsl_sc_stream_type_marker ){
+    /* A caller's stream: ch->impl.p is its ops. Our state, which this
+       copy of the channel owns, takes their place. */
+    st = (fsl_sc_socket_state*)fsl_malloc(sizeof(fsl_sc_socket_state));
+    if( !st ) return FSL_RC_OOM;
+    memset(st, 0, sizeof(*st));
+    st->ops = *(fsl_sc_stream_ops const *)ch->impl.p;
+    st->fd = -1;
+    ch->impl.p = st;
+    ch->impl.type = &fsl_sc_socket_type_marker;
+  }
+  st = (fsl_sc_socket_state*)ch->impl.p;
+  assert( ch->impl.type == &fsl_sc_socket_type_marker );
   if( FSL_SC_INIT_INITIAL==mode ){
     char const * const scheme = self->url.scheme;
-    if( !scheme
-        || (0!=fsl_strcmp(scheme,"http") && 0!=fsl_strcmp(scheme,"https")) ){
-      return fsl_xfer_errorf(ch->xfer, FSL_RC_MISUSE,
-                             "Native channel requires http/https URL, "
-                             "not %s.", scheme ? scheme : "(no scheme)");
+    st->ch = self;
+    if( st->native ){
+      if( !scheme
+          || (0!=fsl_strcmp(scheme,"http") && 0!=fsl_strcmp(scheme,"https")) ){
+        return fsl_xfer_errorf(ch->xfer, FSL_RC_MISUSE,
+                               "Native channel requires http/https URL, "
+                               "not %s.", scheme ? scheme : "(no scheme)");
+      }
+      st->tls = (0==fsl_strcmp(scheme,"https"));
     }
-    st->tls = (0==fsl_strcmp(scheme,"https"));
     st->fd = -1;
   }
   if( FSL_SC_INIT_REQUEST==mode ){
@@ -86081,9 +88339,11 @@ static int fsl_sc_socket_submit(fsl_sc *ch, fsl_b const *loginCard){
   fsl_b_reuse(&st->in);
   st->inCursor = 0;
   st->responseLoaded = false;
-  rc = fsl_sc_socket_connect(ch);
   (void)loginCard;
-  if( rc ) return rc;
+  fsl_sc_stream_close(st) /* a connection left by a failed round */;
+  rc = st->ops.connect(st->ops.state, &self->url, ch->xfer);
+  if( rc ) return fsl_sc_stream_failed(ch, "connect");
+  st->connected = true;
 
   if( self->requestHeaders.used ){
     fsl_b const * const h = &self->requestHeaders;
@@ -86203,25 +88463,25 @@ static int fsl_sc_socket_xRead(fsl_sc *ch, fsl_b *tgt, fsl_int_t howMuch){
 }
 
 static void fsl_sc_socket_xCleanup(fsl_sc *ch){
-  SOCK_STATE(ch);
+  fsl_sc_socket_state * const st = ch->impl.type==&fsl_sc_socket_type_marker
+    ? (fsl_sc_socket_state*)ch->impl.p : NULL;
   if( st ){
-#if defined(FSL_NATIVE_TLS_OPENSSL)
-    if( st->tls ){
-      /* SSL_shutdown() writes the close_notify alert. */
+    if( st->connected ){
+      /* A TLS close writes the close_notify alert. */
       fsl_sc_sigpipe_state sp;
       fsl_sc_sigpipe_block(&sp);
-      fsl_sc_tls_close(st);
+      fsl_sc_stream_close(st);
       fsl_sc_sigpipe_restore(&sp);
     }
-#endif
-    if( st->fd>=0 ) fsl__sock_close(st->fd);
     fsl_b_clear(&st->out);
     fsl_b_clear(&st->in);
+    if( st->native ){
+#if defined(_WIN32)
+      WSACleanup() /* pairs with fsl_sc_socket_state_init() */;
+#endif
+    }
     fsl_free(st);
     ch->impl.p = 0;
-#if defined(_WIN32)
-    WSACleanup() /* pairs with fsl_sc_socket_state_init() */;
-#endif
   }
 }
 
@@ -86261,7 +88521,40 @@ int fsl_sc_socket_state_init(fsl_sc *ch){
   st->fd = -1;
   st->out = fsl_b_empty;
   st->in = fsl_b_empty;
+  st->native = true;
+  st->ops.connect = fsl_sc_sock_connect;
+  st->ops.read = fsl_sc_sock_read;
+  st->ops.write = fsl_sc_sock_write;
+  st->ops.close = fsl_sc_sock_close;
+  st->ops.state = st;
   ch->impl.p = st;
+  return 0;
+}
+
+/* The channel of fsl_sc_stream_init(). Its flags and methods are those
+   of the sockets: only its ops and its name differ. */
+static const fsl_sc fsl_sc_stream_proto = {
+  .xfer = 0,
+  .name = "stream",
+  .url = fsl_url_empty_m,
+  .flags = FSL_SC_F_REQUEST_HEADERS,
+  .impl = { .p = 0, .type = &fsl_sc_stream_type_marker },
+  .init = fsl_sc_socket_xInit,
+  .append = fsl_sc_socket_xAppend,
+  .submit = fsl_sc_socket_xSubmit,
+  .read = fsl_sc_socket_xRead,
+  .cleanup = fsl_sc_socket_xCleanup,
+  .self = fsl_sc_self,
+  .requestHeaders = fsl_b_empty_m,
+  .scratch = fsl_b_empty_m
+};
+
+int fsl_sc_stream_init(fsl_sc * const ch, fsl_sc_stream_ops const * const ops){
+  if( !ch || !ops || !ops->connect || !ops->read || !ops->write ){
+    return FSL_RC_MISUSE;
+  }
+  *ch = fsl_sc_stream_proto;
+  ch->impl.p = (void *)ops;
   return 0;
 }
 
@@ -92946,13 +95239,31 @@ int fsl_vfile_unload_except(fsl_cx * const f, fsl_id_t vid){
    of the file. This routine will hash that file using the same hash
    type. The new hash is appended to pTgt.
 
+   If isLink is true, zName is a symlink and the name it points to is
+   hashed, as fossil(1) hashes symlinks when the allow-symlinks
+   setting is on, else the file's content (following any symlink) is
+   hashed.
+
    Returns 0 on success.
 */
 static int fsl_vfile_recheck_file_hash( fsl_cx * const f, const char * const zName,
-                                        fsl_size_t hashLen, fsl_b * const pTgt ){
+                                        fsl_size_t hashLen, bool isLink,
+                                        fsl_b * const pTgt ){
   bool errReported = false;
   int rc = 0;
-  if((fsl_size_t)FSL_STRLEN_SHA1==hashLen){
+  if(isLink){
+    fsl_b * const target = fsl_cx_b_borrow(f);
+    if(!target) return f->error.code;
+    rc = fsl__cfs_symlink_read(f, target, zName);
+    if(0==rc){
+      if((fsl_size_t)FSL_STRLEN_SHA1==hashLen){
+        rc = fsl_sha1sum_buffer(target, pTgt);
+      }else{
+        rc = fsl_sha3sum_buffer(target, pTgt);
+      }
+    }
+    fsl_cx_b_return(f, target);
+  }else if((fsl_size_t)FSL_STRLEN_SHA1==hashLen){
     rc = fsl__cfs_sha1sum(f, zName, pTgt);
   }else if((fsl_size_t)FSL_STRLEN_K256==hashLen){
     rc = fsl__cfs_sha3sum(f, zName, pTgt);
@@ -92981,6 +95292,7 @@ int fsl_vfile_changes_scan(fsl_cx * const f, fsl_id_t vid, unsigned cksigFlags){
   fsl_b * const fileCksum = fsl__cx_scratchpad(f);
   bool const useMtime = (cksigFlags & FSL_VFILE_CKSIG_HASH)==0
     && fsl_config_get_bool(f, FSL_CONFDB_REPO, true, "mtime-changes");
+  bool allowSymlinks;
   if(!fsl_needs_ckout(f)){
     fsl__cx_scratchpad_yield(f, fileCksum);
     return FSL_RC_NOT_A_CKOUT;
@@ -92990,6 +95302,7 @@ int fsl_vfile_changes_scan(fsl_cx * const f, fsl_id_t vid, unsigned cksigFlags){
   assert(vid>=0);
   rootLen = fsl_strlen(f->db.ckout.dir);
   assert(rootLen);
+  allowSymlinks = fsl_cx_allows_symlinks(f, false);
 
   rc = fsl_cx_txn_begin_write(f, FSL_DBROLE_CKOUT);
   if(rc){
@@ -93061,27 +95374,25 @@ int fsl_vfile_changes_scan(fsl_cx * const f, fsl_id_t vid, unsigned cksigFlags){
     origSize = fsl_stmt_g_int64(&q, 6);
     oldMtime = (fsl_time_t)fsl_stmt_g_int64(&q, 7);
     //isExe = fsl_stmt_g_int32(&q, 8);
-    rc = fsl_cx_stat( f, false, zName, &fst );
+    /* As in fossil(1)'s fossil_stat() for RepoFILE: with symlinks
+       allowed, a symlink is seen as itself (its size is that of the
+       name it points to), else as the file it points to. */
+    fst = fsl_fstat_empty;
+    rc = fsl__cfs_stat(f, zName, &fst, !allowSymlinks);
     currentSize = rc ? -1 : (int64_t)fst.size;
     currentMtime = rc ? 0 : fst.mtime;
     if(rc){
       fsl_cx_err_reset(f);
       rc = 0;
     }
+    bool const isLink = currentSize>=0 && allowSymlinks
+      && FSL_FSTAT_TYPE_LINK==fst.type;
 #if !defined(_WIN32)
     //relName = zName + rootLen;
     origPerm = fsl_stmt_g_int32(&q, 10);
-    currentPerm = (FSL_FSTAT_PERM_EXE==fst.perm
-                   ? FSL_FILE_PERM_EXE
-                   : FSL_FILE_PERM_REGULAR)
-                   /*(FSL_FSTAT_TYPE_LINK==fst.type
-                      ? FSL_FILE_PERM_LINK
-                      : FSL_FILE_PERM_REGULAR)*/
-      /* ^^^ FIXME: this isn't right for symlinks. For those we have
-         to treat them as FSL_FILE_PERM_LINK when the repo has symlink
-         support enabled, else FSL_FILE_PERM_REGULAR. That's to fix
-         if/when we ever support SCM'd symlinks in the library. */
-      ;
+    currentPerm = currentSize>=0
+      ? (int)fsl__fstat_perm(&fst, allowSymlinks)
+      : FSL_FILE_PERM_REGULAR;
 #endif
     if(!changed && (isDeleted || !rid)){
       /* ADD and REMOVE operations always change the file */
@@ -93112,7 +95423,8 @@ int fsl_vfile_changes_scan(fsl_cx * const f, fsl_id_t vid, unsigned cksigFlags){
       assert( origSize==currentSize );
       uuid = fsl_stmt_g_text(&q, 5, &nUuid);
       assert(uuid && fsl_is_uuid_len((int)nUuid));
-      rc = fsl_vfile_recheck_file_hash(f, zName, (int)nUuid, fileCksum);
+      rc = fsl_vfile_recheck_file_hash(f, zName, (int)nUuid, isLink,
+                                       fileCksum);
       if(rc) goto end;
       assert(fsl_is_uuid_len((int)fileCksum->used));
       if( 0 == fsl_uuidcmp(fsl_b_cstr(fileCksum), uuid) ){
@@ -93134,7 +95446,7 @@ int fsl_vfile_changes_scan(fsl_cx * const f, fsl_id_t vid, unsigned cksigFlags){
       uuid = fsl_stmt_g_text(&q, 5, &nUuid);
       assert(uuid && fsl_is_uuid_len((int)nUuid));
       fsl_b_reuse(fileCksum);
-      rc = fsl_vfile_recheck_file_hash(f, zName, nUuid, fileCksum);
+      rc = fsl_vfile_recheck_file_hash(f, zName, nUuid, isLink, fileCksum);
       if(rc) goto end;
       assert(fsl_is_uuid_len((int)fileCksum->used));
       if( fsl_uuidcmp(fsl_b_cstr(fileCksum), uuid) ){
@@ -93163,6 +95475,9 @@ int fsl_vfile_changes_scan(fsl_cx * const f, fsl_id_t vid, unsigned cksigFlags){
     if( origPerm!=FSL_FILE_PERM_LINK && currentPerm==FSL_FILE_PERM_LINK ){
        /* Changing to a symlink takes priority over all other change types. */
        changed = FSL_VFILE_CHANGE_BECAME_SYMLINK;
+    }else if( origPerm==FSL_FILE_PERM_LINK && currentPerm!=FSL_FILE_PERM_LINK ){
+      /* As does no longer being one, as in fossil(1). */
+      changed = FSL_VFILE_CHANGE_NOT_SYMLINK;
     }else if( changed==0
               || changed==FSL_VFILE_CHANGE_IS_EXEC
               || changed==FSL_VFILE_CHANGE_BECAME_SYMLINK
@@ -93314,8 +95629,8 @@ int fsl__vfile_to_ckout(fsl_cx * const f, fsl_id_t vfileId,
     }
     //assert(!"cannot happen");
     if(FSL__LOCALMOD_LINK & isMod){
-      assert(((isLink && FSL_FILE_PERM_LINK!=fst->perm)
-              ||(!isLink && FSL_FILE_PERM_LINK==fst->perm))
+      assert(((isLink && FSL_FSTAT_TYPE_LINK!=fst->type)
+              ||(!isLink && FSL_FSTAT_TYPE_LINK==fst->type))
              && "Expected fsl__is_locally_modified() to set this.");
       rc = fsl__cfs_unlink(f, zName);
       if(rc){
@@ -94438,6 +96753,64 @@ int fsl_xfer_error(fsl_xfer * const xf, int code, char const * zMsg){
     : fsl_xfer_errorf(xf, code, "%s", zMsg ? zMsg : "");
 }
 
+/**
+   Settles the result rc of the channel method named zMethod, which
+   was called through fsl__xfer_ch_call(). A method has failed if it
+   left an error in the transfer's error state (see
+   fsl_xfer_error()), whatever it returned, and that error stands. If
+   it returned non-0 without setting one, we set one which names the
+   channel and the method, so that the caller never sees an empty
+   message or a failure blamed on the remote. FSL_RC_BREAK from
+   read() is the end of the input, not a failure, and FSL_RC_OOM
+   carries no message.
+*/
+static int fsl__xfer_ch_result(fsl_xfer * const xf, char const * zMethod,
+                               int rc){
+  fsl_error const * const err = fsl_cx_err_e(xf->f);
+  if( err->code ){
+    return xf->rc = err->code;
+  }
+  if( rc && FSL_RC_OOM!=rc && !(FSL_RC_BREAK==rc && 0==strcmp(zMethod, "read")) ){
+    return fsl_xfer_errorf(xf, rc, "%s() failed and set no error message",
+                           zMethod);
+  }
+  return rc;
+}
+
+/**
+   Evaluates CALL, a call of one of xf's channel methods, with a clear
+   error state and settles its result with fsl__xfer_ch_result(). The
+   result is an expression and is not assigned to xf->rc.
+*/
+#define fsl__xfer_ch_call(XF, METHOD, CALL) \
+  (fsl_cx_err_reset((XF)->f), fsl__xfer_ch_result((XF), METHOD, (CALL)))
+
+/**
+   Calls rch->read(), via fsl__xfer_ch_call(), and checks that it
+   delivered what was asked for, which the channel is trusted to do
+   only so far: a sized read must append exactly howMuch bytes and a
+   line read must append something. Returns the result.
+*/
+static int fsl__xfer_ch_read(fsl_xfer * const xf, fsl_sc * const rch,
+                             fsl_b * const tgt, fsl_int_t howMuch){
+  fsl_size_t const nBefore = tgt->used;
+  int rc = fsl__xfer_ch_call(xf, "read", rch->read(rch, tgt, howMuch));
+  if( 0==rc ){
+    fsl_size_t const nGot = tgt->used>=nBefore ? tgt->used - nBefore : 0;
+    if( howMuch>0 && nGot!=(fsl_size_t)howMuch ){
+      rc = fsl_xfer_errorf(xf, FSL_RC_MISUSE,
+                           "read() reported success but appended %"
+                           FSL_SIZE_T_PFMT " of %" FSL_SIZE_T_PFMT
+                           " requested bytes", nGot, (fsl_size_t)howMuch);
+    }else if( FSL_SC_READ_LINE==howMuch && !nGot ){
+      rc = fsl_xfer_errorf(xf, FSL_RC_MISUSE,
+                           "read(FSL_SC_READ_LINE) reported success but "
+                           "appended no data");
+    }
+  }
+  return rc;
+}
+
 void fsl_xfer_debug(fsl_xfer * const xf, char const * zMsg){
   if( xf->config->debug.callback ){
     xf->config->debug.callback(xf, zMsg);
@@ -94847,7 +97220,8 @@ int fsl__xfer_setup(fsl_cx * const f,
   }
   return xf->rc
     ? xf->rc
-    : (xf->rc = xf->ch->init(xf->ch, FSL_SC_INIT_INITIAL));
+    : (xf->rc = fsl__xfer_ch_call(xf, "init",
+                                 xf->ch->init(xf->ch, FSL_SC_INIT_INITIAL)));
 }
 
 /** Modes for use with fsl__xfer_start(). */
@@ -94951,9 +97325,8 @@ static int fsl__xfer_read(fsl_xfer * const xf, fsl_b * const dest,
   if( 0==xf->rc ){
     assert( n > 0 );
     fsl__xfer__rch_decl;
-    fsl_cx_err_reset(xf->f);
     fsl_timer_scope(&xf->n.timer.read,{
-        xf->rc = rch->read(rch, dest, (fsl_int_t)n);
+        xf->rc = fsl__xfer_ch_read(xf, rch, dest, (fsl_int_t)n);
       });
     if( 0==xf->rc ){
       fsl__xfer_countRead('u', &xf->n.bytesReadUncompressed, n);
@@ -94969,7 +97342,8 @@ static int fsl__xfer_readln(fsl_xfer * const xf){
   fsl__xfer__rch_decl;
 again: ;
   fsl_timer_scope(&xf->n.timer.read,{
-      xf->rc = rch->read(rch, fsl_b_reuse(bLn), FSL_SC_READ_LINE);
+      xf->rc = fsl__xfer_ch_read(xf, rch, fsl_b_reuse(bLn),
+                                 FSL_SC_READ_LINE);
     });
 
   /*MARKER(("rc=%d line=<<%.*s>>\n", rc,
@@ -95299,7 +97673,10 @@ static int fsl__xfer_prepare_req_headers(fsl_xfer * const xf){
        body, as fossil(1)'s does. */
     fsl_b * const z = fsl__cx_scratchpad(xf->f);
     xf->rc = fsl_b_compress(&xf->request.body, z);
-    if( 0==xf->rc ) xf->rc = xf->ch->append(xf->ch, z->mem, z->used);
+    if( 0==xf->rc ){
+      xf->rc = fsl__xfer_ch_call(xf, "append",
+                                 xf->ch->append(xf->ch, z->mem, z->used));
+    }
     nWire = z->used;
     fsl__cx_scratchpad_yield(xf->f, z);
     if( xf->rc ) goto end;
@@ -95383,8 +97760,8 @@ static int fsl__xfer_parse_http_headers( fsl_xfer * const xf,
   *contentLength = 0;
   while( 1 ){
     fsl_timer_scope(&xf->n.timer.read,{
-        xf->rc = rch->read(rch, fsl_b_reuse(bLine),
-                                FSL_SC_READ_LINE)
+        xf->rc = fsl__xfer_ch_read(xf, rch, fsl_b_reuse(bLine),
+                                   FSL_SC_READ_LINE)
           /* reminder to self: don't use fsl__xfer_readln() because
              it does validation and empty line skipping which is not
              appropriate here. */;
@@ -95476,8 +97853,8 @@ static int fsl__xfer_parse_http_headers( fsl_xfer * const xf,
         /* Discard HTTP/1.1 interim replies such as "100 Continue". */
         do{
           fsl_timer_scope(&xf->n.timer.read,{
-              xf->rc = rch->read(rch, fsl_b_reuse(bLine),
-                                      FSL_SC_READ_LINE);
+              xf->rc = fsl__xfer_ch_read(xf, rch, fsl_b_reuse(bLine),
+                                         FSL_SC_READ_LINE);
             });
           if( FSL_RC_BREAK==xf->rc ){
             fsl_xfer_error(xf, FSL_RC_SYNTAX,
@@ -95600,6 +97977,16 @@ static int fsl__xfer_body_length_error(fsl_xfer * const xf,
                          "its Content-Length", nGot, nWant);
 }
 
+fsl_size_t fsl_xfer_max_response(fsl_xfer const * const xf){
+  int32_t const n = (xf && xf->config) ? xf->config->maxResponseBytes : 0;
+  return n>0 ? (fsl_size_t)n : (fsl_size_t)256 * 1024 * 1024;
+}
+
+int fsl_xfer_socket_timeout(fsl_xfer const * const xf){
+  int32_t const n = (xf && xf->config) ? xf->config->socketTimeoutSeconds : 0;
+  return n>0 ? (int)n : 120;
+}
+
 /**
    fsl_b_uncompress(b) in place.
 */
@@ -95607,12 +97994,12 @@ static int fsl__xfer_unz(fsl_xfer * const xf, fsl_b * const b){
   if( 0==xf->rc ){
     int rc;
     fsl_int_t const nUncompressed = fsl_b_uncompressed_size(b);
-    if( !xf->config->op.clone && xf->config->maxResponseBytes>0
-        && nUncompressed>(fsl_int_t)xf->config->maxResponseBytes ){
+    fsl_size_t const maxBytes = fsl_xfer_max_response(xf);
+    if( nUncompressed>(fsl_int_t)maxBytes ){
       return fsl_xfer_errorf(
         xf, FSL_RC_RANGE,
-        "Uncompressed response exceeds limit of %d bytes",
-        (int)xf->config->maxResponseBytes);
+        "Uncompressed response exceeds limit of %" FSL_SIZE_T_PFMT
+        " bytes", maxBytes);
     }
     fsl_timer_scope(&xf->n.timer.uncompress, {
         rc = fsl_b_uncompress(b, b);
@@ -95645,7 +98032,7 @@ static int fsl__xfer_response_unz(fsl_xfer * const xf,
      xf->chz in place of xf->ch.
   */
   fsl_timer_scope(&xf->n.timer.read,{
-      xf->rc = xf->ch->read(xf->ch, b, FSL_SC_READ_ALL);
+      xf->rc = fsl__xfer_ch_read(xf, xf->ch, b, FSL_SC_READ_ALL);
     });
   //MARKER(("xf->rc=%s compressed size=%u\n",fsl_rc_cstr(xf->rc),
   //  (unsigned)b->used));
@@ -95657,13 +98044,12 @@ static int fsl__xfer_response_unz(fsl_xfer * const xf,
     fsl__xfer_countRead('c', &xf->n.bytesReadCompressed,
                         b->used);
     if( 0==fsl__xfer_unz(xf, b) ){
-      if( 0==xf->rc && !xf->config->op.clone
-          && xf->config->maxResponseBytes>0
-          && b->used>(fsl_size_t)xf->config->maxResponseBytes ){
+      fsl_size_t const maxBytes = fsl_xfer_max_response(xf);
+      if( 0==xf->rc && b->used>maxBytes ){
         fsl_xfer_errorf(
           xf, FSL_RC_RANGE,
-          "Uncompressed response exceeds limit of %d bytes",
-          (int)xf->config->maxResponseBytes);
+          "Uncompressed response exceeds limit of %" FSL_SIZE_T_PFMT
+          " bytes", maxBytes);
       }
       if( xf->n.largestDecompressedResponse < b->capacity ){
         xf->n.largestDecompressedResponse = b->capacity;
@@ -95706,19 +98092,27 @@ int fsl__xfer_submit( fsl_xfer * const xf ){
   }
   if( 0==xf->rc ){
     fsl_timer_scope(&xf->n.timer.submit,{
-        xf->rc = xf->ch->submit(xf->ch, xf->request.loginCard.used
-                                     ? &xf->request.loginCard : NULL);
+        xf->rc = fsl__xfer_ch_call(
+          xf, "submit", xf->ch->submit(xf->ch, xf->request.loginCard.used
+                                       ? &xf->request.loginCard : NULL));
       });
-    fsl__xfer_parse_http_headers( xf, &contentLength,
-                                  &expectCompressedResponse );
+    fsl_sc const * const chSelf = xf->ch->self(xf->ch);
+    if( 0==(FSL_SC_F_NO_HTTP & chSelf->flags) ){
+      fsl__xfer_parse_http_headers( xf, &contentLength,
+                                    &expectCompressedResponse );
+    }else if( 0==xf->rc ){
+      contentLength = chSelf->reply.length;
+      expectCompressedResponse = chSelf->reply.compressed;
+      if( !contentLength ){
+        fsl_xfer_error(xf, FSL_RC_RANGE, "Channel reported an empty reply");
+      }
+    }
     if( 0==xf->rc ) xf->n.bytesReadWire += contentLength;
-    if( 0==xf->rc && !xf->config->op.clone
-        && xf->config->maxResponseBytes>0
-        && contentLength>(fsl_size_t)xf->config->maxResponseBytes ){
+    if( 0==xf->rc && contentLength>fsl_xfer_max_response(xf) ){
       fsl_xfer_errorf(
         xf, FSL_RC_RANGE,
-        "Response exceeds limit of %d bytes",
-        (int)xf->config->maxResponseBytes);
+        "Response exceeds limit of %" FSL_SIZE_T_PFMT " bytes",
+        fsl_xfer_max_response(xf));
     }
     unz = 0==xf->rc && contentLength && expectCompressedResponse;
     if( unz ){
@@ -95767,7 +98161,7 @@ static void fsl__xfer_append_direct(fsl_xfer * const xf, void const * const p,
        fsl__xfer_prepare_req_headers(). */
     xf->rc = (FSL_SC_F_COMPRESSED & xf->ch->flags)
       ? fsl_b_append(&xf->request.body, p, n)
-      : xf->ch->append(xf->ch, p, n);
+      : fsl__xfer_ch_call(xf, "append", xf->ch->append(xf->ch, p, n));
     if( 0==xf->rc ){
       xf->n.bytesWritten += n;
       xf->request.nBytes += n;
@@ -95854,7 +98248,8 @@ int fsl__xfer_append(fsl_xfer * const xf, void const * const p,
       /* Delay (re-)init of the request state until we know we're
          going to post another request (i.e. when we start writing the
          request). */
-      xf->rc = xf->ch->init(xf->ch, FSL_SC_INIT_REQUEST);
+      xf->rc = fsl__xfer_ch_call(xf, "init",
+                                 xf->ch->init(xf->ch, FSL_SC_INIT_REQUEST));
       fsl__xfer_append_prologue(xf);
     }
     fsl__xfer_append_direct(xf, p, n);
@@ -96979,7 +99374,35 @@ fsl_xfcard const * fsl__xfcard_search(unsigned char const * z){
 }
 
 /**
-   Populate pSc and pPopenState based on config->url. Report errors via err.
+   Reports, via err, whichever members the caller's channel ch lacks
+   of those a channel needs: init(), append(), submit(), read() and a
+   non-NULL impl.p. (cleanup() is optional and self() defaults.)
+   Returns 0 if it lacks none, else FSL_RC_MISUSE.
+*/
+static int fsl__xfer_channel_check(fsl_sc const * const ch,
+                                   fsl_error * const err){
+  fsl_b b = fsl_b_empty;
+  int rc = 0;
+#define MISSING(COND, NAME) \
+  if( COND ) fsl_b_appendf(&b, "%s%s", b.used ? ", " : "", NAME)
+  MISSING(!ch->init, "init()");
+  MISSING(!ch->append, "append()");
+  MISSING(!ch->submit, "submit()");
+  MISSING(!ch->read, "read()");
+  MISSING(!ch->impl.p, "impl.p");
+#undef MISSING
+  if( b.used ){
+    rc = fsl_error_set(err, FSL_RC_MISUSE,
+                       "Sync channel '%s' is not usable: missing %b",
+                       ch->name ? ch->name : "unnamed", &b);
+  }
+  fsl_b_clear(&b);
+  return rc;
+}
+
+/**
+   Populate pSc and pPopenState from config->channel or, if that is NULL,
+   based on config->url. Report errors via err.
 */
 static int fsl__xfer_sc_init(fsl_xfer_config const * const config,
                              fsl_sc * const pSc,
@@ -96992,7 +99415,16 @@ static int fsl__xfer_sc_init(fsl_xfer_config const * const config,
   rc = fsl_url_parse(&url, zUrl);
   if( 0==rc ){
     assert( url.raw );
-    if( 0==fsl_strcmp("http", url.scheme)
+    if( config->channel ){
+      /* The caller's channel. The URL is parsed into it by
+         fsl__xfer_init_url(). */
+      rc = fsl__xfer_channel_check(config->channel, err);
+      if( 0==rc ){
+        *pSc = *config->channel;
+        if( !pSc->self ) pSc->self = fsl_sc_self;
+        *pPopenState = fsl_sc_popen_state_empty;
+      }
+    }else if( 0==fsl_strcmp("http", url.scheme)
         || 0==fsl_strcmp("https", url.scheme) ){
       /* Native socket. Allocates and installs heap-owned
          per-channel state. */
@@ -97339,6 +99771,38 @@ static int fsl__xfer_send_private_igots(fsl_xfer * const xf){
 }
 
 /**
+   Lists the unclustered inventory as "igot HASH" cards, as fossil(1)'s
+   send_unclustered() does in every request which carries push. The
+   peer asks with gimme for any it lacks. Without this, an artifact
+   whose unsent entry a push to one peer cleared is never offered to
+   another. Shunned, phantom and private artifacts are not listed.
+*/
+static int fsl__xfer_send_unclustered(fsl_xfer * const xf){
+  fsl_stmt q = fsl_stmt_empty;
+  int stepRc = 0;
+  int rc = fsl_cx_prepare(
+    xf->f, &q,
+    "SELECT b.uuid FROM {{dbname.repo}}.unclustered u"
+    " JOIN {{dbname.repo}}.blob b USING(rid)"
+    " WHERE b.size>=0"
+    " AND NOT EXISTS(SELECT 1 FROM {{dbname.repo}}.shun s"
+    " WHERE s.uuid=b.uuid)"
+    " AND NOT EXISTS(SELECT 1 FROM {{dbname.repo}}.private p"
+    " WHERE p.rid=b.rid)"
+    " ORDER BY b.rid");
+  while( 0==rc && FSL_RC_STEP_ROW==(stepRc=fsl_stmt_step(&q)) ){
+    rc = fsl__xfer_appendcard(xf, fsl_xfcard_e_igot, "%s",
+                              fsl_stmt_g_text(&q, 0, NULL));
+  }
+  if( 0==rc && FSL_RC_STEP_DONE!=stepRc
+      && FSL_RC_STEP_ROW!=stepRc ){
+    rc = fsl_cx_uplift_db_error2(xf->f, q.db, stepRc);
+  }
+  fsl_stmt_finalize(&q);
+  return rc;
+}
+
+/**
    To be called when fsl__xfer_submit() fails with a reply error (see
    xf->flag.peerError). Sync draft section 10.1: such an error ends
    only the reply-card loop. What the reply delivered before it is
@@ -97515,6 +99979,7 @@ again:
     /* After a reply error, push no more batches: the peer may be
        refusing them, and each one sent leaves the unsent table. */
     rc = xf->rc = fsl__xfer_send_unsent(xf);
+    if( 0==rc ) rc = xf->rc = fsl__xfer_send_unclustered(xf);
   }
   if( rc ) return rc;
   fsl_id_bag_reuse(&xf->gimmePending);
@@ -98050,25 +100515,36 @@ void fsl_xfer_metrics_f_outputer(fsl_xfer_metrics const * const m, void *state,
 }
 
 static fsl_flag32_t fsl__autosync_ops(fsl_cx *f, fsl_flag32_t ops){
-  char * z = fsl_configs_get_text(
+  char * z;
+  if( fsl_config_open(f, NULL) ){
+    /* The "g" lookups below need the global config db, which may not
+       be opened yet. If it cannot be opened, treat its settings as
+       unset. */
+    fsl_cx_err_reset(f);
+  }
+  if( 0==(ops & FSL_SYNC_FULL) ){
+    /* FSL_SYNC_AUTO alone asks for a full sync. */
+    ops |= FSL_SYNC_FULL;
+  }
+  z = fsl_configs_get_text(
     f, "crg", "libfossil.autosync", 0
   );
   if(!z){
     z = fsl_configs_get_text(f, "crg", "autosync", 0);
   }
+  /* No setting means autosync=on, fossil(1)'s default: the requested
+     ops stand. */
   if( z ){
     if(!fsl_str_bool(z)){
-      ops &= ~(FSL_SYNC_PULL | FSL_SYNC_PUSH);
-    }else if((z && 0==fsl_strcmp(z, "pullonly"))
-             || fsl_configs_get_bool(f, "crg", false, "dont-push")){
+      ops &= ~FSL_SYNC_FULL;
+    }else if(0==fsl_strcmp(z, "pullonly")){
       ops &= ~FSL_SYNC_PUSH;
     }
-  }else if( FSL_SYNC_AUTO & ops ){
-    /* Settings not found. fossil(1) defaults to autosync=on so we'll
-       imitate that here. */
-    ops |= FSL_SYNC_PULL | FSL_SYNC_PUSH;
+    fsl_free(z);
   }
-  fsl_free(z);
+  if( fsl_configs_get_bool(f, "crg", false, "dont-push") ){
+    ops &= ~FSL_SYNC_PUSH;
+  }
   return ops;
 }
 
@@ -103913,6 +106389,7 @@ static int fslext_status_f(void * state, fsl_ckout_change_e change,
     case FSL_CKOUT_CHANGE_ADDED: zChange = "added"; break;
     case FSL_CKOUT_CHANGE_REMOVED: zChange = "deleted"; break;
     case FSL_CKOUT_CHANGE_MISSING: zChange = "missing"; break;
+    case FSL_CKOUT_CHANGE_NOT_A_FILE: zChange = "not_a_file"; break;
     case FSL_CKOUT_CHANGE_MOD: zChange = "edited"; break;
     case FSL_CKOUT_CHANGE_RENAMED: zChange = "renamed"; break;
     case FSL_CKOUT_CHANGE_IS_EXEC: zChange = "executable"; break;
@@ -103938,7 +106415,8 @@ static int fslext_status_f(void * state, fsl_ckout_change_e change,
   Compares the opened checkout's files with its version and returns a
   JSON object with the version's "checkout" hash and the "changes",
   each with its "name" and "change", named as fossil(1)'s status
-  names them: "added", "deleted", "missing", "edited", "renamed",
+  names them: "added", "deleted", "missing", "not_a_file", "edited",
+  "renamed",
   "executable", "unexec", "symlink", "unlink", "added_by_merge",
   "updated_by_merge", "added_by_integrate", or "updated_by_integrate".
   A renamed file also has "from", its old name. Files not in the

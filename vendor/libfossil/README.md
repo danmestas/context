@@ -1,9 +1,12 @@
-Amalgamations from libfossil check-in 7d9634ac5c (branch `onefile`), with the
-SQLite 3.55.0 they are built against. Replace these files to update; do not edit
+Amalgamations from libfossil check-in 8aa1823ae1 (branch `sql-ext-int`; full hash in CHECKIN),
+with the SQLite 3.55.0 they are built against. Replace these files to update; do not edit
 them. libfossil is BSD-2-Clause (see LICENSE); SQLite is public domain.
 
-Since e84af25d79 this adds: backlinks (the repository's backlink table is written
-when check-ins, wiki pages, forum posts and tickets are crosslinked or rebuilt),
-the SHA-1 alignment fix (fsl_sha1_update no longer does misaligned 32-bit loads),
-and the rest of trunk up to f2983dcd78. No public API, SQL function or schema
-change.
+`sql-ext-int` is trunk through b5a08d2b94 with the `onefile` and `cowoco` branches (which ctx
+used before, from 7d9634ac5c) and the `anypipe` sync-channel branch merged on top. Since
+7d9634ac5c this adds: the autosync fixes (global `pullonly`/`dont-push` honoured; with no
+autosync setting the pulls before commit, update and merge no longer push), the onefile
+write-lock fix (SQLite's busy handler now waits for another connection's lock instead of
+failing at once with "database is locked"), namespacing, push-unclustered, sync reply limits,
+an ssh exit-127 hint, and caller-supplied sync channels (`fsl_xfer_config::channel`), which ctx
+does not use. sqlite3.c and sqlite3.h are unchanged.
