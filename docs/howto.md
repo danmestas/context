@@ -1086,6 +1086,12 @@ and loads of the `ctx` skill. It counts commands agents really ran, not mentions
 of them, from the archive alone, so it is free to run weekly. A project with many
 sessions and no searches is where the skill is not being reached for.
 
+When pic's journal exists (`CTX_PIC_DB`, by default `~/.pic/pic.sqlite`), `ctx stats`
+ends with what pic measured its compaction on a cold resume to save, as `pic usage
+--lapse` reports it. pic leaves a random share of those resumes uncompacted, so the
+saving and its interval are measured, not estimated. The section is left out when
+there is no journal, `CTX_PIC_DB` is empty, or pic is not installed.
+
 `eval/skill_eval.py` measures the `ctx` skill against a private bank of questions
 about past work, with blind grading and a held-out set, so a change to the skill
 is kept only if results improve. The question bank and results stay in

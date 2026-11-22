@@ -1479,6 +1479,25 @@ EOF
 grep -qE '^statsproj +1 +4 +1 +2 +1$' "$T/stats.txt" || fail "stats by project: $(cat "$T/stats.txt")"
 grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2} +1 +4 +1 +2 +1$' "$T/stats.txt" || fail "stats by week: $(cat "$T/stats.txt")"
 if "$CTX" stats --weeks 0 2>/dev/null; then fail "weeks must be positive"; fi
+# pic's measured savings: stats passes on what `pic usage --lapse` says about pic's journal,
+# and leaves the section out when there is no journal, no pic, or pic fails.
+grep -q '^pic' "$T/stats.txt" && fail "a pic section with CTX_PIC_DB naming no journal: $(cat "$T/stats.txt")"
+mkdir -p "$T/fakepic"
+cat > "$T/fakepic/pic" <<'EOF'
+#!/bin/sh
+[ "$1 $3 $4" = "--db usage --lapse" ] || exit 2
+printf 'db %s\ncold caches: 7 compacted, 5 held out, 2 under the floor\n' "$2"
+EOF
+chmod +x "$T/fakepic/pic"
+: > "$T/pic-journal.sqlite"
+PATH="$T/fakepic:$PATH" CTX_PIC_DB="$T/pic-journal.sqlite" "$CTX" stats > "$T/stats-pic.txt" || fail "stats with pic"
+grep -q '^pic: compaction on a cold resume' "$T/stats-pic.txt" || fail "no pic section: $(cat "$T/stats-pic.txt")"
+grep -qx "  db $T/pic-journal.sqlite" "$T/stats-pic.txt" || fail "pic not given the journal: $(cat "$T/stats-pic.txt")"
+grep -qx '  cold caches: 7 compacted, 5 held out, 2 under the floor' "$T/stats-pic.txt" || fail "pic's report not passed on"
+PATH="$T/fakepic:$PATH" CTX_PIC_DB="$T/none.sqlite" "$CTX" stats | grep -q '^pic' && fail "a pic section with no journal"
+PATH="$T/fakepic:$PATH" CTX_PIC_DB= "$CTX" stats | grep -q '^pic' && fail "a pic section with CTX_PIC_DB empty"
+printf '#!/bin/sh\necho broken; exit 1\n' > "$T/fakepic/pic"
+PATH="$T/fakepic:$PATH" CTX_PIC_DB="$T/pic-journal.sqlite" "$CTX" stats | grep -q 'broken' && fail "a failing pic's output shown"
 export CTX_DB="$T/arc.sqlite"
 
 # A secret never reaches the repository or the index.
