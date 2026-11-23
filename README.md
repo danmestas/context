@@ -130,6 +130,9 @@ both. `plugin/INSTALL.md` becomes the archive's README.
   the archive, how often they found nothing, and how many sessions ran. With pic
   installed it ends with what pic measured its compaction on a cold resume to
   save.
+- `ctx repeats` lists the shell commands agents run again and again, across
+  sessions and projects, grouped by shape: candidates for a script or a check,
+  so that agents stop rebuilding them each session.
 - `eval/` measures the `ctx` skill against questions about past work, so a change
   to the skill is judged by results. See [eval/README.md](eval/README.md).
 - `bench/` scores retrieval, grep against BM25, on pinned corpora. `bench/run.sh`

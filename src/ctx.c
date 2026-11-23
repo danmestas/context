@@ -875,6 +875,7 @@ static void schema_ensure(sqlite3 *db) {
 }
 
 static void sql_ctx_calls(sqlite3_context *cx, int argc, sqlite3_value **argv);
+static void sql_ctx_shape(sqlite3_context *cx, int argc, sqlite3_value **argv);
 
 static sqlite3 *ctx_open(void) {
   char *path = db_path();
@@ -884,6 +885,8 @@ static sqlite3 *ctx_open(void) {
   schema_ensure(db);
   /* ctx_calls(body, sub): for ctx stats, and for anyone asking ctx sql the same question */
   sqlite3_create_function(db, "ctx_calls", 2, SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, sql_ctx_calls, NULL, NULL);
+  /* ctx_shape(command): for ctx repeats, and to check a shape with ctx sql */
+  sqlite3_create_function(db, "ctx_shape", 1, SQLITE_UTF8, NULL, sql_ctx_shape, NULL, NULL);
   return db;
 }
 
@@ -1580,6 +1583,27 @@ static int count_ctx_runs(const char *cmd, size_t n, const char *sub) {
   return count;
 }
 
+/* The command of a turn's line "Bash {json input}" or "bash {...}", unescaped into cmd, or 0
+ * if the line is not a shell call. A command's newlines are escaped, so a call is one line. */
+static int shell_command(const char *line, size_t len, buf *cmd) {
+  if (len <= 6 || strncasecmp(line, "bash {", 6)) return 0;
+  const char *p = memmem(line, len, "\"command\":\"", 11), *stop = line + len;
+  if (!p) return 0;
+  cmd->n = 0;
+  buf_add(cmd, "", 0);
+  for (p += 11; p < stop && *p != '"'; p++) {
+    char c = *p;
+    if (c == '\\' && p + 1 < stop) {
+      c = *++p;
+      if (c == 'n') c = '\n';
+      else if (c == 't') c = '\t';
+      else if (c == 'u') { c = '?'; p += p + 4 < stop ? 4 : 0; }
+    }
+    buf_add(cmd, &c, 1);
+  }
+  return 1;
+}
+
 /* ctx_calls(body, sub): how many times the turn's shell calls ran `ctx SUB`. */
 static void sql_ctx_calls(sqlite3_context *cx, int argc, sqlite3_value **argv) {
   (void)argc;
@@ -1588,31 +1612,333 @@ static void sql_ctx_calls(sqlite3_context *cx, int argc, sqlite3_value **argv) {
   const char *stop = body + sqlite3_value_bytes(argv[0]);
   int total = 0;
   buf cmd = {0};
-  for (const char *line = body; line && line < stop;) { /* a command's newlines are escaped, so it is one line */
+  for (const char *line = body; line && line < stop;) {
     const char *end = memchr(line, '\n', (size_t)(stop - line));
     size_t len = end ? (size_t)(end - line) : (size_t)(stop - line);
-    if (len > 6 && !strncasecmp(line, "bash {", 6)) {
-      const char *p = memmem(line, len, "\"command\":\"", 11);
-      if (p) {
-        cmd.n = 0;
-        p += 11;
-        for (; p < stop && *p != '"'; p++) {
-          char c = *p;
-          if (c == '\\' && p + 1 < stop) {
-            c = *++p;
-            if (c == 'n') c = '\n';
-            else if (c == 't') c = '\t';
-            else if (c == 'u') { c = '?'; p += p + 4 < stop ? 4 : 0; }
-          }
-          buf_add(&cmd, &c, 1);
-        }
-        total += count_ctx_runs(cmd.p ? cmd.p : "", cmd.n, sub);
-      }
-    }
+    if (shell_command(line, len, &cmd)) total += count_ctx_runs(cmd.p, cmd.n, sub);
     line = end ? end + 1 : NULL;
   }
   free(cmd.p);
   sqlite3_result_int(cx, total);
+}
+
+/* Repeats. A shell call's shape is its command with what changes between calls taken out, so
+ * calls that do the same job group together: heredoc bodies fold to their first statement,
+ * quoted text to S, scratch paths to TMP, the home folder to ~, hex ids to H and numbers to N;
+ * a leading cd, echo or assignment, redirects to /dev/null or stderr, and a trailing head or
+ * tail go; and the first SHAPE_WORDS words are kept. A call carries an inline script when it
+ * hands an interpreter a heredoc or a -c or -e argument. */
+#define SHAPE_WORDS 6
+
+static int is_word_char(char c) { return isalnum((unsigned char)c) || c == '_'; }
+
+static int is_interpreter(const char *w, size_t n) {
+  static const char *const names[] = {"python", "python3", "node", "ruby", "perl", "bash", "sh",
+                                      "zsh", "bun", "deno", "osascript", NULL};
+  size_t b = 0;
+  for (size_t i = 0; i < n; i++) if (w[i] == '/') b = i + 1;
+  for (int k = 0; names[k]; k++)
+    if (n - b == strlen(names[k]) && !memcmp(w + b, names[k], n - b)) return 1;
+  return 0;
+}
+
+/* A heredoc line that says nothing about what the script does. */
+static int is_preamble(const char *s, size_t n) {
+  static const char *const lead[] = {"import ", "from ", "#", "set -", "'use strict'", "\"use strict\"", "require(", NULL};
+  if (!n) return 1;
+  for (int k = 0; lead[k]; k++)
+    if (n >= strlen(lead[k]) && !memcmp(s, lead[k], strlen(lead[k]))) return 1;
+  return memmem(s, n, "= require(", 10) != NULL;
+}
+
+/* Stage one: lines joined by " ; ", each heredoc replaced by <<H{its first statement}. */
+static void shape_fold(buf *out, const char *s, size_t n, int *inline_script) {
+  char term[64] = "";
+  buf first = {0};
+  size_t mark = 0; /* where the open heredoc's {statement} goes */
+  int want = 0;    /* the open heredoc's statement is not found yet */
+  for (size_t ls = 0; ls <= n;) {
+    size_t le = ls;
+    while (le < n && s[le] != '\n') le++;
+    size_t a = ls, b = le;
+    while (a < b && (s[a] == ' ' || s[a] == '\t')) a++;
+    while (b > a && (s[b - 1] == ' ' || s[b - 1] == '\t' || s[b - 1] == '\r')) b--;
+    if (*term) {
+      int closes = b - a == strlen(term) && !memcmp(s + a, term, b - a);
+      if (!closes && want && !is_preamble(s + a, b - a)) {
+        buf_add(&first, s + a, b - a < 60 ? b - a : 60);
+        want = 0;
+      }
+      if (closes || le >= n) { /* a cut command can end inside its heredoc */
+        buf rest = {0};
+        buf_add(&rest, out->p + mark, out->n - mark);
+        out->n = mark;
+        buf_str(out, "{");
+        buf_add(out, first.p ? first.p : "", first.n);
+        buf_str(out, "}");
+        buf_add(out, rest.p, rest.n);
+        free(rest.p);
+        *term = 0;
+      }
+    } else if (b > a) {
+      if (out->n) buf_str(out, " ; ");
+      int interp = 0;
+      for (size_t i = a; i < b;) {
+        if (s[i] == '<' && i + 1 < b && s[i + 1] == '<' && (i + 2 >= b || s[i + 2] != '<')) {
+          size_t j = i + 2, k = 0;
+          if (j < b && s[j] == '-') j++;
+          while (j < b && (s[j] == ' ' || s[j] == '\'' || s[j] == '"')) j++;
+          while (j < b && k + 1 < sizeof term && is_word_char(s[j])) term[k++] = s[j++];
+          term[k] = 0;
+          if (k) {
+            while (j < b && (s[j] == '\'' || s[j] == '"')) j++;
+            buf_str(out, "<<H");
+            mark = out->n;
+            first.n = 0;
+            want = 1;
+            if (interp) *inline_script = 1;
+            i = j;
+            continue;
+          }
+        }
+        if (strchr(";|&", s[i])) interp = 0;
+        if (i == a || strchr(" \t;|&(", s[i - 1])) { /* a word starts here */
+          size_t w = i;
+          while (w < b && !strchr(" \t;|&()<>", s[w])) w++;
+          if (w > i && is_interpreter(s + i, w - i)) interp = 1;
+          else if (interp && w - i == 2 && s[i] == '-' && (s[i + 1] == 'c' || s[i + 1] == 'e')) *inline_script = 1;
+          if (w > i) {
+            buf_add(out, s + i, w - i);
+            i = w;
+            continue;
+          }
+        }
+        buf_add(out, s + i, 1);
+        i++;
+      }
+    }
+    if (le >= n) break;
+    ls = le + 1;
+  }
+  free(first.p);
+}
+
+static void shape_sep(buf *out, const char *sep) {
+  if (out->n && out->p[out->n - 1] != ' ') buf_str(out, " ");
+  buf_str(out, sep);
+  buf_str(out, " ");
+}
+
+/* Stage two: quoted text, scratch paths, home, ids and numbers become placeholders, and
+ * separators stand as words of their own. */
+static void shape_lex(buf *out, const char *s, size_t n) {
+  static const char *const scratch[] = {"/private/tmp/", "/tmp/", "/private/var/folders/", "/var/folders/", NULL};
+  const char *home = getenv("HOME");
+  size_t hn = home && *home && strcmp(home, "/") ? strlen(home) : 0;
+  for (size_t i = 0; i < n;) {
+    char c = s[i];
+    int at_word = !out->n || out->p[out->n - 1] == ' ' || out->p[out->n - 1] == '=' || out->p[out->n - 1] == '(';
+    if (c == '\'' || c == '"') {
+      size_t j = i + 1;
+      while (j < n && s[j] != c) j += c == '"' && s[j] == '\\' && j + 1 < n ? 2 : 1;
+      buf_str(out, "S");
+      i = j < n ? j + 1 : n;
+    } else if (c == ' ' || c == '\t' || c == '\r') {
+      if (out->n && out->p[out->n - 1] != ' ') buf_str(out, " ");
+      i++;
+    } else if (c == ';') {
+      shape_sep(out, ";");
+      i++;
+    } else if (c == '|') {
+      int two = i + 1 < n && s[i + 1] == '|';
+      shape_sep(out, two ? "||" : "|");
+      i += two ? 2 : 1;
+    } else if (c == '&' && i + 1 < n && s[i + 1] == '&') {
+      shape_sep(out, "&&");
+      i += 2;
+    } else if (c == '&' && !(i + 1 < n && s[i + 1] == '>') && !(out->n && out->p[out->n - 1] == '>')) {
+      shape_sep(out, "&");
+      i++;
+    } else if (isalnum((unsigned char)c)) {
+      size_t j = i;
+      int digits = 0, hex_letters = 0, others = 0;
+      for (; j < n && isalnum((unsigned char)s[j]); j++) {
+        if (isdigit((unsigned char)s[j])) digits++;
+        else if (strchr("abcdef", s[j])) hex_letters++;
+        else others++;
+      }
+      if (!others && !hex_letters) buf_str(out, "N");
+      else if (!others && digits && j - i >= 4) buf_str(out, "H");
+      else buf_add(out, s + i, j - i);
+      i = j;
+    } else {
+      int folded = 0;
+      for (int k = 0; at_word && c == '/' && scratch[k]; k++)
+        if (n - i >= strlen(scratch[k]) && !memcmp(s + i, scratch[k], strlen(scratch[k]))) {
+          while (i < n && !strchr(" \t;|&()<>'\"", s[i])) i++;
+          buf_str(out, "TMP");
+          folded = 1;
+          break;
+        }
+      if (!folded && at_word && hn && n - i >= hn && !memcmp(s + i, home, hn) && (i + hn == n || s[i + hn] == '/' || s[i + hn] == ' ')) {
+        buf_str(out, "~");
+        i += hn;
+        folded = 1;
+      }
+      if (!folded) buf_add(out, s + i++, 1);
+    }
+  }
+}
+
+static int word_is(const char *w, size_t n, const char *s) { return n == strlen(s) && !memcmp(w, s, n); }
+
+/* A redirect that only hides output: 2>&1, >/dev/null, 2>/dev/null, &>/dev/null; and a bare
+ * one whose target, the next word, is /dev/null. */
+static int is_quiet_redirect(const char *w, size_t n, const char *next, size_t nn) {
+  size_t i = 0;
+  if (i < n && (w[i] == 'N' || w[i] == '&')) i++;
+  if (i >= n || w[i] != '>') return 0;
+  while (i < n && w[i] == '>') i++;
+  if (i == n) return next && word_is(next, nn, "/dev/null") ? 2 : 0;
+  return word_is(w + i, n - i, "&N") || word_is(w + i, n - i, "/dev/null");
+}
+
+/* Stage three: the kept words, at most SHAPE_WORDS. */
+static void shape_words(buf *out, const char *s, size_t n) {
+  enum { MAXW = 256 };
+  const char *w[MAXW];
+  size_t wn[MAXW], count = 0;
+  for (size_t i = 0; i < n && count < MAXW;) {
+    while (i < n && s[i] == ' ') i++;
+    size_t j = i;
+    if (n - i > 4 && !memcmp(s + i, "<<H{", 4)) { /* a heredoc's statement is one word */
+      const char *close = memchr(s + i, '}', n - i);
+      if (close) j = (size_t)(close - s);
+    }
+    while (j < n && s[j] != ' ') j++;
+    if (j > i) { w[count] = s + i; wn[count++] = j - i; }
+    i = j;
+  }
+  const char *kw[MAXW];
+  size_t kn[MAXW], kept = 0;
+  for (size_t i = 0; i < count;) {
+    int r = is_quiet_redirect(w[i], wn[i], i + 1 < count ? w[i + 1] : NULL, i + 1 < count ? wn[i + 1] : 0);
+    if (r) { i += (size_t)r; continue; }
+    if (word_is(w[i], wn[i], "|") && i + 1 < count &&
+        (word_is(w[i + 1], wn[i + 1], "head") || word_is(w[i + 1], wn[i + 1], "tail") ||
+         (word_is(w[i + 1], wn[i + 1], "cut") && i + 2 < count && wn[i + 2] > 2 && !memcmp(w[i + 2], "-c", 2)))) {
+      size_t j = i + 2;
+      while (j < count && (w[j][0] == '-' || word_is(w[j], wn[j], "N"))) j++;
+      if (j == count || strchr(";|&", w[j][0])) { i = j; continue; }
+    }
+    kw[kept] = w[i];
+    kn[kept++] = wn[i];
+    i++;
+  }
+  size_t from = 0;
+  for (;;) {
+    size_t left = kept - from;
+    #define SEP_AT(k) (from + (k) < kept && (word_is(kw[from + (k)], kn[from + (k)], ";") || word_is(kw[from + (k)], kn[from + (k)], "&&")))
+    if (left > 2 && (word_is(kw[from], kn[from], "cd") || (word_is(kw[from], kn[from], "echo") && word_is(kw[from + 1], kn[from + 1], "S"))) && SEP_AT(2))
+      from += 3;
+    else if (left > 1 && memchr(kw[from], '=', kn[from]) && is_word_char(kw[from][0]) && !memchr(kw[from], '/', (size_t)((char *)memchr(kw[from], '=', kn[from]) - kw[from])))
+      from += SEP_AT(1) ? 2 : 1;
+    else
+      break;
+    #undef SEP_AT
+  }
+  for (size_t i = from, used = 0; i < kept && used < SHAPE_WORDS; i++, used++) {
+    if (used) buf_str(out, " ");
+    buf_add(out, kw[i], kn[i]);
+  }
+}
+
+/* The shape of one command into out; sets *inline_script when it carries one. */
+static void shape_of(buf *out, const char *cmd, size_t n, int *inline_script) {
+  buf folded = {0}, lexed = {0};
+  *inline_script = 0;
+  shape_fold(&folded, cmd, n, inline_script);
+  shape_lex(&lexed, folded.p ? folded.p : "", folded.n);
+  out->n = 0;
+  buf_add(out, "", 0);
+  shape_words(out, lexed.p ? lexed.p : "", lexed.n);
+  free(folded.p);
+  free(lexed.p);
+}
+
+/* ctx_shape(command): the shape ctx repeats groups a shell command by. */
+static void sql_ctx_shape(sqlite3_context *cx, int argc, sqlite3_value **argv) {
+  (void)argc;
+  const char *cmd = (const char *)sqlite3_value_text(argv[0]);
+  if (!cmd) { sqlite3_result_null(cx); return; }
+  buf out = {0};
+  int inl;
+  shape_of(&out, cmd, (size_t)sqlite3_value_bytes(argv[0]), &inl);
+  sqlite3_result_text(cx, out.p, (int)out.n, free);
+}
+
+static int cmd_repeats(int argc, char **argv) {
+  int days = 30, limit = 20, inline_only = 0;
+  for (int i = 0; i < argc; i++) {
+    if (!strcmp(argv[i], "--days") && i + 1 < argc) days = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--limit") && i + 1 < argc) limit = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--inline")) inline_only = 1;
+    else die("usage: ctx repeats [--inline] [--days N] [--limit N]");
+  }
+  if (days <= 0 || limit <= 0) die("--days and --limit must be positive numbers");
+  sqlite3 *db = ctx_open();
+  char since[32];
+  snprintf(since, sizeof since, "-%d days", days);
+  db_exec(db, "CREATE TEMP TABLE r(shape TEXT NOT NULL, doc INTEGER, project TEXT, turn INTEGER)");
+  db_exec(db, "BEGIN");
+  /* turns are redacted when archived, so a secret typed into a command never gets this far */
+  sqlite3_stmt *q = db_prepare(db,
+      "SELECT c.id, c.doc_id, coalesce(c.project, d.project, ''), c.body FROM ctx_chunk c JOIN ctx_doc d ON d.id = c.doc_id"
+      " WHERE c.heading = 'assistant' AND c.at >= date('now', ?1) AND d.kind = 'session' AND c.body LIKE '%bash {%'");
+  sqlite3_stmt *ins = db_prepare(db, "INSERT INTO temp.r VALUES (?1, ?2, ?3, ?4)");
+  sqlite3_bind_text(q, 1, since, -1, SQLITE_STATIC);
+  long calls = 0, inlines = 0;
+  buf cmd = {0}, shape = {0};
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    const char *body = (const char *)sqlite3_column_text(q, 3);
+    const char *stop = body + sqlite3_column_bytes(q, 3);
+    for (const char *line = body; line && line < stop;) {
+      const char *end = memchr(line, '\n', (size_t)(stop - line));
+      size_t len = end ? (size_t)(end - line) : (size_t)(stop - line);
+      int inl;
+      if (shell_command(line, len, &cmd)) {
+        shape_of(&shape, cmd.p, cmd.n, &inl);
+        calls++;
+        inlines += inl;
+        if ((inl || !inline_only) && shape.n) {
+          sqlite3_bind_text(ins, 1, shape.p, (int)shape.n, SQLITE_STATIC);
+          sqlite3_bind_int64(ins, 2, sqlite3_column_int64(q, 1));
+          sqlite3_bind_text(ins, 3, (const char *)sqlite3_column_text(q, 2), -1, SQLITE_TRANSIENT);
+          sqlite3_bind_int64(ins, 4, sqlite3_column_int64(q, 0));
+          if (sqlite3_step(ins) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+          sqlite3_reset(ins);
+        }
+      }
+      line = end ? end + 1 : NULL;
+    }
+  }
+  sqlite3_finalize(ins);
+  sqlite3_finalize(q);
+  db_exec(db, "COMMIT");
+  free(cmd.p);
+  free(shape.p);
+  printf("%ld shell calls in the last %d days, %ld with an inline script. The most repeated%s, by sessions:\n\n", calls, days,
+         inlines, inline_only ? " inline scripts" : "");
+  printf("%8s %6s %8s  %-9s %s\n", "sessions", "calls", "projects", "turn", "shape");
+  q = db_prepare(db, "SELECT shape, count(DISTINCT doc), count(*), count(DISTINCT project), max(turn) FROM temp.r"
+                     " GROUP BY shape ORDER BY 2 DESC, 3 DESC, 1 LIMIT ?1");
+  sqlite3_bind_int(q, 1, limit);
+  while (sqlite3_step(q) == SQLITE_ROW)
+    printf("%8d %6d %8d  #%-8lld %s\n", sqlite3_column_int(q, 1), sqlite3_column_int(q, 2), sqlite3_column_int(q, 3),
+           sqlite3_column_int64(q, 4), sqlite3_column_text(q, 0));
+  sqlite3_finalize(q);
+  sqlite3_close(db);
+  return 0;
 }
 
 static char *sidecar(const char *suffix);
@@ -14347,6 +14673,7 @@ static int usage(void) {
         "       ctx recall\n"
         "       ctx gate\n"
         "       ctx stats [--weeks N] | --hooks [--days N]\n"
+        "       ctx repeats [--inline] [--days N] [--limit N]\n"
         "       ctx status [--json]\n"
         "       ctx remember TEXT [--project P] [--until DATE] [--from TURN]\n"
         "       ctx decisions [--open] [--all] [--limit N]\n"
@@ -14397,6 +14724,7 @@ static int run(int argc, char **argv) {
   if (argc >= 3 && !strcmp(argv[1], "search")) return cmd_search(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "turn")) return cmd_turn(argc - 2, argv + 2);
   if (argc >= 2 && !strcmp(argv[1], "stats")) return cmd_stats(argc - 2, argv + 2);
+  if (argc >= 2 && !strcmp(argv[1], "repeats")) return cmd_repeats(argc - 2, argv + 2);
   if (argc >= 3 && !strcmp(argv[1], "remember")) return cmd_remember(argc - 2, argv + 2);
   if (argc >= 2 && !strcmp(argv[1], "decisions")) return cmd_decisions(argc - 2, argv + 2);
   if (argc == 3 && !strcmp(argv[1], "docs") && !strcmp(argv[2], "nudge")) return cmd_docs_nudge();
