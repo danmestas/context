@@ -1473,12 +1473,13 @@ static int cmd_search(int argc, char **argv) {
 /* How much of one turn is printed unless --full is given. */
 #define TURN_SHOW 8000
 
-/* ctx turn ID [BEFORE [AFTER]] [--full] */
+/* ctx turn ID [BEFORE [AFTER]] [--full] [--user]; --user prints only what the person typed */
 static int cmd_turn(int argc, char **argv) {
-  int full = 0, nums[3] = {0, 0, 0}, have = 0;
+  int full = 0, user = 0, nums[3] = {0, 0, 0}, have = 0;
   const char *ref = NULL; /* a transcript turn id, as rules record, instead of a number */
   for (int i = 0; i < argc; i++) {
     if (!strcmp(argv[i], "--full")) full = 1;
+    else if (!strcmp(argv[i], "--user")) user = 1;
     else if (!have && argv[i][strspn(argv[i], "0123456789")]) { ref = argv[i]; have++; }
     else if (have < 3) nums[have++] = atoi(argv[i]);
     else return 2;
@@ -1492,7 +1493,7 @@ static int cmd_turn(int argc, char **argv) {
     if (sqlite3_step(f) == SQLITE_ROW) nums[0] = sqlite3_column_int(f, 0);
     sqlite3_finalize(f);
   }
-  if (have < 1 || nums[0] <= 0) die("usage: ctx turn ID [BEFORE [AFTER]] [--full]");
+  if (have < 1 || nums[0] <= 0) die("usage: ctx turn ID [BEFORE [AFTER]] [--full] [--user]");
   if (!db) db = ctx_open();
   sqlite3_stmt *q = db_prepare(db,
       "SELECT n.id, n.heading, coalesce(n.at,''), n.body"
@@ -1501,9 +1502,11 @@ static int cmd_turn(int argc, char **argv) {
   sqlite3_bind_int(q, 1, nums[0]);
   sqlite3_bind_int(q, 2, nums[1]);
   sqlite3_bind_int(q, 3, nums[2]);
-  int found = 0, rc;
+  int found = 0, shown = 0, rc;
   while ((rc = sqlite3_step(q)) == SQLITE_ROW) {
     found = 1;
+    if (user && strcmp((const char *)sqlite3_column_text(q, 1), "user")) continue;
+    shown++;
     const char *body = (const char *)sqlite3_column_text(q, 3);
     size_t n = (size_t)sqlite3_column_bytes(q, 3), show = n;
     if (!full && n > TURN_SHOW) {
@@ -1520,6 +1523,7 @@ static int cmd_turn(int argc, char **argv) {
   sqlite3_finalize(q);
   sqlite3_close(db);
   if (!found) die("no turn #%d", nums[0]);
+  if (!shown) fprintf(stderr, "ctx: no user turns in that stretch\n");
   return 0;
 }
 
@@ -14663,7 +14667,7 @@ static int usage(void) {
         "       ctx extract TRANSCRIPT\n"
         "       ctx archive TRANSCRIPT\n"
         "       ctx search [--all] [--history] [--as-of DATE] [--limit N] WORDS...\n"
-        "       ctx turn ID [BEFORE [AFTER]] [--full]\n"
+        "       ctx turn ID [BEFORE [AFTER]] [--full] [--user]\n"
         "       ctx audit [--all] [--known] [--tickets] [--limit N] | --allow ID [NOTE] | --context ID\n"
         "       ctx ticket new|ready|show|claim|done|drop|offer ...\n"
         "       ctx project add NAME [--root DIR] [--import FILE | --clone URL] [--remote URL] | list | pull NAME [--from URL]\n"

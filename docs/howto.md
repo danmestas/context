@@ -198,6 +198,7 @@ ctx search -- --json --since    # after --, every word is searched for, option n
 ctx turn ID                      # one turn
 ctx turn ID 2 5                  # with 2 turns before and 5 after
 ctx turn ID 0 0 --full           # without trimming a long turn
+ctx turn ID 0 60 --user          # only what the person typed in that stretch
 ```
 
 A turn matches if it has any of the words, and turns with more of the rarer words
