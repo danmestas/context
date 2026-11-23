@@ -108,6 +108,10 @@ it yourself.
 - It can be out of date. Check any claim about current code against the code,
   and say when the evidence is old.
 - Cite the turn (`#1182`, with its date) so the user can check it.
+- When picking up earlier work, check each branch, PR, ticket or check-in the
+  archive mentions against its real state (git, gh, zit or the forge) before
+  reporting it, and say which threads are merged, open, in flight, reverted or
+  only planned. A session saying "landed" or "installed" is a claim, not proof.
 - When the user states a lasting preference, correction or fact about the
   project, save it with `ctx remember "TEXT"` (`--project '*'` for every project).
 - Secrets are redacted when archived, so a masked value is not a real one.
