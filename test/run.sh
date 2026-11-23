@@ -487,6 +487,25 @@ grep -q 'Kite Report' "$T/kite.txt" && grep -q 'pages.example.test/v/kite7#ab12.
 grep -q 'approved: version 2 on .* (turn:y-2)' "$T/kite.txt" || fail "a publisher page records an approval: $(cat "$T/kite.txt")"
 [ "$("$CTX" sql "SELECT group_concat(version_id) FROM (SELECT version_id FROM ctx_artifact WHERE url LIKE '%kite7%' ORDER BY version)")" = c0ffee01,c0ffee02 ] || fail "each version keeps its check-in"
 [ "$("$CTX" sql "SELECT count(*) FROM ctx_artifact WHERE url LIKE '%abc123%'")" = 0 ] || fail "an example link in a document is not a publish"
+# A session is archived one document per day, so a publish just before midnight can have its
+# result in the next day's document. The command is still found, in the day before.
+python3 - "$RC/projects/-w-rp/d00d0005-0000-0000-0000-000000000005.jsonl" <<'PY'
+import json, sys
+tok = "cd34" * 16
+call = lambda u, t, cmd: {"uuid": u, "timestamp": t, "cwd": "/w/rp", "message": {"role": "assistant", "content": [
+    {"type": "tool_use", "id": "t" + u, "name": "Bash", "input": {"command": cmd}}]}}
+res = lambda u, t, c: {"uuid": u, "timestamp": t, "cwd": "/w/rp", "message": {"role": "user", "content": [
+    {"type": "tool_result", "tool_use_id": "t", "content": json.dumps({"id": "owl9", "viewerUrl": "https://pages.example.test/v/owl9#" + tok, "checkin": c})}]}}
+rows = [call("m-1", "2026-11-10T23:59:50Z", 'node scripts/publish-html.mjs --json --title "Owl Notes" owl.html'),
+        res("m-2", "2026-11-11T00:00:05Z", "0ddba11a"),
+        call("m-3", "2026-11-11T00:05:00Z", 'node scripts/publish-html.mjs update "$EDIT" owl.html'),
+        res("m-4", "2026-11-11T00:05:09Z", "0ddba11b")]
+open(sys.argv[1], "w").write("".join(json.dumps(r) + "\n" for r in rows))
+PY
+"$CTX" archive "$RC/projects/-w-rp/d00d0005-0000-0000-0000-000000000005.jsonl" >/dev/null
+[ "$("$CTX" sql "SELECT count(DISTINCT c.doc_id) FROM ctx_chunk c WHERE c.turn LIKE 'm-%'")" = 2 ] || fail "the fixture spans two day documents"
+(cd "$T/w/rp" && "$CTX" artifacts owl) > "$T/owl.txt"
+grep -q 'Owl Notes' "$T/owl.txt" && grep -q 'version 2 of 2 publishes' "$T/owl.txt" || fail "a publish across midnight is counted: $(cat "$T/owl.txt")"
 # A subagent starts without the note, so it gets that one line: no rules, no brief, no questions.
 printf '{"hook_event_name":"SubagentStart","agent_type":"Explore","session_id":"d00d0002-0000-0000-0000-000000000002"}' | (cd "$T/w/rp" && "$CTX" rules offer) > "$T/sub.json"
 python3 - "$T/sub.json" <<'PY'

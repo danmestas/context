@@ -7774,6 +7774,17 @@ static void decisions_index(sqlite3 *db) {
  * it gave one. Only turns newer than the last run are read. A version is approved when
  * the person's next turn in that session is a short yes, before any later publish of
  * the same page; the record keeps that turn, so the approval can be checked. */
+/* The turns just before a tool result, which hold the call that made it: up to three earlier
+ * turns of its document, and when the result is among a day's first turns, the last three of
+ * the same session's day before, since a session is archived one document per day. A is the
+ * candidate chunk's alias and R the result's. Nearest first: ORDER BY ARTIFACT_NEAR(a, r). */
+#define ARTIFACT_BEFORE(A, R) \
+  "((" A ".doc_id = " R ".doc_id AND " A ".seq < " R ".seq AND " A ".seq >= " R ".seq - 3)" \
+  " OR (" R ".seq < 3 AND " A ".doc_id = (SELECT p.id FROM ctx_doc sd JOIN ctx_capture_day cd ON cd.technote = sd.name" \
+  "   JOIN ctx_capture_day pd ON pd.session = cd.session AND pd.day < cd.day JOIN ctx_doc p ON p.name = pd.technote AND p.kind = 'session'" \
+  "   WHERE sd.id = " R ".doc_id AND sd.kind = 'session' ORDER BY pd.day DESC LIMIT 1)" \
+  "  AND " A ".seq >= (SELECT max(m.seq) FROM ctx_chunk m WHERE m.doc_id = " A ".doc_id) - 2))"
+#define ARTIFACT_NEAR(A, R) A ".doc_id = " R ".doc_id DESC, " A ".seq DESC"
 #define ARTIFACT_SESSION "coalesce((SELECT cd.session FROM ctx_capture_day cd JOIN ctx_doc sd ON sd.name = cd.technote AND sd.kind = 'session'" \
                          " WHERE sd.id = c.doc_id LIMIT 1), 'doc:' || c.doc_id)"
 #define ARTIFACT_YES \
@@ -7799,8 +7810,8 @@ static void artifacts_index(sqlite3 *db) {
       "  FROM p WHERE instr(r2, '(Version ') > 0 AND instr(r2, ' ') > 0),"
       /* the call that published this file, a few turns back, for its title */
       " t AS (SELECT v.*, (SELECT substr(a.body, instr(a.body, 'Artifact {\"file_path\":\"' || v.path || '\"'), 2000)"
-      "    FROM ctx_chunk a WHERE a.doc_id = v.doc_id AND a.seq < v.seq AND a.seq >= v.seq - 3 AND a.heading = 'assistant'"
-      "     AND instr(a.body, 'Artifact {\"file_path\":\"' || v.path || '\"') > 0 ORDER BY a.seq DESC LIMIT 1) AS call FROM v),"
+      "    FROM ctx_chunk a WHERE " ARTIFACT_BEFORE("a", "v") " AND a.heading = 'assistant'"
+      "     AND instr(a.body, 'Artifact {\"file_path\":\"' || v.path || '\"') > 0 ORDER BY " ARTIFACT_NEAR("a", "v") " LIMIT 1) AS call FROM v),"
       " l AS (SELECT t.*, CASE WHEN instr(call, char(10)) > 0 THEN substr(call, 1, instr(call, char(10)) - 1) ELSE call END AS line FROM t)"
       " INSERT OR IGNORE INTO ctx_artifact(url, version, version_id, project, session, turn, at, path, title)"
       " SELECT url, version, version_id, project, session, turn, at, path,"
@@ -7823,8 +7834,8 @@ static void artifacts_index(sqlite3 *db) {
       "   AND d.kind = 'session' AND c.heading = 'tool' AND c.body LIKE '%\"viewerUrl\":%/v/%#%' AND c.body LIKE '%\"checkin\":%'),"
       " u AS (SELECT pub.*, substr(r1, instr(r1, '\"') + 1, instr(substr(r1, instr(r1, '\"') + 1), '\"') - 1) AS url,"
       "   substr(r2, instr(r2, '\"') + 1, instr(substr(r2, instr(r2, '\"') + 1), '\"') - 1) AS checkin FROM pub),"
-      " v AS (SELECT u.*, (SELECT substr(a.body, instr(a.body, 'publish'), 1500) FROM ctx_chunk a WHERE a.doc_id = u.doc_id AND a.seq < u.seq"
-      "    AND a.seq >= u.seq - 3 AND a.heading = 'assistant' AND instr(a.body, 'publish') > 0 ORDER BY a.seq DESC LIMIT 1) AS call"
+      " v AS (SELECT u.*, (SELECT substr(a.body, instr(a.body, 'publish'), 1500) FROM ctx_chunk a WHERE " ARTIFACT_BEFORE("a", "u")
+      "    AND a.heading = 'assistant' AND instr(a.body, 'publish') > 0 ORDER BY " ARTIFACT_NEAR("a", "u") " LIMIT 1) AS call"
       "  FROM u WHERE url LIKE 'https://%/v/%#%' AND length(substr(url, instr(url, '#') + 1)) >= 32"
       "   AND substr(url, instr(url, '#') + 1) NOT GLOB '*[^0-9a-f]*'),"
       /* the title is quoted in the command, as \"...\" inside the call's JSON or as '...' */
