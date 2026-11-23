@@ -1498,6 +1498,63 @@ PATH="$T/fakepic:$PATH" CTX_PIC_DB="$T/none.sqlite" "$CTX" stats | grep -q '^pic
 PATH="$T/fakepic:$PATH" CTX_PIC_DB= "$CTX" stats | grep -q '^pic' && fail "a pic section with CTX_PIC_DB empty"
 printf '#!/bin/sh\necho broken; exit 1\n' > "$T/fakepic/pic"
 PATH="$T/fakepic:$PATH" CTX_PIC_DB="$T/pic-journal.sqlite" "$CTX" stats | grep -q 'broken' && fail "a failing pic's output shown"
+
+# Repeats: the shell calls agents make again and again, grouped by shape. A shape keeps the
+# command's words and drops what changes between calls: scratch paths, ids, numbers, quoted
+# text, a leading cd or assignment, redirects and a trailing head or tail.
+shape() { "$CTX" sql "SELECT ctx_shape('$(printf '%s' "$1" | sed "s/'/''/g")')"; }
+[ "$(shape 'cd /x/y && gh pr merge 42 --squash --delete-branch 2>&1 | tail -3')" = 'gh pr merge N --squash --delete-branch' ] \
+  || fail "shape drops cd, numbers, redirects and tail: $(shape 'cd /x/y && gh pr merge 42 --squash --delete-branch 2>&1 | tail -3')"
+[ "$(shape 'cat /private/tmp/claude-501/p/abc/tasks/b1.output')" = 'cat TMP' ] || fail "shape folds scratch paths"
+[ "$(shape 'git show 8e764bec7bf7 | head -n 20')" = 'git show H' ] || fail "shape folds hex ids: $(shape 'git show 8e764bec7bf7 | head -n 20')"
+[ "$(shape 'tail -5 /tmp/x.log | cut -c1-200')" = 'tail -N TMP' ] && [ "$(shape 'cut -f2 a.csv | cut -f1')" = 'cut -f2 a.csv | cut -f1' ] \
+  || fail "shape drops a trailing cut -c and keeps other cuts: $(shape 'tail -5 /tmp/x.log | cut -c1-200')"
+[ "$(shape 'ctx forget cee7dea1-fb15-4a45-b2f1-4fe1d57f6a5f')" = 'ctx forget H-H-H-H-H' ] || fail "shape folds a uuid: $(shape 'ctx forget cee7dea1-fb15-4a45-b2f1-4fe1d57f6a5f')"
+hshape() { (HOME=/home/wren; export HOME; shape "$1"); }
+[ "$(hshape 'X=1 Y=/home/wren/p make test > /dev/null')" = 'make test' ] || fail "shape drops assignments and /dev/null"
+[ "$(hshape "echo \"== a\"; grep -n 'foo bar' /home/wren/projects/c/src/ctx.c")" = 'grep -n S ~/projects/c/src/ctx.c' ] \
+  || fail "shape drops a leading echo, folds quotes and home: $(hshape "echo \"== a\"; grep -n 'foo bar' /home/wren/projects/c/src/ctx.c")"
+[ "$(hshape 'ls /home/wrenfield/x')" = 'ls /home/wrenfield/x' ] || fail "shape folds home only at a folder boundary"
+[ "$(shape 'a b c d e f g h')" = 'a b c d e f' ] || fail "shape keeps six words"
+[ "$(shape "$(printf "python3 - <<'PY'\nimport json\np = '/tmp/a/b.txt'\nPY\necho done")")" = 'python3 - <<H{p = S} ; echo done' ] \
+  || fail "shape keeps an inline script's first statement: $(shape "$(printf "python3 - <<'PY'\nimport json\np = '/tmp/a/b.txt'\nPY\necho done")")"
+[ "$(shape 'make check 2>/dev/null || echo failed')" = 'make check || echo failed' ] || fail "shape: $(shape 'make check 2>/dev/null || echo failed')"
+export CTX_DB="$T/repeats.sqlite"
+"$CTX" init >/dev/null
+python3 - "$T" <<'EOF'
+import datetime, json, sys
+now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+old = "2026-01-02T10:00:00Z"
+def session(name, cwd, calls, at=now):
+    rows = [json.dumps({"uuid": f"{name}-0", "timestamp": at, "cwd": cwd, "message": {"role": "user", "content": "go"}})]
+    for i, c in enumerate(calls, 1):
+        rows.append(json.dumps({"uuid": f"{name}-{i}", "timestamp": at, "cwd": cwd,
+                                "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Bash", "input": {"command": c}}]}}))
+    open(f"{sys.argv[1]}/{name}.jsonl", "w").write("\n".join(rows) + "\n")
+token = "ghp_" + "Ab3" * 12
+session("feed0001-0000-0000-0000-000000000001", "/work/wren", ["gh pr checks 12 2>&1 | tail -5", "make test",
+        "python3 - <<'PY'\nimport sys\ns = open('/tmp/x').read()\nPY", f"gh auth login --with-token {token}"])
+session("feed0002-0000-0000-0000-000000000002", "/work/wren", ["cd /work/wren && gh pr checks 31", "gh pr checks 31"])
+session("feed0003-0000-0000-0000-000000000003", "/work/tern", ["gh pr checks 7 | head -3", "make test"])
+session("feed0004-0000-0000-0000-000000000004", "/work/tern", ["gh pr checks 9", "zig build"], at=old)
+EOF
+for f in "$T"/feed000*.jsonl; do "$CTX" archive "$f" >/dev/null; done
+"$CTX" repeats > "$T/repeats.txt" || fail "repeats runs"
+grep -qE '^ +3 +4 +2 +#[0-9]+ +gh pr checks N$' "$T/repeats.txt" || fail "repeats counts sessions, calls and projects: $(cat "$T/repeats.txt")"
+grep -qE '^ +2 +2 +2 +#[0-9]+ +make test$' "$T/repeats.txt" || fail "repeats: make test: $(cat "$T/repeats.txt")"
+grep -q 'zig build' "$T/repeats.txt" && fail "repeats reaches back past --days: $(cat "$T/repeats.txt")"
+"$CTX" repeats --days 400 | grep -q 'zig build' || fail "repeats --days widens the window"
+[ "$(awk '/gh pr checks/ { print NR }' "$T/repeats.txt")" -lt "$(awk '/make test/ { print NR }' "$T/repeats.txt")" ] \
+  || fail "repeats ranks by sessions"
+grep -q 'ghp_' "$T/repeats.txt" && fail "repeats shows a secret: $(cat "$T/repeats.txt")"
+id=$(awk '/gh pr checks/ { sub("#", "", $4); print $4 }' "$T/repeats.txt")
+"$CTX" turn "$id" 0 0 | grep -q 'gh pr checks' || fail "the turn a repeat names opens with ctx turn: $("$CTX" turn "$id" 0 0)"
+"$CTX" repeats --inline > "$T/repeats-inline.txt"
+grep -qE '^ +1 +1 +1 +#[0-9]+ +python3 - <<H\{s = open\(S\)\.read\(\)\}$' "$T/repeats-inline.txt" || fail "repeats --inline: $(cat "$T/repeats-inline.txt")"
+grep -q 'gh pr' "$T/repeats-inline.txt" && fail "repeats --inline keeps calls with no inline script"
+[ "$("$CTX" repeats --limit 1 | grep -c '#')" = 1 ] || fail "repeats --limit"
+if "$CTX" repeats --days 0 2>/dev/null; then fail "repeats --days must be positive"; fi
+if "$CTX" repeats --bogus 2>/dev/null; then fail "repeats refuses an unknown option"; fi
 export CTX_DB="$T/arc.sqlite"
 
 # A secret never reaches the repository or the index.

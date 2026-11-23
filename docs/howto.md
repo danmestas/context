@@ -1092,6 +1092,24 @@ ends with what pic measured its compaction on a cold resume to save, as `pic usa
 saving and its interval are measured, not estimated. The section is left out when
 there is no journal, `CTX_PIC_DB` is empty, or pic is not installed.
 
+## Find what agents do over and over
+
+```sh
+ctx repeats                 # the 20 most repeated shapes in the last 30 days
+ctx repeats --inline        # only calls that hand an interpreter a script written for them
+ctx repeats --days 7 --limit 40
+```
+
+`ctx repeats` reads the shell calls in archived sessions and groups them by shape: the
+command with what changes between calls taken out. Quoted text becomes `S`, scratch paths
+`TMP`, the home folder `~`, hex ids `H` and numbers `N`; a heredoc becomes `<<H{...}` with
+its first statement; a leading `cd`, `echo` or assignment, redirects that only hide output,
+and a trailing `head`, `tail` or `cut -c` are dropped; and the first six words are kept.
+Each line gives how many sessions, calls and projects made that shape, and the latest turn
+that did, for `ctx turn`. A shape many sessions rebuild is a candidate for a script in a
+skill, a hook or a lint rule. It reads the archive only, which is redacted when written,
+and calls no model. `ctx_shape(command)` gives the same shape in `ctx sql`.
+
 `eval/skill_eval.py` measures the `ctx` skill against a private bank of questions
 about past work, with blind grading and a held-out set, so a change to the skill
 is kept only if results improve. The question bank and results stay in
