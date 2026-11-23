@@ -1611,6 +1611,11 @@ sq() { "$CTX" sql "$1"; }
 ID=$(sq "SELECT c.id FROM ctx_chunk c WHERE c.turn='s-1'")
 "$CTX" turn "$ID" 0 1 > "$T/turn.txt"
 grep -q 'walrus migration' "$T/turn.txt" && grep -q 'lock was held' "$T/turn.txt" || fail "turn and its neighbour"
+# --user shows only what the person typed in that stretch.
+"$CTX" turn "$ID" 0 1 --user > "$T/turn.txt"
+grep -q 'walrus migration' "$T/turn.txt" && ! grep -q 'lock was held' "$T/turn.txt" || fail "turn --user keeps the user's side: $(cat "$T/turn.txt")"
+ID2=$(sq "SELECT c.id FROM ctx_chunk c WHERE c.turn='s-2'")
+[ -z "$("$CTX" turn "$ID2" --user 2>"$T/err.txt")" ] && grep -q 'no user turns' "$T/err.txt" || fail "turn --user says when the stretch has none: $(cat "$T/err.txt")"
 # ctx mcp speaks the Model Context Protocol on stdin and stdout: one JSON-RPC message a line.
 # It offers search and turn as tools, runs them as the commands themselves, and exits at end of input.
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}' \

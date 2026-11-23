@@ -63,7 +63,7 @@ commands for reading. Each turn is labeled `user` (what the person typed),
 a person asked for, read just their side of a stretch:
 
 ```sh
-ctx turn ID 0 60 | grep -A3 -- '--- #[0-9]* user'
+ctx turn ID 0 60 --user
 ```
 
 ## What is waiting on the user
