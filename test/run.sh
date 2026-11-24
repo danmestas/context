@@ -3959,6 +3959,11 @@ calls guard 2026-11-17 14 1 30; calls guard 2026-11-18 14 1 400; calls guard 202
 for d in 2026-11-18 2026-11-19; do calls hook-post $d 15 2 cut; calls rules-offer $d 15 1 cut; done
 stamp $N1 600
 CTX_NOW=$N1 "$CTX" scan "$T/find/empty" >/dev/null || fail "scan runs the detectors"
+# a second scan takes in nothing twice
+HELD=$(fsql "SELECT count(*) FROM ctx_call")
+[ "$HELD" = "$(grep -c '^B ' "$CTX_DB.calls")" ] || fail "every call is taken in once: $HELD"
+CTX_NOW=$N1 "$CTX" scan "$T/find/empty" >/dev/null
+[ "$(fsql "SELECT count(*) FROM ctx_call")" = "$HELD" ] || fail "a second scan counts nothing twice: $(fsql "SELECT count(*) FROM ctx_call")"
 [ "$(fsql "SELECT count(DISTINCT day) FROM ctx_call_day")" = 3 ] || fail "each finished day is summarised, today is not: $(fsql "SELECT day, name, calls FROM ctx_call_day")"
 [ "$(fsql "SELECT calls, cut, p50, p95, max FROM ctx_call_day WHERE day = '2026-11-18' AND name = 'gate'" | tr '\t' ' ')" = "20 0 10 3400 3400" ] || fail "a day's summary: $(fsql "SELECT * FROM ctx_call_day WHERE name = 'gate'")"
 [ "$(fsql "SELECT calls, cut FROM ctx_call_day WHERE day = '2026-11-19' AND name = 'hook-post'" | tr '\t' ' ')" = "22 2" ] || fail "cut-off calls are counted: $(fsql "SELECT * FROM ctx_call_day WHERE name = 'hook-post'")"
@@ -4029,14 +4034,22 @@ assert "badge" not in low and "pill" not in low, "no badges or pills"
 assert "log scale" in low
 EOF
 # Three clean days close a problem; one that comes back reopens the same row.
+# the log rotates between scans: the lines after the last scan in .calls.1 and the new .calls are
+# each taken in once
 for d in 2026-11-20 2026-11-21 2026-11-22 2026-11-23; do
   calls gate $d 16 20 10; calls inject $d 16 20 30; calls search $d 16 20 40; calls guard $d 16 20 20
   calls hook-post $d 16 20 15; calls rules-offer $d 16 20 25
+  [ $d = 2026-11-21 ] && mv "$CTX_DB.calls" "$CTX_DB.calls.1"
 done
+printf 'B %s 999 gate\n' "$(python3 -c 'import calendar, time; print(calendar.timegm(time.strptime("2026-11-23 18", "%Y-%m-%d %H")))')" >> "$CTX_DB.calls.1"
+printf 'E %s 999 gate 12 0 quiet 0 claude s-x\n' "$(python3 -c 'import calendar, time; print(calendar.timegm(time.strptime("2026-11-23 18", "%Y-%m-%d %H")))')" >> "$CTX_DB.calls"
 N2=2026-11-24T12:00:00Z
 calls gate 2026-11-24 06 20 10
 stamp $N2 120
 CTX_NOW=$N2 "$CTX" scan "$T/find/empty" >/dev/null
+[ "$(fsql "SELECT count(*) FROM ctx_call")" = "$(cat "$CTX_DB.calls.1" "$CTX_DB.calls" | grep -c '^B ')" ] || fail "a rotation loses and repeats nothing: $(fsql "SELECT count(*) FROM ctx_call") rows"
+[ "$(fsql "SELECT count(*), max(ms) FROM ctx_call WHERE pid = 999" | tr '\t' ' ')" = "1 12" ] || fail "a start before the rotation meets its end after it"
+[ "$(fsql "SELECT calls FROM ctx_call_day WHERE day = '2026-11-21' AND name = 'gate'")" = 20 ] || fail "a day split by the rotation: $(fsql "SELECT * FROM ctx_call_day WHERE name = 'gate'")"
 STATES=$(fsql "SELECT fingerprint || '=' || state FROM ctx_finding ORDER BY 1" | tr '\n' ' ')
 [ "$STATES" = "hook-cut:hook-post=closed hook-cut:rules-offer=closed hook-slow:gate=closed hook-slow:guard=closed hook-slow:inject=closed search-slow=closed " ] || fail "three clean days close every finding: $STATES"
 CTX_NOW=$N2 "$CTX" doctor > "$T/doc2.out" || fail "doctor exits 0 with no open problem: $(cat "$T/doc2.out")"
@@ -4063,9 +4076,12 @@ grep -Eq '^problem +scan +' "$T/doc3.out" || fail "the late scan's line: $(cat "
 [ "$(tail -1 "$T/doc3.out")" = "2 problems." ] || fail "two problems: $(cat "$T/doc3.out")"
 stamp $N3 60
 CTX_NOW=$N3 "$CTX" doctor | grep -Eq '^ok +scan +last run 1 min ago$' || fail "a fresh scan is ok"
-# The telemetry roll writes the same summaries, once, for days the log holds.
-export CTX_DB="$T/roll/ctx.sqlite"
-[ "$(fsql "SELECT group_concat(name || ':' || calls || ':' || cut, ' ') FROM (SELECT * FROM ctx_call_day WHERE day = '$DAY2' ORDER BY name)")" = "gate:1:0 hook:1:1 rules-offer:1:0" ] || fail "the telemetry roll writes daily summaries: $(fsql "SELECT * FROM ctx_call_day")"
+# Calls older than 30 days are let go; the newer stay.
+N4=2026-12-20T12:00:00Z
+stamp $N4 60
+CTX_NOW=$N4 "$CTX" scan "$T/find/empty" >/dev/null
+[ "$(fsql "SELECT count(*) FROM ctx_call WHERE ts < CAST(strftime('%s', '2026-11-20T12:00:00Z') AS INTEGER)")" = 0 ] || fail "calls over 30 days old are pruned"
+[ "$(fsql "SELECT count(*) > 0 FROM ctx_call")" = 1 ] || fail "newer calls are kept"
 
 # The skill eval harness works end to end with a stand-in for the model.
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"

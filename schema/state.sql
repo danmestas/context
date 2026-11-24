@@ -345,11 +345,23 @@ CREATE TABLE IF NOT EXISTS ctx_rule_same(
   at       TEXT NOT NULL
 ) STRICT, WITHOUT ROWID;
 
--- One row per UTC day and call name from the call log (ctx.sqlite.calls), written once the day
--- is over, when the telemetry roll writes that day's Parquet file or when ctx scan finds it
--- missing, and never rewritten. The log is rotated within about a day, so these rows are what
--- the findings rest on. Times are milliseconds over the calls that ended; NULL when none did.
--- cut counts starts that never ended within a minute: calls the harness cut off.
+-- Each hook, search and turn call from the call log (ctx.sqlite.calls), taken in by the hourly
+-- ctx scan from where the last one stopped (ctx_meta calls_ingested), so a call is counted once
+-- whatever the log's rotation does, and kept 30 days. ts is when it started; ms is how long it
+-- took, NULL while it has no end: once a minute old, it was cut off. An end older than its start
+-- in the log is a row of its own, started ms before it ended.
+CREATE TABLE IF NOT EXISTS ctx_call(
+  ts    INTEGER NOT NULL,           -- unix seconds
+  pid   INTEGER NOT NULL,
+  name  TEXT NOT NULL,
+  ms    INTEGER                     -- -1 when an old end line gave no time
+) STRICT;
+CREATE INDEX IF NOT EXISTS ctx_call_ts ON ctx_call(ts);
+CREATE INDEX IF NOT EXISTS ctx_call_open ON ctx_call(pid, name) WHERE ms IS NULL;
+
+-- One row per UTC day and call name, computed from ctx_call by each scan for the last 15 days.
+-- Times are milliseconds over the calls that ended; NULL when none did. cut counts calls that
+-- started and had not ended a minute later: calls the harness cut off.
 CREATE TABLE IF NOT EXISTS ctx_call_day(
   day   TEXT NOT NULL,              -- YYYY-MM-DD, UTC
   name  TEXT NOT NULL,              -- hook or search, as the log names it

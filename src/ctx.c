@@ -2493,44 +2493,6 @@ typedef struct {
   long calls, cut, p50, p95, max;
 } call_fig;
 
-/* Per-name figures for the rows that started in [from, to); a start still running is left out. */
-static size_t call_figs(const tel_row *r, size_t n, long long from, long long to, call_fig *out, size_t cap) {
-  typedef struct { long *ms; size_t n, cap; } list;
-  list ms[64];
-  size_t names = 0;
-  if (cap > 64) cap = 64;
-  for (size_t i = 0; i < n; i++) {
-    if (r[i].ts < from || r[i].ts >= to || (!r[i].ended && r[i].live)) continue;
-    size_t k = 0;
-    while (k < names && strcmp(out[k].name, r[i].name)) k++;
-    if (k == names) {
-      if (names == cap) continue;
-      memset(&out[k], 0, sizeof out[k]);
-      memset(&ms[k], 0, sizeof ms[k]);
-      snprintf(out[k].name, sizeof out[k].name, "%s", r[i].name);
-      names++;
-    }
-    out[k].calls++;
-    if (!r[i].ended) out[k].cut++;
-    if (!r[i].ended || r[i].ms < 0) continue;
-    if (ms[k].n == ms[k].cap) {
-      ms[k].cap = ms[k].cap ? ms[k].cap * 2 : 64;
-      ms[k].ms = realloc(ms[k].ms, ms[k].cap * sizeof *ms[k].ms);
-      if (!ms[k].ms) die("out of memory");
-    }
-    ms[k].ms[ms[k].n++] = (long)r[i].ms;
-  }
-  for (size_t k = 0; k < names; k++) {
-    size_t m = ms[k].n;
-    sort_some(ms[k].ms, m, sizeof *ms[k].ms, by_long);
-    out[k].p50 = m ? ms[k].ms[m / 2] : -1; /* the same ranks as ctx stats --hooks */
-    out[k].p95 = m ? ms[k].ms[m * 95 / 100] : -1;
-    out[k].max = m ? ms[k].ms[m - 1] : -1;
-    free(ms[k].ms);
-  }
-  return names;
-}
-
 static void utc_day(long long day, char out[11]) {
   time_t t = (time_t)(day * 86400);
   struct tm tm;
@@ -2538,60 +2500,10 @@ static void utc_day(long long day, char out[11]) {
   strftime(out, 11, "%Y-%m-%d", &tm);
 }
 
-static void bind_ms(sqlite3_stmt *q, int col, long ms) {
-  if (ms < 0) sqlite3_bind_null(q, col);
-  else sqlite3_bind_int64(q, col, ms);
-}
-
-/* Writes the daily summaries for every UTC day before today that the log holds, that has no
- * call still running and that has none yet; a day that has them is left as it is. */
-static void call_days_save(sqlite3 *db, const tel_rows *rows, time_t now) {
-  sqlite3_stmt *have = db_prepare(db, "SELECT 1 FROM ctx_call_day WHERE day = ?1 LIMIT 1");
-  sqlite3_stmt *ins = db_prepare(db, "INSERT OR IGNORE INTO ctx_call_day(day, name, calls, cut, p50, p95, max) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)");
-  db_exec(db, "BEGIN IMMEDIATE");
-  for (size_t i = 0; i < rows->n;) {
-    long long day = rows->p[i].ts / 86400;
-    size_t j = i;
-    int live = 0;
-    for (; j < rows->n && rows->p[j].ts / 86400 == day; j++) live |= rows->p[j].live;
-    char name[11];
-    utc_day(day, name);
-    sqlite3_bind_text(have, 1, name, -1, SQLITE_STATIC);
-    if (day < (long long)now / 86400 && !live && sqlite3_step(have) != SQLITE_ROW) {
-      call_fig f[64];
-      size_t n = call_figs(rows->p + i, j - i, LLONG_MIN, LLONG_MAX, f, 64);
-      for (size_t k = 0; k < n; k++) {
-        sqlite3_bind_text(ins, 1, name, -1, SQLITE_STATIC);
-        sqlite3_bind_text(ins, 2, f[k].name, -1, SQLITE_STATIC);
-        sqlite3_bind_int64(ins, 3, f[k].calls);
-        sqlite3_bind_int64(ins, 4, f[k].cut);
-        bind_ms(ins, 5, f[k].p50);
-        bind_ms(ins, 6, f[k].p95);
-        bind_ms(ins, 7, f[k].max);
-        if (sqlite3_step(ins) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
-        sqlite3_reset(ins);
-      }
-    }
-    sqlite3_reset(have);
-    i = j;
-  }
-  db_exec(db, "COMMIT");
-  sqlite3_finalize(have);
-  sqlite3_finalize(ins);
-}
-
 static int telemetry_roll(int say) {
   tel_rows rows = {0};
   time_t now = now_time();
   calls_rows(&rows, now);
-  char *dbp = db_path();
-  struct stat dst;
-  if (!stat(dbp, &dst)) { /* the daily summaries, at the same moment as the day's file */
-    sqlite3 *db = ctx_open();
-    call_days_save(db, &rows, now);
-    sqlite3_close(db);
-  }
-  free(dbp);
   char *root = telemetry_dir();
   int wrote = 0;
   for (size_t i = 0; i < rows.n;) {
@@ -2919,16 +2831,143 @@ static void iso_time(time_t t, char out[24]) {
   strftime(out, 24, "%Y-%m-%dT%H:%M:%SZ", &tm);
 }
 
-/* The hourly part of ctx scan: the daily summaries the log still holds and are missing, then
+/* Takes in the call log's lines written since the last scan. Where it stopped is the inode of
+ * the file it last read and how far, in ctx_meta; rotation renames that file to .calls.1, so a
+ * stopped place found there is read on from, then all of the new .calls. Only whole lines are
+ * read, so one being written waits for the next scan. When neither file is the one it stopped
+ * in, as on the first run, both are read whole. A start is a row with no time; its end fills
+ * the time in, so a start whose end came after a scan is still one call. */
+static void calls_ingest(sqlite3 *db, time_t now) {
+  char *p0 = sidecar(".calls"), *p1 = sidecar(".calls.1");
+  FILE *f0 = fopen(p0, "r"), *f1 = fopen(p1, "r"); /* .calls first: rotated in between, both are the same file */
+  free(p0);
+  free(p1);
+  struct stat s0, s1;
+  if (f0 && fstat(fileno(f0), &s0)) { fclose(f0); f0 = NULL; }
+  if (f1 && (fstat(fileno(f1), &s1) || (f0 && s1.st_ino == s0.st_ino && s1.st_dev == s0.st_dev))) { fclose(f1); f1 = NULL; }
+  unsigned long long ino = 0;
+  long long off = 0;
+  sqlite3_stmt *q = db_prepare(db, "SELECT value FROM ctx_meta WHERE key = 'calls_ingested'");
+  if (sqlite3_step(q) == SQLITE_ROW) sscanf((const char *)sqlite3_column_text(q, 0), "%llu %lld", &ino, &off);
+  sqlite3_finalize(q);
+  FILE *order[2] = {NULL, NULL};
+  long long from[2] = {0, 0};
+  if (f1 && (unsigned long long)s1.st_ino == ino) order[0] = f1, from[0] = off, order[1] = f0;
+  else if (f0 && (unsigned long long)s0.st_ino == ino) order[0] = f0, from[0] = off;
+  else order[0] = f1, order[1] = f0;
+  sqlite3_stmt *beg = db_prepare(db, "INSERT INTO ctx_call(ts, pid, name) VALUES (?1, ?2, ?3)");
+  sqlite3_stmt *end = db_prepare(db, "UPDATE ctx_call SET ms = ?4 WHERE rowid = (SELECT max(rowid) FROM ctx_call WHERE pid = ?2 AND name = ?3 AND ms IS NULL)");
+  sqlite3_stmt *lone = db_prepare(db, "INSERT INTO ctx_call(ts, pid, name, ms) VALUES (?1, ?2, ?3, ?4)");
+  db_exec(db, "BEGIN IMMEDIATE");
+  FILE *last = NULL;
+  long long pos = 0;
+  for (int k = 0; k < 2; k++) {
+    FILE *f = order[k];
+    if (!f) continue;
+    struct stat st;
+    if (fstat(fileno(f), &st) || from[k] > (long long)st.st_size) from[k] = 0; /* shorter than where it stopped: a new file */
+    fseeko(f, (off_t)from[k], SEEK_SET);
+    last = f;
+    pos = from[k];
+    char line[400], kind, name[24];
+    long long at, ms;
+    int pid;
+    while (fgets(line, sizeof line, f)) {
+      size_t len = strlen(line);
+      if (!len || line[len - 1] != '\n') break; /* a line still being written */
+      pos += (long long)len;
+      ms = -1;
+      int got = sscanf(line, "%c %lld %d %23s %lld", &kind, &at, &pid, name, &ms);
+      if (got < 4) continue;
+      if (kind == 'B') {
+        sqlite3_bind_int64(beg, 1, at);
+        sqlite3_bind_int(beg, 2, pid);
+        sqlite3_bind_text(beg, 3, name, -1, SQLITE_STATIC);
+        sqlite3_step(beg);
+        sqlite3_reset(beg);
+      } else if (kind == 'E') {
+        sqlite3_bind_int(end, 2, pid);
+        sqlite3_bind_text(end, 3, name, -1, SQLITE_STATIC);
+        sqlite3_bind_int64(end, 4, ms);
+        sqlite3_step(end);
+        sqlite3_reset(end);
+        if (!sqlite3_changes(db)) { /* its start was rotated away, or came before the first scan */
+          sqlite3_bind_int64(lone, 1, at - (ms > 0 ? ms / 1000 : 0));
+          sqlite3_bind_int(lone, 2, pid);
+          sqlite3_bind_text(lone, 3, name, -1, SQLITE_STATIC);
+          sqlite3_bind_int64(lone, 4, ms);
+          sqlite3_step(lone);
+          sqlite3_reset(lone);
+        }
+      }
+    }
+  }
+  if (last) {
+    struct stat st;
+    fstat(fileno(last), &st);
+    char v[64];
+    snprintf(v, sizeof v, "%llu %lld", (unsigned long long)st.st_ino, pos);
+    q = db_prepare(db, "INSERT OR REPLACE INTO ctx_meta(key, value) VALUES ('calls_ingested', ?1)");
+    sqlite3_bind_text(q, 1, v, -1, SQLITE_STATIC);
+    sqlite3_step(q);
+    sqlite3_finalize(q);
+  }
+  q = db_prepare(db, "DELETE FROM ctx_call WHERE ts < ?1");
+  sqlite3_bind_int64(q, 1, (sqlite3_int64)now - 30 * 86400);
+  sqlite3_step(q);
+  sqlite3_finalize(q);
+  db_exec(db, "COMMIT");
+  sqlite3_finalize(beg);
+  sqlite3_finalize(end);
+  sqlite3_finalize(lone);
+  if (f0) fclose(f0);
+  if (f1) fclose(f1);
+}
+
+/* Figures per name, and per UTC day or over the whole range, for calls started in [?1, ?2) as of
+ * ?3: a start still within its first minute is left out. p50 and p95 are the same ranks
+ * ctx stats --hooks takes. */
+#define CALL_FIGS(bucket)                                                                                                          \
+  "WITH c AS (SELECT " bucket " AS d, name, ms FROM ctx_call WHERE ts >= ?1 AND ts < ?2 AND (ms IS NOT NULL OR ts < ?3 - 60)),"   \
+  " r AS (SELECT d, name, ms, row_number() OVER (PARTITION BY d, name ORDER BY ms) - 1 AS i, count(*) OVER (PARTITION BY d, name) AS n" \
+  "  FROM c WHERE ms >= 0)"                                                                                                        \
+  " SELECT a.d, a.name, a.calls, a.cut, b.p50, b.p95, b.mx FROM (SELECT d, name, count(*) AS calls, sum(ms IS NULL) AS cut FROM c GROUP BY d, name) a" \
+  " LEFT JOIN (SELECT d, name, max(CASE WHEN i = n / 2 THEN ms END) AS p50, max(CASE WHEN i = n * 95 / 100 THEN ms END) AS p95, max(ms) AS mx" \
+  "  FROM r GROUP BY d, name) b USING (d, name)"
+
+/* The daily figures for the last 15 full days, again from the calls held. */
+static void call_days(sqlite3 *db, time_t now) {
+  long long today = (long long)now / 86400;
+  sqlite3_stmt *q = db_prepare(db, "INSERT OR REPLACE INTO ctx_call_day(day, name, calls, cut, p50, p95, max) " CALL_FIGS("date(ts, 'unixepoch')"));
+  sqlite3_bind_int64(q, 1, (today - 15) * 86400);
+  sqlite3_bind_int64(q, 2, today * 86400);
+  sqlite3_bind_int64(q, 3, (sqlite3_int64)now);
+  if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
+  sqlite3_finalize(q);
+}
+
+/* The hourly part of ctx scan: the calls logged since the last scan, the daily figures, then
  * every detector over the last 14 days and the last 24 hours. */
 static void findings_run(sqlite3 *db) {
   time_t now = now_time();
-  tel_rows rows = {0};
-  calls_rows(&rows, now);
-  call_days_save(db, &rows, now);
+  calls_ingest(db, now);
+  call_days(db, now);
   call_fig last[64];
-  size_t nlast = call_figs(rows.p, rows.n, (long long)now - 86400, (long long)now + 1, last, 64);
-  free(rows.p);
+  size_t nlast = 0;
+  sqlite3_stmt *lq = db_prepare(db, CALL_FIGS("''"));
+  sqlite3_bind_int64(lq, 1, (sqlite3_int64)now - 86400);
+  sqlite3_bind_int64(lq, 2, (sqlite3_int64)now + 1);
+  sqlite3_bind_int64(lq, 3, (sqlite3_int64)now);
+  while (nlast < 64 && sqlite3_step(lq) == SQLITE_ROW) {
+    call_fig *g = &last[nlast++];
+    snprintf(g->name, sizeof g->name, "%s", (const char *)sqlite3_column_text(lq, 1));
+    g->calls = sqlite3_column_int64(lq, 2);
+    g->cut = sqlite3_column_int64(lq, 3);
+    g->p50 = sqlite3_column_type(lq, 4) == SQLITE_NULL ? -1 : sqlite3_column_int64(lq, 4);
+    g->p95 = sqlite3_column_type(lq, 5) == SQLITE_NULL ? -1 : sqlite3_column_int64(lq, 5);
+    g->max = sqlite3_column_type(lq, 6) == SQLITE_NULL ? -1 : sqlite3_column_int64(lq, 6);
+  }
+  sqlite3_finalize(lq);
   call_series s[64];
   size_t n = 0;
   long long today = (long long)now / 86400;

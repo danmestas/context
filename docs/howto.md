@@ -1182,11 +1182,12 @@ indexed queries only, about 20 ms on an archive of 400,000 turns.
 ## Find problems with ctx doctor
 
 ctx reports problems with itself that it is fairly sure of, and nothing else. It files no
-tickets for them. The hourly `ctx scan` keeps a summary of each UTC day of the call log in the
-archive (`ctx_call_day`: per hook and for search, calls, calls cut off, and the median, p95 and
-slowest time), so the findings outlive the log, which rotates within about a day on a busy
-machine. A day's summary is written once the day is over, by the telemetry roll or by the scan,
-whichever comes first, and never rewritten; a first run fills in the days the log still holds.
+tickets for them. The call log rotates within about a day on a busy machine, so the hourly
+`ctx scan` takes in each call logged since the scan before (`ctx_call`, kept 30 days), carrying on
+in the rotated file where it stopped, so no call is lost or counted twice. A start with no end a
+minute later counts as cut off. From those calls the scan works out each UTC day's figures per hook
+and for search (`ctx_call_day`: calls, calls cut off, and the median, p95 and slowest time). The
+first scan takes in whatever the log still holds, so the first day may be partial.
 The detectors then compare the last three full days and the last 24 hours of the log with these
 rules:
 
