@@ -2669,9 +2669,9 @@ static void series_json(const call_series *s, int count, char *out, size_t cap) 
   if (n < cap) snprintf(out + n, cap - n, "]");
 }
 
-/* Slow: daily p95 over the target on at least 2 of the last 3 days and in the last 24 hours. A
- * hook is watched when its p95 passed a tenth of its budget on 2 of those days; search when it
- * passed its target on one of them or in the last 24 hours. */
+/* Slow: daily p95 over the target on at least 2 of the last 3 days and in the last 24 hours.
+ * Watched when it was over the target on one of those days or in the last 24 hours, and a hook
+ * also when its p95 passed a tenth of its budget on 2 of those days. */
 static void detect_slow(const call_series *s, long target, int search, finding_state *f) {
   int bad = 0, tenth = 0;
   long top = -1;
@@ -2691,7 +2691,7 @@ static void detect_slow(const call_series *s, long target, int search, finding_s
                                              : snprintf(days + dn, sizeof days - dn, "%sno calls on %s", dn ? ", " : "", s->day[d]));
   }
   int recent = s->last24.p95 > target;
-  f->level = bad >= 2 && recent ? 2 : (search ? bad || recent : tenth >= 2) ? 1 : 0;
+  f->level = bad >= 2 && recent ? 2 : bad || recent || (!search && tenth >= 2) ? 1 : 0;
   f->clean = !bad && !recent;
   f->target = target;
   snprintf(f->kind, sizeof f->kind, "%s", search ? "search-slow" : "hook-slow");
@@ -2705,6 +2705,8 @@ static void detect_slow(const call_series *s, long target, int search, finding_s
   else if (f->level == 2) snprintf(f->title, sizeof f->title, "1 %s call in 20 takes over %s, past its %s budget; the slowest took %s", s->name, p95, lim, max);
   else if (search && !bad) snprintf(f->title, sizeof f->title, "search p95 is %s in the last 24 hours, over its %s target", p95, lim);
   else if (search) snprintf(f->title, sizeof f->title, "search p95 was over its %s target on %d of the last 3 days, up to %s", lim, bad, top_s);
+  else if (!bad && recent) snprintf(f->title, sizeof f->title, "%s p95 is %s in the last 24 hours, over its %s budget", s->name, p95, lim);
+  else if (bad) snprintf(f->title, sizeof f->title, "%s p95 was over its %s budget on %d of the last 3 days, up to %s", s->name, lim, bad, top_s);
   else snprintf(f->title, sizeof f->title, "%s p95 was over a tenth of its %s budget on %d of the last 3 days, up to %s", s->name, lim, tenth, top_s);
   if (s->last24.p95 >= 0)
     snprintf(f->evidence, sizeof f->evidence, "Daily p95 against its %s %s: %s; %s over the last 24 hours, %ld calls.", lim, what, days, p95, s->last24.calls);
@@ -2831,13 +2833,26 @@ static void iso_time(time_t t, char out[24]) {
   strftime(out, 24, "%Y-%m-%dT%H:%M:%SZ", &tm);
 }
 
-/* Takes in the call log's lines written since the last scan. Where it stopped is the inode of
- * the file it last read and how far, in ctx_meta; rotation renames that file to .calls.1, so a
- * stopped place found there is read on from, then all of the new .calls. Only whole lines are
- * read, so one being written waits for the next scan. When neither file is the one it stopped
- * in, as on the first run, both are read whole. A start is a row with no time; its end fills
- * the time in, so a start whose end came after a scan is still one call. */
-static void calls_ingest(sqlite3 *db, time_t now) {
+/* A file's first line, hashed (FNV-1a): with its inode, what tells the file ingest stopped in
+ * from one truncated and written again in the same place. */
+static unsigned long long first_line_hash(FILE *f) {
+  char line[400];
+  unsigned long long h = 1469598103934665603ULL;
+  rewind(f);
+  if (fgets(line, sizeof line, f))
+    for (const char *c = line; *c; c++) h = (h ^ (unsigned char)*c) * 1099511628211ULL;
+  return h;
+}
+
+/* Takes in the call log's lines written since the last scan, and returns the earliest start it
+ * touched (LLONG_MAX for none). Where it stopped is the file it last read, by inode and first
+ * line, and how far, in ctx_meta; rotation renames that file to .calls.1, so a stopped place found
+ * there is read on from, then all of the new .calls. Only whole lines are read, so one being
+ * written waits for the next scan. When neither file is the one it stopped in, as on the first
+ * run or after a file was replaced, what is there is read whole. A start is a row with no time;
+ * its end fills the time in, so a start whose end came after a scan is still one call. The place
+ * is read and written inside the write transaction, so two scans at once take nothing twice. */
+static long long calls_ingest(sqlite3 *db, time_t now) {
   char *p0 = sidecar(".calls"), *p1 = sidecar(".calls.1");
   FILE *f0 = fopen(p0, "r"), *f1 = fopen(p1, "r"); /* .calls first: rotated in between, both are the same file */
   free(p0);
@@ -2845,21 +2860,28 @@ static void calls_ingest(sqlite3 *db, time_t now) {
   struct stat s0, s1;
   if (f0 && fstat(fileno(f0), &s0)) { fclose(f0); f0 = NULL; }
   if (f1 && (fstat(fileno(f1), &s1) || (f0 && s1.st_ino == s0.st_ino && s1.st_dev == s0.st_dev))) { fclose(f1); f1 = NULL; }
-  unsigned long long ino = 0;
-  long long off = 0;
+  unsigned long long h0 = f0 ? first_line_hash(f0) : 0, h1 = f1 ? first_line_hash(f1) : 0;
+  db_exec(db, "BEGIN IMMEDIATE");
+  /* where it stopped, and the rotated file it had already read to the end */
+  unsigned long long ino = 0, hash = 0, done_ino = 0, done_hash = 0;
+  long long off = 0, earliest = LLONG_MAX;
   sqlite3_stmt *q = db_prepare(db, "SELECT value FROM ctx_meta WHERE key = 'calls_ingested'");
-  if (sqlite3_step(q) == SQLITE_ROW) sscanf((const char *)sqlite3_column_text(q, 0), "%llu %lld", &ino, &off);
+  if (sqlite3_step(q) == SQLITE_ROW) sscanf((const char *)sqlite3_column_text(q, 0), "%llu %llu %lld %llu %llu", &ino, &hash, &off, &done_ino, &done_hash);
   sqlite3_finalize(q);
   FILE *order[2] = {NULL, NULL};
   long long from[2] = {0, 0};
-  if (f1 && (unsigned long long)s1.st_ino == ino) order[0] = f1, from[0] = off, order[1] = f0;
-  else if (f0 && (unsigned long long)s0.st_ino == ino) order[0] = f0, from[0] = off;
-  else order[0] = f1, order[1] = f0;
+  int f1_done = f1 && (unsigned long long)s1.st_ino == done_ino && h1 == done_hash;
+  if (f1 && (unsigned long long)s1.st_ino == ino && h1 == hash) order[0] = f1, from[0] = off, order[1] = f0;
+  else if (f0 && (unsigned long long)s0.st_ino == ino && h0 == hash) order[0] = f0, from[0] = off;
+  else order[0] = f1_done ? NULL : f1, order[1] = f0; /* .calls replaced, or the place lost: what is there and new */
   sqlite3_stmt *beg = db_prepare(db, "INSERT INTO ctx_call(ts, pid, name) VALUES (?1, ?2, ?3)");
-  sqlite3_stmt *end = db_prepare(db, "UPDATE ctx_call SET ms = ?4 WHERE rowid = (SELECT max(rowid) FROM ctx_call WHERE pid = ?2 AND name = ?3 AND ms IS NULL)");
+  /* the start this end belongs to: the latest open one of that pid and name that began when the
+   * end says it did, give or take a minute, so a reused pid cannot end an old cut-off call */
+  sqlite3_stmt *end = db_prepare(db, "UPDATE ctx_call SET ms = ?4 WHERE rowid = (SELECT max(rowid) FROM ctx_call WHERE pid = ?2 AND name = ?3 AND ms IS NULL"
+                                     " AND ts BETWEEN ?1 - max(?4, 0) / 1000 - 60 AND ?1) RETURNING ts");
   sqlite3_stmt *lone = db_prepare(db, "INSERT INTO ctx_call(ts, pid, name, ms) VALUES (?1, ?2, ?3, ?4)");
-  db_exec(db, "BEGIN IMMEDIATE");
   FILE *last = NULL;
+  unsigned long long last_hash = 0;
   long long pos = 0;
   for (int k = 0; k < 2; k++) {
     FILE *f = order[k];
@@ -2868,6 +2890,7 @@ static void calls_ingest(sqlite3 *db, time_t now) {
     if (fstat(fileno(f), &st) || from[k] > (long long)st.st_size) from[k] = 0; /* shorter than where it stopped: a new file */
     fseeko(f, (off_t)from[k], SEEK_SET);
     last = f;
+    last_hash = f == f0 ? h0 : h1;
     pos = from[k];
     char line[400], kind, name[24];
     long long at, ms;
@@ -2879,6 +2902,7 @@ static void calls_ingest(sqlite3 *db, time_t now) {
       ms = -1;
       int got = sscanf(line, "%c %lld %d %23s %lld", &kind, &at, &pid, name, &ms);
       if (got < 4) continue;
+      long long start = at;
       if (kind == 'B') {
         sqlite3_bind_int64(beg, 1, at);
         sqlite3_bind_int(beg, 2, pid);
@@ -2886,27 +2910,33 @@ static void calls_ingest(sqlite3 *db, time_t now) {
         sqlite3_step(beg);
         sqlite3_reset(beg);
       } else if (kind == 'E') {
+        sqlite3_bind_int64(end, 1, at);
         sqlite3_bind_int(end, 2, pid);
         sqlite3_bind_text(end, 3, name, -1, SQLITE_STATIC);
         sqlite3_bind_int64(end, 4, ms);
-        sqlite3_step(end);
+        int matched = sqlite3_step(end) == SQLITE_ROW;
+        if (matched) start = sqlite3_column_int64(end, 0);
+        while (sqlite3_step(end) == SQLITE_ROW) {}
         sqlite3_reset(end);
-        if (!sqlite3_changes(db)) { /* its start was rotated away, or came before the first scan */
-          sqlite3_bind_int64(lone, 1, at - (ms > 0 ? ms / 1000 : 0));
+        if (!matched) { /* its start was rotated away, or came before the first scan */
+          start = at - (ms > 0 ? ms / 1000 : 0);
+          sqlite3_bind_int64(lone, 1, start);
           sqlite3_bind_int(lone, 2, pid);
           sqlite3_bind_text(lone, 3, name, -1, SQLITE_STATIC);
           sqlite3_bind_int64(lone, 4, ms);
           sqlite3_step(lone);
           sqlite3_reset(lone);
         }
-      }
+      } else continue;
+      if (start < earliest) earliest = start;
     }
   }
   if (last) {
     struct stat st;
     fstat(fileno(last), &st);
-    char v[64];
-    snprintf(v, sizeof v, "%llu %lld", (unsigned long long)st.st_ino, pos);
+    char v[160]; /* and .calls.1, read to the end by now when it is not the file stopped in */
+    snprintf(v, sizeof v, "%llu %llu %lld %llu %llu", (unsigned long long)st.st_ino, last_hash, pos,
+             f1 && last != f1 ? (unsigned long long)s1.st_ino : 0ULL, f1 && last != f1 ? h1 : 0ULL);
     q = db_prepare(db, "INSERT OR REPLACE INTO ctx_meta(key, value) VALUES ('calls_ingested', ?1)");
     sqlite3_bind_text(q, 1, v, -1, SQLITE_STATIC);
     sqlite3_step(q);
@@ -2916,12 +2946,19 @@ static void calls_ingest(sqlite3 *db, time_t now) {
   sqlite3_bind_int64(q, 1, (sqlite3_int64)now - 30 * 86400);
   sqlite3_step(q);
   sqlite3_finalize(q);
+  char old[11];
+  utc_day(((long long)now - 30 * 86400) / 86400, old);
+  q = db_prepare(db, "DELETE FROM ctx_call_day WHERE day < ?1");
+  sqlite3_bind_text(q, 1, old, -1, SQLITE_STATIC);
+  sqlite3_step(q);
+  sqlite3_finalize(q);
   db_exec(db, "COMMIT");
   sqlite3_finalize(beg);
   sqlite3_finalize(end);
   sqlite3_finalize(lone);
   if (f0) fclose(f0);
   if (f1) fclose(f1);
+  return earliest;
 }
 
 /* Figures per name, and per UTC day or over the whole range, for calls started in [?1, ?2) as of
@@ -2935,11 +2972,15 @@ static void calls_ingest(sqlite3 *db, time_t now) {
   " LEFT JOIN (SELECT d, name, max(CASE WHEN i = n / 2 THEN ms END) AS p50, max(CASE WHEN i = n * 95 / 100 THEN ms END) AS p95, max(ms) AS mx" \
   "  FROM r GROUP BY d, name) b USING (d, name)"
 
-/* The daily figures for the last 15 full days, again from the calls held. */
-static void call_days(sqlite3 *db, time_t now) {
-  long long today = (long long)now / 86400;
+/* The daily figures, again from the calls held, for the full days that can have changed:
+ * yesterday, whose calls cut off near midnight only count as cut a minute later, and any day the
+ * ingest touched. Kept short, since it holds the write lock the hooks wait on. */
+static void call_days(sqlite3 *db, time_t now, long long touched) {
+  long long today = (long long)now / 86400, from = today - 1;
+  if (touched != LLONG_MAX && touched / 86400 < from) from = touched / 86400;
+  if (from < today - 15) from = today - 15;
   sqlite3_stmt *q = db_prepare(db, "INSERT OR REPLACE INTO ctx_call_day(day, name, calls, cut, p50, p95, max) " CALL_FIGS("date(ts, 'unixepoch')"));
-  sqlite3_bind_int64(q, 1, (today - 15) * 86400);
+  sqlite3_bind_int64(q, 1, from * 86400);
   sqlite3_bind_int64(q, 2, today * 86400);
   sqlite3_bind_int64(q, 3, (sqlite3_int64)now);
   if (sqlite3_step(q) != SQLITE_DONE) die("%s", sqlite3_errmsg(db));
@@ -2950,8 +2991,8 @@ static void call_days(sqlite3 *db, time_t now) {
  * every detector over the last 14 days and the last 24 hours. */
 static void findings_run(sqlite3 *db) {
   time_t now = now_time();
-  calls_ingest(db, now);
-  call_days(db, now);
+  long long touched = calls_ingest(db, now);
+  call_days(db, now, touched);
   call_fig last[64];
   size_t nlast = 0;
   sqlite3_stmt *lq = db_prepare(db, CALL_FIGS("''"));
@@ -3040,7 +3081,8 @@ typedef struct {
 static long scan_age(time_t now) {
   char *stamp = sidecar(".scan");
   struct stat st;
-  long age = stat(stamp, &st) == 0 ? (long)(now - st.st_mtime) : -1;
+  long age = -1;
+  if (stat(stamp, &st) == 0) age = now > st.st_mtime ? (long)(now - st.st_mtime) : 0; /* a stamp ahead of the clock ran just now */
   free(stamp);
   return age;
 }
@@ -3181,6 +3223,7 @@ static int cmd_doctor(void) {
     sqlite3_finalize(q);
     q = NULL;
     if (worst < 0) printf("%-10s%-8s%s\n", "ok", "hooks", "no daily figures for the last 3 days yet");
+    else if (worst >= 100) printf("%-10s%-8sdaily p95 reached %ld%% of a budget in the last 3 days\n", "checking", "hooks", (long)worst);
     else printf("%-10s%-8sall under %ld%% of their budget (daily p95, last 3 days)\n", "ok", "hooks", (long)worst + 1);
   }
   if (!busy[1]) {
@@ -3243,9 +3286,10 @@ static int heard(const char *text, const finding_row *f) {
  * heard; nothing when there are none. Later in a session the ones counted but not named are
  * heard too; at its start they are left for a later prompt to name. */
 static void findings_tell(sqlite3 *db, const char *session, int start, buf *out) {
+  char *path = heard_path(session);
+  if (!path) return; /* a session that cannot be told twice is not told at all */
   finding_row *r;
   size_t n = findings_load(db, now_time(), &r);
-  char *path = heard_path(session);
   size_t len = 0;
   char *text = path ? slurp(path, &len) : NULL;
   buf names = {0}, mark = {0};
@@ -14284,7 +14328,7 @@ static void page_findings(sqlite3 *db, buf *out) {
   }
   sqlite3_finalize(q);
   if (rows) buf_str(out, "]}");
-  buf_fmt(out, "],\"from\":\"%s\",\"to\":\"%s\",\"calls\":%ld,\"version\":\"" CTX_VERSION "\",\"scale\":[1,3000],\"target\":%d,\"scan\":%ld}", from, to,
+  buf_fmt(out, "],\"from\":\"%s\",\"to\":\"%s\",\"calls\":%ld,\"version\":\"" CTX_VERSION "\",\"scale\":[1,10000],\"target\":%d,\"scan\":%ld}", from, to,
           calls, SEARCH_TARGET, scan_age(now));
 }
 

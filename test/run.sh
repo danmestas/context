@@ -4020,7 +4020,7 @@ page = open(sys.argv[1], encoding="utf-8").read()
 D = json.loads(re.search(r"var D = (\{.*?\});\n", page, re.S).group(1))
 F = D["find"]
 assert len(F["open"]) == 4 and len(F["watch"]) == 2, F
-assert F["scale"] == [1, 3000], F["scale"]
+assert F["scale"] == [1, 10000], F["scale"]
 names = [r["name"] for r in F["rows"]]
 assert "gate" in names and "search" in names, names
 gate = [r for r in F["rows"] if r["name"] == "gate"][0]
@@ -4030,8 +4030,20 @@ o = [x for x in F["open"] if x["fp"] == "hook-slow:gate"][0]
 assert o["next"] and o["series"] and o["target"] == 3000, o
 assert 'id="findings"' in page and 'id="everything"' in page
 low = page.lower()
-assert "badge" not in low and "pill" not in low, "no badges or pills"
 assert "log scale" in low
+# No badges: no class drawn as a box (a border all round and rounded corners) is used by the
+# findings' markup or the code that renders it, but the table's frame.
+style = re.search(r"<style>(.*?)</style>", page, re.S).group(1)
+boxed = set()
+for sel, body in re.findall(r"([^{}]+)\{([^{}]*)\}", style):
+    if re.search(r"(^|;)\s*border\s*:", body) and "border-radius" in body:
+        boxed |= set(re.findall(r"\.([a-zA-Z][\w-]*)", sel))
+section = re.search(r'<section class="findings".*?</section>\s*</section>', page, re.S).group(0)
+code = re.search(r"function findSpark.*?renderFindings\(\);", page, re.S).group(0)
+used = set(re.findall(r'class="([^"]+)"', section + code)) | set(re.findall(r'el\("[a-z0-9]+", "([^"]+)"', code))
+used = {c for u in used for c in u.split()}
+assert used & boxed <= {"twrap"}, used & boxed
+assert 'class="over"' in page, "a value over the top of the scale is marked"
 EOF
 # Three clean days close a problem; one that comes back reopens the same row.
 # the log rotates between scans: the lines after the last scan in .calls.1 and the new .calls are
@@ -4043,6 +4055,15 @@ for d in 2026-11-20 2026-11-21 2026-11-22 2026-11-23; do
 done
 printf 'B %s 999 gate\n' "$(python3 -c 'import calendar, time; print(calendar.timegm(time.strptime("2026-11-23 18", "%Y-%m-%d %H")))')" >> "$CTX_DB.calls.1"
 printf 'E %s 999 gate 12 0 quiet 0 claude s-x\n' "$(python3 -c 'import calendar, time; print(calendar.timegm(time.strptime("2026-11-23 18", "%Y-%m-%d %H")))')" >> "$CTX_DB.calls"
+# Clean days one at a time: one and two are not enough, the third closes it.
+for c in 2026-11-21 2026-11-22; do
+  stamp ${c}T12:00:00Z 60
+  CTX_NOW=${c}T12:00:00Z "$CTX" scan "$T/find/empty" >/dev/null
+  [ "$(fsql "SELECT state FROM ctx_finding WHERE fingerprint = 'hook-slow:gate'")" = open ] || fail "not closed before three clean days ($c)"
+done
+stamp 2026-11-23T12:00:00Z 60
+CTX_NOW=2026-11-23T12:00:00Z "$CTX" scan "$T/find/empty" >/dev/null
+[ "$(fsql "SELECT state FROM ctx_finding WHERE fingerprint = 'hook-slow:gate'")" = closed ] || fail "closed after the third clean day"
 N2=2026-11-24T12:00:00Z
 calls gate 2026-11-24 06 20 10
 stamp $N2 120
@@ -4082,6 +4103,59 @@ stamp $N4 60
 CTX_NOW=$N4 "$CTX" scan "$T/find/empty" >/dev/null
 [ "$(fsql "SELECT count(*) FROM ctx_call WHERE ts < CAST(strftime('%s', '2026-11-20T12:00:00Z') AS INTEGER)")" = 0 ] || fail "calls over 30 days old are pruned"
 [ "$(fsql "SELECT count(*) > 0 FROM ctx_call")" = 1 ] || fail "newer calls are kept"
+
+# A hook far over its budget on one day and in the last 24 hours is watched, and doctor never
+# calls hooks ok then.
+export CTX_DB="$T/far/ctx.sqlite"
+mkdir -p "$T/far/empty"
+"$CTX" init >/dev/null
+for d in 2026-11-17 2026-11-18; do calls gate $d 13 20 10; done
+calls gate 2026-11-19 13 19 10; calls gate 2026-11-19 14 1 9000
+calls gate 2026-11-20 06 19 10; calls gate 2026-11-20 07 1 9000
+stamp $N1 60
+CTX_NOW=$N1 "$CTX" scan "$T/far/empty" >/dev/null
+[ "$(fsql "SELECT state FROM ctx_finding WHERE fingerprint = 'hook-slow:gate'")" = watching ] || fail "a hook over budget once is watched: $(fsql "SELECT * FROM ctx_finding")"
+CTX_NOW=$N1 "$CTX" doctor > "$T/far.out" || fail "watched is not a problem"
+grep -Eq '^ok +hooks' "$T/far.out" && fail "no ok line for hooks over budget: $(cat "$T/far.out")"
+grep -Eq '^checking +hooks +gate p95 was over its 3 s budget on 1 of the last 3 days, up to 9 s' "$T/far.out" || fail "the watched hook: $(cat "$T/far.out")"
+# a scan stamp ahead of the clock ran just now
+stamp $N1 -600
+CTX_NOW=$N1 "$CTX" doctor | grep -Eq '^ok +scan +last run 0 min ago$' || fail "a stamp ahead of the clock: $(CTX_NOW=$N1 "$CTX" doctor)"
+stamp $N1 60
+# with no session id there is nothing to remember telling, so nothing is told
+echo '{"prompt":"zz","cwd":"/nowhere"}' | CTX_NOW=$N1 "$CTX" inject > "$T/far-inj.json"
+calls gate 2026-11-18 14 2 9000
+CTX_NOW=$N1 "$CTX" scan "$T/far/empty" >/dev/null
+[ "$(fsql "SELECT state FROM ctx_finding WHERE fingerprint = 'hook-slow:gate'")" = open ] || fail "now open"
+echo '{"prompt":"zz","cwd":"/nowhere"}' | CTX_NOW=$N1 "$CTX" inject > "$T/far-inj.json"
+[ ! -s "$T/far-inj.json" ] || fail "no session, nothing told: $(cat "$T/far-inj.json")"
+echo '{"hook_event_name":"SessionStart"}' | CTX_NOW=$N1 "$CTX" rules offer | grep -q 'Evidence: ctx page' && fail "no session at its start, nothing told"
+
+# Taking in the log: a partial last line, an end in a later scan, two rotations between scans, a
+# file emptied and written past where the scan stopped, and a reused pid.
+export CTX_DB="$T/ing/ctx.sqlite"
+mkdir -p "$T/ing/empty"
+"$CTX" init >/dev/null
+IT=$(python3 -c 'import calendar, time; print(calendar.timegm(time.strptime("2026-11-20 10", "%Y-%m-%d %H")))')
+ing() { CTX_NOW=$N1 "$CTX" scan "$T/ing/empty" >/dev/null; fsql "SELECT count(*) FROM ctx_call"; }
+pair() { printf 'B %s %s gate\nE %s %s gate 5 0 quiet 0 claude s\n' $((IT + $1)) "$1" $((IT + $1)) "$1" >> "$CTX_DB.calls"; }
+pair 1; pair 2; printf 'B %s 3 gate' $((IT + 3)) >> "$CTX_DB.calls"
+[ "$(ing)" = 2 ] || fail "a partial last line waits for the next scan"
+printf '\nE %s 3 gate 7 0 quiet 0 claude s\n' $((IT + 3)) >> "$CTX_DB.calls"
+[ "$(ing)" = 3 ] && [ "$(fsql "SELECT ms FROM ctx_call WHERE pid = 3")" = 7 ] || fail "the finished line is read once: $(fsql "SELECT * FROM ctx_call")"
+printf 'B %s 4 gate\n' $((IT + 4)) >> "$CTX_DB.calls"
+[ "$(ing)" = 4 ] && [ -z "$(fsql "SELECT ms FROM ctx_call WHERE pid = 4")" ] || fail "a start alone is a call with no time"
+printf 'E %s 4 gate 9 0 quiet 0 claude s\n' $((IT + 4)) >> "$CTX_DB.calls"
+[ "$(ing)" = 4 ] && [ "$(fsql "SELECT ms FROM ctx_call WHERE pid = 4")" = 9 ] || fail "an end in a later scan finishes its call: $(fsql "SELECT * FROM ctx_call")"
+pair 5; mv "$CTX_DB.calls" "$CTX_DB.calls.1"; pair 6; mv "$CTX_DB.calls" "$CTX_DB.calls.1"; pair 7
+[ "$(ing)" = 6 ] || fail "after two rotations, what is left is taken in once: $(fsql "SELECT group_concat(pid) FROM ctx_call")"
+: > "$CTX_DB.calls"
+for i in 8 9 10 11 12 13; do pair $i; done
+[ "$(ing)" = 12 ] || fail "a log emptied and written past the old place is read from its start: $(fsql "SELECT group_concat(pid) FROM ctx_call")"
+[ "$(ing)" = 12 ] || fail "and only once"
+printf 'B %s 50 gate\n' $((IT - 3600)) >> "$CTX_DB.calls"
+printf 'E %s 50 gate 5 0 quiet 0 claude s\n' $((IT + 20)) >> "$CTX_DB.calls"
+[ "$(ing)" = 14 ] && [ "$(fsql "SELECT count(*) FROM ctx_call WHERE pid = 50 AND ms IS NULL")" = 1 ] || fail "a reused pid's end does not close an hour-old start: $(fsql "SELECT * FROM ctx_call WHERE pid = 50")"
 
 # The skill eval harness works end to end with a stand-in for the model.
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"

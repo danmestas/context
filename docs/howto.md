@@ -1185,7 +1185,10 @@ ctx reports problems with itself that it is fairly sure of, and nothing else. It
 tickets for them. The call log rotates within about a day on a busy machine, so the hourly
 `ctx scan` takes in each call logged since the scan before (`ctx_call`, kept 30 days), carrying on
 in the rotated file where it stopped, so no call is lost or counted twice. A start with no end a
-minute later counts as cut off. From those calls the scan works out each UTC day's figures per hook
+minute later counts as cut off; an end is matched only to a start of the same pid and name from
+about when it says it began, so a reused pid does not end an old call. A log emptied and written
+again is told from the one it replaced by its first line. From those calls the scan works out each
+UTC day's figures per hook
 and for search (`ctx_call_day`: calls, calls cut off, and the median, p95 and slowest time). The
 first scan takes in whatever the log still holds, so the first day may be partial.
 The detectors then compare the last three full days and the last 24 hours of the log with these
@@ -1193,7 +1196,7 @@ rules:
 
 | Finding | Open when | Watched when |
 | --- | --- | --- |
-| A hook is slow | its daily p95 was over its limit (above) on at least 2 of the last 3 days, and is over it in the last 24 hours | its daily p95 passed a tenth of its limit on 2 of the last 3 days |
+| A hook is slow | its daily p95 was over its limit (above) on at least 2 of the last 3 days, and is over it in the last 24 hours | it was over its limit on one of those days or in the last 24 hours, or passed a tenth of its limit on 2 of them |
 | Search is slow | `ctx search`'s daily p95 was over its 1 s target on at least 2 of the last 3 days, and is over it in the last 24 hours | it was over the target on one of those days, or in the last 24 hours |
 | Hooks are cut off | a hook had calls that started and had not ended a minute later on at least 2 of the last 3 days, and in the last 24 hours | it had such calls on one of those days, or in the last 24 hours |
 | The scan is late | the scan stamp is over 2 hours old, the rule `ctx status` uses | never |
@@ -1203,7 +1206,9 @@ An open finding closes once its condition has been false on each of the last 3 d
 last 24 hours; if it is still watched by then, it goes back to watching. A closed finding that
 opens again is the same finding: it keeps the day it was first seen and counts the reopening. A
 hook with no calls left in the days held has nothing to stand on and closes. A late scan is read
-from the stamp each time, so it is over the moment a scan starts.
+from the stamp each time, so it is over the moment a scan starts. The archive hook (`ctx hook`)
+has no limit, since Claude Code runs it without waiting, so it is never found slow; its calls cut
+off are still found.
 
 ```sh
 ctx doctor
@@ -1224,7 +1229,8 @@ ctx tells you of open problems where you already look. At session start the cont
 gains one line naming up to three of them, ending `Evidence: ctx page`; with none open it adds
 nothing. In a session kept open for days, the prompt hook (`ctx inject`) adds one line the first
 time a problem opens or comes back that the session has not heard of, and never repeats a
-problem that has not changed. Which problems a session has heard of is kept beside the database
+problem that has not changed. A hook run with no session id is told nothing, since ctx could not
+keep from telling it again. Which problems a session has heard of is kept beside the database
 (`ctx.sqlite.heard`, cleared after 30 days). `ctx page` shows them first, with the evidence.
 
 ## Keep the call log as Parquet
@@ -1291,9 +1297,9 @@ you (mode 0600). Open it in a browser. Its title counts ctx's open problems ("Tw
 problems." or "No problems."). Each open problem follows: what it is, the evidence with
 dates, a chart of the daily figures it rests on with its limit or target, and a suggested
 next step. **Everything else** is one table, a row per hook and for search: calls over the
-days held (up to 14), a sparkline of daily p95 on one log scale from 1 ms to 3 s shared by
-every row, the limit as a dashed line, the range of daily p95, the last day's p95 and its share
-of the limit. Problems ctx is only watching are one sentence under the table, and a footer
+days held (up to 14), a sparkline of daily p95 on one log scale from 1 ms to 10 s shared by
+every row, the limit as a dashed line, a filled triangle at the top edge for a day over 10 s, the
+range of daily p95, the last day's p95 and its share of the limit. Problems ctx is only watching are one sentence under the table, and a footer
 names the source, the UTC days covered, the number of calls and what p95 means.
 
 Below that, the decisions. Their heading says how many things need you,
