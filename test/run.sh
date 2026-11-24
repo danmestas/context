@@ -3382,7 +3382,9 @@ import json, sys
 print(json.dumps({"tool_name": "Bash", "tool_response": ["l%d %s xxx" % (i, sys.argv[1]) + " y" * 100 for i in range(20000)]}))' "$SEC" > "$T/gbig.json"
 s0=$(date +%s); CTX_DB="$T/noguard.sqlite" "$CTX" guard post < "$T/gbig.json" > "$T/gbig.out"; s1=$(date +%s)
 [ $((s1 - s0)) -lt 5 ] && ! grep -q "$SEC" "$T/gbig.out" && [ "$(grep -o 'REDACTED' "$T/gbig.out" | wc -l)" -eq 20000 ] || fail "20000 secrets in 4 MB are redacted inside a hook's timeout ($((s1 - s0)) s)"
-printf 'dp.st.example.internalservicehostname.com\n' > "$T/ghost.txt"
+gpost Bash "\"\\ud800 $SEC\"" | python3 -c 'import json,sys; assert json.loads(sys.stdin.buffer.read().decode("utf-8"))["hookSpecificOutput"]["updatedToolOutput"] == "\ufffd [REDACTED]"' || fail "a lone surrogate becomes U+FFFD, so the reply stays UTF-8"
+python3 -c 'import sys; sys.stdout.write("{\"tool_name\":\"Bash\",\"tool_response\":\"" + "x" * (17 << 20) + "\"}")' | CTX_DB="$T/noguard.sqlite" "$CTX" guard post 2>"$T/gbig.err" && fail "a result over 16 MB is not passed as checked"
+grep -q 'over 16 MB' "$T/gbig.err" || fail "and says why: $(cat "$T/gbig.err")"
 gpost Bash '"see dp.st.example.internalservicehostname.com"' | grep -q . && fail "a host name is not a Doppler token"
 gate s-pic3 "$GP" find '{"pattern":"*.md"}' | grep -q '"deny"' || fail "find is gated like Glob"
 gate s-pic4 "$GP" GLOB '{"pattern":"*.md"}' | grep -q '"deny"' || fail "a tool name in any case is the same tool"

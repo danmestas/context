@@ -7775,6 +7775,7 @@ static size_t json_string_decode(const char *s, size_t n, size_t i, buf *out) {
           i += 6;
         }
       }
+      if (cp >= 0xD800 && cp < 0xE000) cp = 0xFFFD; /* a lone surrogate is no character: the replacement one */
       char u[4];
       size_t k;
       if (cp < 0x80) u[0] = (char)cp, k = 1;
@@ -7860,6 +7861,11 @@ static int cmd_guard_post(void) {
   size_t len;
   char *in = hook_stdin(&len);
   if (!in) return 0;
+  if (len >= (16u << 20) - 1 && !feof(stdin)) { /* cut short: say so, so a harness that requires the hook can hold the output back */
+    free(in);
+    fprintf(stderr, "ctx guard post: the tool's result is over 16 MB; not checked\n");
+    return 1;
+  }
   sqlite3 *db = NULL;
   if (sqlite3_open(":memory:", &db) != SQLITE_OK) { free(in); return 0; }
   sqlite3_stmt *q = NULL;

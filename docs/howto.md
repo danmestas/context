@@ -1078,7 +1078,10 @@ to what a tool returned and gives the harness the same result with each secret
 replaced, so the model never sees it, however it was read. pic uses it for every
 tool. Claude Code lets a hook change only an MCP tool's result, so there it covers
 MCP tools and `ctx guard` covers the rest. Neither needs an archive, and either
-says nothing when it has nothing to do or anything goes wrong.
+says nothing when it has nothing to do or anything goes wrong. Two things pass
+unchecked: a string of 256 or more base64 characters and nothing else (image and
+file data, left so it still decodes), and a result over 16 MB, for which `ctx guard
+post` exits 1 with a message instead.
 
 ```json
 "PreToolUse": [{ "matcher": "Read|Grep|Bash", "hooks": [{ "type": "command", "command": "ctx guard", "timeout": 3 }] }],
