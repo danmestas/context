@@ -9,6 +9,7 @@
   /* Layout: one column to 1080px; each section is a list of one-line rows with a three-way control; a summary bar stays at the foot */
   --bg:#f7f8f7; --surface:#eef1ef; --fg:#1a1e1c; --muted:#5d6863; --line:#d3dad6; --accent:#1f5f8a;
   --yes:#23724a; --no:#a8321f; --mid:#8a6410; --yes-bg:#dff1e6; --no-bg:#f8e1dc; --mid-bg:#f5ead0;
+  --bad:#b42318; --spark:#6b7671; --rule:#9aa5a0;
   --font-body:"Instrument Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
   --font-mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
   color-scheme:light;
@@ -17,15 +18,18 @@
   :root:not([data-theme="light"]) {
     --bg:#121514; --surface:#1a1e1c; --fg:#e7eae8; --muted:#98a39e; --line:#303734; --accent:#7fb6de;
     --yes:#73c797; --no:#f0907f; --mid:#dfb45a; --yes-bg:#173625; --no-bg:#40201a; --mid-bg:#3a2f14;
+    --bad:#f97066; --spark:#a3ada8; --rule:#68736e;
     color-scheme:dark;
   }
 }
 :root[data-theme="dark"] {
   --bg:#121514; --surface:#1a1e1c; --fg:#e7eae8; --muted:#98a39e; --line:#303734; --accent:#7fb6de;
   --yes:#73c797; --no:#f0907f; --mid:#dfb45a; --yes-bg:#173625; --no-bg:#40201a; --mid-bg:#3a2f14;
+  --bad:#f97066; --spark:#a3ada8; --rule:#68736e;
   color-scheme:dark;
 }
 * { box-sizing:border-box; }
+[hidden] { display:none !important; }
 html { scroll-padding-bottom:120px; }
 body { margin:0; background:var(--bg); color:var(--fg); font-family:var(--font-body); line-height:1.45; font-size:15px; }
 main { max-width:1080px; margin:0 auto; padding:28px 16px 150px; display:flex; flex-direction:column; gap:30px; }
@@ -135,6 +139,31 @@ section.q { display:flex; flex-direction:column; gap:10px; }
 .row.line .meta + button.pick { justify-self:end; }
 .undo { font-family:var(--font-mono); font-size:.8rem; white-space:nowrap; color:var(--fg); }
 
+/* Findings: plain sentences, a red mark only where a finding is open, neutral everywhere else. */
+main > header { border-top:1px solid var(--line); padding-top:18px; }
+.findings { display:flex; flex-direction:column; gap:14px; }
+.findings h1 { margin-bottom:2px; }
+.finding { border-top:1px solid var(--line); padding-top:14px; display:grid; grid-template-columns:minmax(0,1.4fr) minmax(0,1fr); gap:8px 24px; align-items:start; }
+.finding h3 { font-size:1.05rem; grid-column:1 / -1; text-wrap:balance; }
+.finding .ev, .finding .next { color:var(--fg); font-size:.92rem; display:block; }
+.finding .next { margin-top:6px; color:var(--muted); }
+.finding figure { margin:0; }
+.finding figcaption { color:var(--muted); font-size:.8rem; margin-top:4px; }
+.fspark { display:block; width:100%; max-width:300px; height:auto; }
+.fspark .ln { fill:none; stroke:var(--bad); stroke-width:2; } .fspark .pt { fill:var(--bad); }
+.fspark .tg, .tspark .tg { stroke:var(--rule); stroke-width:1; stroke-dasharray:4 3; }
+.fspark .ax, .tspark .ax { stroke:var(--line); stroke-width:1; }
+.fspark text { fill:var(--muted); font-size:9px; font-family:var(--font-body); }
+.twrap { overflow-x:auto; border:1px solid var(--line); border-radius:10px; }
+table.calls { border-collapse:collapse; width:100%; min-width:640px; font-size:.88rem; font-variant-numeric:tabular-nums; }
+table.calls th, table.calls td { text-align:left; padding:7px 12px; border-top:1px solid var(--line); vertical-align:middle; }
+table.calls thead th { border-top:0; color:var(--muted); font-weight:600; font-size:.8rem; }
+table.calls td.n { text-align:right; } table.calls th.n { text-align:right; }
+.tspark { display:block; width:168px; height:28px; }
+.tspark .ln { fill:none; stroke:var(--spark); stroke-width:1.5; } .tspark .pt { fill:var(--spark); }
+.fsrc { font-size:.8rem; }
+@media (max-width:760px) { .finding { grid-template-columns:minmax(0,1fr); } }
+
 .foot { position:fixed; left:0; right:0; bottom:0; background:var(--surface); border-top:1px solid var(--line); }
 .foot .in { max-width:1080px; margin:0 auto; padding:9px 16px; display:flex; flex-wrap:wrap; gap:8px 18px; align-items:center; }
 .foot .sum { flex:1; min-width:220px; font-size:.9rem; }
@@ -154,9 +183,21 @@ section.q { display:flex; flex-direction:column; gap:10px; }
 </head>
 <body>
 <main>
-<header>
+<section class="findings" id="findings" aria-labelledby="fhead">
   <div class="kicker" id="kicker"></div>
-  <h1 id="head"></h1>
+  <h1 id="fhead"></h1>
+  <p class="lede" id="flede"></p>
+  <div id="f-open"></div>
+  <section class="q" id="everything">
+    <h2>Everything else</h2>
+    <div class="twrap"><table class="calls" id="f-table"></table></div>
+    <p class="note" id="f-watch" hidden></p>
+    <p class="note fsrc" id="f-foot"></p>
+  </section>
+</section>
+
+<header>
+  <h2 id="head"></h2>
   <p class="lede" id="batch"></p>
   <section class="q" id="tickets" hidden>
     <div class="qhead"><h2>Tickets</h2><span class="count" id="tk-sum"></span></div>
@@ -707,6 +748,91 @@ section.q { display:flex; flex-direction:column; gap:10px; }
     var fail = function () { var pre = document.getElementById("out"), range = document.createRange(); range.selectNodeContents(pre); var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range); document.getElementById("cmds").scrollIntoView({ block: "start" }); b.textContent = "Selected: press copy"; };
     try { navigator.clipboard.writeText(text).then(function () { b.textContent = "Copied"; setTimeout(function () { b.textContent = "Copy choices"; }, 1600); }, fail); } catch (err) { fail(); }
   });
+  /* The findings: ctx's own problems at the top, then every hook and search on one shared scale. */
+  function ms(v) { return v === null || v === undefined || v < 0 ? "no calls" : v < 1000 ? num(v) + " ms" : (v % 1000 === 0 ? v / 1000 : (v / 1000).toFixed(1)) + " s"; }
+  function cmdText(t) { return esc(t).replace(/`([^`]+)`/g, "<code>$1</code>"); }
+  var COUNT = ["No", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"];
+  function countWord(n) { return n < COUNT.length ? COUNT[n] : num(n); }
+  function howLong(age) { var d = Math.floor(age / 86400); return d < 1 ? "under a day" : plural(d, "day"); }
+  function span(from, to) { var out = [], a = day(from), b = day(to); for (var d = a; d <= b && out.length < 31; d++) out.push(new Date(d * 864e5).toISOString().slice(0, 10)); return out; }
+  var LOG_TOP = Math.log(3000) / Math.LN10;
+  function logY(v, top, h) { var c = Math.min(Math.max(v, 1), Math.pow(10, top)); return h - (Math.log(c) / Math.LN10) / top * h; }
+  /* An open finding's daily series: time on a log scale from 1 ms, a count from zero. */
+  function findSpark(f) {
+    var pts = f.series.filter(function (p) { return p[1] !== null; });
+    if (!pts.length) return "";
+    var W = 300, H = 70, L = 34, R = 6, T0 = 6, B = 16, w = W - L - R, h = H - T0 - B, timed = f.target > 0;
+    var peak = pts.reduce(function (m, p) { return p[1] > m[1] ? p : m; }, pts[0]);
+    var top = timed ? Math.log(Math.max(3000, peak[1], f.target) * 1.3) / Math.LN10 : Math.max(1, peak[1]);
+    var x = function (i) { return L + (f.series.length < 2 ? w / 2 : w * i / (f.series.length - 1)); };
+    var y = function (v) { return T0 + (timed ? logY(v, top, h) : h - h * v / top); };
+    var path = "", dots = "";
+    f.series.forEach(function (p, i) { if (p[1] === null) return; path += (path ? "L" : "M") + x(i).toFixed(1) + " " + y(p[1]).toFixed(1); dots += '<circle class="pt" cx="' + x(i).toFixed(1) + '" cy="' + y(p[1]).toFixed(1) + '" r="2.5"><title>' + esc(p[0]) + ": " + esc(timed ? ms(p[1]) : num(p[1])) + '</title></circle>'; });
+    var lab = timed ? [[1, "1 ms"], [1000, "1 s"]] : [[0, "0"], [top, num(top)]];
+    var svg = '<svg class="fspark" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + esc(f.title) + '">' +
+      '<line class="ax" x1="' + L + '" x2="' + (W - R) + '" y1="' + (T0 + h) + '" y2="' + (T0 + h) + '"/>' +
+      lab.map(function (l) { return '<text x="' + (L - 4) + '" y="' + (y(l[0]) + 3).toFixed(1) + '" text-anchor="end">' + l[1] + '</text>'; }).join("") +
+      (timed ? '<line class="tg" x1="' + L + '" x2="' + (W - R) + '" y1="' + y(f.target).toFixed(1) + '" y2="' + y(f.target).toFixed(1) + '"/>' : "") +
+      '<path class="ln" d="' + path + '"/>' + dots +
+      '<text x="' + L + '" y="' + (H - 3) + '">' + esc(f.series[0][0]) + '</text><text x="' + (W - R) + '" y="' + (H - 3) + '" text-anchor="end">' + esc(f.series[f.series.length - 1][0]) + '</text></svg>';
+    var first = pts[0], last = pts[pts.length - 1], v = function (p) { return (timed ? ms(p[1]) : num(p[1])) + " (" + p[0] + ")"; };
+    var cap = (timed ? "Daily p95, log scale from 1 ms" : "Calls cut off each day, from zero") + ": first " + v(first) + ", peak " + v(peak) + ", last " + v(last) + "." +
+      (timed ? " Dashed line: the " + ms(f.target) + " " + (f.kind === "search-slow" ? "target" : "budget") + "." : "");
+    return '<figure>' + svg + '<figcaption>' + esc(cap) + '</figcaption></figure>';
+  }
+  function tableSpark(r, days) {
+    var W = 168, H = 28, p = 2, w = W - 2 * p, h = H - 2 * p, at = {};
+    r.days.forEach(function (d) { at[d[0]] = d[1]; });
+    var x = function (i) { return p + (days.length < 2 ? w / 2 : w * i / (days.length - 1)); }, y = function (v) { return p + logY(v, LOG_TOP, h); };
+    var path = "", dots = "", run = false;
+    days.forEach(function (d, i) {
+      var v = at[d];
+      if (v === undefined || v === null) { run = false; return; }
+      path += (run ? "L" : "M") + x(i).toFixed(1) + " " + y(v).toFixed(1); run = true;
+      dots += '<circle class="pt" cx="' + x(i).toFixed(1) + '" cy="' + y(v).toFixed(1) + '" r="1.8"><title>' + esc(d) + ": " + esc(ms(v)) + '</title></circle>';
+    });
+    var limit = r.name === "search" ? D.find.target : r.budget;
+    var tg = limit && limit <= 3000 ? '<line class="tg" x1="' + p + '" x2="' + (W - p) + '" y1="' + y(limit).toFixed(1) + '" y2="' + y(limit).toFixed(1) + '"/>' : "";
+    return '<svg class="tspark" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Daily p95 of ' + esc(r.name) + ' on a log scale from 1 ms to 3 s">' + tg + '<path class="ln" d="' + path + '"/>' + dots + '</svg>';
+  }
+  function renderFindings() {
+    var F = D.find, open = F.open, n = open.length;
+    document.getElementById("fhead").textContent = n ? countWord(n) + " problem" + (n === 1 ? "" : "s") + "." : "No problems.";
+    var scan = F.scan < 0 ? "no scan has run yet" : "the hourly scan last ran " + mins(F.scan);
+    document.getElementById("flede").textContent = n ? "ctx reports only what it is fairly sure of. A problem closes by itself after three days without it; " + scan + "." :
+      "No hook was over its budget and search was not over its target on two of the last three days; " + scan + ".";
+    var host = document.getElementById("f-open"); host.innerHTML = "";
+    open.forEach(function (f) {
+      var since = (f.kind === "scan-late" ? " Late since " : " Open since ") + f.changed.slice(0, 10) + ", " + howLong(f.age) + "." +
+        (f.reopened ? " It had closed and came back; reopened " + plural(f.reopened, "time") + ", first seen " + f.first.slice(0, 10) + "." : "");
+      var a = el("article", "finding");
+      a.appendChild(el("h3", "", esc(f.title)));
+      a.appendChild(el("div", "", '<span class="ev">' + esc(f.evidence + since) + '</span><span class="next">Suggested next step: ' + cmdText(f.next) + '</span>'));
+      a.appendChild(el("div", "", findSpark(f)));
+      host.appendChild(a);
+    });
+    var days = F.from ? span(F.from, F.to) : [], t = document.getElementById("f-table");
+    if (!F.rows.length) t.innerHTML = '<tbody><tr><td>No daily figures yet: the first are written once a UTC day with calls is over.</td></tr></tbody>';
+    else {
+      var head = '<thead><tr><th>Hook or search</th><th class="n">Calls, ' + plural(days.length, "day") + '</th><th>Daily p95, log scale 1 ms to 3 s</th><th>Range of daily p95</th><th>Last day\u2019s p95</th><th class="n">Share of budget</th></tr></thead>';
+      t.innerHTML = head + '<tbody>' + F.rows.map(function (r) {
+        var vals = r.days.filter(function (d) { return d[1] !== null; }), calls = r.days.reduce(function (s, d) { return s + d[2]; }, 0);
+        var lo = vals.length ? Math.min.apply(null, vals.map(function (d) { return d[1]; })) : null, hi = vals.length ? Math.max.apply(null, vals.map(function (d) { return d[1]; })) : null;
+        var last = vals.length ? vals[vals.length - 1] : null, limit = r.name === "search" ? D.find.target : r.budget;
+        var share = !last ? "" : limit ? Math.round(100 * last[1] / limit) + "% of " + (r.name === "search" ? "the " + ms(limit) + " target" : ms(limit)) : "no budget";
+        return '<tr><td>' + esc(r.name) + '</td><td class="n">' + num(calls) + '</td><td>' + tableSpark(r, days) + '</td><td>' + (vals.length ? esc(ms(lo) + " to " + ms(hi)) : "no calls ended") +
+          '</td><td>' + (last ? esc(ms(last[1]) + " on " + last[0]) : "") + '</td><td class="n">' + esc(share) + '</td></tr>';
+      }).join("") + '</tbody>';
+    }
+    var w = document.getElementById("f-watch");
+    w.hidden = !F.watch.length;
+    w.textContent = F.watch.length ? "Also being watched, below confidence: " + F.watch.map(function (f) { return f.title + " (since " + f.changed.slice(0, 10) + ")"; }).join("; ") + "." : "";
+    document.getElementById("f-foot").innerHTML = "Source: the call log beside the archive and its daily summaries" + (F.from ? ", UTC days " + esc(F.from) + " to " + esc(F.to) + " (" + plural(days.length, "day") + "), " + plural(F.calls, "call") : ", no full day yet") +
+      "; ctx " + esc(F.version) + ". p95 is the time within which 19 calls in 20 finished that day. Budgets are the timeouts Claude Code gives each hook; search has a " + ms(F.target) +
+      " target, not a limit. The sparklines share one log scale from 1 ms to 3 s, so rows compare; a value over 3 s is drawn at the top edge, and the dashed line is the budget or target where it is on the scale. Run <code>ctx doctor</code> for the same findings in the terminal.";
+  }
+  renderFindings();
+
   var T = D.tot, sugg = D.held.filter(change).length + D.hooks.filter(change).length;
   document.getElementById("kicker").textContent = "ctx · " + (D.scope || "decisions") + " · your archive as of " + nice(T.today);
   document.getElementById("scope").hidden = !D.scope;

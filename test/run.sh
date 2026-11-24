@@ -2871,7 +2871,7 @@ js() { python3 -c "import json, sys; d = json.loads(sys.stdin.read()); print(d[s
 [ "$(js searches < "$T/hud.json")" = 3 ] || fail "searches today in this project: $(cat "$T/hud.json")"
 [ "$(js misses < "$T/hud.json")" = 1 ] || fail "misses: $(cat "$T/hud.json")"
 [ -z "$(js warn < "$T/hud.json")" ] || fail "no warning on a quiet machine: $(cat "$T/hud.json")"
-python3 -c "import json, sys; assert list(json.load(open(sys.argv[1]))) == ['project', 'open', 'docs', 'held', 'need', 'tentative', 'searches', 'misses', 'warn']" "$T/hud.json" || fail "status --json keys, in order"
+python3 -c "import json, sys; assert list(json.load(open(sys.argv[1]))) == ['project', 'open', 'docs', 'held', 'need', 'tentative', 'searches', 'misses', 'warn', 'problems']" "$T/hud.json" || fail "status --json keys, in order"
 [ "$(cd ../elsewhere && "$CTX" status --json | js open)" = 1 ] || fail "another folder, another project"
 (cd "$T/hud/nowhere" && "$CTX" status --json > "$T/hud-all.json")
 [ -z "$(js project < "$T/hud-all.json")" ] && [ "$(js open < "$T/hud-all.json")" = 5 ] && [ "$(js searches < "$T/hud-all.json")" = 4 ] || fail "outside a project it covers everything: $(cat "$T/hud-all.json")"
@@ -3495,7 +3495,7 @@ CLAUDE_CONFIG_DIR="$XC" "$CTX" scan >/dev/null
 "$CTX" forget 5e550000-0000-0000-0000-00000000000 2>/dev/null && fail "an ambiguous prefix is refused"
 export CTX_DB="$T/rebuild.sqlite"
 "$CTX" init >/dev/null
-[ "$("$CTX" sql "PRAGMA user_version")" = 18 ] || fail "a new file is at the current version"
+[ "$("$CTX" sql "PRAGMA user_version")" = 19 ] || fail "a new file is at the current version"
 [ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 7 ] || fail "derived version recorded"
 printf '{"uuid":"rb-1","timestamp":"2026-09-01T10:00:00Z","cwd":"/w/rb","message":{"role":"user","content":"the capybara rollout"}}\n{"uuid":"rb-2","timestamp":"2026-09-01T10:00:05Z","cwd":"/w/rb","message":{"role":"assistant","content":"rolled out the capybara"}}\n' > "$T/ab12cd99-rb.jsonl"
 "$CTX" archive "$T/ab12cd99-rb.jsonl" >/dev/null
@@ -3517,7 +3517,7 @@ grep -q 'rebuilding it once' "$T/rb.err" || fail "an old index is rebuilt on ope
 "$CTX" sql "DROP TABLE ctx_meta" >/dev/null; "$CTX" sql "PRAGMA user_version = 1" >/dev/null
 "$CTX" search --all capybara 2>"$T/rb3.err" | grep -q capybara || fail "an unversioned file still works"
 [ -s "$T/rb3.err" ] && fail "an unversioned file is upgraded without a rebuild"
-[ "$("$CTX" sql "PRAGMA user_version")" = 18 ] || fail "and is marked current"
+[ "$("$CTX" sql "PRAGMA user_version")" = 19 ] || fail "and is marked current"
 
 # Docs tickets: every documentation problem ctx finds becomes a ticket, once each, without the
 # person's sign-off, and the overview shows who holds it and carries a prod to that session.
@@ -3911,6 +3911,161 @@ rm -f "$CTX_DB".page-*.html
 [ ! -e "$CTX_DB.page-dp.html" ] || fail "a ticket change never creates a page file"
 prod "$DT3" "measure me" > "$T/prod-time.txt"
 grep -q '^queued for session' "$T/prod-time.txt" || fail "prod still works with page rewriting"
+
+# Findings: ctx scan keeps daily summaries of the call log and turns them into problems it is
+# fairly sure of. A fake log with chosen times, read as if the clock said CTX_NOW.
+export CTX_DB="$T/find/ctx.sqlite"
+mkdir -p "$T/find/empty"
+"$CTX" init >/dev/null
+rm -f "$CTX_DB.calls"
+# calls NAME DAY HH COUNT MS: COUNT calls of NAME on DAY at HH:00 UTC taking MS each; MS "cut"
+# leaves the starts without ends.
+calls() {
+  python3 - "$CTX_DB.calls" "$@" <<'EOF'
+import calendar, sys, time
+path, name, day, hh, count, ms = sys.argv[1:7]
+at = calendar.timegm(time.strptime(day + " " + hh, "%Y-%m-%d %H"))
+with open(path, "a") as f:
+    for i in range(int(count)):
+        pid = (at + i) % 4000000 + 1
+        f.write("B %d %d %s\n" % (at + i, pid, name))
+        if ms != "cut":
+            f.write("E %d %d %s %s 0 quiet 0 claude s-x\n" % (at + i, pid, name, ms))
+EOF
+}
+# stamp SECONDS_BEFORE NOW: the scan stamp's age
+stamp() { python3 -c 'import calendar, os, sys, time; t = calendar.timegm(time.strptime(sys.argv[2], "%Y-%m-%dT%H:%M:%SZ")) - int(sys.argv[3]); open(sys.argv[1], "a").close(); os.utime(sys.argv[1], (t, t))' "$CTX_DB.scan" "$1" "$2"; }
+fsql() { "$CTX" sql "$1"; }
+N1=2026-11-20T12:00:00Z
+for d in 2026-11-17 2026-11-18 2026-11-19; do
+  calls gate $d 13 19 10
+  calls search $d 13 19 40
+  calls guard $d 13 19 20
+  calls hook-post $d 13 20 15
+  calls inject $d 13 19 30
+  calls rules-offer $d 13 20 25
+done
+# gate and inject over their 3 s budget on the 18th and 19th and in the last 24 hours
+for d in 2026-11-18 2026-11-19; do calls gate $d 14 1 3400; calls inject $d 14 1 3600; done
+calls gate 2026-11-17 14 1 12; calls inject 2026-11-17 14 1 31
+calls gate 2026-11-20 06 19 10; calls gate 2026-11-20 07 1 3400
+calls inject 2026-11-20 06 19 30; calls inject 2026-11-20 07 1 3600
+# search over its 1 s target on one day only: watching, never open
+calls search 2026-11-17 14 1 50; calls search 2026-11-18 14 1 60; calls search 2026-11-19 14 1 2300
+calls search 2026-11-20 06 20 40
+# guard over a tenth of its budget on two days: watching
+calls guard 2026-11-17 14 1 30; calls guard 2026-11-18 14 1 400; calls guard 2026-11-19 14 1 450
+# hook-post and rules-offer cut off on two days and in the last 24 hours
+for d in 2026-11-18 2026-11-19; do calls hook-post $d 15 2 cut; calls rules-offer $d 15 1 cut; done
+stamp $N1 600
+CTX_NOW=$N1 "$CTX" scan "$T/find/empty" >/dev/null || fail "scan runs the detectors"
+[ "$(fsql "SELECT count(DISTINCT day) FROM ctx_call_day")" = 3 ] || fail "each finished day is summarised, today is not: $(fsql "SELECT day, name, calls FROM ctx_call_day")"
+[ "$(fsql "SELECT calls, cut, p50, p95, max FROM ctx_call_day WHERE day = '2026-11-18' AND name = 'gate'" | tr '\t' ' ')" = "20 0 10 3400 3400" ] || fail "a day's summary: $(fsql "SELECT * FROM ctx_call_day WHERE name = 'gate'")"
+[ "$(fsql "SELECT calls, cut FROM ctx_call_day WHERE day = '2026-11-19' AND name = 'hook-post'" | tr '\t' ' ')" = "22 2" ] || fail "cut-off calls are counted: $(fsql "SELECT * FROM ctx_call_day WHERE name = 'hook-post'")"
+STATES=$(fsql "SELECT fingerprint || '=' || state FROM ctx_finding ORDER BY 1" | tr '\n' ' ')
+[ "$STATES" = "hook-cut:hook-post=open hook-cut:rules-offer=open hook-slow:gate=open hook-slow:guard=watching hook-slow:inject=open search-slow=watching " ] || fail "detector states: $STATES"
+fsql "SELECT title FROM ctx_finding WHERE fingerprint = 'hook-slow:gate'" | grep -q '^1 gate call in 20 takes over 3.4 s, past its 3 s budget; the slowest took 3.4 s$' || fail "a finding's title states it with numbers: $(fsql "SELECT title FROM ctx_finding WHERE fingerprint = 'hook-slow:gate'")"
+fsql "SELECT evidence FROM ctx_finding WHERE fingerprint = 'hook-slow:gate'" | grep -q '2026-11-18.*2026-11-19' || fail "the evidence names the days: $(fsql "SELECT evidence FROM ctx_finding WHERE fingerprint = 'hook-slow:gate'")"
+fsql "SELECT evidence FROM ctx_finding WHERE fingerprint = 'search-slow'" | grep -q 'target' || fail "search is held to a target"
+fsql "SELECT evidence FROM ctx_finding WHERE fingerprint = 'search-slow'" | grep -q 'limit' && fail "the search target is not called a limit"
+[ "$(fsql "SELECT json_array_length(series), json_extract(series, '\$[1]'), target FROM ctx_finding WHERE fingerprint = 'hook-slow:gate'" | tr '\t' ' ')" = '3 ["2026-11-18",3400] 3000' ] || fail "the daily series and budget are kept: $(fsql "SELECT series, target FROM ctx_finding WHERE fingerprint = 'hook-slow:gate'")"
+# doctor: problems first, plain words, exit 1 while any is open
+CTX_NOW=$N1 "$CTX" doctor > "$T/doc.out" && fail "doctor exits 1 with an open problem"
+[ "$(tail -1 "$T/doc.out")" = "4 problems." ] || fail "doctor's last line counts problems: $(cat "$T/doc.out")"
+[ "$(awk '{ print $1 }' "$T/doc.out" | tr '\n' ' ')" = "problem problem problem problem checking checking ok 4 " ] || fail "problems first, then checking, then ok: $(cat "$T/doc.out")"
+grep -Eq '^problem +hooks +1 gate call in 20 takes over 3.4 s, past its 3 s budget; the slowest took 3.4 s; open ' "$T/doc.out" || fail "a problem line: $(cat "$T/doc.out")"
+grep -Eq '^ok +scan +last run 10 min ago$' "$T/doc.out" || fail "the scan's ok line: $(cat "$T/doc.out")"
+grep -Eq '^checking +search +' "$T/doc.out" || fail "search is being watched: $(cat "$T/doc.out")"
+LC_ALL=C grep -q '[^ -~]' "$T/doc.out" && fail "doctor prints no glyphs: $(cat "$T/doc.out")"
+# status counts open problems, in both forms
+CTX_NOW=$N1 "$CTX" status | grep -q '4 problems' || fail "status names the open problems: $(CTX_NOW=$N1 "$CTX" status)"
+CTX_NOW=$N1 "$CTX" status --json | python3 -c 'import json, sys; d = json.load(sys.stdin); assert d["problems"] == 4 and "warn" in d and "need" in d, d' || fail "status --json has problems"
+# SessionStart: one line, three problems at most, ending with where the evidence is
+echo '{"session_id":"s-a","hook_event_name":"SessionStart"}' | CTX_NOW=$N1 "$CTX" rules offer > "$T/ss.json"
+python3 - "$T/ss.json" <<'EOF' || fail "the session start line: $(cat "$T/ss.json")"
+import json, sys
+ctx = json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]
+line = [l for l in ctx.split("\n") if "Evidence: ctx page" in l]
+assert len(line) == 1, ctx
+line = line[0]
+assert line.endswith("Evidence: ctx page"), line
+told = [n for n in ("gate", "inject", "hook-post", "rules-offer") if n + " " in line]
+assert len(told) == 3 and "1 more" in line, line
+assert len(line.split()) <= 75, len(line.split())
+EOF
+# inject: a problem this session has not heard of, once; then never again while unchanged
+echo '{"prompt":"zz","session_id":"s-b","cwd":"/nowhere"}' | CTX_NOW=$N1 "$CTX" inject > "$T/inj1.json"
+python3 -c 'import json, sys; c = json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]; assert c.count("problem") >= 1 and "gate" in c and "hook-post" in c and "Evidence: ctx page" in c, c' "$T/inj1.json" || fail "inject tells a session of open problems: $(cat "$T/inj1.json")"
+echo '{"prompt":"zz","session_id":"s-b","cwd":"/nowhere"}' | CTX_NOW=$N1 "$CTX" inject > "$T/inj2.json"
+[ ! -s "$T/inj2.json" ] || fail "an unchanged problem is not repeated in the same session: $(cat "$T/inj2.json")"
+echo '{"prompt":"zz","session_id":"s-a","cwd":"/nowhere"}' | CTX_NOW=$N1 "$CTX" inject > "$T/inj3.json"
+python3 - "$T/inj3.json" "$T/ss.json" <<'EOF' || fail "inject leaves out what session start already said: $(cat "$T/inj3.json")"
+import json, sys
+c = json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]
+s = json.load(open(sys.argv[2]))["hookSpecificOutput"]["additionalContext"]
+told = [n for n in ("gate", "inject", "hook-post", "rules-offer") if n + " " in s]
+assert len(told) == 3, s
+assert not any(n + " " in c for n in told), c
+EOF
+# the page: findings first, then one table on one shared scale
+CTX_NOW=$N1 "$CTX" page --out "$T/find/page.html" >/dev/null
+python3 - "$T/find/page.html" <<'EOF' || fail "the page has its findings"
+import json, re, sys
+page = open(sys.argv[1], encoding="utf-8").read()
+D = json.loads(re.search(r"var D = (\{.*?\});\n", page, re.S).group(1))
+F = D["find"]
+assert len(F["open"]) == 4 and len(F["watch"]) == 2, F
+assert F["scale"] == [1, 3000], F["scale"]
+names = [r["name"] for r in F["rows"]]
+assert "gate" in names and "search" in names, names
+gate = [r for r in F["rows"] if r["name"] == "gate"][0]
+assert gate["budget"] == 3000 and gate["days"][-1] == ["2026-11-19", 3400, 20], gate
+assert F["from"] == "2026-11-17" and F["to"] == "2026-11-19" and F["calls"] > 0, F
+o = [x for x in F["open"] if x["fp"] == "hook-slow:gate"][0]
+assert o["next"] and o["series"] and o["target"] == 3000, o
+assert 'id="findings"' in page and 'id="everything"' in page
+low = page.lower()
+assert "badge" not in low and "pill" not in low, "no badges or pills"
+assert "log scale" in low
+EOF
+# Three clean days close a problem; one that comes back reopens the same row.
+for d in 2026-11-20 2026-11-21 2026-11-22 2026-11-23; do
+  calls gate $d 16 20 10; calls inject $d 16 20 30; calls search $d 16 20 40; calls guard $d 16 20 20
+  calls hook-post $d 16 20 15; calls rules-offer $d 16 20 25
+done
+N2=2026-11-24T12:00:00Z
+calls gate 2026-11-24 06 20 10
+stamp $N2 120
+CTX_NOW=$N2 "$CTX" scan "$T/find/empty" >/dev/null
+STATES=$(fsql "SELECT fingerprint || '=' || state FROM ctx_finding ORDER BY 1" | tr '\n' ' ')
+[ "$STATES" = "hook-cut:hook-post=closed hook-cut:rules-offer=closed hook-slow:gate=closed hook-slow:guard=closed hook-slow:inject=closed search-slow=closed " ] || fail "three clean days close every finding: $STATES"
+CTX_NOW=$N2 "$CTX" doctor > "$T/doc2.out" || fail "doctor exits 0 with no open problem: $(cat "$T/doc2.out")"
+[ "$(tail -1 "$T/doc2.out")" = "No problems." ] || fail "no problems: $(cat "$T/doc2.out")"
+grep -Eq '^ok +hooks +all under [0-9]+% of their budget' "$T/doc2.out" || fail "hooks are ok: $(cat "$T/doc2.out")"
+grep -Eq '^ok +search +' "$T/doc2.out" || fail "search is ok: $(cat "$T/doc2.out")"
+echo '{"session_id":"s-c","hook_event_name":"SessionStart"}' | CTX_NOW=$N2 "$CTX" rules offer > "$T/ss2.json"
+grep -q 'Evidence: ctx page' "$T/ss2.json" && fail "nothing at session start when healthy: $(cat "$T/ss2.json")"
+CTX_NOW=$N2 "$CTX" status --json | python3 -c 'import json, sys; assert json.load(sys.stdin)["problems"] == 0' || fail "no problems in status"
+CTX_NOW=$N2 "$CTX" page --out "$T/find/page2.html" >/dev/null
+python3 -c 'import json, re, sys; D = json.loads(re.search(r"var D = (\{.*?\});\n", open(sys.argv[1]).read(), re.S).group(1)); assert D["find"]["open"] == [] and D["find"]["watch"] == [], D["find"]' "$T/find/page2.html" || fail "the healthy page has no findings"
+FIRST=$(fsql "SELECT first_seen FROM ctx_finding WHERE fingerprint = 'hook-slow:gate'")
+calls gate 2026-11-24 14 2 3500; calls gate 2026-11-25 06 19 10; calls gate 2026-11-25 07 1 3500; calls gate 2026-11-26 06 19 10; calls gate 2026-11-26 07 1 3500
+N3=2026-11-26T12:00:00Z
+stamp $N3 60
+CTX_NOW=$N3 "$CTX" scan "$T/find/empty" >/dev/null
+[ "$(fsql "SELECT state, reopened, first_seen = '$FIRST' FROM ctx_finding WHERE fingerprint = 'hook-slow:gate'" | tr '\t' ' ')" = "open 1 1" ] || fail "a closed finding reopens in its own row: $(fsql "SELECT * FROM ctx_finding WHERE fingerprint = 'hook-slow:gate'")"
+echo '{"prompt":"zz","session_id":"s-b","cwd":"/nowhere"}' | CTX_NOW=$N3 "$CTX" inject > "$T/inj4.json"
+python3 -c 'import json, sys; c = json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]; assert "gate" in c and "back" in c, c' "$T/inj4.json" || fail "a reopened problem is told again: $(cat "$T/inj4.json")"
+# A late scan is a problem the moment the stamp is two hours old, and gone when it is fresh.
+stamp $N3 10800
+CTX_NOW=$N3 "$CTX" doctor > "$T/doc3.out" && fail "a late scan is a problem"
+grep -Eq '^problem +scan +' "$T/doc3.out" || fail "the late scan's line: $(cat "$T/doc3.out")"
+[ "$(tail -1 "$T/doc3.out")" = "2 problems." ] || fail "two problems: $(cat "$T/doc3.out")"
+stamp $N3 60
+CTX_NOW=$N3 "$CTX" doctor | grep -Eq '^ok +scan +last run 1 min ago$' || fail "a fresh scan is ok"
+# The telemetry roll writes the same summaries, once, for days the log holds.
+export CTX_DB="$T/roll/ctx.sqlite"
+[ "$(fsql "SELECT group_concat(name || ':' || calls || ':' || cut, ' ') FROM (SELECT * FROM ctx_call_day WHERE day = '$DAY2' ORDER BY name)")" = "gate:1:0 hook:1:1 rules-offer:1:0" ] || fail "the telemetry roll writes daily summaries: $(fsql "SELECT * FROM ctx_call_day")"
 
 # The skill eval harness works end to end with a stand-in for the model.
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"
