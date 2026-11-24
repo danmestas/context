@@ -344,3 +344,50 @@ CREATE TABLE IF NOT EXISTS ctx_rule_same(
   made     TEXT,                -- for global: the new rule's key
   at       TEXT NOT NULL
 ) STRICT, WITHOUT ROWID;
+
+-- Each hook, search and turn call from the call log (ctx.sqlite.calls), taken in by the hourly
+-- ctx scan from where the last one stopped (ctx_meta calls_ingested), so a call is counted once
+-- whatever the log's rotation does, and kept 30 days. ts is when it started; ms is how long it
+-- took, NULL while it has no end: once a minute old, it was cut off. An end older than its start
+-- in the log is a row of its own, started ms before it ended.
+CREATE TABLE IF NOT EXISTS ctx_call(
+  ts    INTEGER NOT NULL,           -- unix seconds
+  pid   INTEGER NOT NULL,
+  name  TEXT NOT NULL,
+  ms    INTEGER                     -- -1 when an old end line gave no time
+) STRICT;
+CREATE INDEX IF NOT EXISTS ctx_call_ts ON ctx_call(ts);
+CREATE INDEX IF NOT EXISTS ctx_call_open ON ctx_call(pid, name) WHERE ms IS NULL;
+
+-- One row per UTC day and call name, computed from ctx_call by each scan for the last 15 days.
+-- Times are milliseconds over the calls that ended; NULL when none did. cut counts calls that
+-- started and had not ended a minute later: calls the harness cut off.
+CREATE TABLE IF NOT EXISTS ctx_call_day(
+  day   TEXT NOT NULL,              -- YYYY-MM-DD, UTC
+  name  TEXT NOT NULL,              -- hook or search, as the log names it
+  calls INTEGER NOT NULL,           -- ended and cut off
+  cut   INTEGER NOT NULL,
+  p50   INTEGER,
+  p95   INTEGER,
+  max   INTEGER,
+  PRIMARY KEY (day, name)
+) STRICT, WITHOUT ROWID;
+
+-- Problems ctx is fairly sure it has, one row per problem, written by the detectors in ctx scan.
+-- watching: seen, below confidence; open: confident; closed: gone three days running. A closed
+-- problem that comes back is the same row, opened again.
+CREATE TABLE IF NOT EXISTS ctx_finding(
+  fingerprint TEXT PRIMARY KEY,     -- kind:name, such as hook-slow:gate or search-slow
+  kind        TEXT NOT NULL,        -- hook-slow, search-slow, hook-cut
+  state       TEXT NOT NULL CHECK (state IN ('watching', 'open', 'closed')),
+  title       TEXT NOT NULL,        -- the finding in words, numbers included
+  evidence    TEXT NOT NULL,
+  next        TEXT NOT NULL,        -- a suggested next step
+  series      TEXT NOT NULL,        -- JSON [[day, value], ...]: the daily figures it rests on
+  target      INTEGER,              -- the budget or target the series is held to, ms; NULL for counts
+  first_seen  TEXT NOT NULL,
+  last_seen   TEXT NOT NULL,        -- the last scan that saw the condition
+  changed     TEXT NOT NULL,        -- when state last changed
+  opened      TEXT,                 -- when it last became open; NULL if it never was
+  reopened    INTEGER NOT NULL DEFAULT 0
+) STRICT, WITHOUT ROWID;

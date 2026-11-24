@@ -1158,22 +1158,84 @@ even though it never finished.
 ctx stats --hooks          # runs, median, 95th percentile, slowest, cut off, over limit; last 7 days
 ctx stats --hooks --days 1
 ctx status                 # one line for a status bar: ctx 14 searches · hooks 9 ms
+ctx doctor                 # the problems ctx is fairly sure it has, and what is fine
 ```
 
-`ctx status` reads only the log, in about 10 ms. It adds a warning when hooks were cut
-off in the last day, when the slowest took over a second, or when the hourly scan is late. To
-show it in Claude Code's status line, have your status line script print its output.
+A call over its hook's limit counts as over limit. The limits are the timeouts Claude Code gives
+each hook: 3 s for `ctx gate`, `ctx guard`, `ctx hook post`, `ctx inject`, `ctx recall`,
+`ctx rules offer` and `ctx ticket offer`; 5 s for `ctx guard post` and `ctx artifacts keep`.
+
+`ctx status` reads the log and the open findings (see "Find problems with ctx doctor"), in
+about 10 ms. It adds a warning when hooks were cut off in the last day, when the slowest took
+over a second, or when the hourly scan is late, and ends with `2 problems: ctx doctor` while
+any finding is open. To show it in Claude Code's status line, have your status line script
+print its output.
 
 `ctx status --json` says the same about one project, the one that owns the folder it is run in
 (everything, with `"project": ""`, outside a known project): `open`, `docs` and `held` tickets,
 what `need` you (rule proposals the automatic judge has not decided, plus document conflicts
 with no docs ticket), `tentative` rules the judge added this week, `searches` made and `misses`
-among them since local midnight, and a `warn` string that is empty unless hooks were cut off,
-a hook took over a second, or the scan is late. It uses indexed queries only, about 20 ms on an archive of 400,000 turns.
+among them since local midnight, `problems`, the number of open findings, and a `warn` string
+that is empty unless hooks were cut off, a hook took over a second, or the scan is late. It uses
+indexed queries only, about 20 ms on an archive of 400,000 turns.
+
+## Find problems with ctx doctor
+
+ctx reports problems with itself that it is fairly sure of, and nothing else. It files no
+tickets for them. The call log rotates within about a day on a busy machine, so the hourly
+`ctx scan` takes in each call logged since the scan before (`ctx_call`, kept 30 days), carrying on
+in the rotated file where it stopped, so no call is lost or counted twice. A start with no end a
+minute later counts as cut off; an end is matched only to a start of the same pid and name from
+about when it says it began, so a reused pid does not end an old call. A log emptied and written
+again is told from the one it replaced by its first line. From those calls the scan works out each
+UTC day's figures per hook
+and for search (`ctx_call_day`: calls, calls cut off, and the median, p95 and slowest time). The
+first scan takes in whatever the log still holds, so the first day may be partial.
+The detectors then compare the last three full days and the last 24 hours of the log with these
+rules:
+
+| Finding | Open when | Watched when |
+| --- | --- | --- |
+| A hook is slow | its daily p95 was over its limit (above) on at least 2 of the last 3 days, and is over it in the last 24 hours | it was over its limit on one of those days or in the last 24 hours, or passed a tenth of its limit on 2 of them |
+| Search is slow | `ctx search`'s daily p95 was over its 1 s target on at least 2 of the last 3 days, and is over it in the last 24 hours | it was over the target on one of those days, or in the last 24 hours |
+| Hooks are cut off | a hook had calls that started and had not ended a minute later on at least 2 of the last 3 days, and in the last 24 hours | it had such calls on one of those days, or in the last 24 hours |
+| The scan is late | the scan stamp is over 2 hours old, the rule `ctx status` uses | never |
+
+Each finding has a state: `watching` (seen, below confidence), `open` (confident) or `closed`.
+An open finding closes once its condition has been false on each of the last 3 days and in the
+last 24 hours; if it is still watched by then, it goes back to watching. A closed finding that
+opens again is the same finding: it keeps the day it was first seen and counts the reopening. A
+hook with no calls left in the days held has nothing to stand on and closes. A late scan is read
+from the stamp each time, so it is over the moment a scan starts. The archive hook (`ctx hook`)
+has no limit, since Claude Code runs it without waiting, so it is never found slow; its calls cut
+off are still found.
+
+```sh
+ctx doctor
+```
+
+```
+problem   hooks   1 gate call in 20 takes over 3.4 s, past its 3 s budget; the slowest took 5.2 s; open since 2026-11-20 (2 days)
+checking  search  search p95 was over its 1 s target on 1 of the last 3 days, up to 2.3 s; watched since 2026-11-21 (under a day)
+ok        scan    last run 12 min ago
+1 problem.
+```
+
+Problems come first, then what is watched, then an `ok` line for each of hooks, search and the
+scan that has neither. It exits 1 while any finding is open and 0 otherwise, and reads only the
+archive's tables and the scan stamp.
+
+ctx tells you of open problems where you already look. At session start the context ctx adds
+gains one line naming up to three of them, ending `Evidence: ctx page`; with none open it adds
+nothing. In a session kept open for days, the prompt hook (`ctx inject`) adds one line the first
+time a problem opens or comes back that the session has not heard of, and never repeats a
+problem that has not changed. A hook run with no session id is told nothing, since ctx could not
+keep from telling it again. Which problems a session has heard of is kept beside the database
+(`ctx.sqlite.heard`, cleared after 30 days). `ctx page` shows them first, with the evidence.
 
 ## Keep the call log as Parquet
 
-The call log is short-lived: it rotates at 1 MB and keeps about two days. Each end line also
+The call log is short-lived: it rotates at 1 MB and keeps about a day on a busy machine. Each end line also
 says how the call went: `E UNIX PID NAME MS EXIT OUTCOME BYTES HARNESS SESSION`, with `-` for what
 is not known. `OUTCOME` is `offered`, `quiet`, `denied`, `nudged`, `archived` or `error`; `BYTES` is
 what the hook wrote to stdout. Lines from older versions, which end after `MS`, still read.
@@ -1209,7 +1271,8 @@ session id. With no finished day yet it says so, and needs no duckdb.
 ctx collects things only you can settle: rules it proposed from what you typed,
 documents that disagree, projects it holds, and the hooks it runs. `ctx page`
 puts them on one page, with the evidence beside each, and `ctx page apply` does
-what you chose.
+what you chose. Above them the page shows ctx's own problems (see "Find problems with ctx
+doctor").
 
 ```sh
 ctx page                        # the current project's page: <database>.page-NAME.html
@@ -1230,7 +1293,16 @@ in the line above the title, and its numbers and top sentence count that project
 only.
 
 The page is one file with no network use and no model calls, and it is private to
-you (mode 0600). Open it in a browser. The top line says how many things need you,
+you (mode 0600). Open it in a browser. Its title counts ctx's open problems ("Two
+problems." or "No problems."). Each open problem follows: what it is, the evidence with
+dates, a chart of the daily figures it rests on with its limit or target, and a suggested
+next step. **Everything else** is one table, a row per hook and for search: calls over the
+days held (up to 14), a sparkline of daily p95 on one log scale from 1 ms to 10 s shared by
+every row, the limit as a dashed line, a filled triangle at the top edge for a day over 10 s, the
+range of daily p95, the last day's p95 and its share of the limit. Problems ctx is only watching are one sentence under the table, and a footer
+names the source, the UTC days covered, the number of calls and what p95 means.
+
+Below that, the decisions. Their heading says how many things need you,
 or "Nothing urgent.", and names the largest batch ctx suggests, such as "50
 document conflicts in dagnats wait on you; ctx suggests fixing 40." Under it, one
 button per batch (**File 40 docs tickets**, **Dismiss 5**) chooses every conflict
