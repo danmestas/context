@@ -1059,6 +1059,37 @@ hook that held back an agent's question when you had answered a similar one befo
 was dropped: replayed over 743 real questions it fired on 133, and the earlier turns
 held your eventual answer in 16% of those and a conflicting one in 8%.
 
+## Keep secrets out of the conversation
+
+Whatever a tool prints goes into the conversation, and every later request sends
+the conversation again. A guard on the file tool alone is not enough: an agent
+refused `.env` by its read tool runs `cat .env` instead. `ctx guard` works at both ends.
+
+`ctx guard` is a `PreToolUse` hook. It turns back a direct read of a file that
+holds secrets by its name (`.env` and its variants other than `.env.example` and
+the like, private keys, `~/.aws/credentials`, `.netrc`): the Read tool on one, a
+command that prints files given one (`cat`, `grep`, `head`, `python3` and so on),
+a `<` from one, and `env` or `printenv` alone. The refusal says how to use the
+values without printing them. Sourcing a file, writing to one and listing one
+pass. It is a word match, not a parser, so it only stops plain reads.
+
+`ctx guard post` is a `PostToolUse` hook. It applies the archive's redaction rules
+to what a tool returned and gives the harness the same result with each secret
+replaced, so the model never sees it, however it was read. pic uses it for every
+tool. Claude Code lets a hook change only an MCP tool's result, so there it covers
+MCP tools and `ctx guard` covers the rest. Neither needs an archive, and either
+says nothing when it has nothing to do or anything goes wrong. Two things pass
+unchecked: a string of 256 or more base64 characters and nothing else (image and
+file data, left so it still decodes), and a result over 16 MB, for which `ctx guard
+post` exits 1 with a message instead.
+
+```json
+"PreToolUse": [{ "matcher": "Read|Grep|Bash", "hooks": [{ "type": "command", "command": "ctx guard", "timeout": 3 }] }],
+"PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "ctx guard post", "timeout": 5 }] }]
+```
+
+Neither is installed by default.
+
 ## Rebuild and upgrade
 
 ```sh

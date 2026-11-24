@@ -78,7 +78,7 @@ hex40 = "0123456789abcdef" * 3
 hex64 = "0123456789abcdef" * 4
 remove = [
     "gh" + "p_" + a20, "github" + "_pat_" + a20 * 2, "s" + "k-ant-" + a20,
-    "AK" + "IA" + "ABCDEFGH23456789", "xo" + "xb-" + a20, "dp." + "st." + a20,
+    "AK" + "IA" + "ABCDEFGH23456789", "xo" + "xb-" + a20, "dp." + "st." + a20, "dp." + "st." + "prd." + a20, "dp." + "st." + "dev_2-b." + a20,
     "ey" + "J" + a20 + "." + a20 + "." + a20,
 ]
 cases = [(f"use {s} here", s, "use ") for s in remove]
@@ -3333,6 +3333,59 @@ printf '{"hook_event_name":"SubagentStart","session_id":"s-seven","cwd":"%s"}' "
 # as Claude Code's do, and find is Glob under another name.
 gate s-pic1 "$GP" bash '{"command":"grep -rn heron ."}' | grep -q '"deny"' || fail "a lower-case bash search is gated like Bash"
 gate s-pic2 "$GP" grep '{"pattern":"heron"}' | grep -q '"deny"' || fail "a lower-case grep is gated like Grep"
+# ctx guard, a PreToolUse hook: a direct read of a secret file is turned back with a way to use
+# it without printing it. Anything else passes in silence, archive or not.
+guard() { printf '{"hook_event_name":"PreToolUse","session_id":"g","cwd":"%s","tool_name":"%s","tool_input":%s}' "$GP" "$1" "$2" | CTX_DB="$T/noguard.sqlite" "$CTX" guard; }
+guard Bash '{"command":"cat .env"}' > "$T/guard.txt"
+grep -q '"permissionDecision":"deny"' "$T/guard.txt" && grep -q 'every later request' "$T/guard.txt" || fail "cat .env is turned back: $(cat "$T/guard.txt")"
+for c in 'cd app && head -5 config/.env.local' 'grep KEY .env' 'python3 -c x < .env' 'less ~/.aws/credentials' 'tail ~/.ssh/id_ed25519' 'base64 secrets/server.pem' 'cat ./.netrc' 'printenv' 'env | sort'; do
+  guard Bash "{\"command\":\"$c\"}" | grep -q '"deny"' || fail "a read of a secret file is turned back: $c"
+done
+for c in 'cat .env.example' 'source .env && make' 'set -a; . ./.env; set +a; ./run' 'echo X=1 >> .env' 'ls -la .env' 'cat ~/.ssh/id_ed25519.pub' 'printenv HOME' 'env FOO=1 make' 'cat README.md' 'rm .env.bak'; do
+  [ -z "$(guard Bash "{\"command\":\"$c\"}")" ] || fail "a command that prints no secret passes: $c"
+done
+guard Read "{\"file_path\":\"$GP/.env\"}" | grep -q '"deny"' || fail "Read of .env is turned back"
+guard read '{"path":"deploy/.env.production"}' | grep -q '"deny"' || fail "pic's read of .env.production is turned back"
+[ -z "$(guard Read "{\"file_path\":\"$GP/.env.sample\"}")" ] || fail "Read of .env.sample passes"
+[ -z "$(guard Grep '{"pattern":"KEY","path":"src"}')" ] || fail "a Grep over a directory passes"
+[ -z "$(printf 'not json' | "$CTX" guard)" ] || fail "the guard says nothing on input it cannot read"
+[ ! -e "$T/noguard.sqlite" ] || fail "the guard needs no archive and makes none"
+# ctx guard post, a PostToolUse hook: secrets in what a tool returned are replaced before the
+# model sees them, in the shape the harness sent; output with none gets no reply.
+gpost() { printf '{"hook_event_name":"PostToolUse","session_id":"g","cwd":"%s","tool_name":"%s","tool_input":{},"tool_response":%s}' "$GP" "$1" "$2" | CTX_DB="$T/noguard.sqlite" "$CTX" guard post; }
+SEC="dp.st.aB3aB3aB3aB3aB3aB3aB3aB3"
+gpost Bash "{\"content\":\"DOPPLER_TOKEN=$SEC\\nok\",\"is_error\":false}" > "$T/gpost.txt"
+python3 - "$T/gpost.txt" "$SEC" <<'EOF' || fail "pic's string content is redacted in place: $(cat "$T/gpost.txt")"
+import json, sys
+d = json.load(open(sys.argv[1]))["hookSpecificOutput"]
+assert d["hookEventName"] == "PostToolUse"
+o = d["updatedToolOutput"]
+assert o["is_error"] is False and sys.argv[2] not in o["content"] and "[REDACTED]" in o["content"] and o["content"].endswith("\nok"), o
+assert "updatedMCPToolOutput" not in d
+EOF
+gpost bash "{\"content\":[{\"type\":\"text\",\"text\":\"t $SEC\"},{\"type\":\"image\",\"data\":\"AAAA\"}]}" | python3 -c '
+import json, sys; o = json.load(sys.stdin)["hookSpecificOutput"]["updatedToolOutput"]["content"]
+assert o[0]["text"] == "t [REDACTED]" and o[1] == {"type": "image", "data": "AAAA"}, o' || fail "text parts of a content array are redacted, other parts kept"
+gpost Bash "{\"stdout\":\"$SEC\",\"stderr\":\"\",\"interrupted\":false}" | grep -q '"stdout":"\[REDACTED\]"' || fail "Claude Code's stdout is redacted"
+gpost Bash "\"plain $SEC\"" | grep -q '"updatedToolOutput":"plain \[REDACTED\]"' || fail "a plain string result is redacted"
+gpost mcp__x__get "{\"content\":[{\"type\":\"text\",\"text\":\"$SEC\"}]}" | grep -q '"updatedMCPToolOutput"' || fail "an MCP tool's result is also given back as Claude Code's updatedMCPToolOutput"
+[ -z "$(gpost Bash '{"content":"nothing secret here","is_error":false}')" ] || fail "output with no secret gets no reply"
+[ -z "$(printf 'not json' | "$CTX" guard post)" ] || fail "guard post says nothing on input it cannot read"
+gpost Bash "{\"data\":\"$SEC\"}" | grep -q '"data":"\[REDACTED\]"' || fail "a field named data is redacted"
+gpost Bash "{\"a\":\"$SEC\",\"a\":\"x $SEC\"}" > "$T/gdup.txt"; grep -q "$SEC" "$T/gdup.txt" && fail "a repeated key keeps no secret: $(cat "$T/gdup.txt")"
+gpost Bash "\"a\\u0000b $SEC tail\"" | grep -q 'a\\u0000b \[REDACTED\] tail' || fail "text after a NUL is kept"
+gpost Bash "\"caf\\u00e9 \\ud83d\\ude00 $SEC\"" | python3 -c 'import json,sys; assert json.load(sys.stdin)["hookSpecificOutput"]["updatedToolOutput"] == "caf\u00e9 \U0001F600 [REDACTED]"' || fail "escaped characters decode and encode back"
+B64=$(python3 -c 'print("QUJD" * 200)'); BLOB='{"type":"image","data":"'$B64'"}'
+[ -z "$(gpost Read "$BLOB")" ] || fail "a base64 blob is left alone: $(gpost Read "$BLOB" | cut -c1-200)"
+python3 -c '
+import json, sys
+print(json.dumps({"tool_name": "Bash", "tool_response": ["l%d %s xxx" % (i, sys.argv[1]) + " y" * 100 for i in range(20000)]}))' "$SEC" > "$T/gbig.json"
+s0=$(date +%s); CTX_DB="$T/noguard.sqlite" "$CTX" guard post < "$T/gbig.json" > "$T/gbig.out"; s1=$(date +%s)
+[ $((s1 - s0)) -lt 5 ] && ! grep -q "$SEC" "$T/gbig.out" && [ "$(grep -o 'REDACTED' "$T/gbig.out" | wc -l)" -eq 20000 ] || fail "20000 secrets in 4 MB are redacted inside a hook's timeout ($((s1 - s0)) s)"
+gpost Bash "\"\\ud800 $SEC\"" | python3 -c 'import json,sys; assert json.loads(sys.stdin.buffer.read().decode("utf-8"))["hookSpecificOutput"]["updatedToolOutput"] == "\ufffd [REDACTED]"' || fail "a lone surrogate becomes U+FFFD, so the reply stays UTF-8"
+python3 -c 'import sys; sys.stdout.write("{\"tool_name\":\"Bash\",\"tool_response\":\"" + "x" * (17 << 20) + "\"}")' | CTX_DB="$T/noguard.sqlite" "$CTX" guard post 2>"$T/gbig.err" && fail "a result over 16 MB is not passed as checked"
+grep -q 'over 16 MB' "$T/gbig.err" || fail "and says why: $(cat "$T/gbig.err")"
+gpost Bash '"see dp.st.example.internalservicehostname.com"' | grep -q . && fail "a host name is not a Doppler token"
 gate s-pic3 "$GP" find '{"pattern":"*.md"}' | grep -q '"deny"' || fail "find is gated like Glob"
 gate s-pic4 "$GP" GLOB '{"pattern":"*.md"}' | grep -q '"deny"' || fail "a tool name in any case is the same tool"
 [ -z "$(gate s-pic5 "$GP" bash '{"command":"make test"}')" ] || fail "a lower-case bash command that is not a search passes"
