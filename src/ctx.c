@@ -310,7 +310,13 @@ static size_t token_end(const char *s, size_t n, size_t i, const char **name) {
   if (at(s, n, i, "dp.") && i + 5 < n && s[i + 5] == '.' && c_alnum((unsigned char)s[i + 3]) && c_alnum((unsigned char)s[i + 4])) {
     e = span(s, n, i + 6, c_alnum);
     *name = "doppler";
-    return e - (i + 6) >= 20 ? e : 0;
+    if (e - (i + 6) >= 20) return e;
+    /* a service token names its config first: dp.st.prd.TOKEN, the config in letters, digits, - and _ */
+    size_t c = i + 6;
+    while (c < n && (c_alnum((unsigned char)s[c]) || s[c] == '-' || s[c] == '_')) c++;
+    if (c == i + 6 || c >= n || s[c] != '.') return 0;
+    e = span(s, n, c + 1, c_alnum);
+    return e - (c + 1) >= 20 ? e : 0;
   }
   if (at(s, n, i, "eyJ")) { /* JWT: three base64url parts */
     size_t a = span(s, n, i, c_b64);
@@ -2014,9 +2020,10 @@ static void call_end(void) {
 
 /* Starts the log entry when this invocation is a hook or a search. */
 static void call_begin(int argc, char **argv) {
-  static const char *const one[] = {"hook", "inject", "recall", "gate", "search", "turn", NULL};
+  static const char *const one[] = {"hook", "inject", "recall", "gate", "guard", "search", "turn", NULL};
   static const char *const two[][3] = {{"rules", "offer", "rules-offer"}, {"ticket", "offer", "ticket-offer"}, {"artifacts", "keep", "artifacts-keep"},
-                                        {"docs", "nudge", "docs-nudge"}, {"hook", "post", "hook-post"}, {NULL, NULL, NULL}};
+                                        {"docs", "nudge", "docs-nudge"}, {"hook", "post", "hook-post"}, {"guard", "post", "guard-post"},
+                                        {NULL, NULL, NULL}};
   if (argc < 2) return;
   for (int i = 0; two[i][0] && !call_name && argc >= 3; i++) /* first, so hook post is not the archive hook */
     if (!strcmp(argv[1], two[i][0]) && !strcmp(argv[2], two[i][1])) call_name = two[i][2];
@@ -3082,7 +3089,7 @@ static void relabel_speakers(sqlite3 *db) {
                              changed_turns - dropped, changed_notes, dropped);
 }
 
-#define REDACTION_VERSION "3" /* raise when a rule is added or redaction changes, so what is already stored is redacted again; 3: redaction repeats until stable */
+#define REDACTION_VERSION "4" /* raise when a rule is added or redaction changes, so what is already stored is redacted again; 3: redaction repeats until stable; 4: Doppler service tokens with a config */
 
 /* Applies today's redaction rules to what this machine stored under older ones: each turn of
  * its session technotes, then the indexed turns. Once per version. A technote changed here
@@ -7593,6 +7600,228 @@ static int cmd_gate(void) {
   free(mark);
   free(cwd);
   free(cmd);
+  sqlite3_close(db);
+  return 0;
+}
+
+/* Reads a hook's JSON from stdin, up to 16 MB; NULL when there is none. */
+static char *hook_stdin(size_t *len) {
+  buf in = {0};
+  char chunk[4096];
+  size_t got;
+  while (in.n < (16u << 20) && (got = fread(chunk, 1, sizeof chunk, stdin)) > 0) buf_add(&in, chunk, got);
+  if (in.p) buf_add(&in, "", 1);
+  *len = in.n ? in.n - 1 : 0;
+  return in.p;
+}
+
+/* Whether a path names a file that holds secrets by its name alone: .env and its variants other
+ * than the examples, private keys, ~/.aws/credentials, .netrc and the like. */
+static int secret_file(const char *path) {
+  if (!path || !*path) return 0;
+  const char *base = strrchr(path, '/');
+  base = base ? base + 1 : path;
+  if (!strcmp(base, ".env")) return 1;
+  if (!strncmp(base, ".env.", 5)) {
+    static const char *const fine[] = {"example", "sample", "template", "dist", "defaults", NULL};
+    for (int i = 0; fine[i]; i++)
+      if (!strcmp(base + 5, fine[i])) return 0;
+    return 1;
+  }
+  static const char *const names[] = {".netrc", ".pgpass", ".git-credentials", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", NULL};
+  for (int i = 0; names[i]; i++)
+    if (!strcmp(base, names[i])) return 1;
+  if (!strcmp(base, "credentials") && (strstr(path, ".aws/") == path || strstr(path, "/.aws/"))) return 1;
+  size_t n = strlen(base);
+  static const char *const ends[] = {".pem", ".key", ".p12", ".pfx", NULL};
+  for (int i = 0; ends[i]; i++) {
+    size_t e = strlen(ends[i]);
+    if (n > e && !strcmp(base + n - e, ends[i])) return 1;
+  }
+  return 0;
+}
+
+/* What a shell command would print of a secret: a secret file given to a command that prints
+ * files, or fed in with <, or the whole environment (env or printenv alone). Returns what it
+ * would print, or NULL. A word match, not a parser: it catches the plain reads a well-meaning
+ * agent makes, and redaction of the output (ctx guard post) is what holds against the rest. */
+static char *secret_read(const char *cmd) {
+  static const char *const readers[] = {"cat", "less", "more", "head", "tail", "bat", "grep", "egrep", "fgrep", "rg", "ag", "awk",
+                                        "sed", "xxd", "od", "hexdump", "strings", "base64", "cut", "sort", "uniq", "nl", "tac",
+                                        "python", "python3", "node", "ruby", "perl", "jq", "yq", "diff", "cmp", "vi", "vim", "view", NULL};
+  static const char *const prefixes[] = {"sudo", "command", "exec", "time", "nohup", NULL};
+  char *copy = dup_text((const unsigned char *)cmd), *found = NULL;
+  for (char *c = copy; *c; c++) /* segments end at ; & | ( ) and newlines; quotes are dropped */
+    if (*c == '\'' || *c == '"' || *c == '`') *c = ' ';
+  char *seg_save = NULL;
+  for (char *seg = strtok_r(copy, ";&|()\n", &seg_save); seg && !found; seg = strtok_r(NULL, ";&|()\n", &seg_save)) {
+    char *words[256];
+    int nw = 0;
+    char *w_save = NULL;
+    for (char *w = strtok_r(seg, " \t\r", &w_save); w && nw < 256; w = strtok_r(NULL, " \t\r", &w_save)) words[nw++] = w;
+    int i = 0;
+    while (i < nw && (strchr(words[i], '=') && (isalpha((unsigned char)words[i][0]) || words[i][0] == '_'))) i++;
+    for (int p = 0; prefixes[p] && i < nw; p++)
+      if (!strcmp(words[i], prefixes[p])) { i++; p = -1; }
+    if (i >= nw) continue;
+    const char *verb = strrchr(words[i], '/') ? strrchr(words[i], '/') + 1 : words[i];
+    if ((!strcmp(verb, "env") || !strcmp(verb, "printenv")) && i + 1 == nw) {
+      found = dup_text((const unsigned char *)"the whole environment");
+      break;
+    }
+    int reads = 0;
+    for (int r = 0; readers[r]; r++)
+      if (!strcmp(verb, readers[r])) reads = 1;
+    for (int k = i; k < nw && !found; k++) {
+      const char *w = words[k];
+      if (w[0] == '>' || (isdigit((unsigned char)w[0]) && w[1] == '>')) { /* a file written to is not read */
+        if (!strchr(w, '>')[1] || (strchr(w, '>')[1] == '>' && !strchr(w, '>')[2])) k++;
+        continue;
+      }
+      if (w[0] == '<') {
+        const char *f = w[1] ? w + 1 : k + 1 < nw ? words[k + 1] : "";
+        if (secret_file(f)) found = dup_text((const unsigned char *)f);
+        continue;
+      }
+      if (reads && k > i && secret_file(w)) found = dup_text((const unsigned char *)w);
+    }
+  }
+  free(copy);
+  return found;
+}
+
+/* ctx guard: a PreToolUse hook. A direct read of a file that holds secrets (Read on .env, cat
+ * .env, grep KEY .env, env alone) is turned back with a way to use it without printing it,
+ * because whatever a tool prints rides in every later request. It needs no archive, says
+ * nothing about anything else, and lets the call pass on any failure. */
+static int cmd_guard(void) {
+  size_t len;
+  char *in = hook_stdin(&len);
+  if (!in) return 0;
+  sqlite3 *db = NULL;
+  if (sqlite3_open(":memory:", &db) != SQLITE_OK) { free(in); return 0; }
+  sqlite3_stmt *q = NULL;
+  char tool[64] = "", *path = NULL, *cmd = NULL;
+  if (sqlite3_prepare_v2(db, "SELECT coalesce(json_extract(?1, '$.tool_name'), ''), coalesce(json_extract(?1, '$.tool_input.file_path'),"
+                             " json_extract(?1, '$.tool_input.path')), json_extract(?1, '$.tool_input.command'),"
+                             " coalesce(json_extract(?1, '$.harness'), ''), coalesce(json_extract(?1, '$.session_id'), '') WHERE json_valid(?1)",
+                         -1, &q, NULL) == SQLITE_OK) {
+    sqlite3_bind_text(q, 1, in, (int)len, SQLITE_STATIC);
+    if (sqlite3_step(q) == SQLITE_ROW) {
+      tool_canon((const char *)sqlite3_column_text(q, 0), tool, sizeof tool);
+      if (sqlite3_column_text(q, 1)) path = dup_text(sqlite3_column_text(q, 1));
+      if (sqlite3_column_text(q, 2)) cmd = dup_text(sqlite3_column_text(q, 2));
+      call_note((const char *)sqlite3_column_text(q, 3), (const char *)sqlite3_column_text(q, 4));
+    }
+    sqlite3_finalize(q);
+  }
+  free(in);
+  char *what = NULL;
+  if (!strcmp(tool, "bash") && cmd) what = secret_read(cmd);
+  else if ((!strcmp(tool, "read") || !strcmp(tool, "grep")) && secret_file(path)) what = dup_text((const unsigned char *)path);
+  if (what) {
+    int env = !strcmp(what, "the whole environment");
+    if (sqlite3_prepare_v2(db, "SELECT json_object('hookSpecificOutput', json_object('hookEventName', 'PreToolUse', 'permissionDecision', 'deny',"
+                               " 'permissionDecisionReason', 'ctx guard: this would print ' || ?1 || ', which holds secrets, and whatever a tool"
+                               " prints is sent with every later request of this session. ' || ?2))",
+                           -1, &q, NULL) == SQLITE_OK) {
+      sqlite3_bind_text(q, 1, what, -1, SQLITE_STATIC);
+      sqlite3_bind_text(q, 2,
+                        env ? "Print only the variable you need by name (printenv NAME), or check that it is set with [ -n \"$NAME\" ]."
+                            : "Use it without printing it: load it in the command that needs it (set -a; . ./.env; set +a; CMD) or run"
+                              " that command under doppler run --. For the names alone, read .env.example if there is one.",
+                        -1, SQLITE_STATIC);
+      if (sqlite3_step(q) == SQLITE_ROW) call_say((const char *)sqlite3_column_text(q, 0), "denied");
+      sqlite3_finalize(q);
+    }
+  }
+  free(what);
+  free(path);
+  free(cmd);
+  sqlite3_close(db);
+  return 0;
+}
+
+/* ctx_redact(text): text with today's redaction rules applied, as the archive stores it. */
+static void sql_ctx_redact(sqlite3_context *cx, int argc, sqlite3_value **argv) {
+  (void)argc;
+  const char *s = (const char *)sqlite3_value_text(argv[0]);
+  if (!s) { sqlite3_result_null(cx); return; }
+  buf out = {0};
+  add_redacted(&out, s, (size_t)sqlite3_value_bytes(argv[0]));
+  if (out.p) sqlite3_result_text(cx, out.p, (int)out.n, free);
+  else sqlite3_result_text(cx, "", 0, SQLITE_STATIC);
+}
+
+/* ctx guard post: a PostToolUse hook. Secrets in what a tool returned are replaced, with the
+ * archive's rules, before the model sees them: the reply is the harness's own tool_response
+ * with each string redacted, as updatedToolOutput (pic) and, for an MCP tool,
+ * updatedMCPToolOutput (Claude Code, which cannot change its own tools' output). Base64 data
+ * fields are left as they are. With nothing to redact, or on any failure, it says nothing. */
+static int cmd_guard_post(void) {
+  size_t len;
+  char *in = hook_stdin(&len);
+  if (!in) return 0;
+  sqlite3 *db = NULL;
+  if (sqlite3_open(":memory:", &db) != SQLITE_OK) { free(in); return 0; }
+  sqlite3_create_function(db, "ctx_redact", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, sql_ctx_redact, NULL, NULL);
+  sqlite3_stmt *q = NULL, *set = NULL;
+  char *doc = NULL;
+  long cut = 0;
+  if (sqlite3_prepare_v2(db, "SELECT json(?1), coalesce(json_extract(?1, '$.harness'), ''), coalesce(json_extract(?1, '$.session_id'), '')"
+                             " WHERE json_valid(?1) AND json_type(?1, '$.tool_response') IS NOT NULL",
+                         -1, &q, NULL) == SQLITE_OK) {
+    sqlite3_bind_text(q, 1, in, (int)len, SQLITE_STATIC);
+    if (sqlite3_step(q) == SQLITE_ROW) {
+      doc = dup_text(sqlite3_column_text(q, 0));
+      call_note((const char *)sqlite3_column_text(q, 1), (const char *)sqlite3_column_text(q, 2));
+    }
+    sqlite3_finalize(q);
+  }
+  free(in);
+  /* each string leaf that redaction changes, replaced in the document by its full path */
+  if (doc && sqlite3_prepare_v2(db, "SELECT fullkey, ctx_redact(atom) FROM json_tree(?1, '$.tool_response')"
+                                    " WHERE type = 'text' AND coalesce(key, '') NOT IN ('data', 'source') AND ctx_redact(atom) IS NOT atom",
+                                -1, &q, NULL) == SQLITE_OK &&
+      sqlite3_prepare_v2(db, "SELECT json_set(?1, ?2, ?3)", -1, &set, NULL) == SQLITE_OK) {
+    struct { char *key, *val; } *fix = NULL;
+    size_t nfix = 0, capfix = 0;
+    sqlite3_bind_text(q, 1, doc, -1, SQLITE_STATIC);
+    while (sqlite3_step(q) == SQLITE_ROW) {
+      if (nfix == capfix) fix = realloc(fix, (capfix = capfix ? capfix * 2 : 8) * sizeof *fix);
+      fix[nfix].key = dup_text(sqlite3_column_text(q, 0));
+      fix[nfix++].val = dup_text(sqlite3_column_text(q, 1));
+    }
+    sqlite3_reset(q);
+    for (size_t i = 0; i < nfix; i++) {
+      sqlite3_bind_text(set, 1, doc, -1, SQLITE_TRANSIENT);
+      sqlite3_bind_text(set, 2, fix[i].key, -1, SQLITE_STATIC);
+      sqlite3_bind_text(set, 3, fix[i].val, -1, SQLITE_STATIC);
+      if (sqlite3_step(set) == SQLITE_ROW && sqlite3_column_text(set, 0)) {
+        free(doc);
+        doc = dup_text(sqlite3_column_text(set, 0));
+        cut++;
+      }
+      sqlite3_reset(set);
+      free(fix[i].key);
+      free(fix[i].val);
+    }
+    free(fix);
+  }
+  sqlite3_finalize(q);
+  sqlite3_finalize(set);
+  if (doc && cut && sqlite3_prepare_v2(db, "SELECT json_object('hookSpecificOutput', json_object('hookEventName', 'PostToolUse',"
+                                           " 'updatedToolOutput', ?1 -> '$.tool_response'))"
+                                           " || '' WHERE coalesce(json_extract(?1, '$.tool_name'), '') NOT LIKE 'mcp\\_\\_%' ESCAPE '\\'"
+                                           " UNION ALL SELECT json_object('hookSpecificOutput', json_object('hookEventName', 'PostToolUse',"
+                                           " 'updatedToolOutput', ?1 -> '$.tool_response', 'updatedMCPToolOutput', ?1 -> '$.tool_response'))"
+                                           " WHERE json_extract(?1, '$.tool_name') LIKE 'mcp\\_\\_%' ESCAPE '\\'",
+                                       -1, &q, NULL) == SQLITE_OK) {
+    sqlite3_bind_text(q, 1, doc, -1, SQLITE_STATIC);
+    if (sqlite3_step(q) == SQLITE_ROW) call_say((const char *)sqlite3_column_text(q, 0), "redacted");
+    sqlite3_finalize(q);
+  }
+  free(doc);
   sqlite3_close(db);
   return 0;
 }
@@ -14686,6 +14915,7 @@ static int usage(void) {
         "       ctx inject\n"
         "       ctx recall\n"
         "       ctx gate\n"
+        "       ctx guard [post]\n"
         "       ctx stats [--weeks N] | --hooks [--days N]\n"
         "       ctx repeats [--inline] [--days N] [--limit N]\n"
         "       ctx status [--json]\n"
@@ -14725,6 +14955,8 @@ static int run(int argc, char **argv) {
   if (argc == 2 && !strcmp(argv[1], "inject")) return cmd_inject();
   if (argc == 2 && !strcmp(argv[1], "recall")) return cmd_recall();
   if (argc == 2 && !strcmp(argv[1], "gate")) return cmd_gate();
+  if (argc == 2 && !strcmp(argv[1], "guard")) return cmd_guard();
+  if (argc == 3 && !strcmp(argv[1], "guard") && !strcmp(argv[2], "post")) return cmd_guard_post();
   if (argc == 2 && !strcmp(argv[1], "mcp")) return cmd_mcp();
   if ((argc == 2 || argc == 3) && !strcmp(argv[1], "scan")) return cmd_scan(argc == 3 ? argv[2] : NULL);
   if (argc >= 2 && !strcmp(argv[1], "audit")) return cmd_audit(argc - 2, argv + 2);
