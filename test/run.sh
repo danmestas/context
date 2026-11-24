@@ -3371,6 +3371,19 @@ gpost Bash "\"plain $SEC\"" | grep -q '"updatedToolOutput":"plain \[REDACTED\]"'
 gpost mcp__x__get "{\"content\":[{\"type\":\"text\",\"text\":\"$SEC\"}]}" | grep -q '"updatedMCPToolOutput"' || fail "an MCP tool's result is also given back as Claude Code's updatedMCPToolOutput"
 [ -z "$(gpost Bash '{"content":"nothing secret here","is_error":false}')" ] || fail "output with no secret gets no reply"
 [ -z "$(printf 'not json' | "$CTX" guard post)" ] || fail "guard post says nothing on input it cannot read"
+gpost Bash "{\"data\":\"$SEC\"}" | grep -q '"data":"\[REDACTED\]"' || fail "a field named data is redacted"
+gpost Bash "{\"a\":\"$SEC\",\"a\":\"x $SEC\"}" > "$T/gdup.txt"; grep -q "$SEC" "$T/gdup.txt" && fail "a repeated key keeps no secret: $(cat "$T/gdup.txt")"
+gpost Bash "\"a\\u0000b $SEC tail\"" | grep -q 'a\\u0000b \[REDACTED\] tail' || fail "text after a NUL is kept"
+gpost Bash "\"caf\\u00e9 \\ud83d\\ude00 $SEC\"" | python3 -c 'import json,sys; assert json.load(sys.stdin)["hookSpecificOutput"]["updatedToolOutput"] == "caf\u00e9 \U0001F600 [REDACTED]"' || fail "escaped characters decode and encode back"
+B64=$(python3 -c 'print("QUJD" * 200)'); BLOB='{"type":"image","data":"'$B64'"}'
+[ -z "$(gpost Read "$BLOB")" ] || fail "a base64 blob is left alone: $(gpost Read "$BLOB" | cut -c1-200)"
+python3 -c '
+import json, sys
+print(json.dumps({"tool_name": "Bash", "tool_response": ["l%d %s xxx" % (i, sys.argv[1]) + " y" * 100 for i in range(20000)]}))' "$SEC" > "$T/gbig.json"
+s0=$(date +%s); CTX_DB="$T/noguard.sqlite" "$CTX" guard post < "$T/gbig.json" > "$T/gbig.out"; s1=$(date +%s)
+[ $((s1 - s0)) -lt 5 ] && ! grep -q "$SEC" "$T/gbig.out" && [ "$(grep -o 'REDACTED' "$T/gbig.out" | wc -l)" -eq 20000 ] || fail "20000 secrets in 4 MB are redacted inside a hook's timeout ($((s1 - s0)) s)"
+printf 'dp.st.example.internalservicehostname.com\n' > "$T/ghost.txt"
+gpost Bash '"see dp.st.example.internalservicehostname.com"' | grep -q . && fail "a host name is not a Doppler token"
 gate s-pic3 "$GP" find '{"pattern":"*.md"}' | grep -q '"deny"' || fail "find is gated like Glob"
 gate s-pic4 "$GP" GLOB '{"pattern":"*.md"}' | grep -q '"deny"' || fail "a tool name in any case is the same tool"
 [ -z "$(gate s-pic5 "$GP" bash '{"command":"make test"}')" ] || fail "a lower-case bash command that is not a search passes"

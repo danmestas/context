@@ -316,6 +316,7 @@ static size_t token_end(const char *s, size_t n, size_t i, const char **name) {
     while (c < n && (c_alnum((unsigned char)s[c]) || s[c] == '-' || s[c] == '_')) c++;
     if (c == i + 6 || c >= n || s[c] != '.') return 0;
     e = span(s, n, c + 1, c_alnum);
+    if (e + 1 < n && s[e] == '.' && c_alnum((unsigned char)s[e + 1])) return 0; /* dp.st.example.longname.com: a host */
     return e - (c + 1) >= 20 ? e : 0;
   }
   if (at(s, n, i, "eyJ")) { /* JWT: three base64url parts */
@@ -7742,87 +7743,159 @@ static int cmd_guard(void) {
   return 0;
 }
 
-/* ctx_redact(text): text with today's redaction rules applied, as the archive stores it. */
-static void sql_ctx_redact(sqlite3_context *cx, int argc, sqlite3_value **argv) {
-  (void)argc;
-  const char *s = (const char *)sqlite3_value_text(argv[0]);
-  if (!s) { sqlite3_result_null(cx); return; }
-  buf out = {0};
-  add_redacted(&out, s, (size_t)sqlite3_value_bytes(argv[0]));
-  if (out.p) sqlite3_result_text(cx, out.p, (int)out.n, free);
-  else sqlite3_result_text(cx, "", 0, SQLITE_STATIC);
+/* Appends a JSON string's text, decoded, from s (just past its opening quote); returns the
+ * index of its closing quote, or 0 when it never closes. \u0000 and other escapes decode to their
+ * bytes, a surrogate pair to one character. */
+static size_t json_string_decode(const char *s, size_t n, size_t i, buf *out) {
+  while (i < n && s[i] != '"') {
+    if (s[i] != '\\') {
+      size_t j = i;
+      while (j < n && s[j] != '"' && s[j] != '\\') j++;
+      buf_add(out, s + i, j - i);
+      i = j;
+      continue;
+    }
+    if (i + 1 >= n) return 0;
+    char e = s[i + 1], c = 0;
+    i += 2;
+    switch (e) {
+    case 'b': c = '\b'; break;
+    case 'f': c = '\f'; break;
+    case 'n': c = '\n'; break;
+    case 'r': c = '\r'; break;
+    case 't': c = '\t'; break;
+    case 'u': {
+      unsigned long cp = 0;
+      if (i + 4 > n || sscanf(s + i, "%4lx", &cp) != 1) return 0;
+      i += 4;
+      if (cp >= 0xD800 && cp < 0xDC00 && i + 6 <= n && s[i] == '\\' && s[i + 1] == 'u') {
+        unsigned long lo = 0;
+        if (sscanf(s + i + 2, "%4lx", &lo) == 1 && lo >= 0xDC00 && lo < 0xE000) {
+          cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+          i += 6;
+        }
+      }
+      char u[4];
+      size_t k;
+      if (cp < 0x80) u[0] = (char)cp, k = 1;
+      else if (cp < 0x800) u[0] = (char)(0xC0 | cp >> 6), u[1] = (char)(0x80 | (cp & 0x3F)), k = 2;
+      else if (cp < 0x10000) u[0] = (char)(0xE0 | cp >> 12), u[1] = (char)(0x80 | ((cp >> 6) & 0x3F)), u[2] = (char)(0x80 | (cp & 0x3F)), k = 3;
+      else u[0] = (char)(0xF0 | cp >> 18), u[1] = (char)(0x80 | ((cp >> 12) & 0x3F)), u[2] = (char)(0x80 | ((cp >> 6) & 0x3F)), u[3] = (char)(0x80 | (cp & 0x3F)), k = 4;
+      buf_add(out, u, k);
+      continue;
+    }
+    default: c = e; /* \" \\ \/ */
+    }
+    buf_add(out, &c, 1);
+  }
+  return i < n ? i : 0;
+}
+
+/* Appends n bytes as a JSON string, quotes included. */
+static void json_string_encode(buf *out, const char *s, size_t n) {
+  buf_add(out, "\"", 1);
+  for (size_t i = 0; i < n; i++) {
+    unsigned char c = (unsigned char)s[i];
+    char esc[8];
+    if (c == '"' || c == '\\') { esc[0] = '\\'; esc[1] = (char)c; buf_add(out, esc, 2); }
+    else if (c == '\n') buf_add(out, "\\n", 2);
+    else if (c == '\t') buf_add(out, "\\t", 2);
+    else if (c == '\r') buf_add(out, "\\r", 2);
+    else if (c < 0x20) { snprintf(esc, sizeof esc, "\\u%04x", c); buf_add(out, esc, 6); }
+    else buf_add(out, s + i, 1);
+  }
+  buf_add(out, "\"", 1);
+}
+
+/* Whether a decoded string is a long run of base64 with nothing else: image or file data,
+ * left as it is so it still decodes. */
+static int base64_blob(const char *s, size_t n) {
+  if (n < 256) return 0;
+  for (size_t i = 0; i < n; i++)
+    if (!c_b64((unsigned char)s[i]) && s[i] != '+' && s[i] != '/' && s[i] != '=') return 0;
+  return 1;
+}
+
+/* Copies the JSON text s to out with every string value redacted, in one pass: object keys
+ * and base64 blobs are kept, and a string redaction does not change is copied as it was.
+ * Returns how many strings changed. */
+static long json_redact_strings(const char *s, size_t n, buf *out) {
+  long changed = 0;
+  size_t i = 0;
+  while (i < n) {
+    if (s[i] != '"') {
+      size_t j = i;
+      while (j < n && s[j] != '"') j++;
+      buf_add(out, s + i, j - i);
+      i = j;
+      continue;
+    }
+    buf text = {0}, red = {0};
+    size_t end = json_string_decode(s, n, i + 1, &text);
+    if (!end) { buf_add(out, s + i, n - i); free(text.p); return -1; }
+    size_t after = end + 1;
+    while (after < n && c_space((unsigned char)s[after])) after++;
+    int key = after < n && s[after] == ':';
+    if (!key && text.n && !base64_blob(text.p, text.n)) add_redacted(&red, text.p, text.n);
+    if (!key && red.n && (red.n != text.n || memcmp(red.p, text.p, text.n))) {
+      json_string_encode(out, red.p, red.n);
+      changed++;
+    } else {
+      buf_add(out, s + i, end + 1 - i);
+    }
+    free(text.p);
+    free(red.p);
+    i = end + 1;
+  }
+  return changed;
 }
 
 /* ctx guard post: a PostToolUse hook. Secrets in what a tool returned are replaced, with the
  * archive's rules, before the model sees them: the reply is the harness's own tool_response
- * with each string redacted, as updatedToolOutput (pic) and, for an MCP tool,
- * updatedMCPToolOutput (Claude Code, which cannot change its own tools' output). Base64 data
- * fields are left as they are. With nothing to redact, or on any failure, it says nothing. */
+ * with each string value redacted, as updatedToolOutput (pic) and, for an MCP tool,
+ * updatedMCPToolOutput (Claude Code, which cannot change its own tools' output). One pass over
+ * the text, so a large result stays well inside a hook's timeout. Base64 blobs are left as
+ * they are. With nothing to redact, or on any failure, it says nothing. */
 static int cmd_guard_post(void) {
   size_t len;
   char *in = hook_stdin(&len);
   if (!in) return 0;
   sqlite3 *db = NULL;
   if (sqlite3_open(":memory:", &db) != SQLITE_OK) { free(in); return 0; }
-  sqlite3_create_function(db, "ctx_redact", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, sql_ctx_redact, NULL, NULL);
-  sqlite3_stmt *q = NULL, *set = NULL;
-  char *doc = NULL;
-  long cut = 0;
-  if (sqlite3_prepare_v2(db, "SELECT json(?1), coalesce(json_extract(?1, '$.harness'), ''), coalesce(json_extract(?1, '$.session_id'), '')"
+  sqlite3_stmt *q = NULL;
+  buf resp = {0};
+  int mcp = 0;
+  if (sqlite3_prepare_v2(db, "SELECT ?1 -> '$.tool_response', coalesce(json_extract(?1, '$.tool_name'), '') LIKE 'mcp\\_\\_%' ESCAPE '\\',"
+                             " coalesce(json_extract(?1, '$.harness'), ''), coalesce(json_extract(?1, '$.session_id'), '')"
                              " WHERE json_valid(?1) AND json_type(?1, '$.tool_response') IS NOT NULL",
                          -1, &q, NULL) == SQLITE_OK) {
     sqlite3_bind_text(q, 1, in, (int)len, SQLITE_STATIC);
-    if (sqlite3_step(q) == SQLITE_ROW) {
-      doc = dup_text(sqlite3_column_text(q, 0));
-      call_note((const char *)sqlite3_column_text(q, 1), (const char *)sqlite3_column_text(q, 2));
+    if (sqlite3_step(q) == SQLITE_ROW && sqlite3_column_text(q, 0)) {
+      buf_add(&resp, (const char *)sqlite3_column_text(q, 0), (size_t)sqlite3_column_bytes(q, 0));
+      mcp = sqlite3_column_int(q, 1);
+      call_note((const char *)sqlite3_column_text(q, 2), (const char *)sqlite3_column_text(q, 3));
     }
     sqlite3_finalize(q);
   }
   free(in);
-  /* each string leaf that redaction changes, replaced in the document by its full path */
-  if (doc && sqlite3_prepare_v2(db, "SELECT fullkey, ctx_redact(atom) FROM json_tree(?1, '$.tool_response')"
-                                    " WHERE type = 'text' AND coalesce(key, '') NOT IN ('data', 'source') AND ctx_redact(atom) IS NOT atom",
-                                -1, &q, NULL) == SQLITE_OK &&
-      sqlite3_prepare_v2(db, "SELECT json_set(?1, ?2, ?3)", -1, &set, NULL) == SQLITE_OK) {
-    struct { char *key, *val; } *fix = NULL;
-    size_t nfix = 0, capfix = 0;
-    sqlite3_bind_text(q, 1, doc, -1, SQLITE_STATIC);
-    while (sqlite3_step(q) == SQLITE_ROW) {
-      if (nfix == capfix) fix = realloc(fix, (capfix = capfix ? capfix * 2 : 8) * sizeof *fix);
-      fix[nfix].key = dup_text(sqlite3_column_text(q, 0));
-      fix[nfix++].val = dup_text(sqlite3_column_text(q, 1));
-    }
-    sqlite3_reset(q);
-    for (size_t i = 0; i < nfix; i++) {
-      sqlite3_bind_text(set, 1, doc, -1, SQLITE_TRANSIENT);
-      sqlite3_bind_text(set, 2, fix[i].key, -1, SQLITE_STATIC);
-      sqlite3_bind_text(set, 3, fix[i].val, -1, SQLITE_STATIC);
-      if (sqlite3_step(set) == SQLITE_ROW && sqlite3_column_text(set, 0)) {
-        free(doc);
-        doc = dup_text(sqlite3_column_text(set, 0));
-        cut++;
-      }
-      sqlite3_reset(set);
-      free(fix[i].key);
-      free(fix[i].val);
-    }
-    free(fix);
-  }
-  sqlite3_finalize(q);
-  sqlite3_finalize(set);
-  if (doc && cut && sqlite3_prepare_v2(db, "SELECT json_object('hookSpecificOutput', json_object('hookEventName', 'PostToolUse',"
-                                           " 'updatedToolOutput', ?1 -> '$.tool_response'))"
-                                           " || '' WHERE coalesce(json_extract(?1, '$.tool_name'), '') NOT LIKE 'mcp\\_\\_%' ESCAPE '\\'"
-                                           " UNION ALL SELECT json_object('hookSpecificOutput', json_object('hookEventName', 'PostToolUse',"
-                                           " 'updatedToolOutput', ?1 -> '$.tool_response', 'updatedMCPToolOutput', ?1 -> '$.tool_response'))"
-                                           " WHERE json_extract(?1, '$.tool_name') LIKE 'mcp\\_\\_%' ESCAPE '\\'",
-                                       -1, &q, NULL) == SQLITE_OK) {
-    sqlite3_bind_text(q, 1, doc, -1, SQLITE_STATIC);
-    if (sqlite3_step(q) == SQLITE_ROW) call_say((const char *)sqlite3_column_text(q, 0), "redacted");
-    sqlite3_finalize(q);
-  }
-  free(doc);
   sqlite3_close(db);
+  buf red = {0};
+  long changed = resp.n ? json_redact_strings(resp.p, resp.n, &red) : 0;
+  if (changed > 0) {
+    buf out = {0};
+    buf_str(&out, "{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"updatedToolOutput\":");
+    buf_add(&out, red.p, red.n);
+    if (mcp) {
+      buf_str(&out, ",\"updatedMCPToolOutput\":");
+      buf_add(&out, red.p, red.n);
+    }
+    buf_str(&out, "}}");
+    buf_add(&out, "", 1);
+    call_say(out.p, "redacted");
+    free(out.p);
+  }
+  free(resp.p);
+  free(red.p);
   return 0;
 }
 
