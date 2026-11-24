@@ -2623,20 +2623,19 @@ static int cmd_status(void) {
 
 /* ctx stats [--weeks N]: how agents used ctx, per week and per project, from the
  * archive alone. A miss is a search answered with "no matches". */
-/* What pic measured its lapse compaction to save, from `pic usage --lapse` on pic's journal
- * (CTX_PIC_DB, by default ~/.pic/pic.sqlite): pic owns that measure and its interval, so its
- * report is passed on as it is. Nothing is printed when the journal is missing, CTX_PIC_DB is
- * empty, or pic is absent or fails. */
+/* What pic measured its lapse compaction to save, from `pic usage --lapse` on the current
+ * workspace's journal (CTX_PIC_JOURNAL, by default .pic/journal.sqlite in the working directory;
+ * ~/.pic/pic.sqlite is pic's user database, which pic refuses as a journal): pic owns that
+ * measure and its interval, so its report is passed on as it is. Nothing is printed when the
+ * journal is missing, CTX_PIC_JOURNAL is empty, or pic is absent or fails. */
 static void stats_pic(void) {
-  const char *picdb = getenv("CTX_PIC_DB"), *home = getenv("HOME");
+  const char *journal = getenv("CTX_PIC_JOURNAL");
   char path[4200];
-  if (picdb) {
-    if (!*picdb) return;
-    snprintf(path, sizeof path, "%s", picdb);
-  } else if (home && *home) {
-    snprintf(path, sizeof path, "%s/.pic/pic.sqlite", home);
+  if (journal) {
+    if (!*journal) return;
+    snprintf(path, sizeof path, "%s", journal);
   } else {
-    return;
+    snprintf(path, sizeof path, ".pic/journal.sqlite");
   }
   struct stat st;
   if (stat(path, &st) != 0) return;

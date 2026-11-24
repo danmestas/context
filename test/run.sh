@@ -8,6 +8,7 @@ trap 'rm -rf "$T"' EXIT INT TERM
 CLAUDE_CONFIG_DIR="$T/claude"; export CLAUDE_CONFIG_DIR # never the real transcripts, memory or CLAUDE.md
 CTX_PI_ROOTS="$T/no-pi"; export CTX_PI_ROOTS # nor the real Pi and pic sessions
 CTX_PIC_DB="$T/no-pic.sqlite"; export CTX_PIC_DB # nor pic's real database
+CTX_PIC_JOURNAL="$T/no-journal.sqlite"; export CTX_PIC_JOURNAL # nor a real workspace journal
 # nor any other agent's global instructions; python3 and node are pinned first, since a
 # version manager's shim may need the real HOME
 mkdir -p "$T/bin" "$T/home"
@@ -1498,25 +1499,31 @@ EOF
 grep -qE '^statsproj +1 +4 +1 +2 +1$' "$T/stats.txt" || fail "stats by project: $(cat "$T/stats.txt")"
 grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2} +1 +4 +1 +2 +1$' "$T/stats.txt" || fail "stats by week: $(cat "$T/stats.txt")"
 if "$CTX" stats --weeks 0 2>/dev/null; then fail "weeks must be positive"; fi
-# pic's measured savings: stats passes on what `pic usage --lapse` says about pic's journal,
-# and leaves the section out when there is no journal, no pic, or pic fails.
-grep -q '^pic' "$T/stats.txt" && fail "a pic section with CTX_PIC_DB naming no journal: $(cat "$T/stats.txt")"
+# pic's measured savings: stats passes on what `pic usage --lapse` says about the current
+# workspace's journal, and leaves the section out when there is no journal, no pic, or pic fails.
+grep -q '^pic' "$T/stats.txt" && fail "a pic section with CTX_PIC_JOURNAL naming no journal: $(cat "$T/stats.txt")"
 mkdir -p "$T/fakepic"
-cat > "$T/fakepic/pic" <<'EOF'
+cat > "$T/fakepic/pic" <<'EOF2'
 #!/bin/sh
 [ "$1 $3 $4" = "--db usage --lapse" ] || exit 2
+case "$2" in */pic.sqlite) exit 3 ;; esac
 printf 'db %s\ncold caches: 7 compacted, 5 held out, 2 under the floor\n' "$2"
-EOF
+EOF2
 chmod +x "$T/fakepic/pic"
 : > "$T/pic-journal.sqlite"
-PATH="$T/fakepic:$PATH" CTX_PIC_DB="$T/pic-journal.sqlite" "$CTX" stats > "$T/stats-pic.txt" || fail "stats with pic"
+PATH="$T/fakepic:$PATH" CTX_PIC_JOURNAL="$T/pic-journal.sqlite" "$CTX" stats > "$T/stats-pic.txt" || fail "stats with pic"
 grep -q '^pic: compaction on a cold resume' "$T/stats-pic.txt" || fail "no pic section: $(cat "$T/stats-pic.txt")"
 grep -qx "  db $T/pic-journal.sqlite" "$T/stats-pic.txt" || fail "pic not given the journal: $(cat "$T/stats-pic.txt")"
 grep -qx '  cold caches: 7 compacted, 5 held out, 2 under the floor' "$T/stats-pic.txt" || fail "pic's report not passed on"
-PATH="$T/fakepic:$PATH" CTX_PIC_DB="$T/none.sqlite" "$CTX" stats | grep -q '^pic' && fail "a pic section with no journal"
-PATH="$T/fakepic:$PATH" CTX_PIC_DB= "$CTX" stats | grep -q '^pic' && fail "a pic section with CTX_PIC_DB empty"
+# By default the journal is the current directory's workspace journal, never ~/.pic/pic.sqlite.
+mkdir -p "$T/picws/.pic" && : > "$T/picws/.pic/journal.sqlite"
+(cd "$T/picws" && unset CTX_PIC_JOURNAL && PATH="$T/fakepic:$PATH" "$CTX" stats) > "$T/stats-ws.txt" || fail "stats in a pic workspace"
+grep -qx "  db $T/picws/.pic/journal.sqlite" "$T/stats-ws.txt" || grep -qx "  db .pic/journal.sqlite" "$T/stats-ws.txt" || fail "the workspace journal by default: $(cat "$T/stats-ws.txt")"
+(cd "$T" && unset CTX_PIC_JOURNAL && PATH="$T/fakepic:$PATH" "$CTX" stats) | grep -q '^pic' && fail "a pic section outside a pic workspace"
+PATH="$T/fakepic:$PATH" CTX_PIC_JOURNAL="$T/none.sqlite" "$CTX" stats | grep -q '^pic' && fail "a pic section with no journal"
+PATH="$T/fakepic:$PATH" CTX_PIC_JOURNAL= "$CTX" stats | grep -q '^pic' && fail "a pic section with CTX_PIC_JOURNAL empty"
 printf '#!/bin/sh\necho broken; exit 1\n' > "$T/fakepic/pic"
-PATH="$T/fakepic:$PATH" CTX_PIC_DB="$T/pic-journal.sqlite" "$CTX" stats | grep -q 'broken' && fail "a failing pic's output shown"
+PATH="$T/fakepic:$PATH" CTX_PIC_JOURNAL="$T/pic-journal.sqlite" "$CTX" stats | grep -q 'broken' && fail "a failing pic's output shown"
 
 # Repeats: the shell calls agents make again and again, grouped by shape. A shape keeps the
 # command's words and drops what changes between calls: scratch paths, ids, numbers, quoted
