@@ -1241,13 +1241,18 @@ keep from telling it again. Which problems a session has heard of is kept beside
 
 The call log is short-lived: it rotates at 1 MB and keeps about a day on a busy machine. Each end line also
 says how the call went: `E UNIX PID NAME MS EXIT OUTCOME BYTES HARNESS SESSION`, with `-` for what
-is not known. `OUTCOME` is `offered`, `quiet`, `denied`, `nudged`, `archived` or `error`; `BYTES` is
+is not known. `OUTCOME` is `offered`, `quiet`, `denied`, `nudged`, `archived`, `told` or `error`; `BYTES` is
 what the hook wrote to stdout. Lines from older versions, which end after `MS`, still read.
 No prompt, tool input or output, or file text is ever recorded.
 
-Once a UTC day is over, `ctx telemetry roll` writes it to one Parquet file (gzip, one row group)
-beside the database, and never rewrites a day that has a file. The archive hook does this in
-the background at most once an hour, so nothing slows a hook down and no day is lost to rotation.
+ctx takes each call from the log into the archive (`ctx_call`, kept 30 days) at every hourly scan
+and every roll, so a call outlives the log. Once a UTC day has been over for a minute, `ctx
+telemetry roll` takes in what the log holds and writes the day's calls from the archive to one
+Parquet file (gzip, one row group) beside the database, whole even when the log rotated more than
+once that day. It never rewrites a day that has a file. The archive hook does this in the
+background at most once an hour, so nothing slows a hook down. Calls taken in by a ctx from before
+this was so have only their times, with the other columns null; files written before then are
+left as they were, and may lack a day's first hours.
 
 ```sh
 ctx telemetry path    # ~/.ctx/telemetry
@@ -1260,8 +1265,8 @@ duckdb -c "SELECT date, name, outcome, count(*), median(ms)
 
 Files are `telemetry/calls/date=YYYY-MM-DD/calls.parquet` (directories 0700, files 0600). Columns:
 `ts` (unix seconds), `name`, `pid`, `ms` (null when the hook never ended), `ended`, `exit`,
-`outcome`, `bytes_out`, `harness`, `session`, `ctx_version`. A start with no end for over a minute
-is a row with `ended` false.
+`outcome`, `bytes_out`, `harness`, `session`, `ctx_version` (the ctx that wrote the file). A start
+with no end for over a minute is a row with `ended` false.
 
 `ctx telemetry page` rolls any finished days, asks the `duckdb` program (`$CTX_DUCKDB`, else
 `duckdb` on your PATH, else `/opt/homebrew/bin/duckdb`) for the numbers, and writes one HTML page

@@ -31,7 +31,7 @@
 #include "page.h"
 
 #define CTX_VERSION "0.0.1"
-#define CTX_USER_VERSION 19    /* PRAGMA user_version once initialized */
+#define CTX_USER_VERSION 20    /* PRAGMA user_version once initialized */
 #define CTX_DERIVED_VERSION 7 /* raise when schema/index.sql changes; ctx then rebuilds */
 
 /* A tool's output is kept up to this size at each end; the middle is cut. */
@@ -858,6 +858,21 @@ static void head_hash(const char *path, long long upto, char out[17]) {
  * Work that relies on cascades, such as a rebuild, uses its own connection. */
 static void rebuild_derived(sqlite3 *db);
 
+/* Columns a state table gained after it was first made, added to a file that has the table
+ * without them. CREATE TABLE IF NOT EXISTS leaves an existing table as it is. */
+static void columns_ensure(sqlite3 *db) {
+  static const char *const add[][2] = {{"ctx_call", "exit INTEGER"},  {"ctx_call", "outcome TEXT"}, {"ctx_call", "bytes INTEGER"},
+                                       {"ctx_call", "harness TEXT"}, {"ctx_call", "session TEXT"}};
+  for (size_t i = 0; i < sizeof add / sizeof *add; i++) {
+    char q[200], col[32];
+    sscanf(add[i][1], "%31s", col);
+    snprintf(q, sizeof q, "SELECT count(*) FROM pragma_table_info('%s') WHERE name = '%s'", add[i][0], col);
+    if (db_int(db, q)) continue;
+    snprintf(q, sizeof q, "ALTER TABLE %s ADD COLUMN %s", add[i][0], add[i][1]);
+    db_exec(db, q);
+  }
+}
+
 /* Brings an older file up to date: state tables are added in place, and derived ones
  * are rebuilt rather than migrated when their version changed. */
 static void schema_ensure(sqlite3 *db) {
@@ -869,6 +884,7 @@ static void schema_ensure(sqlite3 *db) {
   if (user > CTX_USER_VERSION) die("this database is from a newer ctx (version %d)", user);
   db_exec(db, "BEGIN IMMEDIATE");
   db_exec(db, ctx_state_schema);
+  columns_ensure(db);
   int derived = db_int(db, "SELECT coalesce((SELECT CAST(value AS INTEGER) FROM ctx_meta WHERE key = 'derived_version'), 0)");
   /* a file from before versioning has compatible derived tables, only fewer of them */
   if (derived == 0) derived = CTX_DERIVED_VERSION;
@@ -2146,13 +2162,13 @@ static size_t calls_read(time_t since, call_stat *out, size_t cap) {
   return names;
 }
 
-/* Telemetry: the call log rolled into one Parquet file per UTC day, for anything that reads
- * Parquet (DuckDB, pandas) to query. The log is the source and is not changed; a day's file is
- * written once, after the day is over, and never rewritten. Only what the call log holds goes in:
+/* Telemetry: the calls ctx took in from its log (ctx_call) rolled into one Parquet file per UTC
+ * day, for anything that reads Parquet (DuckDB, pandas) to query. A day's file is written once,
+ * after the day is over, and never rewritten. Only what the call log holds goes in:
  * names, times, outcomes, sizes. Never a prompt, a tool's input or output, or file text. */
 typedef struct {
   long long ts, ms, bytes;
-  int pid, exit, ended, live;
+  int pid, exit, ended;
   size_t seq;
   char name[24], outcome[16], harness[16], session[64];
 } tel_row; /* ms, exit and bytes are -1 when unknown; empty strings are null */
@@ -2173,60 +2189,6 @@ static tel_row *tel_add(tel_rows *r) {
   t->ms = t->exit = t->bytes = -1;
   t->seq = r->n++;
   return t;
-}
-
-/* Reads one log into rows, pairing an end with the start that has the same pid and name. `open`
- * holds the rows still waiting for an end. A start left open for over a minute is a hook that was
- * cut off; a younger one may still be running, so its day waits (`live`). */
-static void tel_read(const char *path, tel_rows *rows, size_t **open, size_t *nopen, size_t *capopen) {
-  FILE *in = fopen(path, "r");
-  if (!in) return;
-  char line[400], kind, name[24], outcome[16], harness[16], session[64];
-  long long at, ms, bytes;
-  int pid, code;
-  while (fgets(line, sizeof line, in)) {
-    outcome[0] = harness[0] = session[0] = 0;
-    int got = sscanf(line, "%c %lld %d %23s %lld %d %15s %lld %15s %63s", &kind, &at, &pid, name, &ms, &code, outcome, &bytes, harness, session);
-    if (got < 4 || (kind != 'B' && kind != 'E')) continue;
-    size_t k = *nopen;
-    while (k-- > 0) {
-      tel_row *o = &rows->p[(*open)[k]];
-      if (o->pid == pid && !strcmp(o->name, name)) break;
-    }
-    int found = k != (size_t)-1 && *nopen;
-    if (kind == 'B') {
-      if (found) (*open)[k] = (*open)[--*nopen]; /* a pid reused before its end: the old start stays unended */
-      tel_row *t = tel_add(rows);
-      t->ts = at;
-      t->pid = pid;
-      snprintf(t->name, sizeof t->name, "%s", name);
-      if (*nopen == *capopen) {
-        *capopen = *capopen ? *capopen * 2 : 64;
-        *open = realloc(*open, *capopen * sizeof **open);
-        if (!*open) die("out of memory");
-      }
-      (*open)[(*nopen)++] = t->seq;
-      continue;
-    }
-    tel_row *t;
-    if (found) {
-      t = &rows->p[(*open)[k]];
-      (*open)[k] = (*open)[--*nopen];
-    } else { /* the start was rotated away: the row begins when the call did */
-      t = tel_add(rows);
-      t->ts = at - (got >= 5 ? ms : 0) / 1000;
-      t->pid = pid;
-      snprintf(t->name, sizeof t->name, "%s", name);
-    }
-    t->ended = 1;
-    if (got >= 5) t->ms = ms;
-    if (got >= 6) t->exit = code;
-    if (got >= 7 && strcmp(outcome, "-")) snprintf(t->outcome, sizeof t->outcome, "%s", outcome);
-    if (got >= 8) t->bytes = bytes;
-    if (got >= 9 && strcmp(harness, "-")) snprintf(t->harness, sizeof t->harness, "%s", harness);
-    if (got >= 10 && strcmp(session, "-")) snprintf(t->session, sizeof t->session, "%s", session);
-  }
-  fclose(in);
 }
 
 /* Thrift compact protocol, the little of it a Parquet footer needs. */
@@ -2452,14 +2414,6 @@ static int tel_file(buf *f, const tel_row *r, size_t n) {
   return 1;
 }
 
-static int tel_cmp(const void *a, const void *b) {
-  const tel_row *x = a, *y = b;
-  long long dx = x->ts / 86400, dy = y->ts / 86400;
-  if (dx != dy) return dx < dy ? -1 : 1;
-  if (x->ts != y->ts) return x->ts < y->ts ? -1 : 1;
-  return (x->seq > y->seq) - (x->seq < y->seq);
-}
-
 /* The telemetry directory: beside the database, so a scratch CTX_DB keeps it all in its own folder. */
 static char *telemetry_dir(void) {
   char *db = db_path();
@@ -2500,19 +2454,6 @@ static int tel_write(const char *dir, const char *path, const buf *f) {
 
 /* Writes a file for every UTC day before today that the call log holds and that has none yet;
  * a day that has a file is left as it is. Prints each day written when `say`. Returns how many. */
-/* Both logs as rows in time order. */
-static void calls_rows(tel_rows *rows, time_t now) {
-  size_t *open = NULL, nopen = 0, capopen = 0;
-  for (int f = 1; f >= 0; f--) { /* the older log first, so a start and its end meet */
-    char *path = sidecar(f ? ".calls.1" : ".calls");
-    tel_read(path, rows, &open, &nopen, &capopen);
-    free(path);
-  }
-  for (size_t i = 0; i < nopen; i++) rows->p[open[i]].live = now - rows->p[open[i]].ts <= 60;
-  free(open);
-  if (rows->n) qsort(rows->p, rows->n, sizeof *rows->p, tel_cmp);
-}
-
 /* One name's figures over some calls. Times are ms over the calls that ended, -1 when none did. */
 typedef struct {
   char name[24];
@@ -2526,40 +2467,72 @@ static void utc_day(long long day, char out[11]) {
   strftime(out, 11, "%Y-%m-%d", &tm);
 }
 
+static long long calls_ingest(sqlite3 *db, time_t now);
+
+/* One day's calls from ctx_call, in the order the log had them, as Parquet rows. */
+static void tel_day(sqlite3 *db, long long day, tel_rows *rows) {
+  sqlite3_stmt *q = db_prepare(db, "SELECT ts, pid, name, ms, exit, outcome, bytes, harness, session FROM ctx_call"
+                                   " WHERE ts >= ?1 AND ts < ?2 ORDER BY ts, rowid");
+  sqlite3_bind_int64(q, 1, day * 86400);
+  sqlite3_bind_int64(q, 2, (day + 1) * 86400);
+#define TXT(i) (sqlite3_column_text(q, i) ? (const char *)sqlite3_column_text(q, i) : "")
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    tel_row *t = tel_add(rows);
+    t->ts = sqlite3_column_int64(q, 0);
+    t->pid = sqlite3_column_int(q, 1);
+    snprintf(t->name, sizeof t->name, "%s", TXT(2));
+    t->ended = sqlite3_column_type(q, 3) != SQLITE_NULL;
+    if (t->ended && sqlite3_column_int64(q, 3) >= 0) t->ms = sqlite3_column_int64(q, 3);
+    if (sqlite3_column_type(q, 4) != SQLITE_NULL) t->exit = sqlite3_column_int(q, 4);
+    snprintf(t->outcome, sizeof t->outcome, "%s", TXT(5));
+    if (sqlite3_column_type(q, 6) != SQLITE_NULL) t->bytes = sqlite3_column_int64(q, 6);
+    snprintf(t->harness, sizeof t->harness, "%s", TXT(7));
+    snprintf(t->session, sizeof t->session, "%s", TXT(8));
+  }
+#undef TXT
+  sqlite3_finalize(q);
+}
+
+/* Writes a file for every UTC day before today that ctx_call holds and that has none yet; a day
+ * that has a file is left as it is. The calls the log holds are taken in first, and a day is
+ * written only once it has been over for a minute, when a call it started that has no end was
+ * cut off. ctx_call keeps every call for 30 days, so the log's rotation loses nothing here.
+ * Prints each day written when `say`. Returns how many. */
 static int telemetry_roll(int say) {
-  tel_rows rows = {0};
   time_t now = now_time();
-  calls_rows(&rows, now);
+  char *dbp = db_path();
+  struct stat dst;
+  int have = !stat(dbp, &dst);
+  free(dbp);
+  if (!have) return 0;
+  sqlite3 *db = ctx_open();
+  calls_ingest(db, now);
+  long long first = db_int(db, "SELECT coalesce(min(ts), -1) FROM ctx_call");
+  long long last = ((long long)now - 60) / 86400; /* the first day not yet over for a minute */
   char *root = telemetry_dir();
   int wrote = 0;
-  for (size_t i = 0; i < rows.n;) {
-    long long day = rows.p[i].ts / 86400;
-    size_t j = i;
-    int live = 0;
-    for (; j < rows.n && rows.p[j].ts / 86400 == day; j++) live |= rows.p[j].live;
-    if (day < (long long)now / 86400 && !live) { /* a day with a call still running waits for the next roll */
-      time_t t = (time_t)(day * 86400);
-      struct tm tm;
-      gmtime_r(&t, &tm);
-      char calls[4200], dir[4300], file[4400], name[16];
-      strftime(name, sizeof name, "%Y-%m-%d", &tm);
-      snprintf(calls, sizeof calls, "%s/calls", root);
-      snprintf(dir, sizeof dir, "%s/date=%s", calls, name);
-      snprintf(file, sizeof file, "%s/calls.parquet", dir);
-      struct stat st;
-      if (stat(file, &st)) {
-        buf out = {0};
-        if (!mkdir_private(root) && !mkdir_private(calls) && !mkdir_private(dir) && tel_file(&out, rows.p + i, j - i) && !tel_write(dir, file, &out)) {
-          wrote++;
-          if (say) printf("%s  %zu calls  %s\n", name, j - i, file);
-        } else die("cannot write %s", file);
-        free(out.p);
-      }
+  for (long long day = first < 0 ? last : first / 86400; day < last; day++) {
+    char calls[4200], dir[4300], file[4400], name[16];
+    utc_day(day, name);
+    snprintf(calls, sizeof calls, "%s/calls", root);
+    snprintf(dir, sizeof dir, "%s/date=%s", calls, name);
+    snprintf(file, sizeof file, "%s/calls.parquet", dir);
+    struct stat st;
+    if (!stat(file, &st)) continue;
+    tel_rows rows = {0};
+    tel_day(db, day, &rows);
+    if (rows.n) {
+      buf out = {0};
+      if (!mkdir_private(root) && !mkdir_private(calls) && !mkdir_private(dir) && tel_file(&out, rows.p, rows.n) && !tel_write(dir, file, &out)) {
+        wrote++;
+        if (say) printf("%s  %zu calls  %s\n", name, rows.n, file);
+      } else die("cannot write %s", file);
+      free(out.p);
     }
-    i = j;
+    free(rows.p);
   }
   free(root);
-  free(rows.p);
+  sqlite3_close(db);
   return wrote;
 }
 
@@ -2903,9 +2876,10 @@ static long long calls_ingest(sqlite3 *db, time_t now) {
   sqlite3_stmt *beg = db_prepare(db, "INSERT INTO ctx_call(ts, pid, name) VALUES (?1, ?2, ?3)");
   /* the start this end belongs to: the latest open one of that pid and name that began when the
    * end says it did, give or take a minute, so a reused pid cannot end an old cut-off call */
-  sqlite3_stmt *end = db_prepare(db, "UPDATE ctx_call SET ms = ?4 WHERE rowid = (SELECT max(rowid) FROM ctx_call WHERE pid = ?2 AND name = ?3 AND ms IS NULL"
+  sqlite3_stmt *end = db_prepare(db, "UPDATE ctx_call SET ms = ?4, exit = ?5, outcome = ?6, bytes = ?7, harness = ?8, session = ?9"
+                                     " WHERE rowid = (SELECT max(rowid) FROM ctx_call WHERE pid = ?2 AND name = ?3 AND ms IS NULL"
                                      " AND ts BETWEEN ?1 - max(?4, 0) / 1000 - 60 AND ?1) RETURNING ts");
-  sqlite3_stmt *lone = db_prepare(db, "INSERT INTO ctx_call(ts, pid, name, ms) VALUES (?1, ?2, ?3, ?4)");
+  sqlite3_stmt *lone = db_prepare(db, "INSERT INTO ctx_call(ts, pid, name, ms, exit, outcome, bytes, harness, session) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)");
   FILE *last = NULL;
   unsigned long long last_hash = 0;
   long long pos = 0;
@@ -2918,15 +2892,16 @@ static long long calls_ingest(sqlite3 *db, time_t now) {
     last = f;
     last_hash = f == f0 ? h0 : h1;
     pos = from[k];
-    char line[400], kind, name[24];
-    long long at, ms;
-    int pid;
+    char line[400], kind, name[24], outcome[16], harness[16], session[64];
+    long long at, ms, bytes;
+    int pid, code;
     while (fgets(line, sizeof line, f)) {
       size_t len = strlen(line);
       if (!len || line[len - 1] != '\n') break; /* a line still being written */
       pos += (long long)len;
       ms = -1;
-      int got = sscanf(line, "%c %lld %d %23s %lld", &kind, &at, &pid, name, &ms);
+      /* the end line's fields as tel_read takes them; older lines stop after the time */
+      int got = sscanf(line, "%c %lld %d %23s %lld %d %15s %lld %15s %63s", &kind, &at, &pid, name, &ms, &code, outcome, &bytes, harness, session);
       if (got < 4) continue;
       long long start = at;
       if (kind == 'B') {
@@ -2940,6 +2915,14 @@ static long long calls_ingest(sqlite3 *db, time_t now) {
         sqlite3_bind_int(end, 2, pid);
         sqlite3_bind_text(end, 3, name, -1, SQLITE_STATIC);
         sqlite3_bind_int64(end, 4, ms);
+        for (int pass = 0; pass < 2; pass++) { /* the same details for the update and for a row of its own */
+          sqlite3_stmt *u = pass ? lone : end;
+          if (got >= 6) sqlite3_bind_int(u, 5, code); else sqlite3_bind_null(u, 5);
+          if (got >= 7 && strcmp(outcome, "-")) sqlite3_bind_text(u, 6, outcome, -1, SQLITE_TRANSIENT); else sqlite3_bind_null(u, 6);
+          if (got >= 8) sqlite3_bind_int64(u, 7, bytes); else sqlite3_bind_null(u, 7);
+          if (got >= 9 && strcmp(harness, "-")) sqlite3_bind_text(u, 8, harness, -1, SQLITE_TRANSIENT); else sqlite3_bind_null(u, 8);
+          if (got >= 10 && strcmp(session, "-")) sqlite3_bind_text(u, 9, session, -1, SQLITE_TRANSIENT); else sqlite3_bind_null(u, 9);
+        }
         int matched = sqlite3_step(end) == SQLITE_ROW;
         if (matched) start = sqlite3_column_int64(end, 0);
         while (sqlite3_step(end) == SQLITE_ROW) {}
@@ -2953,6 +2936,8 @@ static long long calls_ingest(sqlite3 *db, time_t now) {
           sqlite3_step(lone);
           sqlite3_reset(lone);
         }
+        sqlite3_clear_bindings(end);
+        sqlite3_clear_bindings(lone);
       } else continue;
       if (start < earliest) earliest = start;
     }

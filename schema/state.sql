@@ -349,12 +349,19 @@ CREATE TABLE IF NOT EXISTS ctx_rule_same(
 -- ctx scan from where the last one stopped (ctx_meta calls_ingested), so a call is counted once
 -- whatever the log's rotation does, and kept 30 days. ts is when it started; ms is how long it
 -- took, NULL while it has no end: once a minute old, it was cut off. An end older than its start
--- in the log is a row of its own, started ms before it ended.
+-- in the log is a row of its own, started ms before it ended. The rest is what the end line says,
+-- NULL where it says "-" or is from an older ctx that wrote less; a finished day's Parquet file
+-- is written from these rows. Columns added later are added to an older file by ctx itself.
 CREATE TABLE IF NOT EXISTS ctx_call(
-  ts    INTEGER NOT NULL,           -- unix seconds
-  pid   INTEGER NOT NULL,
-  name  TEXT NOT NULL,
-  ms    INTEGER                     -- -1 when an old end line gave no time
+  ts      INTEGER NOT NULL,         -- unix seconds
+  pid     INTEGER NOT NULL,
+  name    TEXT NOT NULL,
+  ms      INTEGER,                  -- -1 when an old end line gave no time
+  exit    INTEGER,
+  outcome TEXT,                     -- offered, quiet, denied, nudged, archived, error, told
+  bytes   INTEGER,                  -- written to stdout
+  harness TEXT,
+  session TEXT
 ) STRICT;
 CREATE INDEX IF NOT EXISTS ctx_call_ts ON ctx_call(ts);
 CREATE INDEX IF NOT EXISTS ctx_call_open ON ctx_call(pid, name) WHERE ms IS NULL;
