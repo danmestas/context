@@ -265,7 +265,13 @@ table.calls td.n { text-align:right; } table.calls th.n { text-align:right; }
     D[s.key].forEach(function (it) { state[s.key][it.id] = { c: null, open: false, text: null }; /* nothing is chosen for you: a batch is applied only when you press it */ });
     view[s.key] = { show: "all", text: "", limit: s.page };
   });
-  D.auto.forEach(function (a) { state.auto[a.id] = { undo: false, open: false }; });
+  /* the automatic judge's answers to groups of the same rule, shaped as the rows above them */
+  D.autosame.forEach(function (g) {
+    var ps = g.m.map(function (m) { return m.p; }).filter(function (v, i, a) { return a.indexOf(v) === i; });
+    g.p = ps.join(", "); g.q = "";
+    g.t = g.v === "global" ? "Made one rule for every project from " + g.m.length + " rules: " + g.m[0].t : "Kept apart: " + g.m.map(function (m) { return m.t; }).join(" / ");
+  });
+  D.auto.concat(D.autosame).forEach(function (a) { state.auto[a.id] = { undo: false, open: false }; });
   D.same.forEach(function (g) { state.same[g.id] = { c: null, pick: g.pick }; });
   function esc(t) { return String(t).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
   function num(n) { return Number(n).toLocaleString("en-US"); }
@@ -430,10 +436,14 @@ table.calls td.n { text-align:right; } table.calls th.n { text-align:right; }
     if (cursor && cursor.sec === "auto" && String(cursor.id) === String(a.id)) row.classList.add("cur");
     row.appendChild(el("div", "main", '<span class="title">' + esc(a.t) + '</span><span class="meta">' + esc(a.p) + ' · ' + esc(ago(a.d)) + ' · ' + esc(a.why) + '</span>' + (a.q ? '<span class="meta cov">Covered by <q>' + esc(a.q) + '</q></span>' : '')));
     var b = el("button", "pick", '<kbd>1</kbd>' + (st.undo ? "Will undo" : "Undo")); b.type = "button"; b.setAttribute("aria-pressed", String(st.undo));
-    b.title = a.v === "serve" ? "Stop giving it to agents; it waits for you instead" : "Reopen it; it waits for you instead";
+    b.title = a.m ? (a.v === "global" ? "Put the rules back in their projects; the group waits for you instead" : "Forget the answer; the group waits for you instead")
+      : a.v === "serve" ? "Stop giving it to agents; it waits for you instead" : "Reopen it; it waits for you instead";
     b.addEventListener("click", function (e) { e.stopPropagation(); cursor = { sec: "auto", id: a.id }; undo(a); });
     row.appendChild(b);
-    if (st.open) {
+    if (st.open && a.m) {
+      row.appendChild(el("div", "detail", '<div class="ev">' + a.m.map(function (m) { return '<span>' + esc(m.p) + ': <q>' + esc(m.t) + '</q></span>'; }).join("") +
+        '<span class="why"><b>Decided ' + esc(nice(a.d)) + ':</b> ' + esc(a.why) + '</span></div>'));
+    } else if (st.open) {
       var again = a.rep && a.rep.length ? "You said it again on " + a.rep.map(function (d) { return d ? nice(d) : "a date not recorded"; }).join(", ") + "." : "You have not said it again since.";
       row.appendChild(el("div", "detail", '<div class="ev"><span>You typed: <q>' + esc(a.said || "(the turn is no longer in the index)") + '</q></span><span>' + esc(again) + '</span><span class="why"><b>Decided ' + esc(nice(a.d)) + ':</b> ' + esc(a.why) + '</span></div>'));
     }
@@ -523,7 +533,7 @@ table.calls td.n { text-align:right; } table.calls th.n { text-align:right; }
    * is hidden. Folds keep their state across reloads through sessionStorage. */
   function anyChoice() {
     var s = SEC.some(function (x) { return D[x.key].some(function (it) { return state[x.key][it.id] && state[x.key][it.id].c !== null; }); });
-    var u = D.auto.some(function (a) { return state.auto[a.id] && state.auto[a.id].undo; });
+    var u = D.auto.concat(D.autosame).some(function (a) { return state.auto[a.id] && state.auto[a.id].undo; });
     var g = D.same.some(function (x) { return state.same[x.id].c !== null; });
     return s || u || g;
   }
@@ -550,11 +560,11 @@ table.calls td.n { text-align:right; } table.calls th.n { text-align:right; }
   }
 
   function renderAuto() {
-    var host = document.getElementById("s-auto"), A = D.auto, added = A.filter(function (a) { return a.v === "serve"; }), gone = A.length - added.length;
-    document.getElementById("auto-n").textContent = "· " + num(added.length) + " added · " + num(gone) + " dismissed";
+    var host = document.getElementById("s-auto"), A = D.auto, G = D.autosame, added = A.filter(function (a) { return a.v === "serve"; }), gone = A.length - added.length;
+    document.getElementById("auto-n").textContent = "· " + num(added.length) + " added · " + num(gone) + " dismissed" + (G.length ? " · " + plural(G.length, "group") + " of the same rule" : "");
     host.innerHTML = "";
     host.appendChild(el("p", "note", "Proposed rules ctx's automatic judge decided without asking you in the last seven days. An added rule is given to agents as a tentative rule until you stop saying it; a dismissed one is not raised again. Undo puts one back in your hands."));
-    if (!A.length) {
+    if (!A.length && !G.length) {
       host.appendChild(el("div", "list", '<div class="empty">ctx decided nothing by itself in the last seven days.' + (D.judge ? '' : ' The automatic judge is off; <code>ctx rules auto CMD</code> turns it on.') + '</div>'));
       return;
     }
@@ -573,6 +583,7 @@ table.calls td.n { text-align:right; } table.calls th.n { text-align:right; }
     };
     part("Added", added.length, added, null);
     part("Dismissed", gone, A.filter(function (a) { return a.v !== "serve"; }), ["covered", "setup", "not"]);
+    if (G.length) part("Same rule in several projects", G.length, G, null);
   }
 
   function visible(s) {
@@ -679,7 +690,7 @@ table.calls td.n { text-align:right; } table.calls th.n { text-align:right; }
   function commands() {
     var out = [], one = function (t) { return String(t).replace(/\s+/g, " ").trim(); }, sq = function (t) { return "'" + one(t).replace(/'/g, "'\\''") + "'"; };
     D.rules.forEach(function (it) { var c = state.rules[it.id].c; var tx = state.rules[it.id].text; if (c === 0) out.push("accept rule " + it.id + (tx ? " as " + sq(tx) : "") + "    # " + one(it.p + ": " + (tx || it.t))); if (c === 2) out.push("reject rule " + it.id + "    # " + one(it.p + ": " + it.t)); });
-    D.auto.forEach(function (a) { if (state.auto[a.id].undo) out.push("undo decision " + a.id + "    # " + one(a.p + ": " + a.t)); });
+    D.auto.concat(D.autosame).forEach(function (a) { if (state.auto[a.id].undo) out.push("undo decision " + a.id + "    # " + one(a.p + ": " + a.t)); });
     D.same.forEach(function (g) {
       var st = state.same[g.id], first = g.m[st.pick], rest = g.m.filter(function (m, i) { return i !== st.pick; });
       var why = "    # " + one(first.t) + " (" + g.m.map(function (m) { return m.p; }).filter(function (v, i, a) { return a.indexOf(v) === i; }).join(", ") + ")";
@@ -727,7 +738,7 @@ table.calls td.n { text-align:right; } table.calls th.n { text-align:right; }
       return;
     }
     if (cursor.sec === "auto") {
-      var a = D.auto.filter(function (x) { return String(x.id) === String(cursor.id); })[0];
+      var a = D.auto.concat(D.autosame).filter(function (x) { return String(x.id) === String(cursor.id); })[0];
       if (k === "1") { e.preventDefault(); undo(a); }
       else if (e.key === "Enter") { e.preventDefault(); state.auto[a.id].open = !state.auto[a.id].open; renderAuto(); focusCursor(); }
       return;
