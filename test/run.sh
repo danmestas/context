@@ -2725,7 +2725,7 @@ mkdir -p "$T/roll"
 "$CTX" init >/dev/null
 rm -f "$CTX_DB.calls"
 MID=$(( $(date -u +%s) / 86400 * 86400 ))
-D2=$((MID - 172800 + 100)); D1=$((MID - 86400 + 100))
+D2=$((MID - 259200 + 100)); D1=$((MID - 172800 + 100)) # not yesterday: a day is rolled 10 minutes after it ends
 DAY2=$(utcday $D2); DAY1=$(utcday $D1)
 {
   printf 'B %s 1 gate\nE %s 1 gate 5 0 quiet 0 claude s1\n' $D2 $D2
@@ -2781,8 +2781,8 @@ mv "$CTX_DB.calls" "$CTX_DB.calls.1"
 hours 20 21 22 23
 printf 'E %s 600 rules-offer 20000 0 offered 512 pic s-600\nB %s 700 gate\n' "$(at '2026-11-20 06:00:10')" "$(at '2026-11-20 22:30:00')" >> "$CTX_DB.calls"
 grep -q ' 01 gate' "$CTX_DB.calls" "$CTX_DB.calls.1" && fail "the test's log no longer holds the day's start"
-CTX_NOW=2026-11-21T00:00:30Z "$CTX" telemetry roll > "$T/r2b.out"
-[ ! -s "$T/r2b.out" ] || fail "a day over for less than a minute waits: $(cat "$T/r2b.out")"
+CTX_NOW=2026-11-21T00:09:30Z "$CTX" telemetry roll > "$T/r2b.out"
+[ ! -s "$T/r2b.out" ] || fail "a day over for less than 10 minutes waits: $(cat "$T/r2b.out")"
 CTX_NOW=2026-11-21T01:00:00Z "$CTX" telemetry roll > "$T/r2c.out"
 grep -q '^2026-11-20  17 calls  ' "$T/r2c.out" || fail "the whole day is written, the rotated hours too: $(cat "$T/r2c.out")"
 [ "$("$CTX" sql "SELECT ms, exit, outcome, bytes, harness, session FROM ctx_call WHERE pid = 600" | tr '\t' ' ')" = "20000 0 offered 512 pic s-600" ] || fail "an end line's details are kept: $("$CTX" sql "SELECT * FROM ctx_call WHERE pid = 600")"
@@ -2799,6 +2799,22 @@ gate,700,,false,,,,,"
 else
   echo "SKIP: duckdb not found; rolled-from-calls contents not checked" >&2
 fi
+# A call running over midnight is written as it ended, not as cut off: its end comes after the
+# day is over, before the day is rolled.
+printf 'B %s 800 rules-offer\n' "$(at '2026-11-22 23:58:30')" >> "$CTX_DB.calls"
+CTX_NOW=2026-11-23T00:05:00Z "$CTX" telemetry roll > "$T/r2e.out"
+[ ! -s "$T/r2e.out" ] || fail "a day is not rolled within 10 minutes of its end: $(cat "$T/r2e.out")"
+printf 'E %s 800 rules-offer 190000 0 offered 64 claude s-800\n' "$(at '2026-11-23 00:01:40')" >> "$CTX_DB.calls"
+CTX_NOW=2026-11-23T00:20:00Z "$CTX" telemetry roll > "$T/r2f.out"
+grep -q '^2026-11-22  1 calls  ' "$T/r2f.out" || fail "the day with the late call is rolled: $(cat "$T/r2f.out")"
+[ "$("$CTX" sql "SELECT ms FROM ctx_call WHERE pid = 800")" = 190000 ] || fail "the call over midnight has its time"
+if [ -n "$DUCK" ]; then
+  [ "$("$DUCK" -csv -noheader -c "SELECT ended, ms FROM read_parquet('$T/roll2/telemetry/calls/date=2026-11-22/calls.parquet')")" = "true,190000" ] || fail "written as ended, not cut off"
+fi
+# A stray row from 1970 is not a reason to walk 20,000 days, nor to write a file for them.
+"$CTX" sql "INSERT INTO ctx_call(ts, pid, name) VALUES (0, 1, 'gate')" >/dev/null
+CTX_NOW=2026-11-23T01:00:00Z "$CTX" telemetry roll >/dev/null
+[ ! -e "$T/roll2/telemetry/calls/date=1970-01-01" ] || fail "no file for a day outside the 30 kept"
 export CTX_DB="$T/roll/ctx.sqlite"
 
 # ctx telemetry page: charts from the Parquet files, queried through the duckdb program.
@@ -3433,7 +3449,8 @@ case "$CTX" in *-san | *-filc) gbound=15 ;; esac
 s0=$(date +%s); CTX_DB="$T/noguard.sqlite" "$CTX" guard post < "$T/gbig.json" > "$T/gbig.out"; s1=$(date +%s)
 [ $((s1 - s0)) -lt $gbound ] && ! grep -q "$SEC" "$T/gbig.out" && [ "$(grep -o 'REDACTED' "$T/gbig.out" | wc -l)" -eq 20000 ] || fail "20000 secrets in 4 MB are redacted in under $gbound s ($((s1 - s0)) s)"
 gpost Bash "\"\\ud800 $SEC\"" | python3 -c 'import json,sys; assert json.loads(sys.stdin.buffer.read().decode("utf-8"))["hookSpecificOutput"]["updatedToolOutput"] == "\ufffd [REDACTED]"' || fail "a lone surrogate becomes U+FFFD, so the reply stays UTF-8"
-python3 -c 'import sys; sys.stdout.write("{\"tool_name\":\"Bash\",\"tool_response\":\"" + "x" * (17 << 20) + "\"}")' | CTX_DB="$T/noguard.sqlite" "$CTX" guard post 2>"$T/gbig.err" && fail "a result over 16 MB is not passed as checked"
+python3 -c 'import sys; sys.stdout.write("{\"tool_name\":\"Bash\",\"tool_response\":\"" + "x" * (17 << 20) + "\"}")' > "$T/gbig.json" # a file: guard post stops reading early
+CTX_DB="$T/noguard.sqlite" "$CTX" guard post < "$T/gbig.json" 2>"$T/gbig.err" && fail "a result over 16 MB is not passed as checked"
 grep -q 'over 16 MB' "$T/gbig.err" || fail "and says why: $(cat "$T/gbig.err")"
 gpost Bash '"see dp.st.example.internalservicehostname.com"' | grep -q . && fail "a host name is not a Doppler token"
 gate s-pic3 "$GP" find '{"pattern":"*.md"}' | grep -q '"deny"' || fail "find is gated like Glob"
