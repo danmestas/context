@@ -664,13 +664,17 @@ the group is not offered again while its members stay as they are. **Later** doe
 nothing. `ctx rules same` lists the groups.
 
 With the automatic judge set (`ctx rules auto CMD`), the hourly scan has it decide these
-groups too, up to 5 a run and for at most 3 minutes, each group once. It is shown each member's
+groups too, up to 5 a run, each group once; it starts no new call after 3 minutes, though a
+call already running may take up to 2 minutes more. It is shown each member's
 key, project and whole text, as the rule for every project would have it, as data; a group with a
 member over 4 KB is not sent and waits for you. It answers in JSON: `same`, naming the member
 whose words to keep and any members that do not say the same thing, or `distinct`. Same makes one
 rule for every project in that member's exact words, through the same code as Make global, from
 the kept member and the others whose titles are near its own; a member that joined the group only
-through another, or that the judge left out, stays in its project. Distinct is recorded as Not the
+through another, or that the judge left out, stays in its project. Titles near each other
+are only what puts rules in one group: two rules that differ by one word, such as "Rotate the
+race1 keys monthly" and "Rotate the race2 keys monthly", are near enough, and whether they are one
+rule rests on the judge alone. Distinct is recorded as Not the
 same. An answer ctx cannot act on (unreadable, a key that is no member, fewer than two rules left,
 or a rule Make global refuses) changes nothing and leaves the group for you. A judge command that
 fails on a group is tried again next run, and after two failures the group is left for you; a
