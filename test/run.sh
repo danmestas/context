@@ -3699,7 +3699,7 @@ CLAUDE_CONFIG_DIR="$XC" "$CTX" scan >/dev/null
 "$CTX" forget 5e550000-0000-0000-0000-00000000000 2>/dev/null && fail "an ambiguous prefix is refused"
 export CTX_DB="$T/rebuild.sqlite"
 "$CTX" init >/dev/null
-[ "$("$CTX" sql "PRAGMA user_version")" = 22 ] || fail "a new file is at the current version"
+[ "$("$CTX" sql "PRAGMA user_version")" = 23 ] || fail "a new file is at the current version"
 [ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 7 ] || fail "derived version recorded"
 printf '{"uuid":"rb-1","timestamp":"2026-09-01T10:00:00Z","cwd":"/w/rb","message":{"role":"user","content":"the capybara rollout"}}\n{"uuid":"rb-2","timestamp":"2026-09-01T10:00:05Z","cwd":"/w/rb","message":{"role":"assistant","content":"rolled out the capybara"}}\n' > "$T/ab12cd99-rb.jsonl"
 "$CTX" archive "$T/ab12cd99-rb.jsonl" >/dev/null
@@ -3721,7 +3721,7 @@ grep -q 'rebuilding it once' "$T/rb.err" || fail "an old index is rebuilt on ope
 "$CTX" sql "DROP TABLE ctx_meta" >/dev/null; "$CTX" sql "PRAGMA user_version = 1" >/dev/null
 "$CTX" search --all capybara 2>"$T/rb3.err" | grep -q capybara || fail "an unversioned file still works"
 [ -s "$T/rb3.err" ] && fail "an unversioned file is upgraded without a rebuild"
-[ "$("$CTX" sql "PRAGMA user_version")" = 22 ] || fail "and is marked current"
+[ "$("$CTX" sql "PRAGMA user_version")" = 23 ] || fail "and is marked current"
 
 # Docs tickets: every documentation problem ctx finds becomes a ticket, once each, without the
 # person's sign-off, and the overview shows who holds it and carries a prod to that session.
@@ -4509,7 +4509,75 @@ printf '{"type":"assistant","timestamp":"2026-11-22T12:00:00Z","sessionId":"t-1"
 printf '{"type":"assistant","timestamp":"2026-11-22T12:01:00Z","sessionId":"t-1","cwd":"/w/owl","message":{"id":"a-fast","model":"claude-opus-5-5","usage":{"input_tokens":1000000,"output_tokens":0,"speed":"fast"}}}\n' >> "$U2/projects/-w-owl/t-1.jsonl"
 CLAUDE_CONFIG_DIR="$U2" CODEX_HOME="$T/none" "$CTX" usage collect >/dev/null
 [ "$(U "SELECT input, output FROM ctx_usage WHERE msg = 'a-fb'")" = "110 55" ] || fail "every attempt of a retried response counts"
-[ "$(U "SELECT round(dollars, 2), speed FROM ctx_usage WHERE msg = 'a-fast'")" = "8.0 fast" ] || fail "fast mode is priced as fast"
+[ "$(U "SELECT dollars IS NULL, speed FROM ctx_usage WHERE msg = 'a-fast'")" = "1 fast" ] || fail "fast mode has no price line, so no dollars"
+
+# A .claude.json that cannot be read says nothing about the login.
+SEEN=$(U "SELECT count(*) FROM ctx_account_seen")
+printf '{"oauthAccount":{"emailAddress":"half' > "$U2/.claude.json"
+resp a-4 2026-11-23T10:00:00Z
+CLAUDE_CONFIG_DIR="$U2" CODEX_HOME="$T/none" CTX_NOW=2026-11-23T11:00:00Z "$CTX" usage collect >/dev/null
+[ "$(U "SELECT count(*) FROM ctx_account_seen")" = "$SEEN" ] && [ "$(U "SELECT account FROM ctx_usage WHERE msg = 'a-4'")" = "anthropic:second@example.test" ] || fail "an unreadable login file is no login change"
+rm "$U2/.claude.json"
+resp a-5 2026-11-24T10:00:00Z
+CLAUDE_CONFIG_DIR="$U2" CODEX_HOME="$T/none" CTX_NOW=2026-11-24T00:00:00Z "$CTX" usage collect >/dev/null
+[ "$(U "SELECT account FROM ctx_usage WHERE msg = 'a-5'")" = "anthropic:api-key" ] || fail "no login file is an API key"
+# A retried response's attempts are each priced at their own model.
+printf '{"type":"assistant","timestamp":"2026-11-24T11:00:00Z","sessionId":"t-1","cwd":"/w/owl","message":{"id":"a-try","model":"claude-opus-5-5","usage":{"input_tokens":1000000,"output_tokens":0,"iterations":[{"model":"claude-sonnet-5-5","input_tokens":1000000,"output_tokens":0},{"input_tokens":1000000,"output_tokens":0}]}}}\n' >> "$U2/projects/-w-owl/t-1.jsonl"
+CLAUDE_CONFIG_DIR="$U2" CODEX_HOME="$T/none" "$CTX" usage collect >/dev/null
+[ "$(U "SELECT input, round(dollars, 2) FROM ctx_usage WHERE msg = 'a-try'")" = "2000000 6.0" ] || fail "each attempt at its own model's price: $(U "SELECT input, dollars FROM ctx_usage WHERE msg = 'a-try'")"
+# Codex limit readings from a session that names no account are kept, as an unknown account's.
+python3 - "$UX/sessions/2026/11/20/rollout-cx-5.jsonl" <<'PY'
+import json, sys
+with open(sys.argv[1], "w") as f:
+    f.write(json.dumps({"timestamp": "2026-11-20T13:00:00Z", "type": "session_meta", "payload": {"id": "cx-5", "cwd": "/w/owl"}}) + "\n")
+    f.write(json.dumps({"timestamp": "2026-11-20T13:00:02Z", "type": "event_msg", "payload": {"type": "token_count", "info": None, "rate_limits": {"primary": {"used_percent": 7.0, "window_minutes": 300, "resets_at": 1795600000}}}}) + "\n")
+PY
+CLAUDE_CONFIG_DIR="$UC" CODEX_HOME="$UX" "$CTX" usage collect >/dev/null
+[ "$(U "SELECT used FROM ctx_limit WHERE account = 'openai:unknown'")" = "7.0" ] || fail "a reading with no account is kept as unknown"
+# ctx forget reaches a Codex session, which is not archived, and it is not collected again.
+"$CTX" forget cx-1 | grep -q '^forgotten cx-1: ' || fail "forget takes a Codex session"
+[ "$(U "SELECT count(*) FROM ctx_usage WHERE session = 'cx-1' OR parent = 'cx-1'")" = 0 ] || fail "a forgotten Codex session's spend, and its subagents', is gone"
+"$CTX" sql "DELETE FROM ctx_usage_read" >/dev/null
+CLAUDE_CONFIG_DIR="$UC" CODEX_HOME="$UX" "$CTX" usage collect >/dev/null
+[ "$(U "SELECT count(*) FROM ctx_usage WHERE session = 'cx-1'")" = 0 ] || fail "and it is not collected again"
+# Excluding a folder removes the spend already collected from it; undoing that brings it back.
+mkdir -p "$U2/projects/-w-kite"
+printf '{"type":"assistant","timestamp":"2026-11-24T12:00:00Z","sessionId":"k-1","cwd":"/w/kite","message":{"id":"kite-1","model":"claude-opus-5-5","usage":{"input_tokens":1,"output_tokens":1}}}\n' > "$U2/projects/-w-kite/k-1.jsonl"
+CLAUDE_CONFIG_DIR="$U2" CODEX_HOME="$T/none" "$CTX" usage collect >/dev/null
+[ "$(U "SELECT folder FROM ctx_usage WHERE msg = 'kite-1'")" = "-w-kite" ] || fail "a response keeps its folder"
+"$CTX" exclude /w/kite >/dev/null
+[ "$(U "SELECT count(*) FROM ctx_usage WHERE msg = 'kite-1'")" = 0 ] || fail "excluding a folder removes its spend"
+"$CTX" exclude --remove /w/kite >/dev/null
+CLAUDE_CONFIG_DIR="$U2" CODEX_HOME="$T/none" "$CTX" usage collect >/dev/null
+[ "$(U "SELECT count(*) FROM ctx_usage WHERE msg = 'kite-1'")" = 1 ] || fail "and undoing it brings the spend back"
+# A hook's write gets in while a big file is read.
+python3 - "$U2/projects/-w-owl/t-huge.jsonl" <<'PY'
+import json, sys
+pad = "y" * 8000
+with open(sys.argv[1], "w") as f:
+    for i in range(6000):
+        f.write(json.dumps({"type": "assistant", "timestamp": "2026-11-24T13:00:00Z", "sessionId": "t-huge", "cwd": "/w/owl", "pad": pad, "message": {"id": "huge-%d" % i, "model": "claude-opus-5-5", "usage": {"input_tokens": 1, "output_tokens": 1}}}) + "\n")
+PY
+CLAUDE_CONFIG_DIR="$U2" CODEX_HOME="$T/none" "$CTX" usage collect >/dev/null &
+UPID=$!
+python3 - "$CTX_DB" <<'PY' || fail "a write with a 200 ms wait gets in while a big file is read"
+import sqlite3, sys, time
+time.sleep(0.3)
+ok = 0
+for i in range(6):
+    c = sqlite3.connect(sys.argv[1], timeout=0.2)
+    try:
+        c.execute("INSERT OR REPLACE INTO ctx_meta(key, value) VALUES ('probe', ?)", (str(i),)); c.commit(); ok += 1
+    except sqlite3.OperationalError:
+        pass
+    c.close()
+    time.sleep(0.05)
+assert ok == 6, ok
+PY
+wait $UPID
+# A database whose ctx_usage is from before folders is started again and read again.
+python3 -c 'import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); c.executescript("DROP TABLE ctx_usage; CREATE TABLE ctx_usage(id INTEGER PRIMARY KEY, harness TEXT, session TEXT, msg TEXT, UNIQUE (harness, session, msg)); PRAGMA user_version = 22"); c.close()' "$CTX_DB"
+[ "$(U "SELECT count(*) FROM pragma_table_info('ctx_usage') WHERE name = 'folder'")" = 1 ] && [ "$(U "SELECT count(*) FROM ctx_usage_read")" = 0 ] || fail "an older ctx_usage is rebuilt"
 
 # The skill eval harness works end to end with a stand-in for the model.
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"

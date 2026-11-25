@@ -1306,8 +1306,14 @@ the account is that login's address, otherwise `openai:` and the account id, and
 from its rate-limit readings. With no login, the account is `anthropic:api-key` or
 `openai:api-key`. Addresses stay in the local database and in `ctx usage` output on this machine;
 nothing is sent anywhere. Folders excluded from the archive (for Codex, by the session's working
-directory) and forgotten sessions are left out of spend too, and `ctx forget` removes a session's
-spend and its subagents'. The places of files that no longer exist are let go.
+directory) and forgotten sessions are left out of spend too: excluding a folder removes the spend
+already collected from it, and undoing that has the next collection read every record again.
+`ctx forget SESSION` removes a session's spend and its subagents', a Codex session's included. A
+`.claude.json` that cannot be read (Claude Code writing it, or a corrupt copy) changes no login.
+Big files are read in batches of at most 8 MB or 50 ms of work, with a 50 ms pause between, so a
+hook's write gets in. The places of files that no longer exist are let go. Codex limit readings
+from a session that names no account are kept under `openai:unknown`. A response retried on
+another model is priced attempt by attempt, each at its own model where the record names it.
 
 Codex writes its plan's limits into its records (`rate_limits`: share used, window, reset time,
 plan); each reading that differs from the one before it goes into `ctx_limit`.
@@ -1327,8 +1333,11 @@ A row keeps the dollars and the date of the line it was priced by, so a later pr
 past spend. A response with no line for its model at its date (a model not listed, a response
 older than the model's first line, or a fast-mode response with no `MODEL@fast` line) has no
 dollars, and reports say so rather than guess; `ctx usage collect` says how many it took in. The
-built-in list leaves out what its source does not settle: Claude Haiku 5.5, whose price depends on
-prompt length, fast mode on models other than Claude Opus 5.5, and every OpenAI model.
+built-in list holds only models whose input, output and cache-read prices its source states, with
+cache writes at the source's stated 1.25x and 2x of input; it leaves out Claude Opus 5 and 4.x,
+Sonnet 5 and 4.6, and Haiku 4.5 (no stated cache-read price), Claude Haiku 5.5 (priced by prompt
+length), fast mode, and every OpenAI model. Add lines for them in the price file when you have
+their prices.
 
 ## Keep the call log as Parquet
 
