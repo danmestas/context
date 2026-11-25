@@ -4449,6 +4449,60 @@ sed -i.bak 's/"s-1"/"s-2"/' "$UC/projects/-w-owl/s-2.jsonl" && rm -f "$UC/projec
 "$CTX" archive "$UC/projects/-w-owl/s-2.jsonl" >/dev/null
 [ "$(U "SELECT count(*) FROM ctx_usage WHERE session = 's-2'")" = 4 ] || fail "archiving a transcript takes in its responses: $(U "SELECT count(*) FROM ctx_usage WHERE session = 's-2'")"
 
+# ctx usage: spend and tokens over a window, a subagent under the session that started it.
+CTX_NOW=2026-11-21T12:00:00Z "$CTX" usage --days 60 > "$T/urep.out"
+grep -q '^Last 1440 hours, by session: \$.* at API prices, .* tokens, 11 responses (7 with no price line, not in the dollars)\.$' "$T/urep.out" || fail "the report's first line: $(head -1 "$T/urep.out")"
+awk '$NF ~ /claude-/ && / s-1 / { if ($4 == 1) ok = 1 } END { exit !ok }' "$T/urep.out" || fail "a subagent is counted under its parent, with a count: $(cat "$T/urep.out")"
+grep -q 'agent-a1' "$T/urep.out" && fail "a subagent has no row of its own"
+CTX_NOW=2026-11-21T12:00:00Z "$CTX" usage --days 60 --by account | grep -q 'Anthropic (Max) anthropic:person@example.test' || fail "by account: provider and plan, and the address on this machine"
+CTX_NOW=2026-11-21T12:00:00Z "$CTX" usage --by model --hours 1 | grep -q '^Last 1 hour, by model: \$0.00 at API prices, 0 tokens, 0 responses\.$' || fail "an empty window says so"
+if "$CTX" usage --by colour 2>/dev/null; then fail "an unknown --by is refused"; fi
+# limits-in: the status line's JSON; plan readings and the context in use, silently.
+SL() { printf '{"session_id":"s-3","transcript_path":"%s","rate_limits":{"five_hour":{"used_percentage":%s,"resets_at":1795700000},"seven_day":{"used_percentage":%s,"resets_at":1796100000}},"context_window":{"used_percentage":33}}' "$UC/projects/-w-owl/s-3.jsonl" "$1" "$2"; }
+SL 20 40 | CTX_NOW=2026-11-21T10:00:00Z "$CTX" usage limits-in > "$T/lin.out" 2>&1 || fail "limits-in exits 0"
+[ ! -s "$T/lin.out" ] || fail "limits-in is silent"
+[ "$(U "SELECT window, used, resets_at, session, source FROM ctx_limit WHERE source = 'statusline' ORDER BY window")" = "0 33.0  s-3 statusline
+300 20.0 1795700000  statusline
+10080 40.0 1796100000  statusline" ] || fail "limits-in records both windows and the context: $(U "SELECT * FROM ctx_limit WHERE source = 'statusline'")"
+[ "$(U "SELECT count(DISTINCT account) FROM ctx_limit WHERE source = 'statusline' AND account = 'anthropic:person@example.test'")" = 1 ] || fail "readings are tied to the session's account"
+SL 20 40 | CTX_NOW=2026-11-21T10:05:00Z "$CTX" usage limits-in
+[ "$(U "SELECT count(*) FROM ctx_limit WHERE source = 'statusline'")" = 3 ] || fail "an unchanged reading is not kept again"
+echo 'not json' | "$CTX" usage limits-in || fail "limits-in ignores what it cannot read"
+# A rise in a limit is split among the sessions running then, by their priced tokens.
+python3 - "$UC/projects" <<'PY'
+import json, os, sys
+root = sys.argv[1]
+for sid, cwd, out in (("s-3", "/w/owl", 30000), ("s-4", "/w/heron", 10000)):
+    d = root + "/-w-" + cwd.split("/")[-1]
+    os.makedirs(d, exist_ok=True)
+    with open(d + "/" + sid + ".jsonl", "w") as f:
+        f.write(json.dumps({"type": "assistant", "timestamp": "2026-11-21T11:00:00Z", "sessionId": sid, "cwd": cwd, "message": {"id": "m-" + sid, "model": "claude-opus-5-5", "usage": {"input_tokens": 0, "output_tokens": out}}}) + "\n")
+PY
+CLAUDE_CONFIG_DIR="$UC" CODEX_HOME="$UX" "$CTX" usage collect >/dev/null
+SL 22 55 | CTX_NOW=2026-11-21T12:00:00Z "$CTX" usage limits-in
+CTX_NOW=2026-11-21T12:30:00Z "$CTX" usage --by project > "$T/ushare.out"
+awk '$NF == "owl" && $5 == "11.2" { a = 1 } $NF == "heron" && $5 == "3.8" { b = 1 } END { exit !(a && b) }' "$T/ushare.out" || fail "a 15-point rise split 3 to 1 by dollars: $(cat "$T/ushare.out")"
+# At session start: one line when it is worth saying, with no address in it.
+echo '{"session_id":"ss-1","hook_event_name":"SessionStart"}' | CTX_NOW=2026-11-21T12:30:00Z "$CTX" rules offer > "$T/uss.json"
+python3 - "$T/uss.json" <<'PY' || fail "the session-start plan line: $(cat "$T/uss.json")"
+import json, sys
+c = json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]
+line = [l for l in c.split("\n") if l.startswith("Plan use")]
+assert len(line) == 1, c
+l = line[0]
+assert "Anthropic (Max): week 55%, resets " in l and "+15% since yesterday (owl 11, heron 4)." in l, l
+assert "@" not in l and "Prices date" not in l, l
+PY
+echo '{"session_id":"ss-2","hook_event_name":"SessionStart"}' | CTX_NOW=2026-11-20T12:00:00Z "$CTX" rules offer | grep -q 'Plan use' && fail "nothing is said when nothing is worth saying"
+# An API key is shown in dollars, and an old price list says how old it is.
+UK="$T/ucfg-key"
+mkdir -p "$UK/projects/-w-owl"
+printf '{}\n' > "$UK/.claude.json"
+printf '{"type":"assistant","timestamp":"2027-01-15T10:00:00Z","sessionId":"k-1","cwd":"/w/owl","message":{"id":"m-k1","model":"claude-opus-5-5","usage":{"input_tokens":500000,"output_tokens":0}}}\n' > "$UK/projects/-w-owl/k-1.jsonl"
+CLAUDE_CONFIG_DIR="$UK" "$CTX" usage collect >/dev/null
+echo '{"session_id":"ss-3","hook_event_name":"SessionStart"}' | CTX_NOW=2027-01-15T12:00:00Z "$CTX" rules offer > "$T/uss2.json"
+grep -q 'Anthropic API key: \$2.00 since yesterday\.' "$T/uss2.json" && grep -q 'Prices date from 2026-11-03\.' "$T/uss2.json" || fail "API-key dollars and the price list's age: $(cat "$T/uss2.json")"
+
 # The skill eval harness works end to end with a stand-in for the model.
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"
 

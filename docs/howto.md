@@ -1322,6 +1322,62 @@ older than the model's first line, or a fast-mode response, priced as `MODEL@fas
 and reports say so rather than guess. The built-in list leaves out what its source does not settle:
 Claude Haiku 5.5, whose price depends on prompt length, fast mode, and every OpenAI model.
 
+**Reports.** `ctx usage` shows spend over a recent window, most first, for an agent balancing
+several workers as much as for you:
+
+```sh
+ctx usage                      # the last 24 hours, by session
+ctx usage --hours 6 --by project
+ctx usage --days 7 --by model  # or harness, or account
+```
+
+```
+Last 24 hours, by session: $1113.88 at API prices, 3.1B tokens, 11128 responses (1616 with no price line, not in the dollars).
+   dollars    tokens   resp  subs  week%  session  project  harness  models
+    473.71+      1.1B   3025    22      -  2ca4c388-...  pi-c  claude  claude-opus-5-5,claude-sonnet-5-5
+```
+
+A subagent's responses are counted in the row of the session that started it, and `subs` says how
+many subagent sessions are in the row. Dollars are what the responses cost at the dated API
+prices; on a subscription they are notional, the one way to compare an Opus session with a Sonnet
+one, and `+` marks a row with some responses that had no price. `week%` is the points of a plan's
+weekly limit the row used (below). `--by account` shows the provider, the plan and the login
+address; the address is shown nowhere else.
+
+**Plan limits.** What runs out on a subscription is the plan's limits, so ctx keeps readings of
+them in `ctx_limit`. Codex writes them into its records. Claude Code gives them only to its status
+line, so the status line passes its JSON on to `ctx usage limits-in`, which records the five-hour
+and weekly readings and the share of the context window in use, tied to the account of the
+session's config folder. It prints nothing, always exits 0, and keeps a reading only when it
+differs from the one before. A status line script that reads its JSON from standard input can
+pass it on like this (bash):
+
+```sh
+input=$(cat)
+printf '%s' "$input" | ctx usage limits-in
+printf '%s' "$input" | the-rest-of-the-status-line
+```
+
+Each rise between two readings of an account's window is split among the sessions that made
+responses on that account in between, in proportion to what their responses cost at the dated
+prices (or their tokens, when none had a price). A reading with a new reset time starts a new
+window, so its whole value counts as the rise. A rise with no responses in between is left
+unattributed. The prices weigh sessions against each other; they are not shown as spend there.
+
+**At session start**, the context ctx adds gains one line about the last 24 hours when it is worth
+saying: per subscription account, its provider and plan, the week's share used and when it resets,
+the rise since yesterday and the two projects that made most of it; dollars for an API key; tokens
+for an account with no readings. For example:
+
+```
+Plan use, for the user to know of (`ctx usage` for more): Anthropic (Ultra): week 46%, resets Sat; +18% since yesterday (pic-relay 11, valet 4, rest 3).  OpenAI (pro): week 31%, resets Sun.
+```
+
+It is worth saying when an account's week is at 50% or more, or rose 10 points or more in the day;
+when an API key spent $1 or more; or when an account with no readings used 10 million tokens or
+more. Then every account used in the day is listed. The line names no address, and it says
+"Prices date from DATE." when the newest price line is over 60 days old.
+
 ## Keep the call log as Parquet
 
 The call log is short-lived: it rotates at 1 MB and keeps about a day on a busy machine. Each end line also
