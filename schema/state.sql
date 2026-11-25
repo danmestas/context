@@ -442,6 +442,7 @@ CREATE TABLE IF NOT EXISTS ctx_usage(
   parent     TEXT,                -- for a subagent: the session that started it
   msg        TEXT NOT NULL,       -- the response's id
   project    TEXT,
+  folder     TEXT,                -- the working directory as Claude Code names its folder, which ctx exclude matches
   account    TEXT,
   plan       TEXT,                -- plan name, or api-key
   billing    TEXT,
