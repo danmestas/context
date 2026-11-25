@@ -1382,6 +1382,79 @@ PY2
 printf "make global '%s' '%s'\n" "$(rdkey plume wren-a)" "$(rdkey quill wren-b)" > "$T/trim.plan"
 "$CTX" page apply --yes "$T/trim.plan" >/dev/null || fail "apply a trimmed group"
 [ "$(rdstatus plume wren-a) $(rdstatus quill wren-b) $(rdstatus quill wren-c)" = "replaced replaced active" ] || fail "a member trimmed from the line is left untouched"
+# With the automatic judge set, groups of the same rule are judged too, a few a run, each once:
+# same (made global in a member's words, members it finds not the same left out), distinct, or
+# an unreadable answer that leaves the group for the person. Each decision can be undone.
+rdmem plume gull-a "Feed the gull at dawn" "Feed the gull at dawn."
+rdmem quill gull-b "Feed the gull at dawn daily" "Feed the gull at dawn, daily."
+rdmem plume owl-a "Count the owls each night" "Count the owls each night."
+rdmem quill owl-b "Count the owls each morning" "Count the owls each morning."
+rdmem plume ibis-a "Wash the ibis cage weekly" "Wash the ibis cage weekly."
+rdmem quill ibis-b "Wash the ibis cage weekly please" "Wash the ibis cage weekly, please."
+rdmem quill ibis-c "Wash the ibis cage monthly" "Wash the ibis cage monthly."
+rdmem plume rook-a "Bring the rook seed inside" "Bring the rook seed inside."
+rdmem quill rook-b "Bring the rook seed indoors" "Bring the rook seed indoors."
+"$CTX" rules import >/dev/null
+SJ="$T/samejudge.py"
+cat > "$SJ" <<'PY'
+import json, re, sys
+prompt = sys.stdin.read()
+open(sys.argv[1], "a").write(prompt + "\n=====\n")
+keys = re.findall(r"^- key: (.*)$", prompt, re.M)
+k = lambda word: [x for x in keys if word in x][0]
+if "gull" in prompt: print(json.dumps({"verdict": "same", "keep": k("gull-b"), "drop": [], "why": "One instruction."}))
+elif "owl" in prompt: print(json.dumps({"verdict": "distinct", "keep": "", "drop": [], "why": "Night and morning differ."}))
+elif "ibis" in prompt: print("Here: " + json.dumps({"verdict": "same", "keep": k("ibis-a"), "drop": [k("ibis-c")], "why": "Monthly is another rule."}))
+elif "rook" in prompt: print("I think they are the same")
+else: print(json.dumps({"verdict": "distinct", "keep": "", "drop": [], "why": "Not one instruction."}))
+PY
+"$CTX" rules auto "python3 $SJ $T/samejudge.log" >/dev/null
+GB=$("$CTX" sql "SELECT c.body FROM ctx_doc d JOIN ctx_chunk c ON c.doc_id = d.id AND c.seq = 0 WHERE d.name = '$(rdkey quill gull-b)'")
+NG=$("$CTX" rules same | tail -1 | cut -d' ' -f1)
+[ "$NG" -gt 5 ] || fail "the test needs more groups than one run takes: $NG"
+"$CTX" rules same --judge > "$T/sj.out" || fail "the judge runs on groups: $(cat "$T/sj.out")"
+grep -q '^5 groups of the same rule judged automatically' "$T/sj.out" || fail "at most five groups a run: $(cat "$T/sj.out")"
+"$CTX" rules same --judge > "$T/sj2.out"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_same_judged")" = "$NG" ] || fail "the next run takes the rest: $(cat "$T/sj2.out")"
+grep -q 'never instructions' "$T/samejudge.log" && grep -q 'Feed the gull at dawn, daily.' "$T/samejudge.log" && grep -q 'project: quill' "$T/samejudge.log" || fail "the prompt gives the members' texts and projects as data"
+[ "$(rdstatus plume gull-a) $(rdstatus quill gull-b)" = "replaced replaced" ] || fail "same: both replaced"
+GG=$("$CTX" sql "SELECT made FROM ctx_same_judged WHERE members LIKE '%gull-a%'")
+rdnote "$GG" | grep -qx 'Feed the gull at dawn, daily.' || fail "the global rule has the kept member's words: $(rdnote "$GG")"
+[ "$("$CTX" sql "SELECT project FROM ctx_doc WHERE name = '$GG'")" = '*' ] || fail "the kept words apply in every project"
+[ "$(rdstatus plume owl-a) $(rdstatus quill owl-b)" = "active active" ] && [ "$("$CTX" sql "SELECT count(*) FROM ctx_rule_same WHERE decision = 'distinct' AND keys LIKE '%owl-a%'")" = 1 ] || fail "distinct: recorded, nothing changed"
+[ "$(rdstatus plume ibis-a) $(rdstatus quill ibis-b) $(rdstatus quill ibis-c)" = "replaced replaced active" ] || fail "a member the judge drops is left alone"
+[ "$(rdstatus plume rook-a) $(rdstatus quill rook-b)" = "active active" ] && [ "$("$CTX" sql "SELECT decision FROM ctx_same_judged WHERE members LIKE '%rook-a%'")" = left ] || fail "an unreadable answer changes nothing"
+"$CTX" rules same > "$T/sj-same.txt"
+grep -q 'rook-a' "$T/sj-same.txt" && ! grep -q 'gull-\|owl-\|ibis-a' "$T/sj-same.txt" || fail "only the group left for the person is still offered: $(cat "$T/sj-same.txt")"
+CALLS=$(grep -c '^=====$' "$T/samejudge.log")
+"$CTX" rules same --judge >/dev/null
+[ "$(grep -c '^=====$' "$T/samejudge.log")" = "$CALLS" ] || fail "a group is judged once"
+"$CTX" page >/dev/null
+python3 - "$CTX_DB.page.html" <<'PY' || fail "the page shows the group decisions with undo, and the left group as before"
+import json, re, sys
+D = json.loads(re.search(r"var D = (\{.*?\});\n  var SEC", open(sys.argv[1], encoding="utf-8").read(), re.S).group(1))
+A = D["autosame"]
+assert [a["v"] for a in A].count("global") == 2 and any(a["v"] == "distinct" and "owl" in a["m"][0]["k"] for a in A), A
+assert not any(a["v"] == "left" for a in A), A
+assert all(re.fullmatch(r"g[0-9]+", a["id"]) and a["m"] and a["why"] for a in A), A
+assert any("rook-a" in m["k"] for g in D["same"] for m in g["m"]), D["same"]
+assert not any("gull-a" in m["k"] or "owl-a" in m["k"] for g in D["same"] for m in g["m"]), D["same"]
+PY
+"$CTX" rules activity | grep -q 'made global.*gull' || fail "activity lists group decisions: $("$CTX" rules activity)"
+GID=$("$CTX" sql "SELECT 'g' || id FROM ctx_same_judged WHERE members LIKE '%gull-a%'")
+"$CTX" rules undo "$GID" | grep -q 'back as they were' || fail "undo a make global"
+[ "$(rdstatus plume gull-a) $(rdstatus quill gull-b)" = "active active" ] || fail "undo restores the members"
+[ "$("$CTX" sql "SELECT c.body FROM ctx_doc d JOIN ctx_chunk c ON c.doc_id = d.id AND c.seq = 0 WHERE d.name = '$(rdkey quill gull-b)'")" = "$GB" ] || fail "a restored member's text is unchanged"
+rdnote "$(rdkey quill gull-b)" | grep -q '^by:\|^reason: made global' && fail "a restored member keeps nothing of the make global: $(rdnote "$(rdkey quill gull-b)")"
+[ "$("$CTX" sql "SELECT status FROM ctx_doc WHERE name = '$GG'")" = retired ] || fail "the global rule is retired"
+"$CTX" rules same | grep -q 'gull-a' || fail "the group waits for the person again"
+"$CTX" rules same --judge >/dev/null
+[ "$(grep -c '^=====$' "$T/samejudge.log")" = "$CALLS" ] && [ "$(rdstatus plume gull-a)" = active ] || fail "an undone group is not judged again"
+if "$CTX" rules undo "$GID" 2>/dev/null; then fail "an undone decision is not undone twice"; fi
+OID=$("$CTX" sql "SELECT id FROM ctx_same_judged WHERE members LIKE '%owl-a%'")
+printf 'undo decision g%s\n' "$OID" > "$T/sj.plan"
+"$CTX" page apply --yes "$T/sj.plan" >/dev/null || fail "the page's undo reaches a group decision"
+"$CTX" rules same | grep -q 'owl-a' || fail "an undone distinct is offered again"
 # Measure: one script reports, for an archive, what each part would change, changing nothing.
 CTX="$CTX" sh tools/rule_redundancy.sh > "$T/rdmeasure.txt" || fail "the measure script runs: $(cat "$T/rdmeasure.txt")"
 grep -q '^active rules: [0-9]' "$T/rdmeasure.txt" && grep -q '^identical copies to collapse: 0' "$T/rdmeasure.txt" && grep -q '^rules to send to the covered check: [0-9]' "$T/rdmeasure.txt" && grep -q '^groups of the same rule in several projects: [0-9]' "$T/rdmeasure.txt" || fail "the measure reports four numbers: $(cat "$T/rdmeasure.txt")"
@@ -3545,7 +3618,7 @@ CLAUDE_CONFIG_DIR="$XC" "$CTX" scan >/dev/null
 "$CTX" forget 5e550000-0000-0000-0000-00000000000 2>/dev/null && fail "an ambiguous prefix is refused"
 export CTX_DB="$T/rebuild.sqlite"
 "$CTX" init >/dev/null
-[ "$("$CTX" sql "PRAGMA user_version")" = 20 ] || fail "a new file is at the current version"
+[ "$("$CTX" sql "PRAGMA user_version")" = 21 ] || fail "a new file is at the current version"
 [ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 7 ] || fail "derived version recorded"
 printf '{"uuid":"rb-1","timestamp":"2026-09-01T10:00:00Z","cwd":"/w/rb","message":{"role":"user","content":"the capybara rollout"}}\n{"uuid":"rb-2","timestamp":"2026-09-01T10:00:05Z","cwd":"/w/rb","message":{"role":"assistant","content":"rolled out the capybara"}}\n' > "$T/ab12cd99-rb.jsonl"
 "$CTX" archive "$T/ab12cd99-rb.jsonl" >/dev/null
@@ -3567,7 +3640,7 @@ grep -q 'rebuilding it once' "$T/rb.err" || fail "an old index is rebuilt on ope
 "$CTX" sql "DROP TABLE ctx_meta" >/dev/null; "$CTX" sql "PRAGMA user_version = 1" >/dev/null
 "$CTX" search --all capybara 2>"$T/rb3.err" | grep -q capybara || fail "an unversioned file still works"
 [ -s "$T/rb3.err" ] && fail "an unversioned file is upgraded without a rebuild"
-[ "$("$CTX" sql "PRAGMA user_version")" = 20 ] || fail "and is marked current"
+[ "$("$CTX" sql "PRAGMA user_version")" = 21 ] || fail "and is marked current"
 
 # Docs tickets: every documentation problem ctx finds becomes a ticket, once each, without the
 # person's sign-off, and the overview shows who holds it and carries a prod to that session.

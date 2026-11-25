@@ -661,7 +661,21 @@ words of the member you pick (the longest title by default, frontmatter left out
 replaces every member with it. It refuses a group from one project, a whole instruction
 file, a rule already for every project, and a rule with an `--until` date. **Not the same** is recorded, and
 the group is not offered again while its members stay as they are. **Later** does
-nothing. No rule is widened without that choice. `ctx rules same` lists the groups.
+nothing. `ctx rules same` lists the groups.
+
+With the automatic judge set (`ctx rules auto CMD`), the hourly scan has it decide these
+groups too, up to 5 a run, each group once. It is shown each member's key, project and text,
+as data, and answers in JSON: `same`, naming the member whose words to keep and any members
+that do not say the same thing, or `distinct`. Same makes the rest one rule for every project
+in that member's exact words, through the same code as Make global; a member it leaves out is
+left alone. Distinct is recorded as Not the same. An answer ctx cannot act on (unreadable, a
+kept key that is no member, fewer than two rules left, or a rule Make global refuses) changes
+nothing and leaves the group for you; a judge command that fails decides nothing and the rest
+wait for the next run. `ctx rules same --judge` runs it now. Each decision is listed by `ctx
+rules activity` and under "Decided for you this week" on the page, and `ctx rules undo gN`
+reverses one: the rules a make global replaced are back as they were, the rule it made is
+retired, and the group waits for you; the judge does not take it again. Without the judge, no
+rule is widened without your choice.
 
 `tools/rule_redundancy.sh` reports all of this for an archive and changes nothing:
 rules in force, copies to collapse, rules the covered check would send, and groups. Run
@@ -1324,13 +1338,15 @@ conflict or Later. A proposal the judge decided is never asked about here.
 
 **Decided for you this week** is folded. Open it to review the judge's last seven
 days: rules it added, and proposals it dismissed, grouped by reason (already covered
-by a rule, with the rule's words; session setup; not a rule). Each has **Undo**.
-Decisions you already undid are not listed.
+by a rule, with the rule's words; session setup; not a rule), and the groups of the same rule
+it made global or kept apart, with their members. Each has **Undo**. Decisions you already
+undid are not listed.
 
 **Same rule in several projects** lists groups of rules saved separately in two or
 more projects that seem to say the same thing, each with Make global, Not the same or
-Later, and the members to pick the words from. A project's page lists the groups with a
-member in that project.
+Later, and the members to pick the words from. With the automatic judge set it lists only
+the groups the judge has not decided: those it could not act on, those you undid, and those
+it has not reached yet. A project's page lists the groups with a member in that project.
 
 **Status** is folded too: the projects ctx holds (Keep, Stop archiving or Forget),
 the hooks it runs (Keep, Later or Remove) and the weekly grid, with a one-line
@@ -1352,7 +1368,7 @@ with shell single-quote rules and are never passed to a shell.
 - `dismiss conflict ID` is Not a conflict, so the pair is not raised again unless a passage changes; `because 'TEXT'` keeps a reason.
 - `stop archiving NAME` is `ctx exclude --project NAME`; what is held stays searchable.
 - `forget NAME` is `ctx forget --project NAME`; the project's sessions leave search for good.
-- `undo decision N` is `ctx rules undo N`: the automatic judge's decision on proposal N is reversed, and the plan names the proposal.
+- `undo decision N` is `ctx rules undo N`: the automatic judge's decision on proposal N is reversed, and the plan names the proposal. `undo decision gN` does the same for its decision on group N of the same rule.
 - `make global KEY KEY...` is Make global for a group of the same rule in several projects: one rule for every project in the first key's words, replacing every key listed (`ctx rules global`).
 - `not the same KEY KEY...` is Not the same: the group is not offered again while its rules are unchanged (`ctx rules distinct`).
 - Remove, for a hook, is only a `#` comment naming the entry to remove. ctx does not
