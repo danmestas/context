@@ -3349,10 +3349,10 @@ gate s-pic2 "$GP" grep '{"pattern":"heron"}' | grep -q '"deny"' || fail "a lower
 guard() { printf '{"hook_event_name":"PreToolUse","session_id":"g","cwd":"%s","tool_name":"%s","tool_input":%s}' "$GP" "$1" "$2" | CTX_DB="$T/noguard.sqlite" "$CTX" guard; }
 guard Bash '{"command":"cat .env"}' > "$T/guard.txt"
 grep -q '"permissionDecision":"deny"' "$T/guard.txt" && grep -q 'every later request' "$T/guard.txt" || fail "cat .env is turned back: $(cat "$T/guard.txt")"
-for c in 'cd app && head -5 config/.env.local' 'grep KEY .env' 'python3 -c x < .env' 'less ~/.aws/credentials' 'tail ~/.ssh/id_ed25519' 'base64 secrets/server.pem' 'cat ./.netrc' 'printenv' 'env | sort'; do
+for c in 'cd app && head -5 config/.env.local' 'grep KEY .env' 'python3 -c x < .env' 'less ~/.aws/credentials' 'tail ~/.ssh/id_ed25519' 'base64 secrets/server.pem' 'cat ./.netrc' 'printenv' 'env | sort' 'env | grep KEY' 'cat .env | grep -C 3 KEY' 'env | grep -e c' 'env || wc -l' 'cat .env | wc -l; cat .env' 'bash <<EOF\ncat .env\nEOF' 'python3 - <<EOF\nprint(1)\nEOF\ncat .env' 'sh -s <<-X\n\tcat .env\n\tX'; do
   guard Bash "{\"command\":\"$c\"}" | grep -q '"deny"' || fail "a read of a secret file is turned back: $c"
 done
-for c in 'cat .env.example' 'source .env && make' 'set -a; . ./.env; set +a; ./run' 'echo X=1 >> .env' 'ls -la .env' 'cat ~/.ssh/id_ed25519.pub' 'printenv HOME' 'env FOO=1 make' 'cat README.md' 'rm .env.bak'; do
+for c in 'cat .env.example' 'source .env && make' 'set -a; . ./.env; set +a; ./run' 'echo X=1 >> .env' 'ls -la .env' 'cat ~/.ssh/id_ed25519.pub' 'printenv HOME' 'env FOO=1 make' 'cat README.md' 'rm .env.bak' 'env | grep -c KEY' 'printenv | wc -l' 'env | grep -q AWS_' 'grep -q KEY .env' 'grep -lc KEY .env' 'cat .env | wc -l' 'env | FOO=1 grep --count KEY' 'python3 - <<EOF\nprint(cat .env)\nEOF' 'cat > notes.md <<END\ncat ~/.netrc\nEND\nls'; do
   [ -z "$(guard Bash "{\"command\":\"$c\"}")" ] || fail "a command that prints no secret passes: $c"
 done
 guard Read "{\"file_path\":\"$GP/.env\"}" | grep -q '"deny"' || fail "Read of .env is turned back"

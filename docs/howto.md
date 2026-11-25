@@ -1071,7 +1071,11 @@ the like, private keys, `~/.aws/credentials`, `.netrc`): the Read tool on one, a
 command that prints files given one (`cat`, `grep`, `head`, `python3` and so on),
 a `<` from one, and `env` or `printenv` alone. The refusal says how to use the
 values without printing them. Sourcing a file, writing to one and listing one
-pass. It is a word match, not a parser, so it only stops plain reads.
+pass, and so does a read whose output only counts or tests: piped into `wc`, or
+into `grep` with `-c`, `-q`, `-l` or `-L` (`env | grep -c KEY`, `grep -q KEY .env`).
+The body of a here-document is text, not commands, unless it is handed to a
+shell (`bash <<EOF`), so a script that mentions `cat .env` in a string passes.
+It is a word match, not a parser, so it only stops plain reads.
 
 `ctx guard post` is a `PostToolUse` hook. It applies the archive's redaction rules
 to what a tool returned and gives the harness the same result with each secret
