@@ -1282,10 +1282,14 @@ archives and its subagents' files, and the hourly scan takes in everything else.
 from where the last read stopped, a big file in batches of 8 MB so the hooks are never kept
 waiting, and a response is one row however many files repeat it (Claude Code's message id; a
 forked or copied transcript repeats its parent's). The first scan collects every
-record the harnesses still keep; `ctx usage collect` does it now.
+record the harnesses still keep. The hourly scan holds the archive's lock, so it spends at most
+3 minutes on usage and leaves the rest to the next scan, which goes on from the same places; a long
+history is collected over a few hours. `ctx usage collect` does it now and goes to the end, or for
+as long as `--for SECONDS` says.
 
 ```sh
 ctx usage collect     # 1240 responses (31 with no price line) and 85 limit readings taken in
+ctx usage collect --for 60    # at most a minute; the next collection goes on from there
 ```
 
 | Harness | Records | Counts |
@@ -1365,8 +1369,10 @@ address; the address is shown nowhere else.
 them in `ctx_limit`. Codex writes them into its records. Claude Code gives them only to its status
 line, so the status line passes its JSON on to `ctx usage limits-in`, which records the five-hour
 and weekly readings and the share of the context window in use, tied to the account of the
-session's config folder. It prints nothing, always exits 0, and keeps a reading only when it
-differs from the one before. A status line script that reads its JSON from standard input can
+session's config folder. It prints nothing, creates nothing, always exits 0 (with no archive or
+no `HOME` too), makes its writes in one transaction, and keeps a reading only when it differs from
+the one before. It reads the login from `.claude.json` at most every ten minutes, so a new login
+shows there within ten minutes. A status line script that reads its JSON from standard input can
 pass it on like this (bash):
 
 ```sh
@@ -1375,11 +1381,16 @@ printf '%s' "$input" | ctx usage limits-in
 printf '%s' "$input" | the-rest-of-the-status-line
 ```
 
-Each rise between two readings of an account's window is split among the sessions that made
-responses on that account in between, in proportion to what their responses cost at the dated
-prices (or their tokens, when none had a price). A reading with a new reset time starts a new
-window, so its whole value counts as the rise. A rise with no responses in between is left
-unattributed. The prices weigh sessions against each other; they are not shown as spend there.
+Every session's status line reports the readings it last saw, so readings of a window arrive out
+of step: an idle session repeats an old value, and one from before a reset can follow one from
+after it. So a window is known by its reset time, within 10 minutes; only the highest value read in
+the current window counts, and a rise is a value above it. A reading from an earlier window is
+stale and counts nothing, a drop and a climb back count nothing, and a reading with a clearly later
+reset starts a new window, whose whole value counts as the rise. Each rise is split among the
+sessions that made responses on that account since the rise before, in proportion to what their
+responses cost at the dated prices (or their tokens, when none had a price); a rise with no
+responses behind it is left unattributed. The prices weigh sessions against each other; they are
+not shown as spend there.
 
 **At session start**, the context ctx adds gains one line about the last 24 hours when it is worth
 saying: per subscription account, its provider and plan, the week's share used and when it resets,
@@ -1392,7 +1403,10 @@ Plan use, for the user to know of (`ctx usage` for more): Anthropic (Ultra): wee
 
 It is worth saying when an account's week is at 50% or more, or rose 10 points or more in the day;
 when an API key spent $1 or more; or when an account with no readings used 10 million tokens or
-more. Then every account used in the day is listed. The line names no address, and it says
+more. Then every account used in the day is listed, each at most once a day, so a resumed or
+compacted session does not hear it again. The week shown is the current one: a reading whose reset
+has passed is not. The line names no address: two logins on the same provider and plan are told
+apart as "account 1" and "account 2", in the order ctx first saw a response from each. It says
 "Prices date from DATE." when the newest price line is over 60 days old.
 
 **When to hand off.** Every response re-reads the whole context, so a long session's responses

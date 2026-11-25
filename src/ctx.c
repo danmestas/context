@@ -1255,7 +1255,11 @@ static int session_forgotten(sqlite3 *db, const char *session) {
 }
 
 static void usage_after_archive(sqlite3 *db, const char *path);
-static void usage_scan(sqlite3 *db, int say);
+/* A scan's share of time for usage: its lock keeps the archive waiting, so a first collection of
+ * a large history is spread over several scans, each going on where the last stopped. */
+#define USAGE_SCAN_MS (180 * 1000)
+
+static void usage_scan(sqlite3 *db, int say, long budget_ms);
 static void handoff_compute_daily(sqlite3 *db);
 static void handoff_warn(sqlite3 *db, const char *session, const char *transcript, buf *note);
 static void usage_brief(sqlite3 *db, buf *out);
@@ -2093,6 +2097,7 @@ static void call_begin(int argc, char **argv) {
     if (!strcmp(argv[1], two[i][0]) && !strcmp(argv[2], two[i][1])) call_name = two[i][2];
   for (int i = 0; one[i] && !call_name; i++)
     if (!strcmp(argv[1], one[i])) call_name = one[i];
+  if (!call_name) return; /* not logged: and finding the archive would make ~/.ctx, or stop without a HOME */
   char *db = db_path();
   struct stat st;
   int have = stat(db, &st) == 0; /* no archive, no log */
@@ -4415,7 +4420,7 @@ static int cmd_scan(const char *root_arg) {
     }
   }
   if (!root_arg || strcmp(root_arg, "--pic")) findings_run(db); /* not for a pic hook's quick scan */
-  if (!root_arg) usage_scan(db, 0); /* every harness's new responses; a scan of one folder is about turns */
+  if (!root_arg) usage_scan(db, 0, USAGE_SCAN_MS); /* every harness's new responses; a scan of one folder is about turns */
   sqlite3_close(db);
   printf("%ld transcripts read\n", ran);
   if (doc_changes) printf("%ld documents changed\n", doc_changes);
@@ -16735,7 +16740,19 @@ static const usage_account *login_at(const usage_logins *l, const char *at) {
 typedef struct {
   sqlite3_stmt *claude, *codex, *limits, *ins, *lim, *pos, *setpos, *tries;
   long rows, unpriced, readings;
+  struct timespec until; /* when to stop: a scan holds the archive's lock, so it reads for a while and leaves the rest */
+  int bounded, stopped;
 } usage_ctx;
+
+/* Whether the time given to this collection is up; once it is, every read stops at the next
+ * point it can save its place. */
+static int usage_out_of_time(usage_ctx *u) {
+  if (!u->bounded || u->stopped) return u->stopped;
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  u->stopped = now.tv_sec > u->until.tv_sec || (now.tv_sec == u->until.tv_sec && now.tv_nsec >= u->until.tv_nsec);
+  return u->stopped;
+}
 
 static void usage_prepare(sqlite3 *db, usage_ctx *u) {
   memset(u, 0, sizeof *u);
@@ -16889,7 +16906,7 @@ static void usage_mark(sqlite3 *db, usage_ctx *u, const char *path, long long po
  * a session names as its creator when the ids match. */
 static void usage_file(sqlite3 *db, usage_ctx *u, const char *path, int codex, const usage_logins *logins, const usage_account *login) {
   struct stat st;
-  if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) return;
+  if (usage_out_of_time(u) || stat(path, &st) != 0 || !S_ISREG(st.st_mode)) return;
   long long off = 0;
   codex_state cs = {0};
   sqlite3_bind_text(u->pos, 1, path, -1, SQLITE_STATIC);
@@ -16960,6 +16977,11 @@ static void usage_file(sqlite3 *db, usage_ctx *u, const char *path, int codex, c
     if (pos - batch >= BATCH_BYTES || ms >= 25) { /* a hook waits at most 200 ms: let it in between batches */
       usage_mark(db, u, path, pos - len, codex, &cs);
       db_exec(db, "COMMIT");
+      if (usage_out_of_time(u)) { /* the place is saved before this line: the next collection starts there */
+        free(line);
+        fclose(f);
+        return;
+      }
       usleep(50000); /* longer than SQLite's busy handler sleeps at a time, so a waiting writer sees it */
       db_exec(db, "BEGIN IMMEDIATE");
       batch = pos;
@@ -17208,12 +17230,23 @@ static void usage_after_archive(sqlite3 *db, const char *path) {
   free(logins.p);
 }
 
-static void usage_scan(sqlite3 *db, int say) {
+static void usage_scan(sqlite3 *db, int say, long budget_ms) {
   usage_ctx u;
   usage_prepare(db, &u);
+  if (budget_ms > 0) {
+    clock_gettime(CLOCK_MONOTONIC, &u.until);
+    u.until.tv_sec += budget_ms / 1000;
+    u.until.tv_nsec += (budget_ms % 1000) * 1000000;
+    if (u.until.tv_nsec >= 1000000000) {
+      u.until.tv_sec++;
+      u.until.tv_nsec -= 1000000000;
+    }
+    u.bounded = 1;
+  }
   usage_collect(db, &u);
   usage_finish(&u);
-  if (say) printf("%ld responses (%ld with no price line) and %ld limit readings taken in\n", u.rows, u.unpriced, u.readings);
+  if (say) printf("%ld responses (%ld with no price line) and %ld limit readings taken in%s\n", u.rows, u.unpriced, u.readings,
+                  u.stopped ? "; out of time, the rest at the next collection" : "");
 }
 
 /* The share of a plan's limit each session used: every rise between two readings of an account's
@@ -17246,11 +17279,18 @@ static void shares_add(usage_shares *s, const char *key, double v) {
 }
 
 /* Shares of one account's window from since on, by session (the parent, for a subagent) or by
- * project when by_project. */
+ * project when by_project. Every session's status line reports the readings it last saw, so the
+ * readings of a window come in out of step: an idle session repeats an old value, and one from
+ * before a reset can follow one from after it. So a window is known by its reset time, give or take
+ * LIMIT_RESET_SLACK; only the highest value seen in the current window counts, and a rise is a value
+ * above it. A reading from an earlier window is stale and skipped, and a clearly later reset starts
+ * a new window, whose first value is all rise. A drop and a climb back count nothing. */
+#define LIMIT_RESET_SLACK 600
 static void limit_shares(sqlite3 *db, const char *account, int window, const char *since, const char *until, int by_project, usage_shares *out) {
   memset(out, 0, sizeof *out);
-  sqlite3_stmt *r = db_prepare(db, "SELECT at, used, resets_at FROM ctx_limit WHERE account = ?1 AND window = ?2"
-                                   " AND at >= coalesce((SELECT max(at) FROM ctx_limit WHERE account = ?1 AND window = ?2 AND at < ?3), ?3) AND at <= ?4 ORDER BY at");
+  sqlite3_stmt *r = db_prepare(db, "SELECT at, used, resets_at FROM ctx_limit WHERE account = ?1 AND window = ?2 AND at <= ?4"
+                                   " AND at >= coalesce((SELECT min(at) FROM (SELECT at FROM ctx_limit WHERE account = ?1 AND window = ?2 AND at < ?3"
+                                   "  ORDER BY at DESC LIMIT 50)), ?3) ORDER BY at"); /* the readings before since set where the window stood */
   sqlite3_stmt *who = db_prepare(db, by_project
       ? "SELECT coalesce(project, '?'), sum(coalesce(dollars, 0)), sum(input + write_5m + write_1h + cache_read + output) FROM ctx_usage"
         " WHERE account = ?1 AND at > ?2 AND at <= ?3 GROUP BY 1"
@@ -17261,46 +17301,50 @@ static void limit_shares(sqlite3 *db, const char *account, int window, const cha
   sqlite3_bind_text(r, 3, since, -1, SQLITE_STATIC);
   sqlite3_bind_text(r, 4, until, -1, SQLITE_STATIC);
   char prev_at[40] = "";
-  double prev_used = 0;
-  long long prev_reset = -1;
+  double high = 0;            /* the highest value of the current window */
+  long long cur_reset = -1;   /* its reset time; -1 for none known */
   int have = 0;
   while (sqlite3_step(r) == SQLITE_ROW) {
     const char *at = (const char *)sqlite3_column_text(r, 0);
-    double used = sqlite3_column_double(r, 1);
+    double used = sqlite3_column_double(r, 1), rise = 0;
     long long reset = sqlite3_column_type(r, 2) == SQLITE_NULL ? -1 : sqlite3_column_int64(r, 2);
-    if (have && strcmp(at, since) > 0) {
-      double rise = reset == prev_reset ? used - prev_used : used;
-      if (rise > 0) {
-        out->rise += rise;
-        sqlite3_bind_text(who, 1, account, -1, SQLITE_STATIC);
-        sqlite3_bind_text(who, 2, prev_at, -1, SQLITE_STATIC);
-        sqlite3_bind_text(who, 3, at, -1, SQLITE_STATIC);
-        double dollars = 0, tokens = 0;
-        typedef struct { char key[160]; double d, t; } part;
-        part *parts = NULL;
-        size_t np = 0;
-        while (sqlite3_step(who) == SQLITE_ROW) {
-          parts = realloc(parts, (np + 1) * sizeof *parts);
-          if (!parts) die("out of memory");
-          snprintf(parts[np].key, sizeof parts[np].key, "%s", sqlite3_column_text(who, 0));
-          parts[np].d = sqlite3_column_double(who, 1);
-          parts[np].t = sqlite3_column_double(who, 2);
-          dollars += parts[np].d;
-          tokens += parts[np].t;
-          np++;
-        }
-        sqlite3_reset(who);
-        for (size_t i = 0; i < np; i++) {
-          double w = dollars > 0 ? parts[i].d / dollars : tokens > 0 ? parts[i].t / tokens : 0;
-          if (w > 0) shares_add(out, parts[i].key, rise * w);
-        }
-        if (!np || (dollars <= 0 && tokens <= 0)) out->unattributed += rise;
-        free(parts);
-      }
+    if (have && reset >= 0 && cur_reset >= 0 && reset < cur_reset - LIMIT_RESET_SLACK) continue; /* stale: an earlier window */
+    if (!have || (reset >= 0 && cur_reset >= 0 && reset > cur_reset + LIMIT_RESET_SLACK)) { /* a new window */
+      rise = have ? used : 0;
+      high = used;
+      cur_reset = reset;
+    } else {
+      if (used > high) rise = used - high, high = used;
+      if (reset > cur_reset) cur_reset = reset;
     }
-    snprintf(prev_at, sizeof prev_at, "%s", at);
-    prev_used = used;
-    prev_reset = reset;
+    if (have && rise > 0 && strcmp(at, since) > 0) {
+      out->rise += rise;
+      sqlite3_bind_text(who, 1, account, -1, SQLITE_STATIC);
+      sqlite3_bind_text(who, 2, prev_at, -1, SQLITE_STATIC);
+      sqlite3_bind_text(who, 3, at, -1, SQLITE_STATIC);
+      double dollars = 0, tokens = 0;
+      typedef struct { char key[160]; double d, t; } part;
+      part *parts = NULL;
+      size_t np = 0;
+      while (sqlite3_step(who) == SQLITE_ROW) {
+        parts = realloc(parts, (np + 1) * sizeof *parts);
+        if (!parts) die("out of memory");
+        snprintf(parts[np].key, sizeof parts[np].key, "%s", sqlite3_column_text(who, 0));
+        parts[np].d = sqlite3_column_double(who, 1);
+        parts[np].t = sqlite3_column_double(who, 2);
+        dollars += parts[np].d;
+        tokens += parts[np].t;
+        np++;
+      }
+      sqlite3_reset(who);
+      for (size_t i = 0; i < np; i++) {
+        double w = dollars > 0 ? parts[i].d / dollars : tokens > 0 ? parts[i].t / tokens : 0;
+        if (w > 0) shares_add(out, parts[i].key, rise * w);
+      }
+      if (!np || (dollars <= 0 && tokens <= 0)) out->unattributed += rise;
+      free(parts);
+    }
+    if (rise > 0 || !have) snprintf(prev_at, sizeof prev_at, "%s", at); /* the next rise is the work since this one */
     have = 1;
   }
   sqlite3_finalize(r);
@@ -17328,6 +17372,31 @@ static void account_label(const char *account, const char *plan, char *out, size
   if (plan && !strcmp(plan, "api-key")) snprintf(out, cap, "%s API key", provider);
   else if (plan && *plan) snprintf(out, cap, "%s (%s)", provider, plan);
   else snprintf(out, cap, "%s", provider);
+}
+
+/* The label with a tag when another account of the same provider and plan exists, so two logins
+ * on one plan can be told apart without their addresses: "account 1", "account 2" in the order
+ * ctx first saw a response from each. */
+static void account_label_tagged(sqlite3 *db, const char *account, const char *plan, char *out, size_t cap) {
+  char base[120];
+  account_label(account, plan, base, sizeof base);
+  snprintf(out, cap, "%s", base);
+  const char *colon = strchr(account, ':');
+  if (!colon) return;
+  sqlite3_stmt *q = NULL;
+  if (sqlite3_prepare_v2(db, "SELECT count(*) OVER (), row_number() OVER (ORDER BY first, a) FROM (SELECT account AS a, min(at) AS first FROM ctx_usage"
+                             " WHERE substr(account, 1, ?2) = ?3 AND coalesce(plan, '') = coalesce(?4, '') GROUP BY account) ORDER BY a = ?1 DESC LIMIT 1",
+                         -1, &q, NULL) != SQLITE_OK) return;
+  sqlite3_bind_text(q, 1, account, -1, SQLITE_STATIC);
+  sqlite3_bind_int(q, 2, (int)(colon - account + 1));
+  sqlite3_bind_text(q, 3, account, (int)(colon - account + 1), SQLITE_STATIC);
+  sqlite3_bind_text(q, 4, plan, -1, SQLITE_STATIC);
+  if (sqlite3_step(q) == SQLITE_ROW && sqlite3_column_int(q, 0) > 1) {
+    size_t n = strlen(out);
+    if (n && out[n - 1] == ')') snprintf(out + n - 1, cap - (n - 1), ", account %d)", sqlite3_column_int(q, 1));
+    else snprintf(out + n, cap - n, " (account %d)", sqlite3_column_int(q, 1));
+  }
+  sqlite3_finalize(q);
 }
 
 static void fmt_tokens(double t, char *out, size_t cap) {
@@ -17373,7 +17442,18 @@ static void usage_brief(sqlite3 *db, buf *out) {
                              " FROM ctx_usage WHERE at >= ?1 AND at <= ?2 AND account IS NOT NULL GROUP BY account ORDER BY account", -1, &acc, NULL) != SQLITE_OK) return;
   sqlite3_bind_text(acc, 1, since, -1, SQLITE_STATIC);
   sqlite3_bind_text(acc, 2, until, -1, SQLITE_STATIC);
-  sqlite3_stmt *week = db_prepare(db, "SELECT used, resets_at FROM ctx_limit WHERE account = ?1 AND window = 10080 AND at >= ?2 AND at <= ?3 ORDER BY at DESC LIMIT 1");
+  /* the current week: the latest reset still ahead, and the highest value read for it */
+  sqlite3_stmt *week = db_prepare(db, "SELECT max(used), max(resets_at) FROM ctx_limit WHERE account = ?1 AND window = 10080 AND at >= ?2 AND at <= ?3"
+                                      " AND resets_at >= ?4 AND resets_at >= (SELECT max(resets_at) FROM ctx_limit WHERE account = ?1 AND window = 10080"
+                                      "  AND at >= ?2 AND at <= ?3) - " "600" " HAVING count(*) > 0");
+  /* once a day an account: when it was last in the line */
+  sqlite3_stmt *told = NULL, *tell = NULL;
+  sqlite3_prepare_v2(db, "SELECT 1 FROM ctx_meta WHERE key = 'plan-told:' || ?1 AND value = ?2", -1, &told, NULL);
+  sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO ctx_meta(key, value) VALUES ('plan-told:' || ?1, ?2)", -1, &tell, NULL);
+  char today[11];
+  utc_day((long long)now / 86400, today);
+  char **said = NULL;
+  size_t nsaid = 0;
   char week_ago[32];
   iso_time(now - 7 * 86400, week_ago);
   buf line = {0};
@@ -17381,8 +17461,18 @@ static void usage_brief(sqlite3 *db, buf *out) {
   while (sqlite3_step(acc) == SQLITE_ROW) {
     const char *account = (const char *)sqlite3_column_text(acc, 0), *plan = (const char *)sqlite3_column_text(acc, 1);
     double dollars = sqlite3_column_double(acc, 2), tokens = sqlite3_column_double(acc, 4);
-    char label[120];
-    account_label(account, plan, label, sizeof label);
+    if (told) {
+      sqlite3_bind_text(told, 1, account, -1, SQLITE_STATIC);
+      sqlite3_bind_text(told, 2, today, -1, SQLITE_STATIC);
+      int already = sqlite3_step(told) == SQLITE_ROW;
+      sqlite3_reset(told);
+      if (already) continue; /* said today */
+    }
+    said = realloc(said, (nsaid + 1) * sizeof *said);
+    if (!said) die("out of memory");
+    said[nsaid++] = dup_text((const unsigned char *)account);
+    char label[160];
+    account_label_tagged(db, account, plan, label, sizeof label);
     buf_str(&line, line.n ? "  " : "");
     if (plan && !strcmp(plan, "api-key")) {
       buf_fmt(&line, "%s: $%.2f since yesterday%s.", label, dollars, sqlite3_column_int(acc, 3) ? ", some unpriced" : "");
@@ -17392,6 +17482,7 @@ static void usage_brief(sqlite3 *db, buf *out) {
     sqlite3_bind_text(week, 1, account, -1, SQLITE_STATIC);
     sqlite3_bind_text(week, 2, week_ago, -1, SQLITE_STATIC);
     sqlite3_bind_text(week, 3, until, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(week, 4, (sqlite3_int64)now); /* a week whose reset has passed is over */
     if (sqlite3_step(week) == SQLITE_ROW) {
       double used = sqlite3_column_double(week, 0);
       buf_fmt(&line, "%s: week %.0f%%", label, used);
@@ -17439,21 +17530,44 @@ static void usage_brief(sqlite3 *db, buf *out) {
     buf_str(out, "Plan use, for the user to know of (`ctx usage` for more): ");
     buf_add(out, line.p, line.n);
     if (*date && strcmp(date, old) < 0) buf_fmt(out, " Prices date from %s.", date);
+    for (size_t i = 0; i < nsaid && tell; i++) { /* a database that cannot be written only says it again */
+      sqlite3_bind_text(tell, 1, said[i], -1, SQLITE_STATIC);
+      sqlite3_bind_text(tell, 2, today, -1, SQLITE_STATIC);
+      sqlite3_step(tell);
+      sqlite3_reset(tell);
+    }
   }
+  for (size_t i = 0; i < nsaid; i++) free(said[i]);
+  free(said);
+  sqlite3_finalize(told);
+  sqlite3_finalize(tell);
   free(line.p);
 }
 
 /* ctx usage limits-in: the Claude Code status line's JSON on stdin; its plan readings and the
  * context in use go to ctx_limit, tied to the account of the config folder the session's
- * transcript is in. It runs on every refresh of the status line, so it opens no schema, prints
- * nothing and always exits 0; the account is read from .claude.json only when that file changed. */
+ * transcript is in. It runs on every refresh of the status line, so it opens no schema, creates
+ * nothing, prints nothing and always exits 0, whatever it is given. The account is read from the
+ * large .claude.json at most every ten minutes, so a /login shows here within ten minutes. */
 static int usage_limits_in(void) {
   buf in = {0};
   char chunk[4096];
   size_t got;
   while (in.n < (1 << 20) && (got = fread(chunk, 1, sizeof chunk, stdin)) > 0) buf_add(&in, chunk, got);
   if (!in.p) return 0;
-  char *path = db_path();
+  const char *env = getenv("CTX_DB"), *home_dir = getenv("HOME");
+  if ((!env || !*env) && (!home_dir || !*home_dir)) { /* nowhere to look: db_path would stop with an error */
+    free(in.p);
+    return 0;
+  }
+  char *path;
+  if (env && *env) path = dup_text((const unsigned char *)env);
+  else { /* the archive's own place, without making its folder as db_path does */
+    size_t n = strlen(home_dir) + sizeof "/.ctx/ctx.sqlite";
+    path = malloc(n);
+    if (!path) die("out of memory");
+    snprintf(path, n, "%s/.ctx/ctx.sqlite", home_dir);
+  }
   sqlite3 *db = NULL;
   struct stat st;
   if (stat(path, &st) || sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK) {
@@ -17476,40 +17590,55 @@ static int usage_limits_in(void) {
     return 0;
   }
   sqlite3_bind_text(q, 1, in.p, (int)in.n, SQLITE_STATIC);
-  if (sqlite3_step(q) == SQLITE_ROW) {
-    char config[4200] = "", key[4300], cached[600] = "";
-    const char *cfg = getenv("CLAUDE_CONFIG_DIR"), *home = getenv("HOME");
-    if (!claude_config_of((const char *)sqlite3_column_text(q, 0), config, sizeof config)) {
-      if (cfg && *cfg) snprintf(config, sizeof config, "%s", cfg);
-      else if (home) snprintf(config, sizeof config, "%s/.claude", home);
+  /* what the status line said, taken out first so the writes are one transaction */
+  char transcript[4200] = "", session[128] = "";
+  double used[3] = {0};
+  long long resets[3] = {-1, -1, -1};
+  int have_used[3] = {0}, row = sqlite3_step(q) == SQLITE_ROW;
+  if (row) {
+    snprintf(transcript, sizeof transcript, "%s", sqlite3_column_text(q, 0));
+    snprintf(session, sizeof session, "%s", sqlite3_column_text(q, 1));
+    for (int w = 0; w < 3; w++) {
+      int col = w == 2 ? 6 : 2 + 2 * w;
+      have_used[w] = sqlite3_column_type(q, col) != SQLITE_NULL;
+      used[w] = sqlite3_column_double(q, col);
+      if (w < 2 && sqlite3_column_type(q, col + 1) != SQLITE_NULL) resets[w] = sqlite3_column_int64(q, col + 1);
     }
-    /* the account, read again at most every ten minutes: Claude Code rewrites .claude.json all the
-     * time, and it is large, while a login changes rarely */
-    snprintf(key, sizeof key, "account:%s", config);
-    usage_account a;
-    memset(&a, 0, sizeof a);
-    sqlite3_stmt *c = NULL;
-    if (sqlite3_prepare_v2(db, "SELECT value FROM ctx_meta WHERE key = ?1", -1, &c, NULL) == SQLITE_OK) {
-      sqlite3_bind_text(c, 1, key, -1, SQLITE_STATIC);
-      if (sqlite3_step(c) == SQLITE_ROW) snprintf(cached, sizeof cached, "%s", sqlite3_column_text(c, 0));
+  }
+  sqlite3_finalize(q);
+  free(in.p);
+  if (!row || sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) { /* busy: this refresh is skipped */
+    sqlite3_close(db);
+    return 0;
+  }
+  char config[4200] = "", key[4300], cached[600] = "";
+  const char *cfg = getenv("CLAUDE_CONFIG_DIR");
+  if (!claude_config_of(transcript, config, sizeof config)) {
+    if (cfg && *cfg) snprintf(config, sizeof config, "%s", cfg);
+    else if (home_dir && *home_dir) snprintf(config, sizeof config, "%s/.claude", home_dir);
+  }
+  /* the account, read again at most every ten minutes: .claude.json is large and Claude Code
+   * rewrites it all the time, while a login changes rarely */
+  snprintf(key, sizeof key, "account:%s", config);
+  usage_account a;
+  memset(&a, 0, sizeof a);
+  sqlite3_stmt *c = NULL;
+  if (sqlite3_prepare_v2(db, "SELECT value FROM ctx_meta WHERE key = ?1", -1, &c, NULL) == SQLITE_OK) {
+    sqlite3_bind_text(c, 1, key, -1, SQLITE_STATIC);
+    if (sqlite3_step(c) == SQLITE_ROW) snprintf(cached, sizeof cached, "%s", sqlite3_column_text(c, 0));
+  }
+  sqlite3_finalize(c);
+  long long read_at = 0;
+  time_t now = now_time();
+  int have = sscanf(cached, "%lld\t%199[^\t]", &read_at, a.account) == 2, known = 1;
+  if (!(have && now - read_at >= 0 && now - read_at < 600)) {
+    char was[200];
+    snprintf(was, sizeof was, "%s", have ? a.account : "");
+    if (!claude_account(db, config, &a)) { /* unreadable now: the login cached before still holds, or none is known */
+      snprintf(a.account, sizeof a.account, "%s", was);
+      known = *was != 0;
     }
-    sqlite3_finalize(c);
-    long long read_at = 0;
-    time_t now = now_time();
-    int have = sscanf(cached, "%lld\t%199[^\t]", &read_at, a.account) == 2;
-    if (have && now - read_at >= 0 && now - read_at < 600) {}
-    else {
-      char was[200];
-      snprintf(was, sizeof was, "%s", have ? a.account : "");
-      if (!claude_account(db, config, &a)) { /* unreadable now: the login cached before still holds, or none is known */
-        snprintf(a.account, sizeof a.account, "%s", was);
-        if (!*was) {
-          sqlite3_finalize(q);
-          sqlite3_close(db);
-          free(in.p);
-          return 0;
-        }
-      }
+    if (known) {
       char value[600];
       snprintf(value, sizeof value, "%lld\t%s", (long long)now, a.account);
       if (sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO ctx_meta(key, value) VALUES (?1, ?2)", -1, &c, NULL) == SQLITE_OK) {
@@ -17519,33 +17648,31 @@ static int usage_limits_in(void) {
       }
       sqlite3_finalize(c);
     }
-    char at[24];
-    iso_time(now, at);
-    sqlite3_stmt *ins = NULL;
-    if (sqlite3_prepare_v2(db, "INSERT OR IGNORE INTO ctx_limit(account, window, at, used, resets_at, session, source) SELECT ?1, ?2, ?3, ?4, ?5, nullif(?6, ''), 'statusline'"
-                               " WHERE NOT EXISTS (SELECT 1 FROM ctx_limit l WHERE l.account = ?1 AND l.window = ?2 AND l.used = ?4 AND l.resets_at IS ?5"
-                               "  AND l.session IS nullif(?6, '') AND l.at = (SELECT max(at) FROM ctx_limit WHERE account = ?1 AND window = ?2 AND at < ?3))",
-                           -1, &ins, NULL) == SQLITE_OK) {
-      static const int windows[3] = {300, 10080, 0};
-      for (int w = 0; w < 3; w++) {
-        int col = w == 2 ? 6 : 2 + 2 * w;
-        if (sqlite3_column_type(q, col) == SQLITE_NULL) continue;
-        sqlite3_bind_text(ins, 1, a.account, -1, SQLITE_STATIC);
-        sqlite3_bind_int(ins, 2, windows[w]);
-        sqlite3_bind_text(ins, 3, at, -1, SQLITE_STATIC);
-        sqlite3_bind_double(ins, 4, sqlite3_column_double(q, col));
-        if (w == 2 || sqlite3_column_type(q, col + 1) == SQLITE_NULL) sqlite3_bind_null(ins, 5);
-        else sqlite3_bind_int64(ins, 5, sqlite3_column_int64(q, col + 1));
-        sqlite3_bind_text(ins, 6, w == 2 ? (const char *)sqlite3_column_text(q, 1) : "", -1, SQLITE_STATIC); /* context belongs to one session */
-        sqlite3_step(ins);
-        sqlite3_reset(ins);
-      }
-    }
-    sqlite3_finalize(ins);
   }
-  sqlite3_finalize(q);
+  char at[24];
+  iso_time(now, at);
+  sqlite3_stmt *ins = NULL;
+  if (known && sqlite3_prepare_v2(db, "INSERT OR IGNORE INTO ctx_limit(account, window, at, used, resets_at, session, source) SELECT ?1, ?2, ?3, ?4, ?5, nullif(?6, ''), 'statusline'"
+                                      " WHERE NOT EXISTS (SELECT 1 FROM ctx_limit l WHERE l.account = ?1 AND l.window = ?2 AND l.used = ?4 AND l.resets_at IS ?5"
+                                      "  AND l.session IS nullif(?6, '') AND l.at = (SELECT max(at) FROM ctx_limit WHERE account = ?1 AND window = ?2 AND at < ?3))",
+                                  -1, &ins, NULL) == SQLITE_OK) {
+    static const int windows[3] = {300, 10080, 0};
+    for (int w = 0; w < 3; w++) {
+      if (!have_used[w]) continue;
+      sqlite3_bind_text(ins, 1, a.account, -1, SQLITE_STATIC);
+      sqlite3_bind_int(ins, 2, windows[w]);
+      sqlite3_bind_text(ins, 3, at, -1, SQLITE_STATIC);
+      sqlite3_bind_double(ins, 4, used[w]);
+      if (resets[w] < 0) sqlite3_bind_null(ins, 5);
+      else sqlite3_bind_int64(ins, 5, resets[w]);
+      sqlite3_bind_text(ins, 6, w == 2 ? session : "", -1, SQLITE_STATIC); /* context belongs to one session */
+      sqlite3_step(ins);
+      sqlite3_reset(ins);
+    }
+  }
+  sqlite3_finalize(ins);
+  sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
   sqlite3_close(db);
-  free(in.p);
   return 0;
 }
 
@@ -18056,9 +18183,9 @@ static void handoff_warn(sqlite3 *db, const char *session, const char *transcrip
 
 /* ctx usage [--hours N | --days N] [--by KEY] | collect | handoff */
 static int cmd_usage(int argc, char **argv) {
-  if (argc == 1 && !strcmp(argv[0], "collect")) {
+  if (argc >= 1 && !strcmp(argv[0], "collect") && (argc == 1 || (argc == 3 && !strcmp(argv[1], "--for") && atof(argv[2]) > 0))) {
     sqlite3 *db = ctx_open();
-    usage_scan(db, 1);
+    usage_scan(db, 1, argc == 3 ? (long)(atof(argv[2]) * 1000) : 0); /* by hand, to the end unless told otherwise */
     sqlite3_close(db);
     return 0;
   }
@@ -18102,7 +18229,7 @@ static int usage(void) {
         "       ctx stats [--weeks N] | --hooks [--days N]\n"
         "       ctx repeats [--inline] [--days N] [--limit N]\n"
         "       ctx status [--json]\n"
-        "       ctx usage [--hours N | --days N] [--by session|project|harness|model|account] | collect | handoff | limits-in\n"
+        "       ctx usage [--hours N | --days N] [--by session|project|harness|model|account] | collect [--for SECONDS] | handoff | limits-in\n"
         "       ctx doctor\n"
         "       ctx remember TEXT [--project P] [--until DATE] [--from TURN]\n"
         "       ctx handoff TEXT... | -\n"
