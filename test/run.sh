@@ -3349,10 +3349,10 @@ gate s-pic2 "$GP" grep '{"pattern":"heron"}' | grep -q '"deny"' || fail "a lower
 guard() { printf '{"hook_event_name":"PreToolUse","session_id":"g","cwd":"%s","tool_name":"%s","tool_input":%s}' "$GP" "$1" "$2" | CTX_DB="$T/noguard.sqlite" "$CTX" guard; }
 guard Bash '{"command":"cat .env"}' > "$T/guard.txt"
 grep -q '"permissionDecision":"deny"' "$T/guard.txt" && grep -q 'every later request' "$T/guard.txt" || fail "cat .env is turned back: $(cat "$T/guard.txt")"
-for c in 'cd app && head -5 config/.env.local' 'grep KEY .env' 'python3 -c x < .env' 'less ~/.aws/credentials' 'tail ~/.ssh/id_ed25519' 'base64 secrets/server.pem' 'cat ./.netrc' 'printenv' 'env | sort'; do
+for c in 'cd app && head -5 config/.env.local' 'grep KEY .env' 'python3 -c x < .env' 'less ~/.aws/credentials' 'tail ~/.ssh/id_ed25519' 'base64 secrets/server.pem' 'cat ./.netrc' 'printenv' 'env | sort' 'env | grep KEY' 'cat .env | grep -C 3 KEY' 'env | grep -e c' 'env || wc -l' 'cat .env | wc -l; cat .env' 'bash <<EOF\ncat .env\nEOF' 'python3 - <<EOF\nprint(1)\nEOF\ncat .env' 'sh -s <<-X\n\tcat .env\n\tX'; do
   guard Bash "{\"command\":\"$c\"}" | grep -q '"deny"' || fail "a read of a secret file is turned back: $c"
 done
-for c in 'cat .env.example' 'source .env && make' 'set -a; . ./.env; set +a; ./run' 'echo X=1 >> .env' 'ls -la .env' 'cat ~/.ssh/id_ed25519.pub' 'printenv HOME' 'env FOO=1 make' 'cat README.md' 'rm .env.bak'; do
+for c in 'cat .env.example' 'source .env && make' 'set -a; . ./.env; set +a; ./run' 'echo X=1 >> .env' 'ls -la .env' 'cat ~/.ssh/id_ed25519.pub' 'printenv HOME' 'env FOO=1 make' 'cat README.md' 'rm .env.bak' 'env | grep -c KEY' 'printenv | wc -l' 'env | grep -q AWS_' 'grep -q KEY .env' 'grep -lc KEY .env' 'cat .env | wc -l' 'env | FOO=1 grep --count KEY' 'python3 - <<EOF\nprint(cat .env)\nEOF' 'cat > notes.md <<END\ncat ~/.netrc\nEND\nls'; do
   [ -z "$(guard Bash "{\"command\":\"$c\"}")" ] || fail "a command that prints no secret passes: $c"
 done
 guard Read "{\"file_path\":\"$GP/.env\"}" | grep -q '"deny"' || fail "Read of .env is turned back"
@@ -3391,8 +3391,10 @@ B64=$(python3 -c 'print("QUJD" * 200)'); BLOB='{"type":"image","data":"'$B64'"}'
 python3 -c '
 import json, sys
 print(json.dumps({"tool_name": "Bash", "tool_response": ["l%d %s xxx" % (i, sys.argv[1]) + " y" * 100 for i in range(20000)]}))' "$SEC" > "$T/gbig.json"
+gbound=5 # the hook's timeout, for the release build; a sanitized or Fil-C build runs several times slower
+case "$CTX" in *-san | *-filc) gbound=15 ;; esac
 s0=$(date +%s); CTX_DB="$T/noguard.sqlite" "$CTX" guard post < "$T/gbig.json" > "$T/gbig.out"; s1=$(date +%s)
-[ $((s1 - s0)) -lt 5 ] && ! grep -q "$SEC" "$T/gbig.out" && [ "$(grep -o 'REDACTED' "$T/gbig.out" | wc -l)" -eq 20000 ] || fail "20000 secrets in 4 MB are redacted inside a hook's timeout ($((s1 - s0)) s)"
+[ $((s1 - s0)) -lt $gbound ] && ! grep -q "$SEC" "$T/gbig.out" && [ "$(grep -o 'REDACTED' "$T/gbig.out" | wc -l)" -eq 20000 ] || fail "20000 secrets in 4 MB are redacted in under $gbound s ($((s1 - s0)) s)"
 gpost Bash "\"\\ud800 $SEC\"" | python3 -c 'import json,sys; assert json.loads(sys.stdin.buffer.read().decode("utf-8"))["hookSpecificOutput"]["updatedToolOutput"] == "\ufffd [REDACTED]"' || fail "a lone surrogate becomes U+FFFD, so the reply stays UTF-8"
 python3 -c 'import sys; sys.stdout.write("{\"tool_name\":\"Bash\",\"tool_response\":\"" + "x" * (17 << 20) + "\"}")' | CTX_DB="$T/noguard.sqlite" "$CTX" guard post 2>"$T/gbig.err" && fail "a result over 16 MB is not passed as checked"
 grep -q 'over 16 MB' "$T/gbig.err" || fail "and says why: $(cat "$T/gbig.err")"

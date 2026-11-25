@@ -8422,25 +8422,116 @@ static int secret_file(const char *path) {
  * files, or fed in with <, or the whole environment (env or printenv alone). Returns what it
  * would print, or NULL. A word match, not a parser: it catches the plain reads a well-meaning
  * agent makes, and redaction of the output (ctx guard post) is what holds against the rest. */
+/* A command that prints no line of what it reads: wc, or grep with -c, -q, -l or -L. Piped into
+ * one, the environment or a secret file is only counted or tested. */
+static int quiet_reader(char **words, int i, int nw) {
+  const char *verb = strrchr(words[i], '/') ? strrchr(words[i], '/') + 1 : words[i];
+  if (!strcmp(verb, "wc")) return 1;
+  if (strcmp(verb, "grep") && strcmp(verb, "egrep") && strcmp(verb, "fgrep") && strcmp(verb, "rg")) return 0;
+  for (int k = i + 1; k < nw; k++) {
+    const char *w = words[k];
+    if (!strcmp(w, "--count") || !strcmp(w, "--quiet") || !strcmp(w, "--silent") || !strcmp(w, "--files-with-matches") ||
+        !strcmp(w, "--files-without-match"))
+      return 1;
+    if (w[0] == '-' && w[1] != '-')
+      for (const char *f = w + 1; *f && isalpha((unsigned char)*f); f++) {
+        if (*f == 'e' || *f == 'f') break; /* the rest is a pattern or a file name */
+        if (*f == 'c' || *f == 'q' || *f == 'l' || *f == 'L') return 1;
+      }
+  }
+  return 0;
+}
+
+/* Blanks the body of each here-document, which is text handed to a program, not commands run:
+ * a script that mentions `cat .env` in a string reads nothing. A body handed to a shell (sh,
+ * bash, zsh, dash) is run, so it stays. */
+static void heredoc_blank(char *s) {
+  for (char *line = s; line && *line;) {
+    char *eol = strchr(line, '\n');
+    char *op = strstr(line, "<<");
+    if (!op || (eol && op > eol) || op[2] == '<') {
+      line = eol ? eol + 1 : NULL;
+      continue;
+    }
+    char *d = op + 2;
+    if (*d == '-') d++;
+    while (*d == ' ' || *d == '\t') d++;
+    char word[64];
+    size_t wn = 0;
+    while (*d && *d != '\n' && *d != ' ' && *d != '\t' && *d != ';' && *d != '|' && *d != '&' && *d != ')' && wn + 1 < sizeof word) {
+      if (*d != '\'' && *d != '"' && *d != '\\') word[wn++] = *d;
+      d++;
+    }
+    word[wn] = 0;
+    if (!wn || !eol) {
+      line = eol ? eol + 1 : NULL;
+      continue;
+    }
+    int shell = 0; /* a shell among the words of the line that opens the here-document */
+    char head[4096];
+    size_t hn = (size_t)(eol - line) < sizeof head - 1 ? (size_t)(eol - line) : sizeof head - 1;
+    memcpy(head, line, hn);
+    head[hn] = 0;
+    char *h_save = NULL;
+    for (char *w = strtok_r(head, " \t;|&()", &h_save); w && !shell; w = strtok_r(NULL, " \t;|&()", &h_save)) {
+      const char *b = strrchr(w, '/') ? strrchr(w, '/') + 1 : w;
+      shell = !strcmp(b, "sh") || !strcmp(b, "bash") || !strcmp(b, "zsh") || !strcmp(b, "dash");
+    }
+    char *body = eol + 1;
+    for (char *l = body; l && *l;) { /* up to the line that is the delimiter alone, give or take tabs */
+      char *le = strchr(l, '\n');
+      size_t ln = le ? (size_t)(le - l) : strlen(l);
+      const char *t = l;
+      while (*t == '\t') t++;
+      size_t tn = ln - (size_t)(t - l);
+      if (tn == wn && !memcmp(t, word, wn)) {
+        line = le ? le + 1 : NULL;
+        goto next;
+      }
+      if (!shell) memset(l, ' ', ln);
+      l = le ? le + 1 : NULL;
+    }
+    return; /* an unclosed here-document runs to the end */
+  next:;
+  }
+}
+
 static char *secret_read(const char *cmd) {
   static const char *const readers[] = {"cat", "less", "more", "head", "tail", "bat", "grep", "egrep", "fgrep", "rg", "ag", "awk",
                                         "sed", "xxd", "od", "hexdump", "strings", "base64", "cut", "sort", "uniq", "nl", "tac",
                                         "python", "python3", "node", "ruby", "perl", "jq", "yq", "diff", "cmp", "vi", "vim", "view", NULL};
   static const char *const prefixes[] = {"sudo", "command", "exec", "time", "nohup", NULL};
   char *copy = dup_text((const unsigned char *)cmd), *found = NULL;
+  heredoc_blank(copy);
   for (char *c = copy; *c; c++) /* segments end at ; & | ( ) and newlines; quotes are dropped */
     if (*c == '\'' || *c == '"' || *c == '`') *c = ' ';
-  char *seg_save = NULL;
-  for (char *seg = strtok_r(copy, ";&|()\n", &seg_save); seg && !found; seg = strtok_r(NULL, ";&|()\n", &seg_save)) {
+  int piped = 0; /* this segment's output goes into a quiet reader */
+  for (char *seg = copy; seg && *seg && !found;) {
+    char *end = seg + strcspn(seg, ";&|()\n");
+    char *next = *end ? end + 1 : NULL;
+    piped = 0;
+    if (*end == '|' && end[1] != '|') { /* look at what reads this one's output */
+      char *nx = dup_text((const unsigned char *)(end + 1));
+      nx[strcspn(nx, ";&|()\n")] = 0;
+      char *nwords[256];
+      int nn = 0, j = 0;
+      char *n_save = NULL;
+      for (char *w = strtok_r(nx, " \t\r", &n_save); w && nn < 256; w = strtok_r(NULL, " \t\r", &n_save)) nwords[nn++] = w;
+      while (j < nn && strchr(nwords[j], '=') && (isalpha((unsigned char)nwords[j][0]) || nwords[j][0] == '_')) j++;
+      piped = j < nn && quiet_reader(nwords, j, nn);
+      free(nx);
+    }
+    *end = 0;
     char *words[256];
     int nw = 0;
     char *w_save = NULL;
     for (char *w = strtok_r(seg, " \t\r", &w_save); w && nw < 256; w = strtok_r(NULL, " \t\r", &w_save)) words[nw++] = w;
+    seg = next;
     int i = 0;
     while (i < nw && (strchr(words[i], '=') && (isalpha((unsigned char)words[i][0]) || words[i][0] == '_'))) i++;
     for (int p = 0; prefixes[p] && i < nw; p++)
       if (!strcmp(words[i], prefixes[p])) { i++; p = -1; }
-    if (i >= nw) continue;
+    if (i >= nw || piped || quiet_reader(words, i, nw)) continue;
     const char *verb = strrchr(words[i], '/') ? strrchr(words[i], '/') + 1 : words[i];
     if ((!strcmp(verb, "env") || !strcmp(verb, "printenv")) && i + 1 == nw) {
       found = dup_text((const unsigned char *)"the whole environment");
