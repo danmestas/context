@@ -811,6 +811,17 @@ ctx ticket done ID --result "Fixed in 4f2a91"
 ctx ticket drop ID --reason "Superseded by 9c1e"
 ```
 
+```sh
+ctx ticket note ID "Step 2 done; worker in conv-77" [--pic CONV]   # a note, kept in order
+ctx ticket ready --project a,b,c --short   # several projects, one short line each
+```
+
+A note records its time, the session that wrote it (from `CTX_SESSION`), and with `--pic`
+the pic conversation a reviewer should read. Secrets are redacted as in the archive, and
+`ctx ticket show` lists the notes after the ticket's body, oldest first. A session that
+resumes or is compacted is told, at its start, the tickets it has claimed and not
+finished. `--short` prints the id, the project and the title cut to about 70 characters.
+
 A claim belongs to one person. When `repo:me` has a remote, `ctx` syncs before and
 after a claim, so two machines cannot both take the same ticket.
 

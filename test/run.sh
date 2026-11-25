@@ -3822,6 +3822,27 @@ python3 -c 'print("x" * 4001)' | (cd "$T/hoA" && "$CTX" handoff - 2> "$T/ho.err"
 grep -q 'at most 4000 bytes' "$T/ho.err" || fail "the refusal says the limit: $(cat "$T/ho.err")"
 printf 'from stdin\n' | (cd "$T/hoA" && env -u CTX_SESSION "$CTX" handoff -) >/dev/null || fail "handoff reads standard input"
 printf '{"session_id":"s-d","source":"startup"}' | (cd "$T/hoA" && "$CTX" ticket offer) | grep -q 'session unknown' || fail "a handoff with no session says so"
+# A note on a ticket keeps its text, an optional pic conversation and the session, and show lists them.
+TN=$("$CTX" ticket new "Note target" --project hoA)
+CTX_SESSION=sess-note-123456 "$CTX" ticket note "$TN" "step 2 done; review the worker" --pic conv-77 | grep -q "note$" || fail "ticket note"
+"$CTX" ticket note "$TN" "second line one
+second line two" >/dev/null
+"$CTX" ticket show "$TN" > "$T/tn.txt"
+grep -q '^notes:$' "$T/tn.txt" && grep -q '^- 20[0-9-]* [0-9:]*.*: step 2 done; review the worker$' "$T/tn.txt" && grep -q '^  pic conversation: conv-77$' "$T/tn.txt" \
+  && grep -q '^  session: sess-note-12$' "$T/tn.txt" && grep -q '^  second line two$' "$T/tn.txt" || fail "show lists notes: $(cat "$T/tn.txt")"
+[ "$("$CTX" ticket show "$TN" | grep -c '^- ')" = 2 ] || fail "two notes, oldest first"
+"$CTX" ticket note "$TN" 2>/dev/null && fail "a note needs text"
+# A session that resumes is told the tickets it holds.
+(cd "$T/hoA" && "$CTX" ticket claim "$TN") >/dev/null # the hook that saw the claim records its session:
+"$CTX" sql "INSERT INTO ctx_ticket_claim(ticket, session, claimed_at, seen_at) SELECT tkt_uuid, 'sess-hold', datetime('now'), datetime('now') FROM fslrepo_me_ticket WHERE title = 'Note target'" >/dev/null || fail "record a claim"
+printf '{"session_id":"sess-hold","source":"resume"}' | (cd "$T/hoA" && "$CTX" ticket offer) | grep -q 'Tickets this session has claimed and not finished' || fail "a resumed session hears of its claimed ticket"
+printf '{"session_id":"sess-other","source":"startup"}' | (cd "$T/hoA" && "$CTX" ticket offer) | grep -q 'this session has claimed' && fail "another session is not told of a claim it does not hold"
+# ready --project takes several projects, --short fits a line.
+"$CTX" ticket new "Ready in hoB $(printf 'w%.0s' $(seq 1 90))" --project hoB >/dev/null
+"$CTX" ticket new "Ready in hoC" --project hoC >/dev/null
+"$CTX" ticket ready --project hoB,hoC --short > "$T/rs.txt"
+[ "$(wc -l < "$T/rs.txt")" -eq 2 ] && grep -q '^[0-9a-f]\{10\} hoC Ready in hoC$' "$T/rs.txt" && [ "$(awk '{ if (length($0) > m) m = length($0) } END { print m }' "$T/rs.txt")" -le 95 ] || fail "ready --project a,b --short: $(cat "$T/rs.txt")"
+grep -q 'Note target' "$T/rs.txt" && fail "ready --project lists only the projects named"
 # A second run files nothing, and neither does a closed one.
 if CTX_CLASSIFY="$T/screen.sh" CTX_JUDGE="$T/confirm.sh" "$CTX" docs conflicts --run | grep -q '^filed '; then fail "a second run files again"; fi
 WHO=$("$CTX" sql "SELECT count(*) FROM ctx_docs_ticket")
