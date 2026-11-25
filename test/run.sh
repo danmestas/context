@@ -163,6 +163,17 @@ mv "$A.new" "$A"
 [ "$("$CTX" archive "$A")" = "1 turns archived" ] || fail "replaced file"
 [ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk")" = 6 ] || fail "duplicate turns after replacement"
 
+# A transcript that holds the same turn id twice stores it once and does not stop the archive.
+D="$T/dup00001-session.jsonl"
+cat > "$D" <<'EOF'
+{"uuid":"d-1","timestamp":"2026-03-03T10:00:00Z","message":{"role":"user","content":"question once"}}
+{"uuid":"d-2","timestamp":"2026-03-03T10:00:05Z","message":{"role":"assistant","content":[{"type":"text","text":"answer written twice"}]}}
+{"uuid":"d-2","timestamp":"2026-03-03T10:00:05Z","message":{"role":"assistant","content":[{"type":"text","text":"answer written twice"}]}}
+{"uuid":"d-3","timestamp":"2026-03-03T10:00:09Z","message":{"role":"user","content":"after the twin"}}
+EOF
+[ "$("$CTX" archive "$D" 2>&1)" = "3 turns archived" ] || fail "duplicate turn id: $("$CTX" archive "$D" 2>&1)"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_chunk WHERE turn = 'd-2'")" = 1 ] || fail "duplicate turn id stored twice"
+
 # Turns archived before speakers were told apart are corrected once from their transcript.
 export CTX_DB="$T/rel.sqlite"
 "$CTX" init >/dev/null

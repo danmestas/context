@@ -979,6 +979,19 @@ static void turn_day(const turn_t *t, char out[11], const char *fallback) {
   out[10] = 0;
 }
 
+static void sort_some(void *base, size_t n, size_t size, int (*cmp)(const void *, const void *));
+
+typedef struct {
+  const char *uuid;
+  size_t i;
+} uuid_at;
+
+static int by_uuid_at(const void *a, const void *b) {
+  const uuid_at *x = a, *y = b;
+  int c = strcmp(x->uuid, y->uuid);
+  return c ? c : (x->i > y->i) - (x->i < y->i);
+}
+
 /* Stores one batch of turns, those not already held, inside the caller's transaction. */
 static long store_turns(sqlite3 *db, const char *session, const char *path, const char *project,
                         long long repo_id, turn_t *turns, size_t n) {
@@ -1007,6 +1020,19 @@ static long store_turns(sqlite3 *db, const char *session, const char *path, cons
     sqlite3_reset(seen);
   }
   sqlite3_finalize(seen);
+  /* A transcript can hold the same turn id twice (Claude Code has written an assistant entry
+   * twice); the first is stored and the rest skipped, as if already held. */
+  {
+    uuid_at *ids = malloc((n ? n : 1) * sizeof *ids);
+    if (!ids) die("out of memory");
+    size_t m = 0;
+    for (size_t i = 0; i < n; i++)
+      if (!done[i] && *turns[i].uuid) ids[m++] = (uuid_at){turns[i].uuid, i};
+    sort_some(ids, m, sizeof *ids, by_uuid_at);
+    for (size_t k = 1; k < m; k++)
+      if (!strcmp(ids[k].uuid, ids[k - 1].uuid)) done[ids[k].i] = 1; /* sorted by id, then position */
+    free(ids);
+  }
   /* A turn stored before headings carried ids is known, after a rebuild, only by a placeholder
    * id. Reading its transcript again must find it, not store it twice: the same speaker, time
    * and text in this session is that turn, and it takes its real id back. */
