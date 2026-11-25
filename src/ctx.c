@@ -3601,10 +3601,11 @@ static int exists(const char *path) {
 }
 
 /* Runs a scan if none has run for a while. */
-static void scan_if_due(void) {
+static int scan_if_due(void) {
   char *stamp = sidecar(".scan");
   struct stat st;
-  if (stat(stamp, &st) != 0 || time(NULL) - st.st_mtime >= SCAN_EVERY_SECS) {
+  int due = stat(stamp, &st) != 0 || time(NULL) - st.st_mtime >= SCAN_EVERY_SECS;
+  if (due) {
     int fd = open(stamp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
     if (fd >= 0) close(fd);
     run_self("scan", NULL);
@@ -3614,11 +3615,13 @@ static void scan_if_due(void) {
     run_self("sync", NULL); /* only repositories with a remote; failures wait for the next hour */
   }
   free(stamp);
+  return due;
 }
 
 /* Empties the spool unless another process already holds the lock. */
 static void drain(int scan) {
   char *spool = sidecar(".spool"), *work = sidecar(".spool.work"), *lock = sidecar(".lock");
+  int scanned = 0;
   do {
     int fd = open(lock, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
     if (fd < 0 || flock(fd, LOCK_EX | LOCK_NB) != 0) {
@@ -3627,10 +3630,13 @@ static void drain(int scan) {
     }
     if (exists(work)) drain_file(work); /* left by a run that died */
     while (rename(spool, work) == 0) drain_file(work);
-    if (scan) scan_if_due();
+    if (scan) scanned = scan_if_due();
     scan = 0;
     close(fd);
   } while (exists(spool));
+  /* the handoff points read a long stretch of the archive: worked out once a day after the lock is
+   * let go, so no hook waits on them */
+  if (scanned) run_self("usage", "handoff-daily");
   free(spool);
   free(work);
   free(lock);
@@ -4404,10 +4410,7 @@ static int cmd_scan(const char *root_arg) {
     }
   }
   if (!root_arg || strcmp(root_arg, "--pic")) findings_run(db); /* not for a pic hook's quick scan */
-  if (!root_arg) {
-    usage_scan(db, 0); /* every harness's new responses; a scan of one folder is about turns */
-    handoff_compute_daily(db);
-  }
+  if (!root_arg) usage_scan(db, 0); /* every harness's new responses; a scan of one folder is about turns */
   sqlite3_close(db);
   printf("%ld transcripts read\n", ran);
   if (doc_changes) printf("%ld documents changed\n", doc_changes);
@@ -17609,7 +17612,16 @@ static double median_of(double *v, size_t n) {
 }
 
 /* Each step's evidence for one model's sessions, against the replay curve cum. */
-static void ho_steps(const ho_session *s, size_t ns, const double *cum, size_t ncum, ho_step out[HANDOFF_STEPS + 1]) {
+/* What a handoff note costs, taken at its largest (HANDOFF_MAX bytes, about a token for four):
+ * written once as output, written once to the new session's cache, and read again with each of
+ * the responses that follow. Rough, and on the side of handing off later. */
+#define HANDOFF_NOTE_TOKENS (HANDOFF_MAX / 4)
+static double ho_note_cost(const price_line *p, size_t later) {
+  if (!p) return 0;
+  return HANDOFF_NOTE_TOKENS * (p->out + p->w1 + (double)later * p->rd) / 1e6;
+}
+
+static void ho_steps(const ho_session *s, size_t ns, const double *cum, size_t ncum, const price_line *price, ho_step out[HANDOFF_STEPS + 1]) {
   double *sav = malloc((ns + 1) * sizeof *sav), *left = malloc((ns + 1) * sizeof *left);
   if (!sav || !left) die("out of memory");
   for (int b = 1; b <= HANDOFF_STEPS; b++) {
@@ -17622,7 +17634,7 @@ static void ho_steps(const ho_session *s, size_t ns, const double *cum, size_t n
       double rest = 0;
       for (size_t j = at; j < s[i].n; j++) rest += s[i].cost[j];
       size_t r = s[i].n - at;
-      sav[k] = rest - cum[r < ncum ? r : ncum - 1];
+      sav[k] = rest - cum[r < ncum ? r : ncum - 1] - ho_note_cost(price, r);
       left[k] = (double)r;
       pos += sav[k] > 0;
       k++;
@@ -17773,7 +17785,9 @@ static void handoff_compute(sqlite3 *db) {
       ncum = t + 2;
     }
     ho_step st[HANDOFF_STEPS + 1] = {{0}};
-    ho_steps(s, ns, cum, ncum, st);
+    char today[24];
+    iso_time(now, today);
+    ho_steps(s, ns, cum, ncum, price_for(model, NULL, today), st);
     int cost = ho_cost_point(st);
     ho_quality qa;
     memset(&qa, 0, sizeof qa);
@@ -17952,6 +17966,12 @@ static int cmd_usage(int argc, char **argv) {
     return 0;
   }
   if (argc == 1 && !strcmp(argv[0], "handoff")) return usage_handoff();
+  if (argc == 1 && !strcmp(argv[0], "handoff-daily")) { /* the hourly hook's part, once a day, silent */
+    sqlite3 *db = ctx_open();
+    handoff_compute_daily(db);
+    sqlite3_close(db);
+    return 0;
+  }
   return usage_report(argc, argv);
 }
 

@@ -1426,7 +1426,11 @@ The point is the lower of two, each worked out from the last 90 days of finished
   at the next size up, trouble per response is at least 1.5 times the rate below 100K tokens and
   at least 2 per 100 responses more, with at least 50 responses and 10 events there.
 
-The hourly scan works the points out again once a day, and `ctx usage` lists them. The hook reads
+The cost of the handoff note itself is counted too, roughly: a note at its largest (4,000 bytes,
+taken as 1,000 tokens) written once as output, written once to the new session's cache, and read
+again with each response after it, at the model's price. The archive hook works the points out
+again once a day, after it has let go of the scan's lock, so no hook waits on it; `ctx usage`
+lists them. The hook reads
 the session's current context from the end of its transcript, and marks the session told beside
 the database (`ctx.sqlite.handoff-told`). The cost of writing a handoff note is not counted; a
 fresh session's own first responses are.

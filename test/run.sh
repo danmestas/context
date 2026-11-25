@@ -4601,7 +4601,14 @@ for k in $(seq 1 25); do "$CTX" archive "$QC/q-$k.jsonl" >/dev/null; done
   INSERT INTO ctx_usage(harness, session, msg, model, at, input, write_5m, write_1h, cache_read, output, dollars, price_date)
   SELECT 'claude', 'q-' || k, 'q-' || k || ':' || i, 'claude-test-q', strftime('%Y-%m-%dT%H:%M:%SZ', '2026-11-15', '+' || k || ' hours', '+' || i || ' minutes'),
     0, 0, 0, 20000 * (i + 1), 10, 0.01, '2026-11-03' FROM s, t" >/dev/null
+# claude-sonnet-5-5: the same growth at a thousandth of the cost, so handing off saves less than the
+# note costs to write and read: a priced model counts the note
+"$CTX" sql "WITH RECURSIVE s(k) AS (SELECT 1 UNION ALL SELECT k + 1 FROM s WHERE k < 25), t(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM t WHERE i < 59)
+  INSERT INTO ctx_usage(harness, session, msg, model, at, input, write_5m, write_1h, cache_read, output, dollars, price_date)
+  SELECT 'claude', 'n-' || k, 'n-' || k || ':' || i, 'claude-sonnet-5-5', strftime('%Y-%m-%dT%H:%M:%SZ', '2026-11-10', '+' || k || ' hours', '+' || i || ' minutes'),
+    0, 0, 0, 10000 * (i + 1), 10, 10000 * (i + 1) * 1e-9, '2026-11-03' FROM s, t" >/dev/null
 CTX_NOW=2026-11-21T12:00:00Z "$CTX" usage handoff > "$T/ho.out"
+grep -q '^claude-sonnet-5-5: 25 past sessions in 90 days\. No point yet' "$T/ho.out" || fail "the handoff note's cost is counted: $(grep sonnet "$T/ho.out")"
 grep -q '^claude-test-c: 25 past sessions in 90 days\. Hand off past 50K tokens of context (cost point; cost point 50K, quality point 0K)\.$' "$T/ho.out" || fail "a model whose long sessions cost more gets a cost point: $(cat "$T/ho.out")"
 grep -q '^claude-test-few: 19 past sessions in 90 days\. No point yet' "$T/ho.out" || fail "too little history: no point"
 grep -q '^claude-test-q: 25 past sessions in 90 days\. Hand off past 300K tokens of context (quality point; cost point 0K, quality point 300K)\.$' "$T/ho.out" || fail "a model whose sessions meet more corrections past a size gets a quality point: $(cat "$T/ho.out")"
