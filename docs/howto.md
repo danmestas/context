@@ -1274,6 +1274,54 @@ problem that has not changed. A hook run with no session id is told nothing, sin
 keep from telling it again. Which problems a session has heard of is kept beside the database
 (`ctx.sqlite.heard`, cleared after 30 days). `ctx page` shows them first, with the evidence.
 
+## Track spend per session
+
+ctx keeps one row per model response (`ctx_usage`), read from the records each harness already
+writes, at the same moments ctx reads sessions: the archive hook takes in the transcript it
+archives and its subagents' files, and the hourly scan takes in everything else. Each file is read
+from where the last read stopped, so a response is counted once. The first scan collects every
+record the harnesses still keep; `ctx usage collect` does it now.
+
+```sh
+ctx usage collect     # 1240 responses and 85 limit readings taken in
+```
+
+| Harness | Records | Counts |
+|---|---|---|
+| Claude Code | `CONFIG/projects/PROJECT/SESSION.jsonl`, and a subagent's in `SESSION/subagents/agent-*.jsonl` | each assistant record's `message.usage`, once per message id: input, cache writes (1-hour and 5-minute), cache reads, output, and thinking tokens where given |
+| Codex | `CODEX_HOME/sessions/**/*.jsonl` and `archived_sessions` | each `token_count` event's `last_token_usage`, or the growth of `total_token_usage`; input there includes cached input, which ctx keeps apart as cache reads; reasoning tokens are part of output |
+
+A subagent's responses keep its own session and name its parent, so reports can count them under
+the session that started it. A row also has the project (from the working directory, as for
+turns), the exact model, the time, and the account: the provider and the address the harness is
+logged in with, read from Claude Code's `.claude.json` (`oauthAccount`: address, plan name and
+billing type; `~/.claude.json` for the default config folder) or Codex's `auth.json` (the address
+in its login token), with Codex's plan from its rate-limit readings. With no login there, the
+account is `anthropic:api-key` or `openai:api-key`. The account is the login when ctx reads the
+records, so responses made under an earlier login are counted under the current one. Addresses
+stay in the local database and in `ctx usage` output on this machine; nothing is sent anywhere.
+Projects excluded from the archive, and sessions forgotten, are left out of spend too.
+
+Codex writes its plan's limits into its records (`rate_limits`: share used, window, reset time,
+plan); each reading that differs from the one before it goes into `ctx_limit`.
+
+**Prices.** Each response is priced when it is collected at the price of its model on its own
+date: the latest line for the model dated on or before the response, from a price list compiled
+into ctx (`schema/prices.txt`, which names its source and when it was read). A file named by
+`CTX_PRICES`, or else `ctx.sqlite.prices` beside the database, adds lines in the same form, and a
+line with the same model and date replaces the built-in one:
+
+```
+# model  from  input  cache-write-5m  cache-write-1h  cache-read  output   (US dollars per million tokens)
+claude-opus-5-5  2026-11-03  4.00  5.00  8.00  0.20  20.00
+```
+
+A row keeps the dollars and the date of the line it was priced by, so a later price never changes
+past spend. A response with no line for its model at its date (a model not listed, a response
+older than the model's first line, or a fast-mode response, priced as `MODEL@fast`) has no dollars,
+and reports say so rather than guess. The built-in list leaves out what its source does not settle:
+Claude Haiku 5.5, whose price depends on prompt length, fast mode, and every OpenAI model.
+
 ## Keep the call log as Parquet
 
 The call log is short-lived: it rotates at 1 MB and keeps about a day on a busy machine. Each end line also
@@ -1432,4 +1480,6 @@ ctx sql "SELECT project, count(*) FROM ctx_capture GROUP BY 1"
 | `CTX_PIC_JOURNAL` | the pic journal `ctx stats` reports on, instead of `.pic/journal.sqlite` in the working directory; empty skips it |
 | `USER` | the name on check-ins, claims and sources |
 | `CTX_SESSION` | the session `ctx wiki save` records a page against |
+| `CODEX_HOME` | where Codex's records and login are found, instead of `~/.codex` |
+| `CTX_PRICES` | a price file read after ctx's own, instead of `ctx.sqlite.prices` beside the database |
 | `CTX_NOW` | a date or time (`2026-10-11T15:45:48Z`) ctx treats as now in every query, so a replay of a past moment, on a copy of the archive cut at that moment, gets the brief it would have had then |

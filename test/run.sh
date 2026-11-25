@@ -3699,7 +3699,7 @@ CLAUDE_CONFIG_DIR="$XC" "$CTX" scan >/dev/null
 "$CTX" forget 5e550000-0000-0000-0000-00000000000 2>/dev/null && fail "an ambiguous prefix is refused"
 export CTX_DB="$T/rebuild.sqlite"
 "$CTX" init >/dev/null
-[ "$("$CTX" sql "PRAGMA user_version")" = 21 ] || fail "a new file is at the current version"
+[ "$("$CTX" sql "PRAGMA user_version")" = 22 ] || fail "a new file is at the current version"
 [ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 7 ] || fail "derived version recorded"
 printf '{"uuid":"rb-1","timestamp":"2026-09-01T10:00:00Z","cwd":"/w/rb","message":{"role":"user","content":"the capybara rollout"}}\n{"uuid":"rb-2","timestamp":"2026-09-01T10:00:05Z","cwd":"/w/rb","message":{"role":"assistant","content":"rolled out the capybara"}}\n' > "$T/ab12cd99-rb.jsonl"
 "$CTX" archive "$T/ab12cd99-rb.jsonl" >/dev/null
@@ -3721,7 +3721,7 @@ grep -q 'rebuilding it once' "$T/rb.err" || fail "an old index is rebuilt on ope
 "$CTX" sql "DROP TABLE ctx_meta" >/dev/null; "$CTX" sql "PRAGMA user_version = 1" >/dev/null
 "$CTX" search --all capybara 2>"$T/rb3.err" | grep -q capybara || fail "an unversioned file still works"
 [ -s "$T/rb3.err" ] && fail "an unversioned file is upgraded without a rebuild"
-[ "$("$CTX" sql "PRAGMA user_version")" = 21 ] || fail "and is marked current"
+[ "$("$CTX" sql "PRAGMA user_version")" = 22 ] || fail "and is marked current"
 
 # Docs tickets: every documentation problem ctx finds becomes a ticket, once each, without the
 # person's sign-off, and the overview shows who holds it and carries a prod to that session.
@@ -4379,6 +4379,75 @@ for i in 8 9 10 11 12 13; do pair $i; done
 printf 'B %s 50 gate\n' $((IT - 3600)) >> "$CTX_DB.calls"
 printf 'E %s 50 gate 5 0 quiet 0 claude s\n' $((IT + 20)) >> "$CTX_DB.calls"
 [ "$(ing)" = 14 ] && [ "$(fsql "SELECT count(*) FROM ctx_call WHERE pid = 50 AND ms IS NULL")" = 1 ] || fail "a reused pid's end does not close an hour-old start: $(fsql "SELECT * FROM ctx_call WHERE pid = 50")"
+
+# Usage: one row per model response from each harness's own records, priced at the price of its
+# model on its date, with Codex's plan-limit readings. Addresses here are fake.
+export CTX_DB="$T/usage/ctx.sqlite"
+mkdir -p "$T/usage"
+"$CTX" init >/dev/null
+UC="$T/ucfg"; UX="$T/ucodex"
+mkdir -p "$UC/projects/-w-owl/s-1/subagents" "$UX/sessions/2026/11/20"
+printf '{"oauthAccount":{"emailAddress":"person@example.test","planDisplayName":"Max","billingType":"stripe_subscription"}}\n' > "$UC/.claude.json"
+python3 - "$UC/projects/-w-owl" "$UX" <<'PY'
+import base64, json, os, sys
+owl, ux = sys.argv[1:3]
+def asst(mid, model, at, usage, sid="s-1", extra=None):
+    r = {"type": "assistant", "timestamp": at, "sessionId": sid, "cwd": "/w/owl", "message": {"id": mid, "model": model, "role": "assistant", "content": [{"type": "text", "text": "ok"}], "usage": usage}}
+    r.update(extra or {})
+    return json.dumps(r) + "\n"
+u1 = {"input_tokens": 10, "cache_creation_input_tokens": 1000, "cache_read_input_tokens": 2000, "output_tokens": 300, "cache_creation": {"ephemeral_1h_input_tokens": 1000, "ephemeral_5m_input_tokens": 0}}
+with open(owl + "/s-1.jsonl", "w") as f:
+    f.write(json.dumps({"type": "user", "timestamp": "2026-11-20T09:59:00Z", "sessionId": "s-1", "cwd": "/w/owl", "message": {"role": "user", "content": "what does \"usage\" mean for the assistant"}}) + "\n")
+    f.write(asst("msg_1", "claude-opus-5-5", "2026-11-20T10:00:00Z", u1))
+    f.write(asst("msg_1", "claude-opus-5-5", "2026-11-20T10:00:01Z", u1))  # the same response, another content block
+    f.write(asst("msg_2", "claude-haiku-5-5", "2026-11-20T10:01:00Z", {"input_tokens": 7, "output_tokens": 3}))
+    f.write(asst("msg_0", "claude-opus-5-5", "2026-10-01T10:00:00Z", {"input_tokens": 7, "output_tokens": 3}))
+    f.write(asst("msg_x", "<synthetic>", "2026-11-20T10:02:00Z", {"input_tokens": 0, "output_tokens": 0}))
+with open(owl + "/s-1/subagents/agent-a1.jsonl", "w") as f:
+    f.write(asst("msg_s1", "claude-sonnet-5-5", "2026-11-20T10:03:00Z", {"input_tokens": 5, "cache_creation_input_tokens": 100, "output_tokens": 50}, extra={"isSidechain": True, "agentId": "a1"}))
+claims = base64.urlsafe_b64encode(json.dumps({"email": "coder@example.test"}).encode()).decode().rstrip("=")
+json.dump({"auth_mode": "chatgpt", "OPENAI_API_KEY": None, "tokens": {"id_token": "e30." + claims + ".sig"}}, open(ux + "/auth.json", "w"))
+def tc(at, total, last, limits=True):
+    info = {"total_token_usage": total}
+    if last: info["last_token_usage"] = last
+    p = {"type": "token_count", "info": info}
+    if limits: p["rate_limits"] = {"primary": {"used_percent": 12.5, "window_minutes": 300, "resets_at": 1795600000}, "secondary": {"used_percent": 40.0, "window_minutes": 10080, "resets_at": 1796000000}, "plan_type": "pro"}
+    return json.dumps({"timestamp": at, "type": "event_msg", "payload": p}) + "\n"
+k = lambda i, c, o, r: {"input_tokens": i, "cached_input_tokens": c, "cache_write_input_tokens": 0, "output_tokens": o, "reasoning_output_tokens": r}
+with open(ux + "/sessions/2026/11/20/rollout-cx-1.jsonl", "w") as f:
+    f.write(json.dumps({"timestamp": "2026-11-20T11:00:00Z", "type": "session_meta", "payload": {"id": "cx-1", "cwd": "/w/owl"}}) + "\n")
+    f.write(json.dumps({"timestamp": "2026-11-20T11:00:01Z", "type": "turn_context", "payload": {"model": "gpt-test", "cwd": "/w/owl"}}) + "\n")
+    f.write(tc("2026-11-20T11:00:02Z", k(1000, 400, 50, 10), k(1000, 400, 50, 10)))
+    f.write(tc("2026-11-20T11:00:03Z", k(1000, 400, 50, 10), k(1000, 400, 50, 10)))  # repeated: not a new response
+    f.write(tc("2026-11-20T11:00:04Z", k(1600, 900, 80, 10), None, limits=False))  # no last: the running total's growth
+PY
+CLAUDE_CONFIG_DIR="$UC" CODEX_HOME="$UX" "$CTX" usage collect > "$T/ucol.out" || fail "ctx usage collect runs"
+grep -q '^6 responses and 2 limit readings taken in$' "$T/ucol.out" || fail "collect counts what it took in: $(cat "$T/ucol.out")"
+grep -q '@' "$T/ucol.out" && fail "collect prints no address"
+U() { "$CTX" sql "$1" | tr '\t' ' '; }
+[ "$(U "SELECT count(*) FROM ctx_usage WHERE msg = 'msg_1'")" = 1 ] || fail "one row per response, not per record"
+[ "$(U "SELECT input, write_5m, write_1h, cache_read, output, round(dollars, 6), price_date, project FROM ctx_usage WHERE msg = 'msg_1'")" = "10 0 1000 2000 300 0.01444 2026-11-03 owl" ] || fail "a response priced at its date: $(U "SELECT * FROM ctx_usage WHERE msg = 'msg_1'")"
+[ "$(U "SELECT account = 'anthropic:person@example.test', plan, billing FROM ctx_usage WHERE msg = 'msg_1'")" = "1 Max stripe_subscription" ] || fail "the Claude Code login is the account"
+[ "$(U "SELECT dollars IS NULL, price_date IS NULL FROM ctx_usage WHERE msg IN ('msg_2', 'msg_0')")" = "1 1
+1 1" ] || fail "no price line, no dollars: a model with none, and a response before its first line"
+[ "$(U "SELECT count(*) FROM ctx_usage WHERE model = '<synthetic>'")" = 0 ] || fail "a synthetic message is not a response"
+[ "$(U "SELECT session, parent, write_5m, round(dollars, 6) FROM ctx_usage WHERE msg = 'msg_s1'")" = "agent-a1 s-1 100 0.00076" ] || fail "a subagent's response, under its parent: $(U "SELECT * FROM ctx_usage WHERE msg = 'msg_s1'")"
+[ "$(U "SELECT session, model, input, cache_read, output, reasoning, project, plan FROM ctx_usage WHERE harness = 'codex' ORDER BY at")" = "cx-1 gpt-test 600 400 50 10 owl pro
+cx-1 gpt-test 100 500 30 0 owl pro" ] || fail "Codex: last usage, then the running total's growth, cached input apart: $(U "SELECT * FROM ctx_usage WHERE harness = 'codex'")"
+[ "$(U "SELECT count(*) FROM ctx_usage WHERE harness = 'codex' AND account = 'openai:coder@example.test' AND dollars IS NULL")" = 2 ] || fail "the Codex login is the account, and an unpriced model has no dollars"
+[ "$(U "SELECT window, used, resets_at, source FROM ctx_limit ORDER BY window")" = "300 12.5 1795600000 codex
+10080 40.0 1796000000 codex" ] || fail "Codex's limit readings: $(U "SELECT window, used, resets_at, source FROM ctx_limit")"
+# Only what is new is read next time, and a price line added later prices new responses only.
+printf '{"type":"assistant","timestamp":"2026-11-21T10:00:00Z","sessionId":"s-1","cwd":"/w/owl","message":{"id":"msg_3","model":"claude-haiku-5-5","usage":{"input_tokens":1000000,"output_tokens":0}}}\n' >> "$UC/projects/-w-owl/s-1.jsonl"
+printf 'claude-haiku-5-5 2026-11-21 2.00 0 0 0 0 a test line\n' > "$T/uprices.txt"
+CLAUDE_CONFIG_DIR="$UC" CODEX_HOME="$UX" CTX_PRICES="$T/uprices.txt" "$CTX" usage collect | grep -q '^1 responses and 0 limit readings taken in$' || fail "a second collection reads only what is new"
+[ "$(U "SELECT round(dollars, 2), price_date FROM ctx_usage WHERE msg = 'msg_3'")" = "2.0 2026-11-21" ] || fail "a price file adds a model: $(U "SELECT dollars, price_date FROM ctx_usage WHERE msg = 'msg_3'")"
+[ "$(U "SELECT dollars IS NULL FROM ctx_usage WHERE msg = 'msg_2'")" = 1 ] || fail "a stored row keeps the price it was given"
+# The archive hook takes in the transcript it archives, and its subagents', at once.
+cp "$UC/projects/-w-owl/s-1.jsonl" "$UC/projects/-w-owl/s-2.jsonl"
+sed -i.bak 's/"s-1"/"s-2"/' "$UC/projects/-w-owl/s-2.jsonl" && rm -f "$UC/projects/-w-owl/s-2.jsonl.bak"
+"$CTX" archive "$UC/projects/-w-owl/s-2.jsonl" >/dev/null
+[ "$(U "SELECT count(*) FROM ctx_usage WHERE session = 's-2'")" = 4 ] || fail "archiving a transcript takes in its responses: $(U "SELECT count(*) FROM ctx_usage WHERE session = 's-2'")"
 
 # The skill eval harness works end to end with a stand-in for the model.
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"

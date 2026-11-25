@@ -29,9 +29,10 @@
 #include "state_schema.h"
 #include "ticket_schema.h"
 #include "page.h"
+#include "prices.h"
 
 #define CTX_VERSION "0.0.1"
-#define CTX_USER_VERSION 21    /* PRAGMA user_version once initialized */
+#define CTX_USER_VERSION 22    /* PRAGMA user_version once initialized */
 #define CTX_DERIVED_VERSION 7 /* raise when schema/index.sql changes; ctx then rebuilds */
 
 /* A tool's output is kept up to this size at each end; the middle is cut. */
@@ -1248,6 +1249,9 @@ static int session_forgotten(sqlite3 *db, const char *session) {
   return hit;
 }
 
+static void usage_after_archive(sqlite3 *db, const char *path);
+static void usage_scan(sqlite3 *db, int say);
+
 static int cmd_archive(const char *path) {
   struct stat st;
   if (stat(path, &st) != 0) die("cannot read %s: %s", path, strerror(errno));
@@ -1356,6 +1360,7 @@ static int cmd_archive(const char *path) {
   free(project);
   ex_close(&e);
   fclose(f);
+  if (!pi) usage_after_archive(db, path); /* the same moment: its responses and its subagents' */
   sqlite3_close(db);
   printf("%ld turns archived\n", stored);
   return 0;
@@ -4395,6 +4400,7 @@ static int cmd_scan(const char *root_arg) {
     }
   }
   if (!root_arg || strcmp(root_arg, "--pic")) findings_run(db); /* not for a pic hook's quick scan */
+  if (!root_arg) usage_scan(db, 0); /* every harness's new responses; a scan of one folder is about turns */
   sqlite3_close(db);
   printf("%ld transcripts read\n", ran);
   if (doc_changes) printf("%ld documents changed\n", doc_changes);
@@ -16437,6 +16443,532 @@ static int cmd_rebuild(void) {
   return 0;
 }
 
+/* Usage: one row per model response in ctx_usage, from the records each harness already writes,
+ * read from where the last read stopped; Codex's plan-limit readings into ctx_limit; and each
+ * row priced at the price of its model on its own date, from the price lines (ctx_prices, then
+ * CTX_PRICES or ctx.sqlite.prices). Nothing here sends anything anywhere. */
+typedef struct {
+  char model[64], from[11];
+  double in, w5, w1, rd, out;
+} price_line;
+
+static price_line *price_lines;
+static size_t price_n;
+
+static void prices_parse(const char *text) {
+  for (const char *line = text; line && *line;) {
+    const char *end = strchr(line, '\n');
+    char one[400];
+    size_t len = end ? (size_t)(end - line) : strlen(line);
+    snprintf(one, sizeof one, "%.*s", (int)(len < sizeof one ? len : sizeof one - 1), line);
+    line = end ? end + 1 : NULL;
+    price_line p;
+    if (one[0] == '#' || sscanf(one, "%63s %10s %lf %lf %lf %lf %lf", p.model, p.from, &p.in, &p.w5, &p.w1, &p.rd, &p.out) != 7) continue;
+    size_t k = 0;
+    while (k < price_n && (strcmp(price_lines[k].model, p.model) || strcmp(price_lines[k].from, p.from))) k++;
+    if (k == price_n) {
+      price_lines = realloc(price_lines, (price_n + 1) * sizeof *price_lines);
+      if (!price_lines) die("out of memory");
+      price_n++;
+    }
+    price_lines[k] = p; /* a later line for the same model and date replaces it */
+  }
+}
+
+static void prices_load(void) {
+  static int loaded;
+  if (loaded) return;
+  loaded = 1;
+  prices_parse(ctx_prices);
+  const char *env = getenv("CTX_PRICES");
+  char *path = env && *env ? dup_text((const unsigned char *)env) : sidecar(".prices");
+  size_t len = 0;
+  char *text = slurp(path, &len);
+  if (text) prices_parse(text);
+  free(text);
+  free(path);
+}
+
+/* The latest line for the model on or before the day of at; NULL when there is none. A fast-mode
+ * response is priced as MODEL@fast. */
+static const price_line *price_for(const char *model, const char *speed, const char *at) {
+  prices_load();
+  char key[80], day[11];
+  snprintf(key, sizeof key, "%s%s", model, speed && !strcmp(speed, "fast") ? "@fast" : "");
+  snprintf(day, sizeof day, "%.10s", at ? at : "");
+  const price_line *best = NULL;
+  for (size_t i = 0; i < price_n; i++)
+    if (!strcmp(price_lines[i].model, key) && strcmp(price_lines[i].from, day) <= 0 && (!best || strcmp(price_lines[i].from, best->from) > 0)) best = &price_lines[i];
+  return best;
+}
+
+/* Who a harness is logged in as, from its own files: provider and address, plan and billing. */
+typedef struct {
+  char account[200], plan[80], billing[60];
+} usage_account;
+
+/* Claude Code: the config folder's .claude.json, which for ~/.claude lives at ~/.claude.json. */
+static void claude_account(sqlite3 *db, const char *config, usage_account *a) {
+  snprintf(a->account, sizeof a->account, "anthropic:api-key");
+  snprintf(a->plan, sizeof a->plan, "api-key");
+  *a->billing = 0;
+  char path[4300];
+  size_t len = 0;
+  snprintf(path, sizeof path, "%s/.claude.json", config);
+  char *text = slurp(path, &len);
+  const char *home = getenv("HOME");
+  char dflt[4300];
+  if (!text && home) {
+    snprintf(dflt, sizeof dflt, "%s/.claude", home);
+    if (!strcmp(dflt, config)) {
+      snprintf(path, sizeof path, "%s/.claude.json", home);
+      text = slurp(path, &len);
+    }
+  }
+  if (!text) return;
+  sqlite3_stmt *q = db_prepare(db, "SELECT json_extract(?1, '$.oauthAccount.emailAddress'), coalesce(json_extract(?1, '$.oauthAccount.planDisplayName'), ''),"
+                                   " coalesce(json_extract(?1, '$.oauthAccount.billingType'), '') WHERE json_valid(?1)");
+  sqlite3_bind_text(q, 1, text, (int)len, SQLITE_STATIC);
+  if (sqlite3_step(q) == SQLITE_ROW && sqlite3_column_text(q, 0)) {
+    snprintf(a->account, sizeof a->account, "anthropic:%s", sqlite3_column_text(q, 0));
+    snprintf(a->plan, sizeof a->plan, "%s", sqlite3_column_text(q, 1));
+    snprintf(a->billing, sizeof a->billing, "%s", sqlite3_column_text(q, 2));
+  }
+  sqlite3_finalize(q);
+  free(text);
+}
+
+static size_t b64url_decode(const char *in, size_t n, char *out, size_t cap) {
+  unsigned v = 0;
+  int bits = 0;
+  size_t o = 0;
+  for (size_t i = 0; i < n && o + 1 < cap; i++) {
+    int c = (unsigned char)in[i], d = c >= 'A' && c <= 'Z' ? c - 'A' : c >= 'a' && c <= 'z' ? c - 'a' + 26 : c >= '0' && c <= '9' ? c - '0' + 52
+                                     : c == '-' || c == '+' ? 62 : c == '_' || c == '/' ? 63 : -1;
+    if (d < 0) break;
+    v = (v << 6) | (unsigned)d;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out[o++] = (char)((v >> bits) & 0xff);
+    }
+  }
+  out[o] = 0;
+  return o;
+}
+
+/* Codex: auth.json under CODEX_HOME. A ChatGPT login's address is in its id token's claims; the
+ * plan comes with each rate-limit reading, so it is filled in per response. */
+static void codex_account(sqlite3 *db, const char *home, usage_account *a) {
+  snprintf(a->account, sizeof a->account, "openai:api-key");
+  snprintf(a->plan, sizeof a->plan, "api-key");
+  *a->billing = 0;
+  char path[4300];
+  size_t len = 0;
+  snprintf(path, sizeof path, "%s/auth.json", home);
+  char *text = slurp(path, &len);
+  if (!text) return;
+  sqlite3_stmt *q = db_prepare(db, "SELECT coalesce(json_extract(?1, '$.auth_mode'), ''), coalesce(json_extract(?1, '$.tokens.id_token'), '') WHERE json_valid(?1)");
+  sqlite3_bind_text(q, 1, text, (int)len, SQLITE_STATIC);
+  if (sqlite3_step(q) == SQLITE_ROW) {
+    const char *token = (const char *)sqlite3_column_text(q, 1), *dot = strchr(token, '.'), *dot2 = dot ? strchr(dot + 1, '.') : NULL;
+    if (strcmp((const char *)sqlite3_column_text(q, 0), "apikey") && dot && dot2) {
+      char claims[8192];
+      b64url_decode(dot + 1, (size_t)(dot2 - dot - 1), claims, sizeof claims);
+      sqlite3_stmt *c = db_prepare(db, "SELECT json_extract(?1, '$.email') WHERE json_valid(?1)");
+      sqlite3_bind_text(c, 1, claims, -1, SQLITE_STATIC);
+      if (sqlite3_step(c) == SQLITE_ROW && sqlite3_column_text(c, 0)) {
+        snprintf(a->account, sizeof a->account, "openai:%s", sqlite3_column_text(c, 0));
+        *a->plan = 0;
+        snprintf(a->billing, sizeof a->billing, "chatgpt");
+      }
+      sqlite3_finalize(c);
+    }
+  }
+  sqlite3_finalize(q);
+  free(text);
+}
+
+/* The statements one read uses, prepared once per collection. */
+typedef struct {
+  sqlite3_stmt *claude, *codex, *limits, *ins, *lim, *pos, *setpos;
+  long rows, readings;
+} usage_ctx;
+
+static void usage_prepare(sqlite3 *db, usage_ctx *u) {
+  memset(u, 0, sizeof *u);
+  u->claude = db_prepare(db,
+      "SELECT json_extract(?1, '$.message.id'), json_extract(?1, '$.message.model'), json_extract(?1, '$.timestamp'),"
+      " coalesce(json_extract(?1, '$.message.usage.input_tokens'), 0),"
+      " coalesce(json_extract(?1, '$.message.usage.cache_creation.ephemeral_5m_input_tokens'),"
+      "  coalesce(json_extract(?1, '$.message.usage.cache_creation_input_tokens'), 0) - coalesce(json_extract(?1, '$.message.usage.cache_creation.ephemeral_1h_input_tokens'), 0)),"
+      " coalesce(json_extract(?1, '$.message.usage.cache_creation.ephemeral_1h_input_tokens'), 0),"
+      " coalesce(json_extract(?1, '$.message.usage.cache_read_input_tokens'), 0), coalesce(json_extract(?1, '$.message.usage.output_tokens'), 0),"
+      " coalesce(json_extract(?1, '$.message.usage.output_tokens_details.thinking_tokens'), 0),"
+      " json_extract(?1, '$.message.usage.speed'), json_extract(?1, '$.cwd'), json_extract(?1, '$.sessionId')"
+      " WHERE json_valid(?1) AND json_extract(?1, '$.type') = 'assistant' AND json_type(?1, '$.message.usage') = 'object'");
+  u->codex = db_prepare(db,
+      "SELECT json_extract(?1, '$.type'), json_extract(?1, '$.payload.type'), json_extract(?1, '$.timestamp'),"
+      " json_extract(?1, '$.payload.id'), json_extract(?1, '$.payload.cwd'), json_extract(?1, '$.payload.model'),"
+      " json_extract(?1, '$.payload.info.total_token_usage'), json_extract(?1, '$.payload.info.last_token_usage'),"
+      " json_extract(?1, '$.payload.rate_limits'), json_extract(?1, '$.payload.rate_limits.plan_type') WHERE json_valid(?1)");
+  u->limits = db_prepare(db, "SELECT json_extract(value, '$.window_minutes'), json_extract(value, '$.used_percent'), json_extract(value, '$.resets_at')"
+                             " FROM json_each(?1) WHERE key IN ('primary', 'secondary') AND type = 'object' AND json_type(value, '$.used_percent') IN ('real', 'integer')");
+  u->ins = db_prepare(db, "INSERT OR IGNORE INTO ctx_usage(harness, session, parent, msg, project, account, plan, billing, model, speed, at,"
+                          " input, write_5m, write_1h, cache_read, output, reasoning, dollars, price_date)"
+                          " VALUES (?1, ?2, ?3, ?4, ?5, ?6, nullif(?7, ''), nullif(?8, ''), ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)");
+  /* a reading the same as the one before it for that account and window says nothing new */
+  u->lim = db_prepare(db, "INSERT OR IGNORE INTO ctx_limit(account, window, at, used, resets_at, session, source) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7"
+                          " WHERE NOT EXISTS (SELECT 1 FROM ctx_limit l WHERE l.account = ?1 AND l.window = ?2 AND l.used = ?4 AND l.resets_at IS ?5"
+                          "  AND l.at = (SELECT max(at) FROM ctx_limit WHERE account = ?1 AND window = ?2 AND at < ?3))");
+  u->pos = db_prepare(db, "SELECT offset, head, state FROM ctx_usage_read WHERE path = ?1");
+  u->setpos = db_prepare(db, "INSERT OR REPLACE INTO ctx_usage_read(path, offset, head, state) VALUES (?1, ?2, ?3, ?4)");
+}
+
+static void usage_finish(usage_ctx *u) {
+  sqlite3_finalize(u->claude);
+  sqlite3_finalize(u->codex);
+  sqlite3_finalize(u->limits);
+  sqlite3_finalize(u->ins);
+  sqlite3_finalize(u->lim);
+  sqlite3_finalize(u->pos);
+  sqlite3_finalize(u->setpos);
+}
+
+/* A response, priced and stored. t: input, write 5m, write 1h, cache read, output, reasoning. */
+static void usage_store(usage_ctx *u, const char *harness, const char *session, const char *parent, const char *msg, const char *project,
+                        const usage_account *a, const char *plan, const char *model, const char *speed, const char *at, const long long t[6]) {
+  if (!model || !*model || !strcmp(model, "<synthetic>") || !msg || !at) return;
+  sqlite3_stmt *q = u->ins;
+  sqlite3_bind_text(q, 1, harness, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 2, session, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 3, parent, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 4, msg, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 5, project, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 6, a->account, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 7, plan && *plan ? plan : a->plan, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 8, a->billing, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 9, model, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 10, speed, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 11, at, -1, SQLITE_STATIC);
+  for (int i = 0; i < 6; i++) sqlite3_bind_int64(q, 12 + i, t[i]);
+  const price_line *p = price_for(model, speed, at);
+  if (p) {
+    sqlite3_bind_double(q, 18, ((double)t[0] * p->in + (double)t[1] * p->w5 + (double)t[2] * p->w1 + (double)t[3] * p->rd + (double)t[4] * p->out) / 1e6);
+    sqlite3_bind_text(q, 19, p->from, -1, SQLITE_STATIC);
+  } else {
+    sqlite3_bind_null(q, 18);
+    sqlite3_bind_null(q, 19);
+  }
+  sqlite3_step(q);
+  u->rows += sqlite3_changes(sqlite3_db_handle(q));
+  sqlite3_reset(q);
+  sqlite3_clear_bindings(q);
+}
+
+/* What a Codex rollout said before the lines being read: its session, model, project, plan and
+ * running totals (input, cached, cache write, output, reasoning). */
+typedef struct {
+  char session[128], model[64], project[256], plan[64];
+  long long total[5];
+} codex_state;
+
+static const char *const codex_keys[5] = {"input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens"};
+
+static void codex_counts(sqlite3 *db, const char *json, long long out[5]) {
+  sqlite3_stmt *q = db_prepare(db, "SELECT coalesce(json_extract(?1, '$.' || ?2), 0)");
+  sqlite3_bind_text(q, 1, json, -1, SQLITE_STATIC);
+  for (int i = 0; i < 5; i++) {
+    sqlite3_bind_text(q, 2, codex_keys[i], -1, SQLITE_STATIC);
+    out[i] = sqlite3_step(q) == SQLITE_ROW ? sqlite3_column_int64(q, 0) : 0;
+    sqlite3_reset(q);
+  }
+  sqlite3_finalize(q);
+}
+
+/* Reads one record file from where the last read stopped and stores what is new. codex is 1 for
+ * a Codex rollout. A subagent's file names its parent session; the parent is NULL otherwise. */
+static void usage_file(sqlite3 *db, usage_ctx *u, const char *path, int codex, const usage_account *a) {
+  struct stat st;
+  if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) return;
+  long long off = 0;
+  codex_state cs = {0};
+  sqlite3_bind_text(u->pos, 1, path, -1, SQLITE_STATIC);
+  if (sqlite3_step(u->pos) == SQLITE_ROW) {
+    off = sqlite3_column_int64(u->pos, 0);
+    if (off == (long long)st.st_size) { /* nothing new: the common case costs one stat and one lookup */
+      sqlite3_reset(u->pos);
+      return;
+    }
+    const char *h = (const char *)sqlite3_column_text(u->pos, 1), *state = (const char *)sqlite3_column_text(u->pos, 2);
+    char now[17];
+    head_hash(path, off, now);
+    if (off > (long long)st.st_size || !h || strcmp(h, now)) off = 0; /* replaced: read again from the start */
+    else if (state && codex) {
+      sqlite3_stmt *s = db_prepare(db, "SELECT json_extract(?1, '$.s'), json_extract(?1, '$.m'), json_extract(?1, '$.p'), json_extract(?1, '$.n'),"
+                                       " json_extract(?1, '$.t[0]'), json_extract(?1, '$.t[1]'), json_extract(?1, '$.t[2]'), json_extract(?1, '$.t[3]'), json_extract(?1, '$.t[4]')");
+      sqlite3_bind_text(s, 1, state, -1, SQLITE_STATIC);
+      if (sqlite3_step(s) == SQLITE_ROW) {
+        snprintf(cs.session, sizeof cs.session, "%s", sqlite3_column_text(s, 0) ? (const char *)sqlite3_column_text(s, 0) : "");
+        snprintf(cs.model, sizeof cs.model, "%s", sqlite3_column_text(s, 1) ? (const char *)sqlite3_column_text(s, 1) : "");
+        snprintf(cs.project, sizeof cs.project, "%s", sqlite3_column_text(s, 2) ? (const char *)sqlite3_column_text(s, 2) : "");
+        snprintf(cs.plan, sizeof cs.plan, "%s", sqlite3_column_text(s, 3) ? (const char *)sqlite3_column_text(s, 3) : "");
+        for (int i = 0; i < 5; i++) cs.total[i] = sqlite3_column_int64(s, 4 + i);
+      }
+      sqlite3_finalize(s);
+    }
+  }
+  sqlite3_reset(u->pos);
+  if (off == (long long)st.st_size) return;
+  FILE *f = fopen(path, "r");
+  if (!f) return;
+  if (fseeko(f, (off_t)off, SEEK_SET) != 0) {
+    fclose(f);
+    return;
+  }
+  /* Claude Code: the session is the file's name; a subagent's file sits in its parent's folder */
+  const char *base = strrchr(path, '/');
+  base = base ? base + 1 : path;
+  char session[128], parent[128] = "", project[256] = "";
+  snprintf(session, sizeof session, "%.*s", (int)strcspn(base, "."), base);
+  const char *sub = strstr(path, "/subagents/");
+  if (!codex && sub) {
+    const char *end = sub, *start = end;
+    while (start > path && start[-1] != '/') start--;
+    snprintf(parent, sizeof parent, "%.*s", (int)(end - start), start);
+  }
+  db_exec(db, "BEGIN IMMEDIATE");
+  char *line = NULL;
+  size_t cap = 0;
+  ssize_t len;
+  long long pos = off;
+  while ((len = getline(&line, &cap, f)) > 0 && line[len - 1] == '\n') {
+    pos += len;
+    if (!codex) {
+      if (!memmem(line, (size_t)len, "\"usage\"", 7) || !memmem(line, (size_t)len, "\"assistant\"", 11)) continue;
+      sqlite3_bind_text(u->claude, 1, line, (int)len, SQLITE_STATIC);
+      if (sqlite3_step(u->claude) == SQLITE_ROW) {
+        if (!*project && sqlite3_column_text(u->claude, 10)) {
+          char *p = project_for(db, (const char *)sqlite3_column_text(u->claude, 10));
+          snprintf(project, sizeof project, "%s", p);
+          free(p);
+        }
+        if (sub && !*parent && sqlite3_column_text(u->claude, 11)) snprintf(parent, sizeof parent, "%s", sqlite3_column_text(u->claude, 11));
+        long long t[6];
+        for (int i = 0; i < 6; i++) t[i] = sqlite3_column_int64(u->claude, 3 + i);
+        if (t[1] < 0) t[1] = 0;
+        usage_store(u, "claude", session, *parent ? parent : NULL, (const char *)sqlite3_column_text(u->claude, 0), *project ? project : NULL, a, NULL,
+                    (const char *)sqlite3_column_text(u->claude, 1), (const char *)sqlite3_column_text(u->claude, 9),
+                    (const char *)sqlite3_column_text(u->claude, 2), t);
+      }
+      sqlite3_reset(u->claude);
+      continue;
+    }
+    if (!memmem(line, (size_t)len, "session_meta", 12) && !memmem(line, (size_t)len, "turn_context", 12) && !memmem(line, (size_t)len, "token_count", 11)) continue;
+    sqlite3_bind_text(u->codex, 1, line, (int)len, SQLITE_STATIC);
+    if (sqlite3_step(u->codex) == SQLITE_ROW) {
+#define CX(i) ((const char *)sqlite3_column_text(u->codex, i))
+      const char *type = CX(0), *ptype = CX(1);
+      if (type && !strcmp(type, "session_meta")) {
+        if (CX(3)) snprintf(cs.session, sizeof cs.session, "%s", CX(3));
+        if (CX(4)) {
+          char *p = project_for(db, CX(4));
+          snprintf(cs.project, sizeof cs.project, "%s", p);
+          free(p);
+        }
+      } else if (type && !strcmp(type, "turn_context")) {
+        if (CX(5)) snprintf(cs.model, sizeof cs.model, "%s", CX(5));
+      } else if (ptype && !strcmp(ptype, "token_count") && *cs.session) {
+        const char *at = CX(2);
+        if (CX(9)) snprintf(cs.plan, sizeof cs.plan, "%s", CX(9)); /* the plan comes with the limits; it holds until they say otherwise */
+        if (CX(8)) { /* plan limits, as Codex read them with this response */
+          sqlite3_bind_text(u->limits, 1, CX(8), -1, SQLITE_TRANSIENT);
+          while (sqlite3_step(u->limits) == SQLITE_ROW) {
+            if (sqlite3_column_type(u->limits, 0) == SQLITE_NULL || !at) continue;
+            sqlite3_bind_text(u->lim, 1, a->account, -1, SQLITE_STATIC);
+            sqlite3_bind_int64(u->lim, 2, sqlite3_column_int64(u->limits, 0));
+            sqlite3_bind_text(u->lim, 3, at, -1, SQLITE_STATIC);
+            sqlite3_bind_double(u->lim, 4, sqlite3_column_double(u->limits, 1));
+            if (sqlite3_column_type(u->limits, 2) == SQLITE_NULL) sqlite3_bind_null(u->lim, 5);
+            else sqlite3_bind_int64(u->lim, 5, sqlite3_column_int64(u->limits, 2));
+            sqlite3_bind_text(u->lim, 6, cs.session, -1, SQLITE_STATIC);
+            sqlite3_bind_text(u->lim, 7, "codex", -1, SQLITE_STATIC);
+            sqlite3_step(u->lim);
+            u->readings += sqlite3_changes(db);
+            sqlite3_reset(u->lim);
+          }
+          sqlite3_reset(u->limits);
+        }
+        if (CX(6)) { /* a response: its own counts, or what the running total grew by */
+          long long total[5], last[5];
+          codex_counts(db, CX(6), total);
+          int grew = 0;
+          for (int i = 0; i < 5; i++) grew |= total[i] != cs.total[i];
+          if (grew) {
+            if (CX(7)) codex_counts(db, CX(7), last);
+            else for (int i = 0; i < 5; i++) last[i] = total[i] - cs.total[i];
+            long long t[6] = {last[0] - last[1], last[2], 0, last[1], last[3], last[4]}; /* Codex counts cached input inside input */
+            if (t[0] < 0) t[0] = 0;
+            char msg[64];
+            snprintf(msg, sizeof msg, "t%lld", total[0] + total[3]); /* one response, one running total */
+            usage_store(u, "codex", cs.session, NULL, msg, *cs.project ? cs.project : NULL, a, cs.plan, *cs.model ? cs.model : NULL, NULL, at, t);
+            memcpy(cs.total, total, sizeof total);
+          }
+        }
+      }
+#undef CX
+    }
+    sqlite3_reset(u->codex);
+  }
+  free(line);
+  fclose(f);
+  char hash[17];
+  head_hash(path, pos, hash);
+  buf state = {0};
+  if (codex) {
+    buf_str(&state, "{\"s\":");
+    js_str(&state, cs.session);
+    buf_str(&state, ",\"m\":");
+    js_str(&state, cs.model);
+    buf_str(&state, ",\"p\":");
+    js_str(&state, cs.project);
+    buf_str(&state, ",\"n\":");
+    js_str(&state, cs.plan);
+    buf_fmt(&state, ",\"t\":[%lld,%lld,%lld,%lld,%lld]}", cs.total[0], cs.total[1], cs.total[2], cs.total[3], cs.total[4]);
+  }
+  sqlite3_bind_text(u->setpos, 1, path, -1, SQLITE_STATIC);
+  sqlite3_bind_int64(u->setpos, 2, pos);
+  sqlite3_bind_text(u->setpos, 3, hash, -1, SQLITE_STATIC);
+  if (state.p) sqlite3_bind_text(u->setpos, 4, state.p, -1, SQLITE_STATIC);
+  else sqlite3_bind_null(u->setpos, 4);
+  sqlite3_step(u->setpos);
+  sqlite3_reset(u->setpos);
+  free(state.p);
+  db_exec(db, "COMMIT");
+}
+
+/* Claude Code's config folder for a transcript: the part of its path before /projects/. */
+static int claude_config_of(const char *path, char *out, size_t cap) {
+  const char *p = strstr(path, "/projects/");
+  if (!p) return 0;
+  snprintf(out, cap, "%.*s", (int)(p - path), path);
+  return 1;
+}
+
+/* A Claude Code transcript and its subagents' files, unless its project folder is excluded or
+ * the session forgotten: what ctx keeps out of the archive it keeps out of spend too. */
+static void usage_claude_session(sqlite3 *db, usage_ctx *u, const char *path, const usage_account *a) {
+  const char *base = strrchr(path, '/');
+  if (!base) return;
+  char session[128], folder[1024], dir[4600];
+  snprintf(session, sizeof session, "%.*s", (int)strcspn(base + 1, "."), base + 1);
+  const char *start = base;
+  while (start > path && start[-1] != '/') start--;
+  snprintf(folder, sizeof folder, "%.*s", (int)(base - start), start);
+  if (folder_excluded(db, folder) || session_forgotten(db, session)) return;
+  usage_file(db, u, path, 0, a);
+  snprintf(dir, sizeof dir, "%.*s/%s/subagents", (int)(base - path), path, session);
+  DIR *d = opendir(dir);
+  struct dirent *e;
+  while (d && (e = readdir(d))) {
+    size_t n = strlen(e->d_name);
+    if (n < 7 || strcmp(e->d_name + n - 6, ".jsonl")) continue;
+    char file[4900];
+    snprintf(file, sizeof file, "%s/%s", dir, e->d_name);
+    usage_file(db, u, file, 0, a);
+  }
+  if (d) closedir(d);
+}
+
+/* Every Codex rollout under a folder, at any depth (sessions/YYYY/MM/DD/). */
+static void usage_codex_dir(sqlite3 *db, usage_ctx *u, const char *dir, const usage_account *a, int depth) {
+  DIR *d = opendir(dir);
+  struct dirent *e;
+  while (d && (e = readdir(d))) {
+    if (e->d_name[0] == '.') continue;
+    char path[4600];
+    snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+    struct stat st;
+    if (stat(path, &st) != 0) continue;
+    size_t n = strlen(e->d_name);
+    if (S_ISDIR(st.st_mode) && depth < 6) usage_codex_dir(db, u, path, a, depth + 1);
+    else if (S_ISREG(st.st_mode) && n > 6 && !strcmp(e->d_name + n - 6, ".jsonl")) usage_file(db, u, path, 1, a);
+  }
+  if (d) closedir(d);
+}
+
+/* Everything both harnesses have written since the last collection; the first collects all. */
+static void usage_collect(sqlite3 *db, usage_ctx *u) {
+  const char *cfg = getenv("CLAUDE_CONFIG_DIR"), *home = getenv("HOME"), *cx = getenv("CODEX_HOME");
+  char root[4200];
+  usage_account a;
+  if (cfg && *cfg) snprintf(root, sizeof root, "%s", cfg);
+  else if (home && *home) snprintf(root, sizeof root, "%s/.claude", home);
+  else return;
+  claude_account(db, root, &a);
+  char projects[4300];
+  snprintf(projects, sizeof projects, "%s/projects", root);
+  DIR *top = opendir(projects);
+  struct dirent *p;
+  while (top && (p = readdir(top))) {
+    if (p->d_name[0] == '.') continue;
+    char dir[4600];
+    snprintf(dir, sizeof dir, "%s/%s", projects, p->d_name);
+    DIR *d = opendir(dir);
+    struct dirent *e;
+    while (d && (e = readdir(d))) {
+      size_t n = strlen(e->d_name);
+      if (n < 7 || strcmp(e->d_name + n - 6, ".jsonl")) continue;
+      char path[4900];
+      snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+      usage_claude_session(db, u, path, &a);
+    }
+    if (d) closedir(d);
+  }
+  if (top) closedir(top);
+  if (cx && *cx) snprintf(root, sizeof root, "%s", cx);
+  else if (home && *home) snprintf(root, sizeof root, "%s/.codex", home);
+  else return;
+  codex_account(db, root, &a);
+  char dir[4300];
+  snprintf(dir, sizeof dir, "%s/sessions", root);
+  usage_codex_dir(db, u, dir, &a, 0);
+  snprintf(dir, sizeof dir, "%s/archived_sessions", root);
+  usage_codex_dir(db, u, dir, &a, 0);
+}
+
+/* The archive hook's part: the one transcript it archived, and its subagents. */
+static void usage_after_archive(sqlite3 *db, const char *path) {
+  char config[4200];
+  if (!claude_config_of(path, config, sizeof config)) return;
+  usage_account a;
+  claude_account(db, config, &a);
+  usage_ctx u;
+  usage_prepare(db, &u);
+  usage_claude_session(db, &u, path, &a);
+  usage_finish(&u);
+}
+
+static void usage_scan(sqlite3 *db, int say) {
+  usage_ctx u;
+  usage_prepare(db, &u);
+  usage_collect(db, &u);
+  usage_finish(&u);
+  if (say) printf("%ld responses and %ld limit readings taken in\n", u.rows, u.readings);
+}
+
+/* ctx usage collect: what the harnesses have written since the last collection, now. */
+static int cmd_usage(int argc, char **argv) {
+  if (argc == 1 && !strcmp(argv[0], "collect")) {
+    sqlite3 *db = ctx_open();
+    usage_scan(db, 1);
+    sqlite3_close(db);
+    return 0;
+  }
+  fputs("usage: ctx usage collect\n", stderr);
+  return 2;
+}
+
 static int usage(void) {
   fputs("usage: ctx version\n"
         "       ctx init [--clone URL]\n"
@@ -16467,6 +16999,7 @@ static int usage(void) {
         "       ctx stats [--weeks N] | --hooks [--days N]\n"
         "       ctx repeats [--inline] [--days N] [--limit N]\n"
         "       ctx status [--json]\n"
+        "       ctx usage collect\n"
         "       ctx doctor\n"
         "       ctx remember TEXT [--project P] [--until DATE] [--from TURN]\n"
         "       ctx handoff TEXT... | -\n"
@@ -16533,6 +17066,7 @@ static int run(int argc, char **argv) {
   if (argc >= 2 && !strcmp(argv[1], "rules")) return cmd_rules(argc - 2, argv + 2);
   if (argc >= 2 && !strcmp(argv[1], "page")) return cmd_page(argc - 2, argv + 2);
   if (argc >= 2 && !strcmp(argv[1], "telemetry")) return cmd_telemetry(argc - 2, argv + 2);
+  if (argc >= 2 && !strcmp(argv[1], "usage")) return cmd_usage(argc - 2, argv + 2);
   return usage();
 }
 
