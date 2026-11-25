@@ -429,14 +429,18 @@ CREATE TABLE IF NOT EXISTS ctx_same_fail(
 -- transcripts and subagent files, Codex's rollouts), taken in as ctx reads them. Tokens as the
 -- harness reports them for that one response; for Codex, input excludes the cached part, which is
 -- cache_read. account is the provider and the login address (or "anthropic:api-key" and the like),
--- kept only here. dollars is the response priced, when collected, at the price line dated
+-- kept only here, and NULL when it is not known: a Claude Code response made before ctx first saw
+-- the login that was current when it read it (ctx_account_seen), or a Codex session that does not
+-- name its account. msg is the harness's message id for Claude Code, which a forked or copied
+-- transcript repeats, so a response is one row whichever file it is read from; for Codex it is the
+-- session and its running total. dollars is the response priced, when collected, at the price line dated
 -- price_date; NULL when no line covers the model at that time.
 CREATE TABLE IF NOT EXISTS ctx_usage(
   id         INTEGER PRIMARY KEY,
   harness    TEXT NOT NULL,       -- claude, codex
   session    TEXT NOT NULL,
   parent     TEXT,                -- for a subagent: the session that started it
-  msg        TEXT NOT NULL,       -- the response's id within its session
+  msg        TEXT NOT NULL,       -- the response's id
   project    TEXT,
   account    TEXT,
   plan       TEXT,                -- plan name, or api-key
@@ -452,10 +456,22 @@ CREATE TABLE IF NOT EXISTS ctx_usage(
   reasoning  INTEGER NOT NULL DEFAULT 0, -- part of output, where the harness says
   dollars    REAL,
   price_date TEXT,
-  UNIQUE (harness, session, msg)
+  UNIQUE (harness, msg)
 ) STRICT;
 CREATE INDEX IF NOT EXISTS ctx_usage_at ON ctx_usage(at);
 CREATE INDEX IF NOT EXISTS ctx_usage_session ON ctx_usage(session);
+
+-- The logins ctx has seen in each Claude Code config folder, from when it first saw each. A
+-- response is given the login seen latest at or before its time; one older than every login seen
+-- has none, since .claude.json says only who is logged in now.
+CREATE TABLE IF NOT EXISTS ctx_account_seen(
+  config     TEXT NOT NULL,       -- the config folder
+  first_seen TEXT NOT NULL,       -- ISO 8601, UTC
+  account    TEXT NOT NULL,
+  plan       TEXT,
+  billing    TEXT,
+  PRIMARY KEY (config, first_seen)
+) STRICT, WITHOUT ROWID;
 
 -- How far each session record file has been read for ctx_usage: the byte after the last whole
 -- line, a hash of the file's start to notice a replaced file, and what a Codex rollout said

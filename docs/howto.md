@@ -1279,28 +1279,35 @@ keep from telling it again. Which problems a session has heard of is kept beside
 ctx keeps one row per model response (`ctx_usage`), read from the records each harness already
 writes, at the same moments ctx reads sessions: the archive hook takes in the transcript it
 archives and its subagents' files, and the hourly scan takes in everything else. Each file is read
-from where the last read stopped, so a response is counted once. The first scan collects every
+from where the last read stopped, a big file in batches of 8 MB so the hooks are never kept
+waiting, and a response is one row however many files repeat it (Claude Code's message id; a
+forked or copied transcript repeats its parent's). The first scan collects every
 record the harnesses still keep; `ctx usage collect` does it now.
 
 ```sh
-ctx usage collect     # 1240 responses and 85 limit readings taken in
+ctx usage collect     # 1240 responses (31 with no price line) and 85 limit readings taken in
 ```
 
 | Harness | Records | Counts |
 |---|---|---|
-| Claude Code | `CONFIG/projects/PROJECT/SESSION.jsonl`, and a subagent's in `SESSION/subagents/agent-*.jsonl` | each assistant record's `message.usage`, once per message id: input, cache writes (1-hour and 5-minute), cache reads, output, and thinking tokens where given |
-| Codex | `CODEX_HOME/sessions/**/*.jsonl` and `archived_sessions` | each `token_count` event's `last_token_usage`, or the growth of `total_token_usage`; input there includes cached input, which ctx keeps apart as cache reads; reasoning tokens are part of output |
+| Claude Code | `CONFIG/projects/PROJECT/SESSION.jsonl`, and a subagent's in `SESSION/subagents/agent-*.jsonl` | each assistant record's `message.usage`, once per message id: input, cache writes (1-hour and 5-minute), cache reads, output, and thinking tokens where given; a response retried on another model counts every attempt in `usage.iterations` |
+| Codex | `CODEX_HOME/sessions/**/*.jsonl` and `archived_sessions` | each `token_count` event's `last_token_usage`, or the growth of `total_token_usage`; input there includes cached input, which ctx keeps apart as cache reads; reasoning tokens are part of output. The first `session_meta` is the rollout's own thread; a subagent's names its parent (`parent_thread_id` or `forked_from_id`) |
 
 A subagent's responses keep its own session and name its parent, so reports can count them under
 the session that started it. A row also has the project (from the working directory, as for
 turns), the exact model, the time, and the account: the provider and the address the harness is
-logged in with, read from Claude Code's `.claude.json` (`oauthAccount`: address, plan name and
-billing type; `~/.claude.json` for the default config folder) or Codex's `auth.json` (the address
-in its login token), with Codex's plan from its rate-limit readings. With no login there, the
-account is `anthropic:api-key` or `openai:api-key`. The account is the login when ctx reads the
-records, so responses made under an earlier login are counted under the current one. Addresses
-stay in the local database and in `ctx usage` output on this machine; nothing is sent anywhere.
-Projects excluded from the archive, and sessions forgotten, are left out of spend too.
+logged in with. Claude Code's `.claude.json` (`oauthAccount`: address, plan name and billing type;
+`~/.claude.json` for the default config folder) says only who is logged in now, so ctx records
+each login it sees in a config folder with when it first saw it (`ctx_account_seen`), and gives a
+response the login seen latest at or before its time. A response older than every login seen has
+no account ("unknown"), which is most of the history a first collection finds. A Codex session
+names the account it was made in (`creator_account_id`); when that is the login in `auth.json`,
+the account is that login's address, otherwise `openai:` and the account id, and Codex's plan comes
+from its rate-limit readings. With no login, the account is `anthropic:api-key` or
+`openai:api-key`. Addresses stay in the local database and in `ctx usage` output on this machine;
+nothing is sent anywhere. Folders excluded from the archive (for Codex, by the session's working
+directory) and forgotten sessions are left out of spend too, and `ctx forget` removes a session's
+spend and its subagents'. The places of files that no longer exist are let go.
 
 Codex writes its plan's limits into its records (`rate_limits`: share used, window, reset time,
 plan); each reading that differs from the one before it goes into `ctx_limit`.
@@ -1318,9 +1325,10 @@ claude-opus-5-5  2026-11-03  4.00  5.00  8.00  0.20  20.00
 
 A row keeps the dollars and the date of the line it was priced by, so a later price never changes
 past spend. A response with no line for its model at its date (a model not listed, a response
-older than the model's first line, or a fast-mode response, priced as `MODEL@fast`) has no dollars,
-and reports say so rather than guess. The built-in list leaves out what its source does not settle:
-Claude Haiku 5.5, whose price depends on prompt length, fast mode, and every OpenAI model.
+older than the model's first line, or a fast-mode response with no `MODEL@fast` line) has no
+dollars, and reports say so rather than guess; `ctx usage collect` says how many it took in. The
+built-in list leaves out what its source does not settle: Claude Haiku 5.5, whose price depends on
+prompt length, fast mode on models other than Claude Opus 5.5, and every OpenAI model.
 
 **Reports.** `ctx usage` shows spend over a recent window, most first, for an agent balancing
 several workers as much as for you:
