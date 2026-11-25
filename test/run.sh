@@ -4550,6 +4550,23 @@ CLAUDE_CONFIG_DIR="$U2" CODEX_HOME="$T/none" "$CTX" usage collect >/dev/null
 "$CTX" exclude --remove /w/kite >/dev/null
 CLAUDE_CONFIG_DIR="$U2" CODEX_HOME="$T/none" "$CTX" usage collect >/dev/null
 [ "$(U "SELECT count(*) FROM ctx_usage WHERE msg = 'kite-1'")" = 1 ] || fail "and undoing it brings the spend back"
+# A collection given little time stops where it can save its place; the next one goes on from
+# there, and between them every response is taken in once.
+python3 - "$U2/projects/-w-owl/t-cap.jsonl" <<'PY'
+import json, sys
+pad = "z" * 6000
+with open(sys.argv[1], "w") as f:
+    for i in range(4000):
+        f.write(json.dumps({"type": "assistant", "timestamp": "2026-11-24T14:00:00Z", "sessionId": "t-cap", "cwd": "/w/owl", "pad": pad, "message": {"id": "cap-%d" % i, "model": "claude-opus-5-5", "usage": {"input_tokens": 1, "output_tokens": 1}}}) + "\n")
+PY
+CLAUDE_CONFIG_DIR="$U2" CODEX_HOME="$T/none" "$CTX" usage collect --for 0.05 > "$T/cap1.out"
+grep -q 'out of time, the rest at the next collection$' "$T/cap1.out" || fail "a capped collection says it stopped: $(cat "$T/cap1.out")"
+FIRST=$(U "SELECT count(*) FROM ctx_usage WHERE session = 't-cap'")
+[ "$FIRST" -lt 4000 ] || fail "the cap stopped the read part way: $FIRST"
+CLAUDE_CONFIG_DIR="$U2" CODEX_HOME="$T/none" "$CTX" usage collect >/dev/null
+[ "$(U "SELECT count(*), count(DISTINCT msg) FROM ctx_usage WHERE session = 't-cap'")" = "4000 4000" ] || fail "the next collection goes on, with no loss and nothing twice"
+rm "$U2/projects/-w-owl/t-cap.jsonl"
+
 # A hook's write gets in while a big file is read.
 python3 - "$U2/projects/-w-owl/t-huge.jsonl" <<'PY'
 import json, sys

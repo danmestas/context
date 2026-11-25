@@ -1255,7 +1255,11 @@ static int session_forgotten(sqlite3 *db, const char *session) {
 }
 
 static void usage_after_archive(sqlite3 *db, const char *path);
-static void usage_scan(sqlite3 *db, int say);
+/* A scan's share of time for usage: its lock keeps the archive waiting, so a first collection of
+ * a large history is spread over several scans, each going on where the last stopped. */
+#define USAGE_SCAN_MS (180 * 1000)
+
+static void usage_scan(sqlite3 *db, int say, long budget_ms);
 
 static int cmd_archive(const char *path) {
   struct stat st;
@@ -4405,7 +4409,7 @@ static int cmd_scan(const char *root_arg) {
     }
   }
   if (!root_arg || strcmp(root_arg, "--pic")) findings_run(db); /* not for a pic hook's quick scan */
-  if (!root_arg) usage_scan(db, 0); /* every harness's new responses; a scan of one folder is about turns */
+  if (!root_arg) usage_scan(db, 0, USAGE_SCAN_MS); /* every harness's new responses; a scan of one folder is about turns */
   sqlite3_close(db);
   printf("%ld transcripts read\n", ran);
   if (doc_changes) printf("%ld documents changed\n", doc_changes);
@@ -16709,7 +16713,19 @@ static const usage_account *login_at(const usage_logins *l, const char *at) {
 typedef struct {
   sqlite3_stmt *claude, *codex, *limits, *ins, *lim, *pos, *setpos, *tries;
   long rows, unpriced, readings;
+  struct timespec until; /* when to stop: a scan holds the archive's lock, so it reads for a while and leaves the rest */
+  int bounded, stopped;
 } usage_ctx;
+
+/* Whether the time given to this collection is up; once it is, every read stops at the next
+ * point it can save its place. */
+static int usage_out_of_time(usage_ctx *u) {
+  if (!u->bounded || u->stopped) return u->stopped;
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  u->stopped = now.tv_sec > u->until.tv_sec || (now.tv_sec == u->until.tv_sec && now.tv_nsec >= u->until.tv_nsec);
+  return u->stopped;
+}
 
 static void usage_prepare(sqlite3 *db, usage_ctx *u) {
   memset(u, 0, sizeof *u);
@@ -16863,7 +16879,7 @@ static void usage_mark(sqlite3 *db, usage_ctx *u, const char *path, long long po
  * a session names as its creator when the ids match. */
 static void usage_file(sqlite3 *db, usage_ctx *u, const char *path, int codex, const usage_logins *logins, const usage_account *login) {
   struct stat st;
-  if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) return;
+  if (usage_out_of_time(u) || stat(path, &st) != 0 || !S_ISREG(st.st_mode)) return;
   long long off = 0;
   codex_state cs = {0};
   sqlite3_bind_text(u->pos, 1, path, -1, SQLITE_STATIC);
@@ -16934,6 +16950,11 @@ static void usage_file(sqlite3 *db, usage_ctx *u, const char *path, int codex, c
     if (pos - batch >= BATCH_BYTES || ms >= 25) { /* a hook waits at most 200 ms: let it in between batches */
       usage_mark(db, u, path, pos - len, codex, &cs);
       db_exec(db, "COMMIT");
+      if (usage_out_of_time(u)) { /* the place is saved before this line: the next collection starts there */
+        free(line);
+        fclose(f);
+        return;
+      }
       usleep(50000); /* longer than SQLite's busy handler sleeps at a time, so a waiting writer sees it */
       db_exec(db, "BEGIN IMMEDIATE");
       batch = pos;
@@ -17182,23 +17203,34 @@ static void usage_after_archive(sqlite3 *db, const char *path) {
   free(logins.p);
 }
 
-static void usage_scan(sqlite3 *db, int say) {
+static void usage_scan(sqlite3 *db, int say, long budget_ms) {
   usage_ctx u;
   usage_prepare(db, &u);
+  if (budget_ms > 0) {
+    clock_gettime(CLOCK_MONOTONIC, &u.until);
+    u.until.tv_sec += budget_ms / 1000;
+    u.until.tv_nsec += (budget_ms % 1000) * 1000000;
+    if (u.until.tv_nsec >= 1000000000) {
+      u.until.tv_sec++;
+      u.until.tv_nsec -= 1000000000;
+    }
+    u.bounded = 1;
+  }
   usage_collect(db, &u);
   usage_finish(&u);
-  if (say) printf("%ld responses (%ld with no price line) and %ld limit readings taken in\n", u.rows, u.unpriced, u.readings);
+  if (say) printf("%ld responses (%ld with no price line) and %ld limit readings taken in%s\n", u.rows, u.unpriced, u.readings,
+                  u.stopped ? "; out of time, the rest at the next collection" : "");
 }
 
 /* ctx usage collect: what the harnesses have written since the last collection, now. */
 static int cmd_usage(int argc, char **argv) {
-  if (argc == 1 && !strcmp(argv[0], "collect")) {
+  if (argc >= 1 && !strcmp(argv[0], "collect") && (argc == 1 || (argc == 3 && !strcmp(argv[1], "--for") && atof(argv[2]) > 0))) {
     sqlite3 *db = ctx_open();
-    usage_scan(db, 1);
+    usage_scan(db, 1, argc == 3 ? (long)(atof(argv[2]) * 1000) : 0); /* by hand, to the end unless told otherwise */
     sqlite3_close(db);
     return 0;
   }
-  fputs("usage: ctx usage collect\n", stderr);
+  fputs("usage: ctx usage collect [--for SECONDS]\n", stderr);
   return 2;
 }
 
@@ -17232,7 +17264,7 @@ static int usage(void) {
         "       ctx stats [--weeks N] | --hooks [--days N]\n"
         "       ctx repeats [--inline] [--days N] [--limit N]\n"
         "       ctx status [--json]\n"
-        "       ctx usage collect\n"
+        "       ctx usage collect [--for SECONDS]\n"
         "       ctx doctor\n"
         "       ctx remember TEXT [--project P] [--until DATE] [--from TURN]\n"
         "       ctx handoff TEXT... | -\n"

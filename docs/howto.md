@@ -1282,10 +1282,14 @@ archives and its subagents' files, and the hourly scan takes in everything else.
 from where the last read stopped, a big file in batches of 8 MB so the hooks are never kept
 waiting, and a response is one row however many files repeat it (Claude Code's message id; a
 forked or copied transcript repeats its parent's). The first scan collects every
-record the harnesses still keep; `ctx usage collect` does it now.
+record the harnesses still keep. The hourly scan holds the archive's lock, so it spends at most
+3 minutes on usage and leaves the rest to the next scan, which goes on from the same places; a long
+history is collected over a few hours. `ctx usage collect` does it now and goes to the end, or for
+as long as `--for SECONDS` says.
 
 ```sh
 ctx usage collect     # 1240 responses (31 with no price line) and 85 limit readings taken in
+ctx usage collect --for 60    # at most a minute; the next collection goes on from there
 ```
 
 | Harness | Records | Counts |
