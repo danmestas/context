@@ -1485,6 +1485,7 @@ elif "zinc" in prompt: say(verdict="same", keep="/no/such/rule.md")
 elif "hinge" in prompt: say(verdict="same", keep=k("hinge-a"), drop=["/no/such/rule.md"])
 elif "alpha" in prompt: say(verdict="same", keep=k("alpha-a"))
 elif "quartz" in prompt: time.sleep(1); say(verdict="same", keep=k("quartz-a"))
+elif "koi" in prompt: say(verdict="same", keep=k("koi-b"))
 else: say(verdict="distinct")
 PY
 "$CTX" rules auto "python3 $SJ2 $T/samejudge2.log" >/dev/null
@@ -1519,6 +1520,19 @@ P2=$!
 wait $P1 || true; wait $P2 || true
 [ "$("$CTX" sql "SELECT count(*) FROM ctx_same_judged WHERE members LIKE '%quartz-a%'")" = 1 ] || fail "two runs at once decide a group once"
 [ "$("$CTX" sql "SELECT count(*) FROM ctx_doc WHERE kind = 'rule' AND project = '*' AND status IS NULL AND title = 'Polish the quartz lens'")" = 1 ] || fail "two runs at once make one global rule: $("$CTX" sql "SELECT name, status FROM ctx_doc WHERE title = 'Polish the quartz lens'")"
+# A reason line of any length comes back whole on undo.
+rdmem plume koi-a "Feed the koi slowly" "Feed the koi slowly."
+rdmem quill koi-b "Feed the koi slowly daily" "Feed the koi slowly, daily."
+"$CTX" rules import >/dev/null
+"$CTX" rules retire koi-a.md --reason "test" >/dev/null && "$CTX" rules restore koi-a.md >/dev/null
+LONG=$(python3 -c 'print("kept on purpose " * 80)')
+"$CTX" sql "SELECT fsl_technote_save(replace(CAST(fsl_technote(technote) AS TEXT), 'reason: restored', 'reason: $LONG'), json_object('id', technote)) FROM ctx_rule WHERE key = '$(rdkey plume koi-a)'" >/dev/null
+NOTE_K=$(rdnote "$(rdkey plume koi-a)")
+[ "$(echo "$NOTE_K" | grep -c '^reason: kept on purpose')" = 1 ] && [ ${#NOTE_K} -gt 1300 ] || fail "the test needs a long reason line: $NOTE_K"
+"$CTX" rules same --judge >/dev/null 2>&1 || true
+[ "$(rdstatus plume koi-a)" = replaced ] || fail "the koi rules are made global"
+"$CTX" rules undo "$("$CTX" sql "SELECT 'g' || id FROM ctx_same_judged WHERE members LIKE '%koi-a%'")" >/dev/null
+[ "$(rdnote "$(rdkey plume koi-a)")" = "$NOTE_K" ] || fail "undo restores a long reason line whole: $(rdnote "$(rdkey plume koi-a)" | grep '^reason' | wc -c)"
 # Measure: one script reports, for an archive, what each part would change, changing nothing.
 CTX="$CTX" sh tools/rule_redundancy.sh > "$T/rdmeasure.txt" || fail "the measure script runs: $(cat "$T/rdmeasure.txt")"
 grep -q '^active rules: [0-9]' "$T/rdmeasure.txt" && grep -q '^identical copies to collapse: 0' "$T/rdmeasure.txt" && grep -q '^rules to send to the covered check: [0-9]' "$T/rdmeasure.txt" && grep -q '^groups of the same rule in several projects: [0-9]' "$T/rdmeasure.txt" || fail "the measure reports four numbers: $(cat "$T/rdmeasure.txt")"
