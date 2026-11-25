@@ -2764,6 +2764,43 @@ SUM=$(cksum "$P1" "$P2"); MT=$(ls -l "$P1" "$P2")
 [ ! -s "$T/roll2.out" ] || fail "a second roll writes nothing: $(cat "$T/roll2.out")"
 [ "$SUM" = "$(cksum "$P1" "$P2")" ] && [ "$MT" = "$(ls -l "$P1" "$P2")" ] || fail "an existing day is not rewritten"
 [ -z "$(find "$TEL" -name '.tmp*')" ] || fail "no temp files left"
+# A day is rolled from the calls ctx took in, not from the log: a day longer than the log holds,
+# split by two rotations, is written whole, once it has been over for a minute.
+export CTX_DB="$T/roll2/ctx.sqlite"
+mkdir -p "$T/roll2"
+"$CTX" init >/dev/null
+at() { python3 -c 'import calendar, sys, time; print(calendar.timegm(time.strptime(sys.argv[1], "%Y-%m-%d %H:%M:%S")))' "$1"; }
+hours() { for h in "$@"; do t=$(at "2026-11-20 $h:00:00"); printf 'B %s %s gate\nE %s %s gate 4 0 denied 120 claude sess-%s\n' "$t" "$h" "$t" "$h" "$h" >> "$CTX_DB.calls"; done; }
+hours 01 02 03 04 05
+printf 'B %s 600 rules-offer\n' "$(at '2026-11-20 05:59:50')" >> "$CTX_DB.calls"
+CTX_NOW=2026-11-20T06:00:00Z "$CTX" telemetry roll > "$T/r2a.out"
+[ ! -s "$T/r2a.out" ] || fail "a day not over is not rolled: $(cat "$T/r2a.out")"
+mv "$CTX_DB.calls" "$CTX_DB.calls.1"
+hours 10 11 12 13 14 15
+mv "$CTX_DB.calls" "$CTX_DB.calls.1"
+hours 20 21 22 23
+printf 'E %s 600 rules-offer 20000 0 offered 512 pic s-600\nB %s 700 gate\n' "$(at '2026-11-20 06:00:10')" "$(at '2026-11-20 22:30:00')" >> "$CTX_DB.calls"
+grep -q ' 01 gate' "$CTX_DB.calls" "$CTX_DB.calls.1" && fail "the test's log no longer holds the day's start"
+CTX_NOW=2026-11-21T00:00:30Z "$CTX" telemetry roll > "$T/r2b.out"
+[ ! -s "$T/r2b.out" ] || fail "a day over for less than a minute waits: $(cat "$T/r2b.out")"
+CTX_NOW=2026-11-21T01:00:00Z "$CTX" telemetry roll > "$T/r2c.out"
+grep -q '^2026-11-20  17 calls  ' "$T/r2c.out" || fail "the whole day is written, the rotated hours too: $(cat "$T/r2c.out")"
+[ "$("$CTX" sql "SELECT ms, exit, outcome, bytes, harness, session FROM ctx_call WHERE pid = 600" | tr '\t' ' ')" = "20000 0 offered 512 pic s-600" ] || fail "an end line's details are kept: $("$CTX" sql "SELECT * FROM ctx_call WHERE pid = 600")"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_call WHERE pid = 700 AND ms IS NULL")" = 1 ] || fail "a start with no end is kept"
+CTX_NOW=2026-11-21T02:00:00Z "$CTX" telemetry roll > "$T/r2d.out"
+[ ! -s "$T/r2d.out" ] || fail "a rolled day is not written again"
+if [ -n "$DUCK" ]; then
+  R2="$T/roll2/telemetry/calls/date=2026-11-20/calls.parquet"
+  GOT=$("$DUCK" -csv -noheader -nullvalue "" -c "SELECT name, pid, ms, ended, \"exit\", outcome, bytes_out, harness, session FROM read_parquet('$R2') WHERE pid IN (1, 600, 700) ORDER BY ts")
+  WANT="gate,1,4,true,0,denied,120,claude,sess-01
+rules-offer,600,20000,true,0,offered,512,pic,s-600
+gate,700,,false,,,,,"
+  [ "$GOT" = "$WANT" ] || fail "rows from ctx_call have the columns the log gave: $GOT"
+else
+  echo "SKIP: duckdb not found; rolled-from-calls contents not checked" >&2
+fi
+export CTX_DB="$T/roll/ctx.sqlite"
+
 # ctx telemetry page: charts from the Parquet files, queried through the duckdb program.
 PGMIN="$T/minpath"; mkdir -p "$PGMIN"
 if CTX_DUCKDB="$T/no-such-duckdb" PATH="$PGMIN" "$CTX" telemetry page > "$T/pg.out" 2> "$T/pg.err"; then fail "telemetry page without duckdb fails"; fi
@@ -3508,7 +3545,7 @@ CLAUDE_CONFIG_DIR="$XC" "$CTX" scan >/dev/null
 "$CTX" forget 5e550000-0000-0000-0000-00000000000 2>/dev/null && fail "an ambiguous prefix is refused"
 export CTX_DB="$T/rebuild.sqlite"
 "$CTX" init >/dev/null
-[ "$("$CTX" sql "PRAGMA user_version")" = 19 ] || fail "a new file is at the current version"
+[ "$("$CTX" sql "PRAGMA user_version")" = 20 ] || fail "a new file is at the current version"
 [ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 7 ] || fail "derived version recorded"
 printf '{"uuid":"rb-1","timestamp":"2026-09-01T10:00:00Z","cwd":"/w/rb","message":{"role":"user","content":"the capybara rollout"}}\n{"uuid":"rb-2","timestamp":"2026-09-01T10:00:05Z","cwd":"/w/rb","message":{"role":"assistant","content":"rolled out the capybara"}}\n' > "$T/ab12cd99-rb.jsonl"
 "$CTX" archive "$T/ab12cd99-rb.jsonl" >/dev/null
@@ -3530,7 +3567,7 @@ grep -q 'rebuilding it once' "$T/rb.err" || fail "an old index is rebuilt on ope
 "$CTX" sql "DROP TABLE ctx_meta" >/dev/null; "$CTX" sql "PRAGMA user_version = 1" >/dev/null
 "$CTX" search --all capybara 2>"$T/rb3.err" | grep -q capybara || fail "an unversioned file still works"
 [ -s "$T/rb3.err" ] && fail "an unversioned file is upgraded without a rebuild"
-[ "$("$CTX" sql "PRAGMA user_version")" = 19 ] || fail "and is marked current"
+[ "$("$CTX" sql "PRAGMA user_version")" = 20 ] || fail "and is marked current"
 
 # Docs tickets: every documentation problem ctx finds becomes a ticket, once each, without the
 # person's sign-off, and the overview shows who holds it and carries a prod to that session.
