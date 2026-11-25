@@ -1455,6 +1455,70 @@ OID=$("$CTX" sql "SELECT id FROM ctx_same_judged WHERE members LIKE '%owl-a%'")
 printf 'undo decision g%s\n' "$OID" > "$T/sj.plan"
 "$CTX" page apply --yes "$T/sj.plan" >/dev/null || fail "the page's undo reaches a group decision"
 "$CTX" rules same | grep -q 'owl-a' || fail "an undone distinct is offered again"
+# The judge's answer is checked, its failures are counted, long rules are not sent cut, a chain
+# of titles is not made one rule, and an undo puts each rule back exactly.
+rdmem plume zinc-a "Polish the zinc bell" "Polish the zinc bell."
+rdmem quill zinc-b "Polish the zinc bell daily" "Polish the zinc bell, daily."
+rdmem plume hinge-a "Oil the tin hinge" "Oil the tin hinge."
+rdmem quill hinge-b "Oil the tin hinge often" "Oil the tin hinge often."
+rdmem plume slate-a "Sweep the slate roof" "Sweep the slate roof. $(python3 -c 'print("Mind the gutters. " * 300)')"
+rdmem quill slate-b "Sweep the slate roof weekly" "Sweep the slate roof weekly."
+rdmem plume brass-a "Wind the brass clock" "Wind the brass clock."
+rdmem quill brass-b "Wind the brass clock nightly" "Wind the brass clock nightly."
+rdmem plume alpha-a "Alpha bravo charlie delta" "Alpha bravo charlie delta."
+rdmem quill alpha-b "Charlie delta echo foxtrot" "Charlie delta echo foxtrot."
+rdmem quill alpha-c "Echo foxtrot golf hotel" "Echo foxtrot golf hotel."
+"$CTX" rules import >/dev/null
+"$CTX" rules retire alpha-a.md --reason "test" >/dev/null && "$CTX" rules restore alpha-a.md >/dev/null
+NOTE_A=$(rdnote "$(rdkey plume alpha-a)"); NOTE_B=$(rdnote "$(rdkey quill alpha-b)")
+echo "$NOTE_A" | grep -qx 'reason: restored' || fail "the test needs a member with a reason line: $NOTE_A"
+SJ2="$T/samejudge2.py"
+cat > "$SJ2" <<'PY'
+import json, re, sys, time
+prompt = sys.stdin.read()
+open(sys.argv[1], "a").write(prompt + "\n=====\n")
+keys = re.findall(r"^- key: (.*)$", prompt, re.M)
+k = lambda word: [x for x in keys if word in x][0]
+say = lambda **a: print(json.dumps(dict({"drop": [], "why": "Judged."}, **a)))
+if "brass" in prompt: sys.exit(3)
+elif "zinc" in prompt: say(verdict="same", keep="/no/such/rule.md")
+elif "hinge" in prompt: say(verdict="same", keep=k("hinge-a"), drop=["/no/such/rule.md"])
+elif "alpha" in prompt: say(verdict="same", keep=k("alpha-a"))
+elif "quartz" in prompt: time.sleep(1); say(verdict="same", keep=k("quartz-a"))
+else: say(verdict="distinct")
+PY
+"$CTX" rules auto "python3 $SJ2 $T/samejudge2.log" >/dev/null
+"$CTX" rules same --judge > "$T/sj3.out" 2>"$T/sj3.err" && fail "a run with a failed group says so in its exit status"
+grep -q '^4 groups of the same rule judged automatically: 1 made global, 0 not the same, 3 left for you' "$T/sj3.out" || fail "one failure stops no other group: $(cat "$T/sj3.out")"
+[ "$("$CTX" sql "SELECT fails FROM ctx_same_fail WHERE sig IN (SELECT sig FROM ctx_same_fail)")" = 1 ] || fail "the failure is counted"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_same_judged WHERE members LIKE '%brass-a%'")" = 0 ] || fail "one failure leaves the group to try again"
+judged() { "$CTX" sql "SELECT decision || ': ' || why FROM ctx_same_judged WHERE members LIKE '%$1%'"; }
+judged zinc-a | grep -q "^left: Left for you: the words it chose to keep are not a member's" || fail "a keep that is no member: $(judged zinc-a)"
+judged hinge-a | grep -q '^left: Left for you: it dropped a key that is not in the group' || fail "a drop that is no member: $(judged hinge-a)"
+judged slate-a | grep -q '^left: Left for you: slate-a.md is longer than 4096 bytes' || fail "a member too long to send whole: $(judged slate-a)"
+grep -q 'slate' "$T/samejudge2.log" && fail "a group with a member too long is not sent"
+[ "$(rdstatus plume zinc-a) $(rdstatus quill hinge-b) $(rdstatus plume slate-a)" = "active active active" ] || fail "groups left for the person change nothing"
+grep -q 'Mind the gutters' "$T/samejudge2.log" && fail "nothing of the long rule went out"
+[ "$(rdstatus plume alpha-a) $(rdstatus quill alpha-b) $(rdstatus quill alpha-c)" = "replaced replaced active" ] || fail "a member joined only through another stays in its project"
+judged alpha-a | grep -q 'left in its project' || fail "the decision says one was left: $(judged alpha-a)"
+AK=$("$CTX" sql "SELECT made FROM ctx_same_judged WHERE members LIKE '%alpha-a%'")
+[ "$(rdnote "$AK" | grep -c 'Alpha bravo charlie delta.')" = 1 ] || fail "the global rule is the kept text, whole"
+"$CTX" rules same --judge >/dev/null 2>&1 || true
+judged brass-a | grep -q '^left: Left for you: the judge failed on it twice' || fail "a group that fails twice is left: $(judged brass-a)"
+AG=$("$CTX" sql "SELECT 'g' || id FROM ctx_same_judged WHERE members LIKE '%alpha-a%'")
+"$CTX" rules undo "$AG" >/dev/null
+[ "$(rdnote "$(rdkey plume alpha-a)")" = "$NOTE_A" ] && [ "$(rdnote "$(rdkey quill alpha-b)")" = "$NOTE_B" ] || fail "undo puts each technote back as it was: $(rdnote "$(rdkey plume alpha-a)")"
+# Two runs at once, one by hand and one from the scan: the group is decided once.
+rdmem plume quartz-a "Polish the quartz lens" "Polish the quartz lens."
+rdmem quill quartz-b "Polish the quartz lens gently" "Polish the quartz lens gently."
+"$CTX" rules import >/dev/null
+"$CTX" rules same --judge >/dev/null 2>&1 &
+P1=$!
+"$CTX" rules same-quiet >/dev/null 2>&1 &
+P2=$!
+wait $P1 || true; wait $P2 || true
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_same_judged WHERE members LIKE '%quartz-a%'")" = 1 ] || fail "two runs at once decide a group once"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_doc WHERE kind = 'rule' AND project = '*' AND status IS NULL AND title = 'Polish the quartz lens'")" = 1 ] || fail "two runs at once make one global rule: $("$CTX" sql "SELECT name, status FROM ctx_doc WHERE title = 'Polish the quartz lens'")"
 # Measure: one script reports, for an archive, what each part would change, changing nothing.
 CTX="$CTX" sh tools/rule_redundancy.sh > "$T/rdmeasure.txt" || fail "the measure script runs: $(cat "$T/rdmeasure.txt")"
 grep -q '^active rules: [0-9]' "$T/rdmeasure.txt" && grep -q '^identical copies to collapse: 0' "$T/rdmeasure.txt" && grep -q '^rules to send to the covered check: [0-9]' "$T/rdmeasure.txt" && grep -q '^groups of the same rule in several projects: [0-9]' "$T/rdmeasure.txt" || fail "the measure reports four numbers: $(cat "$T/rdmeasure.txt")"

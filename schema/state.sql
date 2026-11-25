@@ -411,8 +411,16 @@ CREATE TABLE IF NOT EXISTS ctx_same_judged(
   keys     TEXT NOT NULL,         -- JSON keys acted on; for global the kept one first
   acted    TEXT,                  -- ctx_rule_same.sig of those keys
   made     TEXT,                  -- for global: the new rule's key
+  prior    TEXT,                  -- for global: JSON [{"k", "status", "by", "reason"}], each replaced rule as it was
   why      TEXT NOT NULL,
   model    TEXT NOT NULL,
   at       TEXT NOT NULL,
   undone   INTEGER NOT NULL DEFAULT 0
 ) STRICT;
+
+-- Groups the automatic judge's command failed on (non-zero exit or out of time), by signature. At
+-- two, the group is recorded as left for the person, so one group cannot hold up the rest.
+CREATE TABLE IF NOT EXISTS ctx_same_fail(
+  sig   TEXT PRIMARY KEY,
+  fails INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
