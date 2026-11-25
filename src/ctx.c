@@ -4827,6 +4827,25 @@ static char *ticket_new(sqlite3 *db, const char *title, const char *type, const 
 }
 
 /* The claim ctx recorded for a ticket by its holder's gate runs, if any. */
+/* The notes added with ctx ticket note, oldest first, for ctx ticket show. */
+static void ticket_show_notes(sqlite3 *db, const char *ticket) {
+  sqlite3_stmt *q = NULL;
+  if (sqlite3_prepare_v2(db, "SELECT strftime('%Y-%m-%d %H:%M', c.tkt_mtime), coalesce(c.login, ''), replace(c.icomment, char(10), char(10) || '  ') FROM fslrepo_me_ticketchng c"
+                             " JOIN fslrepo_me_ticket t ON t.tkt_id = c.tkt_id WHERE t.tkt_uuid = ?1 AND coalesce(c.icomment, '') <> ''"
+                             " ORDER BY c.tkt_mtime, c.rowid", -1, &q, NULL) != SQLITE_OK) {
+    sqlite3_finalize(q);
+    return;
+  }
+  sqlite3_bind_text(q, 1, ticket, -1, SQLITE_STATIC);
+  int first = 1;
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    if (first) printf("\nnotes:\n");
+    first = 0;
+    printf("- %s%s%s: %s\n", sqlite3_column_text(q, 0), *sqlite3_column_text(q, 1) ? " " : "", sqlite3_column_text(q, 1), sqlite3_column_text(q, 2));
+  }
+  sqlite3_finalize(q);
+}
+
 static void ticket_show_claim(sqlite3 *db, const char *ticket) {
   sqlite3_stmt *q = db_prepare(db, "SELECT session, claimed_at, seen_at FROM ctx_ticket_claim WHERE ticket = ?1");
   sqlite3_bind_text(q, 1, ticket, -1, SQLITE_STATIC);
@@ -5046,6 +5065,21 @@ static int ticket_offer(void) {
     buf_str(&all, handoff);
     free(handoff);
   }
+  if (ok && *session && sqlite3_prepare_v2(db, /* the tickets this session holds, when it resumes or is compacted */
+          "SELECT substr(t.tkt_uuid, 1, 10), t.title FROM ctx_ticket_claim c JOIN fslrepo_me_ticket t ON t.tkt_uuid = c.ticket"
+          " WHERE c.session = ?1 AND t.status = 'Claimed' ORDER BY c.claimed_at LIMIT 5", -1, &q, NULL) == SQLITE_OK) {
+    sqlite3_bind_text(q, 1, session, -1, SQLITE_STATIC);
+    buf held = {0};
+    while (sqlite3_step(q) == SQLITE_ROW) buf_fmt(&held, "\n- %s %s", sqlite3_column_text(q, 0), sqlite3_column_text(q, 1));
+    sqlite3_finalize(q);
+    q = NULL;
+    if (held.n) {
+      buf_str(&all, all.n ? "\n\n" : "");
+      buf_str(&all, "Tickets this session has claimed and not finished, as a record (`ctx ticket show ID` for its notes):");
+      buf_add(&all, held.p, held.n);
+    }
+    free(held.p);
+  }
   if (ok && sqlite3_prepare_v2(db,
           "SELECT substr(t.tkt_uuid, 1, 10), t.type, t.title FROM fslrepo_me_ticket t WHERE t.subsystem = ?1 AND" READY_TICKET
           " AND substr(t.title, 1, 6) <> 'Docs: ' ORDER BY t.tkt_ctime LIMIT 5", -1, &q, NULL) == SQLITE_OK) { /* docs tickets have their own list */
@@ -5104,8 +5138,9 @@ static int ticket_offer(void) {
 
 static int ticket_usage(void) {
   fputs("usage: ctx ticket new TITLE [--type T] [--body TEXT] [--acceptance TEXT] [--blocked-by ID]... [--project P] [--conflict ID]\n"
-        "       ctx ticket ready [--all]\n"
+        "       ctx ticket ready [--all | --project P[,P...]] [--short]\n"
         "       ctx ticket show ID\n"
+        "       ctx ticket note ID TEXT [--pic CONV]\n"
         "       ctx ticket claim ID [--as NAME]\n"
         "       ctx ticket done ID [--result TEXT]\n"
         "       ctx ticket drop ID [--reason TEXT]\n"
@@ -5167,13 +5202,14 @@ static int cmd_ticket(int argc, char **argv) {
   if (!strcmp(sub, "offer")) return ticket_offer();
   if (!strcmp(sub, "prod")) return ticket_prod(argc - 1, argv + 1);
   const char *id = NULL, *title = NULL, *type = "Task", *body = "", *acceptance = "", *project_opt = NULL, *as = person();
-  const char *result = "", *reason = "", *conflict = NULL;
-  int all = 0;
+  const char *result = "", *reason = "", *conflict = NULL, *note = NULL, *pic = NULL;
+  int all = 0, brief = 0;
   char *blockers[32];
   int nblock = 0;
   for (int i = 1; i < argc; i++) {
     const char *a = argv[i], *val = i + 1 < argc ? argv[i + 1] : NULL;
     if (!strcmp(a, "--all")) { all = 1; continue; }
+    if (!strcmp(a, "--short") && !strcmp(sub, "ready")) { brief = 1; continue; }
     if (!strncmp(a, "--", 2)) {
       if (!val) return ticket_usage();
       i++;
@@ -5185,12 +5221,14 @@ static int cmd_ticket(int argc, char **argv) {
       else if (!strcmp(a, "--result")) result = val;
       else if (!strcmp(a, "--reason")) reason = val;
       else if (!strcmp(a, "--conflict") && !strcmp(sub, "new")) conflict = val;
+      else if (!strcmp(a, "--pic") && !strcmp(sub, "note")) pic = val;
       else if (!strcmp(a, "--blocked-by") && nblock < 32) blockers[nblock++] = (char *)val;
       else return ticket_usage();
       continue;
     }
     if (!strcmp(sub, "new") && !title) title = a;
     else if (!id) id = a;
+    else if (!strcmp(sub, "note") && !note) note = a;
     else return ticket_usage();
   }
   sqlite3 *db = ctx_open();
@@ -5240,15 +5278,27 @@ static int cmd_ticket(int argc, char **argv) {
     free(made);
     free(project);
     free(b.p);
-  } else if (!strcmp(sub, "ready")) {
-    char *project = current_project(db);
+  } else if (!strcmp(sub, "ready")) { /* --project a,b,c names several projects; --short is id, project and title cut to fit a line */
+    char *project = project_opt ? dup_text((const unsigned char *)project_opt) : current_project(db);
     sqlite3_stmt *q = db_prepare(db,
         "SELECT substr(t.tkt_uuid, 1, 10), t.subsystem, t.type, t.title FROM fslrepo_me_ticket t"
-        " WHERE (?1 OR t.subsystem = ?2) AND" READY_TICKET " ORDER BY t.tkt_ctime");
+        " WHERE (?1 OR t.subsystem IN (SELECT value FROM json_each('[\"' || replace(replace(replace(?2, '\\', '\\\\'), '\"', '\\\"'), ',', '\",\"') || '\"]')))"
+        " AND" READY_TICKET " ORDER BY t.tkt_ctime");
     sqlite3_bind_int(q, 1, all);
-    sqlite3_bind_text(q, 2, project, -1, SQLITE_STATIC);
-    while (sqlite3_step(q) == SQLITE_ROW)
-      printf("%s %s %s %s\n", sqlite3_column_text(q, 0), sqlite3_column_text(q, 1), sqlite3_column_text(q, 2), sqlite3_column_text(q, 3));
+    sqlite3_bind_text(q, 2, project ? project : "", -1, SQLITE_STATIC);
+    while (sqlite3_step(q) == SQLITE_ROW) {
+      if (brief) {
+        const char *t = (const char *)sqlite3_column_text(q, 3);
+        int n = (int)strlen(t);
+        if (n > 70) { /* cut on a character boundary */
+          n = 69;
+          while (n > 0 && (t[n] & 0xC0) == 0x80) n--;
+        }
+        printf("%s %s %.*s%s\n", sqlite3_column_text(q, 0), sqlite3_column_text(q, 1), n, t, n < (int)strlen(t) ? "\xe2\x80\xa6" : "");
+      } else {
+        printf("%s %s %s %s\n", sqlite3_column_text(q, 0), sqlite3_column_text(q, 1), sqlite3_column_text(q, 2), sqlite3_column_text(q, 3));
+      }
+    }
     sqlite3_finalize(q);
     free(project);
   } else {
@@ -5289,6 +5339,7 @@ static int cmd_ticket(int argc, char **argv) {
       if (*sqlite3_column_text(q, 7)) printf("result: %s\n", sqlite3_column_text(q, 7));
       ticket_show_claim(db, full);
       if (*sqlite3_column_text(q, 4)) printf("\n%s\n", sqlite3_column_text(q, 4));
+      ticket_show_notes(db, full);
     } else if (!strcmp(sub, "claim")) {
       if (strcmp(status, "Open")) {
         fprintf(stderr, "ctx: ticket %.10s is %s%s%s\n", full, status, *who ? " by " : "", who);
@@ -5299,6 +5350,13 @@ static int cmd_ticket(int argc, char **argv) {
       } else {
         /* written below, still inside the transaction */
       }
+    } else if (!strcmp(sub, "note")) {
+      if (!note || !*note) {
+        sqlite3_finalize(q);
+        db_exec(db, "ROLLBACK");
+        return ticket_usage();
+      }
+      if (strlen(note) > 4000) die("a note holds at most 4000 bytes");
     } else if (strcmp(sub, "done") && strcmp(sub, "drop")) {
       sqlite3_finalize(q);
       db_exec(db, "ROLLBACK");
@@ -5312,13 +5370,23 @@ static int cmd_ticket(int argc, char **argv) {
       j = db_prepare(db, "SELECT json_object('status', 'Done', 'result', ?1)");
     else if (!strcmp(sub, "drop"))
       j = db_prepare(db, "SELECT json_object('status', 'Dropped', 'resolution', ?1)");
+    buf noted = {0};
+    if (!strcmp(sub, "note")) { /* a note is a ticket change with an icomment; the ticket's fields stay as they are */
+      add_redacted(&noted, note, strlen(note));
+      if (pic && *pic) buf_fmt(&noted, "\npic conversation: %s", pic);
+      const char *session = getenv("CTX_SESSION");
+      if (session && *session) buf_fmt(&noted, "\nsession: %.12s", session);
+      buf_add(&noted, "", 1);
+      j = db_prepare(db, "SELECT json_object('icomment', ?1)");
+    }
     if (j) {
-      sqlite3_bind_text(j, 1, !strcmp(sub, "claim") ? as : !strcmp(sub, "done") ? result : reason, -1, SQLITE_STATIC);
+      sqlite3_bind_text(j, 1, !strcmp(sub, "claim") ? as : !strcmp(sub, "done") ? result : !strcmp(sub, "note") ? noted.p : reason, -1, SQLITE_STATIC);
       if (sqlite3_step(j) != SQLITE_ROW) die("%s", sqlite3_errmsg(db));
       ticket_save(db, full, (const char *)sqlite3_column_text(j, 0));
       sqlite3_finalize(j);
       printf("%.10s %s\n", full, sub);
     }
+    free(noted.p);
     db_exec(db, "COMMIT");
     if (!rc && strcmp(sub, "show")) page_refresh(db, tproject, 0);
     if (!rc && !strcmp(sub, "claim")) {
@@ -16445,7 +16513,7 @@ static int usage(void) {
         "       ctx search [--all] [--history] [--as-of DATE] [--limit N] WORDS...\n"
         "       ctx turn ID [BEFORE [AFTER]] [--full] [--user]\n"
         "       ctx audit [--all] [--known] [--tickets] [--limit N] | --allow ID [NOTE] | --context ID\n"
-        "       ctx ticket new|ready|show|claim|done|drop|offer ...\n"
+        "       ctx ticket new|ready|show|note|claim|done|drop|offer ...\n"
         "       ctx project add NAME [--root DIR] [--import FILE | --clone URL] [--remote URL] | list | pull NAME [--from URL]\n"
         "       ctx source add FILE --origin WHERE --class CLASS [--as PATH] | supersede OLD | uses PATH | check\n"
         "       ctx index [--project P]\n"
