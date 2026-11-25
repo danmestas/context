@@ -724,6 +724,24 @@ decided in the last two days, the pages it published in the last three days with
 addresses, messages from other sessions in the last day, rules you set in it, and when
 you last reported a landing. A fresh session gets none of this.
 
+## Hand off to the next session
+
+A session near its context limit, or about to end, can leave the next one a note so
+nobody has to brief it again:
+
+```sh
+ctx handoff "Step 3 of 5 done; next: wire the parser into main.c. Tests: make test."
+ctx handoff - < notes.md      # the text on standard input
+```
+
+The note belongs to the project of the working directory. The next session to start
+in that project, whether new, resumed, cleared or compacted, gets it once at the top
+of what `ctx ticket offer` adds at session start, saying when it was written and by
+which session. A note is never delivered into another project. It holds at most
+4000 bytes, secrets are redacted as in the archive, and a newer note replaces one not
+yet read. Two sessions starting at once cannot both receive it. The note waits beside
+the database, in `<database>.handoff/`, until it is read.
+
 ## Set up a project
 
 A project maps a directory to a shared Fossil repository held inside the ctx

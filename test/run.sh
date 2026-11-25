@@ -3652,6 +3652,25 @@ mkdir -p "$T/offerproj/.git" "$T/offerproj/src"
 rm -f "$CTX_DB-shm" "$CTX_DB-wal"
 printf '{"session_id":"offer-closed","source":"startup"}' | (cd "$T/offerproj/src" && "$CTX" ticket offer) > "$T/closed-offer.json"
 grep -q 'ctx: 1 open docs ticket for this project: documentation problems' "$T/closed-offer.json" && ! grep -q 'offered from a closed archive' "$T/closed-offer.json" || fail "the offer works on an archive nothing else has open: $(cat "$T/closed-offer.json")"
+# A handoff reaches the next session to start in its project, once, and no other project.
+mkdir -p "$T/hoA/.git" "$T/hoB/.git"
+(cd "$T/hoA" && CTX_SESSION=writer-1234567 "$CTX" handoff "first note") | grep -q '^handoff saved for hoA' || fail "handoff saves"
+(cd "$T/hoA" && CTX_SESSION=writer-1234567 "$CTX" handoff "where it stands: step 3 of 5, token sk-ant-api03-$(printf 'a%.0s' $(seq 1 90))") | grep -q 'replaces one not yet read' || fail "a newer handoff says it replaces an unread one"
+[ -z "$(printf '{"session_id":"s-b","source":"startup"}' | (cd "$T/hoB" && "$CTX" ticket offer))" ] || fail "a handoff is never delivered into another project"
+printf '{"session_id":"s-a","source":"startup"}' | (cd "$T/hoA" && "$CTX" ticket offer) > "$T/ho1.json"
+python3 - "$T/ho1.json" <<'PY' || fail "the next session in the project gets the handoff: $(cat "$T/ho1.json")"
+import json, sys
+t = json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]
+assert t.startswith("ctx: a handoff left for this project by an earlier session (session writer-1"), t
+assert " UTC." in t and "not the user's instructions" in t, t
+assert "step 3 of 5" in t and "first note" not in t, t
+assert "sk-ant-api03" not in t and "[REDACTED]" in t, t
+PY
+[ -z "$(printf '{"session_id":"s-c","source":"startup"}' | (cd "$T/hoA" && "$CTX" ticket offer))" ] || fail "a handoff is delivered once"
+python3 -c 'print("x" * 4001)' | (cd "$T/hoA" && "$CTX" handoff - 2> "$T/ho.err") && fail "a handoff over 4000 bytes is refused"
+grep -q 'at most 4000 bytes' "$T/ho.err" || fail "the refusal says the limit: $(cat "$T/ho.err")"
+printf 'from stdin\n' | (cd "$T/hoA" && env -u CTX_SESSION "$CTX" handoff -) >/dev/null || fail "handoff reads standard input"
+printf '{"session_id":"s-d","source":"startup"}' | (cd "$T/hoA" && "$CTX" ticket offer) | grep -q 'session unknown' || fail "a handoff with no session says so"
 # A second run files nothing, and neither does a closed one.
 if CTX_CLASSIFY="$T/screen.sh" CTX_JUDGE="$T/confirm.sh" "$CTX" docs conflicts --run | grep -q '^filed '; then fail "a second run files again"; fi
 WHO=$("$CTX" sql "SELECT count(*) FROM ctx_docs_ticket")
