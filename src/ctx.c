@@ -1251,6 +1251,8 @@ static int session_forgotten(sqlite3 *db, const char *session) {
 
 static void usage_after_archive(sqlite3 *db, const char *path);
 static void usage_scan(sqlite3 *db, int say);
+static void handoff_compute_daily(sqlite3 *db);
+static void handoff_warn(sqlite3 *db, const char *session, const char *transcript, buf *note);
 static void usage_brief(sqlite3 *db, buf *out);
 static int usage_limits_in(void);
 
@@ -4385,7 +4387,7 @@ static int cmd_scan(const char *root_arg) {
   docs_scan(db, NULL, &doc_changes);
   docs_tickets_all(db); /* every project whose documents are registered */
   { /* forget which sessions were told about the archive once they are a month old */
-    static const char *const marks[] = {".noted", ".nudged", ".heard", NULL};
+    static const char *const marks[] = {".noted", ".nudged", ".heard", ".handoff-told", NULL};
     time_t old = time(NULL) - 30 * 86400;
     for (int m = 0; marks[m]; m++) {
       char *dir = sidecar(marks[m]);
@@ -4402,7 +4404,10 @@ static int cmd_scan(const char *root_arg) {
     }
   }
   if (!root_arg || strcmp(root_arg, "--pic")) findings_run(db); /* not for a pic hook's quick scan */
-  if (!root_arg) usage_scan(db, 0); /* every harness's new responses; a scan of one folder is about turns */
+  if (!root_arg) {
+    usage_scan(db, 0); /* every harness's new responses; a scan of one folder is about turns */
+    handoff_compute_daily(db);
+  }
   sqlite3_close(db);
   printf("%ld transcripts read\n", ran);
   if (doc_changes) printf("%ld documents changed\n", doc_changes);
@@ -11524,11 +11529,12 @@ static int hook_post(int post) {
   free(dbp);
   sqlite3_busy_timeout(db, 200);
   sqlite3_stmt *q = NULL;
-  char given[4200] = "", session[128] = "", real[4200], cwd[4200] = "", *cmd = NULL;
+  char given[4200] = "", session[128] = "", real[4200], cwd[4200] = "", transcript[4200] = "", *cmd = NULL;
   int tool = 0;
   if (sqlite3_prepare_v2(db, "SELECT coalesce(json_extract(?1, '$.tool_name'), ''), coalesce(json_extract(?1, '$.tool_input.file_path'), ''),"
                              " coalesce(json_extract(?1, '$.session_id'), ''), coalesce(json_extract(?1, '$.cwd'), ''),"
-                             " json_extract(?1, '$.tool_input.command'), coalesce(json_extract(?1, '$.harness'), '') WHERE json_valid(?1)", -1, &q, NULL) == SQLITE_OK) {
+                             " json_extract(?1, '$.tool_input.command'), coalesce(json_extract(?1, '$.harness'), ''), coalesce(json_extract(?1, '$.transcript_path'), '')"
+                             " WHERE json_valid(?1)", -1, &q, NULL) == SQLITE_OK) {
     sqlite3_bind_text(q, 1, in.p, (int)in.n, SQLITE_STATIC);
     if (sqlite3_step(q) == SQLITE_ROW) {
       char name[64];
@@ -11537,6 +11543,7 @@ static int hook_post(int post) {
       snprintf(given, sizeof given, "%s", sqlite3_column_text(q, 1));
       snprintf(session, sizeof session, "%s", sqlite3_column_text(q, 2));
       snprintf(cwd, sizeof cwd, "%s", sqlite3_column_text(q, 3));
+      snprintf(transcript, sizeof transcript, "%s", sqlite3_column_text(q, 6));
       call_note((const char *)sqlite3_column_text(q, 5), session);
       if (!strcmp(name, "bash") && sqlite3_column_text(q, 4)) cmd = dup_text(sqlite3_column_text(q, 4));
     }
@@ -11560,6 +11567,11 @@ static int hook_post(int post) {
     any = 1;
   }
   free(prods.p);
+  if (post) { /* past the point where handing off has cost less: said once a session */
+    size_t before = note.n;
+    handoff_warn(db, session, transcript, &note);
+    any |= note.n > before;
+  }
   if (tool && *given && realpath(given, real)) {
     size_t len = 0;
     char *file = NULL;
@@ -17371,13 +17383,415 @@ static int usage_report(int argc, char **argv) {
     puts("dollars: notional on a subscription; + means some responses had no price. subs: subagent sessions counted in the row."
          " week%: points of a plan's weekly limit the row used, from the limit readings.");
   }
+  sqlite3_stmt *ho = NULL;
+  if (sqlite3_prepare_v2(db, "SELECT json_extract(m.value, '$.model'), json_extract(m.value, '$.point'), json_extract(m.value, '$.why'),"
+                             " (SELECT json_extract(s.value, '$.n') FROM json_each(json_extract(m.value, '$.steps')) s WHERE json_extract(s.value, '$.at') = json_extract(m.value, '$.point')),"
+                             " (SELECT json_extract(s.value, '$.saving') FROM json_each(json_extract(m.value, '$.steps')) s WHERE json_extract(s.value, '$.at') = json_extract(m.value, '$.point')),"
+                             " substr(json_extract(ctx_meta.value, '$.computed'), 1, 10)"
+                             " FROM ctx_meta, json_each(json_extract(ctx_meta.value, '$.models')) m WHERE ctx_meta.key = 'handoff_points' AND json_extract(m.value, '$.point') > 0", -1, &ho, NULL) == SQLITE_OK) {
+    int first = 1;
+    while (sqlite3_step(ho) == SQLITE_ROW) {
+      if (first) printf("Handoff points (worked out %s; ctx usage handoff for the evidence):\n", sqlite3_column_text(ho, 5));
+      first = 0;
+      if (!strcmp((const char *)sqlite3_column_text(ho, 2), "cost"))
+        printf("  %s: past %lldK tokens of context; %lld past sessions that size would have saved a median $%.2f by handing off\n", sqlite3_column_text(ho, 0),
+               (long long)sqlite3_column_int64(ho, 1) / 1000, (long long)sqlite3_column_int64(ho, 3), sqlite3_column_double(ho, 4));
+      else printf("  %s: past %lldK tokens of context; past sessions met more trouble from there\n", sqlite3_column_text(ho, 0), (long long)sqlite3_column_int64(ho, 1) / 1000);
+    }
+  }
+  sqlite3_finalize(ho);
   free(body.p);
   free(week.p);
   sqlite3_close(db);
   return 0;
 }
 
-/* ctx usage [--hours N | --days N] [--by KEY] | collect */
+/* The handoff point: the context size past which, in this archive's own history, handing a session
+ * off to a fresh one has cost less than going on, or has gone with more trouble, per model.
+ *
+ * Cost. A response re-reads the whole context, so a long session's responses cost more and more.
+ * For each past main session of a model that reached a context size, ctx compares what its
+ * responses from then on cost with what a fresh session's first as many responses cost: the
+ * replay curve, the mean cost of each response number over the model's sessions, which grows as a
+ * fresh session builds its own context. A size is the cost point when, at it and at the next size
+ * up, at least HANDOFF_SESSIONS sessions reached it, the median saving is above zero and most of
+ * those sessions (HANDOFF_SHARE) would have saved.
+ *
+ * Quality. In the archive's turns, a correction from the person, a tool failure right after
+ * another, and work undone with git are trouble. Each is placed at the context of the session's
+ * last response before it. A size is the quality point when, at it and at the next size up, the
+ * rate of trouble per response is at least HANDOFF_RISE times the rate below 100K tokens and at
+ * least 2 per 100 responses higher, with HANDOFF_RESPONSES responses and HANDOFF_EVENTS events.
+ *
+ * The point is the lower of the two. A model with too little history has none, and nothing is
+ * said about it. Sizes are steps of HANDOFF_STEP tokens. Sessions active in the last 6 hours are
+ * left out, since how much longer they run is not known yet. */
+#define HANDOFF_STEP 50000
+#define HANDOFF_STEPS 20
+#define HANDOFF_SESSIONS 20
+#define HANDOFF_SHARE 0.55
+#define HANDOFF_RISE 1.5
+#define HANDOFF_RESPONSES 50
+#define HANDOFF_EVENTS 10
+#define HANDOFF_TURNS 5000
+
+typedef struct {
+  double *ctx, *cost;
+  size_t n, cap;
+} ho_session;
+
+typedef struct {
+  long n, turns_left;
+  double saving, share;
+} ho_step;
+
+static int by_double(const void *a, const void *b) {
+  double x = *(const double *)a, y = *(const double *)b;
+  return (x > y) - (x < y);
+}
+
+static double median_of(double *v, size_t n) {
+  if (!n) return 0;
+  qsort(v, n, sizeof *v, by_double);
+  return n % 2 ? v[n / 2] : (v[n / 2 - 1] + v[n / 2]) / 2;
+}
+
+/* Each step's evidence for one model's sessions, against the replay curve cum. */
+static void ho_steps(const ho_session *s, size_t ns, const double *cum, size_t ncum, ho_step out[HANDOFF_STEPS + 1]) {
+  double *sav = malloc((ns + 1) * sizeof *sav), *left = malloc((ns + 1) * sizeof *left);
+  if (!sav || !left) die("out of memory");
+  for (int b = 1; b <= HANDOFF_STEPS; b++) {
+    size_t k = 0;
+    long pos = 0;
+    for (size_t i = 0; i < ns; i++) {
+      size_t at = 0;
+      while (at < s[i].n && s[i].ctx[at] < (double)b * HANDOFF_STEP) at++;
+      if (at == s[i].n) continue;
+      double rest = 0;
+      for (size_t j = at; j < s[i].n; j++) rest += s[i].cost[j];
+      size_t r = s[i].n - at;
+      sav[k] = rest - cum[r < ncum ? r : ncum - 1];
+      left[k] = (double)r;
+      pos += sav[k] > 0;
+      k++;
+    }
+    out[b].n = (long)k;
+    out[b].share = k ? (double)pos / (double)k : 0;
+    out[b].saving = median_of(sav, k);
+    out[b].turns_left = (long)median_of(left, k);
+  }
+  free(sav);
+  free(left);
+}
+
+static int ho_cost_point(const ho_step st[HANDOFF_STEPS + 1]) {
+  for (int b = 1; b < HANDOFF_STEPS; b++) {
+    int ok = 1;
+    for (int c = b; c <= b + 1; c++) ok &= st[c].n >= HANDOFF_SESSIONS && st[c].saving > 0 && st[c].share >= HANDOFF_SHARE;
+    if (ok) return b;
+  }
+  return 0;
+}
+
+/* Trouble per response at each step, for one model, from the archive's turns. */
+typedef struct {
+  long responses[HANDOFF_STEPS + 2], events[HANDOFF_STEPS + 2];
+} ho_quality;
+
+#define HO_STEP_SQL(c) "min(" HANDOFF_STEPS_TXT ", CAST((" c ") / " HANDOFF_STEP_TXT " AS INTEGER))"
+#define HANDOFF_STEPS_TXT "21"
+#define HANDOFF_STEP_TXT "50000"
+
+/* Responses and trouble per model and step, for every model at once: the trouble query reads 90
+ * days of turns, so it runs once a computation, not once a model. */
+typedef struct {
+  char model[64];
+  ho_quality q;
+} ho_quality_row;
+
+static ho_quality *ho_quality_find(ho_quality_row **rows, size_t *n, const char *model) {
+  for (size_t i = 0; i < *n; i++)
+    if (!strcmp((*rows)[i].model, model)) return &(*rows)[i].q;
+  *rows = realloc(*rows, (*n + 1) * sizeof **rows);
+  if (!*rows) die("out of memory");
+  memset(&(*rows)[*n], 0, sizeof **rows);
+  snprintf((*rows)[*n].model, sizeof (*rows)[*n].model, "%s", model);
+  return &(*rows)[(*n)++].q;
+}
+
+static size_t ho_quality_all(sqlite3 *db, const char *since, ho_quality_row **rows) {
+  size_t n = 0;
+  *rows = NULL;
+  sqlite3_stmt *r = db_prepare(db, "SELECT model, " HO_STEP_SQL("input + write_5m + write_1h + cache_read") ", count(*) FROM ctx_usage INDEXED BY ctx_usage_at"
+                                   " WHERE at >= ?1 AND parent IS NULL GROUP BY 1, 2");
+  sqlite3_bind_text(r, 1, since, -1, SQLITE_STATIC);
+  while (sqlite3_step(r) == SQLITE_ROW) ho_quality_find(rows, &n, (const char *)sqlite3_column_text(r, 0))->responses[sqlite3_column_int(r, 1)] = sqlite3_column_int64(r, 2);
+  sqlite3_finalize(r);
+  /* the trouble: corrections, a tool failure after another, work undone with git; each at the
+   * context of its session's last response before it */
+  sqlite3_stmt *e = NULL;
+  if (sqlite3_prepare_v2(db,
+          "WITH ev AS (SELECT cd.session, c.at FROM ctx_chunk c JOIN ctx_doc d ON d.id = c.doc_id JOIN ctx_capture_day cd ON cd.technote = d.name"
+          "  WHERE c.at >= ?1 AND ("
+          "   (c.heading = 'user' AND length(c.body) < 600 AND (lower(c.body) GLOB 'no[ ,.!]*' OR lower(c.body) GLOB 'nope*' OR lower(c.body) LIKE '%that''s wrong%'"
+          "    OR lower(c.body) LIKE '%that is wrong%' OR lower(c.body) LIKE '%not what i%' OR lower(c.body) LIKE '%i said%' OR lower(c.body) LIKE '%you didn''t%'"
+          "    OR lower(c.body) LIKE '%still broken%' OR lower(c.body) LIKE '%doesn''t work%' OR lower(c.body) LIKE '%undo that%'))"
+          "   OR (c.heading = 'tool' AND (c.body LIKE '%<tool_use_error>%' OR c.body GLOB 'Exit code [1-9]*') AND EXISTS (SELECT 1 FROM ctx_chunk p"
+          "    WHERE p.doc_id = c.doc_id AND p.heading = 'tool' AND p.seq < c.seq AND p.seq >= c.seq - 3 AND (p.body LIKE '%<tool_use_error>%' OR p.body GLOB 'Exit code [1-9]*')))"
+          "   OR (c.heading = 'assistant' AND (c.body LIKE '%git revert %' OR c.body LIKE '%git restore %' OR c.body LIKE '%git reset --hard%' OR c.body LIKE '%git checkout -- %'))))"
+          " SELECT u.model, " HO_STEP_SQL("u.input + u.write_5m + u.write_1h + u.cache_read") ", count(*) FROM ev"
+          " JOIN ctx_usage u ON u.id = (SELECT x.id FROM ctx_usage x WHERE x.session = ev.session AND x.at <= ev.at ORDER BY x.at DESC LIMIT 1)"
+          " GROUP BY 1, 2", -1, &e, NULL) == SQLITE_OK) {
+    sqlite3_bind_text(e, 1, since, -1, SQLITE_STATIC);
+    while (sqlite3_step(e) == SQLITE_ROW) ho_quality_find(rows, &n, (const char *)sqlite3_column_text(e, 0))->events[sqlite3_column_int(e, 1)] = sqlite3_column_int64(e, 2);
+  }
+  sqlite3_finalize(e);
+  return n;
+}
+
+static int ho_quality_point(const ho_quality *q, double *base_out) {
+  long br = q->responses[0] + q->responses[1], be = q->events[0] + q->events[1];
+  double base = br ? (double)be / (double)br : 0;
+  *base_out = base;
+  if (br < HANDOFF_RESPONSES) return 0;
+  for (int b = 2; b < HANDOFF_STEPS; b++) {
+    int ok = 1;
+    for (int c = b; c <= b + 1; c++) {
+      double rate = q->responses[c] ? (double)q->events[c] / (double)q->responses[c] : 0;
+      ok &= q->responses[c] >= HANDOFF_RESPONSES && q->events[c] >= HANDOFF_EVENTS && rate >= HANDOFF_RISE * base && rate - base >= 0.02;
+    }
+    if (ok) return b;
+  }
+  return 0;
+}
+
+/* Works out every model's point from the archive and keeps it in ctx_meta (handoff_points), as
+ * JSON the hook and ctx usage read: one entry per model with history. */
+static void handoff_compute(sqlite3 *db) {
+  time_t now = now_time();
+  char recent[24], since[24];
+  iso_time(now - 6 * 3600, recent);
+  iso_time(now - 90 * 86400, since);
+  sqlite3_stmt *q = db_prepare(db, "SELECT model, session, input + write_5m + write_1h + cache_read, dollars FROM ctx_usage u"
+                                   " WHERE parent IS NULL AND dollars IS NOT NULL AND at >= ?2"
+                                   " AND session NOT IN (SELECT session FROM ctx_usage WHERE at >= ?1) ORDER BY model, session, at");
+  sqlite3_bind_text(q, 1, recent, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 2, since, -1, SQLITE_STATIC);
+  buf out = {0};
+  char date[24];
+  iso_time(now, date);
+  buf_fmt(&out, "{\"computed\":\"%s\",\"models\":[", date);
+  ho_quality_row *qrows;
+  size_t nq = ho_quality_all(db, since, &qrows);
+  int more = sqlite3_step(q) == SQLITE_ROW, models = 0;
+  while (more) {
+    char model[64], session[128] = "";
+    snprintf(model, sizeof model, "%s", sqlite3_column_text(q, 0));
+    ho_session *s = NULL;
+    size_t ns = 0;
+    while (more && !strcmp((const char *)sqlite3_column_text(q, 0), model)) {
+      if (strcmp((const char *)sqlite3_column_text(q, 1), session)) {
+        snprintf(session, sizeof session, "%s", sqlite3_column_text(q, 1));
+        s = realloc(s, (ns + 1) * sizeof *s);
+        if (!s) die("out of memory");
+        memset(&s[ns++], 0, sizeof *s);
+      }
+      ho_session *x = &s[ns - 1];
+      if (x->n == x->cap) {
+        x->cap = x->cap ? x->cap * 2 : 64;
+        x->ctx = realloc(x->ctx, x->cap * sizeof *x->ctx);
+        x->cost = realloc(x->cost, x->cap * sizeof *x->cost);
+        if (!x->ctx || !x->cost) die("out of memory");
+      }
+      x->ctx[x->n] = sqlite3_column_double(q, 2);
+      x->cost[x->n++] = sqlite3_column_double(q, 3);
+      more = sqlite3_step(q) == SQLITE_ROW;
+    }
+    /* the replay curve: what a fresh session's first k responses cost */
+    double *cum = calloc(HANDOFF_TURNS + 1, sizeof *cum);
+    if (!cum) die("out of memory");
+    size_t ncum = 1;
+    for (size_t t = 0; t < HANDOFF_TURNS; t++) {
+      double sum = 0;
+      long have = 0;
+      for (size_t i = 0; i < ns; i++)
+        if (s[i].n > t) { sum += s[i].cost[t]; have++; }
+      if (!have) break;
+      cum[t + 1] = cum[t] + sum / (double)have;
+      ncum = t + 2;
+    }
+    ho_step st[HANDOFF_STEPS + 1] = {{0}};
+    ho_steps(s, ns, cum, ncum, st);
+    int cost = ho_cost_point(st);
+    ho_quality qa;
+    memset(&qa, 0, sizeof qa);
+    double base = 0;
+    int quality = 0;
+    if (ns >= HANDOFF_SESSIONS) { /* too few sessions is too little history either way */
+      for (size_t i = 0; i < nq; i++)
+        if (!strcmp(qrows[i].model, model)) qa = qrows[i].q;
+      quality = ho_quality_point(&qa, &base);
+    }
+    int point = cost && quality ? (cost < quality ? cost : quality) : cost ? cost : quality;
+    buf_str(&out, models++ ? ",{\"model\":" : "{\"model\":");
+    js_str(&out, model);
+    buf_fmt(&out, ",\"sessions\":%zu,\"point\":%d,\"why\":\"%s\",\"cost_point\":%d,\"quality_point\":%d,\"base_rate\":%.4f,\"steps\":[", ns,
+            point * HANDOFF_STEP, !point ? "" : point == cost ? "cost" : "quality", cost * HANDOFF_STEP, quality * HANDOFF_STEP, base);
+    for (int b = 1; b <= HANDOFF_STEPS; b++) {
+      long resp = qa.responses[b];
+      buf_fmt(&out, "%s{\"at\":%d,\"n\":%ld,\"saving\":%.2f,\"share\":%.2f,\"turns_left\":%ld,\"responses\":%ld,\"events\":%ld}", b > 1 ? "," : "",
+              b * HANDOFF_STEP, st[b].n, st[b].saving, st[b].share, st[b].turns_left, resp, qa.events[b]);
+    }
+    buf_str(&out, "]}");
+    for (size_t i = 0; i < ns; i++) {
+      free(s[i].ctx);
+      free(s[i].cost);
+    }
+    free(s);
+    free(cum);
+  }
+  sqlite3_finalize(q);
+  free(qrows);
+  buf_str(&out, "]}");
+  q = db_prepare(db, "INSERT OR REPLACE INTO ctx_meta(key, value) VALUES ('handoff_points', ?1)");
+  sqlite3_bind_text(q, 1, out.p, (int)out.n, SQLITE_STATIC);
+  sqlite3_step(q);
+  sqlite3_finalize(q);
+  free(out.p);
+}
+
+/* Once a day, from the hourly scan. */
+static void handoff_compute_daily(sqlite3 *db) {
+  if (db_int(db, "SELECT count(*) FROM ctx_meta WHERE key = 'handoff_points' AND json_extract(value, '$.computed') >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 day')")) return;
+  handoff_compute(db);
+}
+
+/* ctx usage handoff: each model's point and the evidence for it, worked out afresh. */
+static int usage_handoff(void) {
+  sqlite3 *db = ctx_open();
+  handoff_compute(db);
+  sqlite3_stmt *q = db_prepare(db, "SELECT json_extract(m.value, '$.model'), json_extract(m.value, '$.sessions'), json_extract(m.value, '$.point'),"
+                                   " json_extract(m.value, '$.why'), json_extract(m.value, '$.cost_point'), json_extract(m.value, '$.quality_point'),"
+                                   " json_extract(m.value, '$.base_rate'), json_extract(m.value, '$.steps')"
+                                   " FROM ctx_meta, json_each(json_extract(ctx_meta.value, '$.models')) m WHERE ctx_meta.key = 'handoff_points' ORDER BY 2 DESC");
+  sqlite3_stmt *steps = db_prepare(db, "SELECT json_extract(value, '$.at'), json_extract(value, '$.n'), json_extract(value, '$.saving'), json_extract(value, '$.share'),"
+                                       " json_extract(value, '$.turns_left'), json_extract(value, '$.responses'), json_extract(value, '$.events') FROM json_each(?1)");
+  int any = 0;
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    any = 1;
+    long point = sqlite3_column_int64(q, 2);
+    printf("%s: %lld past sessions in 90 days. ", sqlite3_column_text(q, 0), (long long)sqlite3_column_int64(q, 1));
+    if (point) printf("Hand off past %ldK tokens of context (%s point; cost point %lldK, quality point %lldK).\n", point / 1000, sqlite3_column_text(q, 3),
+                      (long long)sqlite3_column_int64(q, 4) / 1000, (long long)sqlite3_column_int64(q, 5) / 1000);
+    else printf("No point yet: too little history, or going on has not cost more.\n");
+    printf("  %7s %8s %9s %6s %10s %10s %8s\n", "context", "sessions", "saving", "saved", "turns left", "responses", "trouble");
+    sqlite3_bind_text(steps, 1, (const char *)sqlite3_column_text(q, 7), -1, SQLITE_STATIC);
+    while (sqlite3_step(steps) == SQLITE_ROW) {
+      long n = sqlite3_column_int64(steps, 1), resp = sqlite3_column_int64(steps, 5);
+      if (!n && !resp) continue;
+      char rate[24] = "-";
+      if (resp) snprintf(rate, sizeof rate, "%.1f%%", 100.0 * (double)sqlite3_column_int64(steps, 6) / (double)resp);
+      printf("  %6lldK %8ld %9.2f %5.0f%% %10lld %10ld %8s\n", (long long)sqlite3_column_int64(steps, 0) / 1000, n, sqlite3_column_double(steps, 2),
+             100 * sqlite3_column_double(steps, 3), (long long)sqlite3_column_int64(steps, 4), resp, rate);
+    }
+    sqlite3_reset(steps);
+    printf("  trouble below 100K: %.1f%% of responses\n", 100 * sqlite3_column_double(q, 6));
+  }
+  if (!any) puts("No priced history yet.");
+  else puts("saving: median dollars a session at that size would have saved by handing off (what its later responses cost, less a fresh session's first"
+            " as many); saved: the share of those sessions that would have saved. trouble: corrections, repeated tool failures and git undos per response.");
+  sqlite3_finalize(q);
+  sqlite3_finalize(steps);
+  sqlite3_close(db);
+  return 0;
+}
+
+/* For ctx hook post: when this session's last response is past its model's point, say so once.
+ * The context is read from the end of the session's transcript, so it is current. */
+static void handoff_warn(sqlite3 *db, const char *session, const char *transcript, buf *note) {
+  if (!*session || !transcript || !*transcript || strstr(transcript, "/subagents/")) return;
+  FILE *f = fopen(transcript, "rb");
+  if (!f) return;
+  struct stat st;
+  long long size = fstat(fileno(f), &st) ? 0 : (long long)st.st_size, from = size > (1 << 20) ? size - (1 << 20) : 0;
+  char *tail = malloc((size_t)(size - from) + 1);
+  if (!tail) die("out of memory");
+  fseeko(f, (off_t)from, SEEK_SET);
+  size_t got = fread(tail, 1, (size_t)(size - from), f);
+  fclose(f);
+  tail[got] = 0;
+  char model[64] = "";
+  long long ctx = -1;
+  sqlite3_stmt *q = NULL;
+  if (sqlite3_prepare_v2(db, "SELECT json_extract(?1, '$.message.model'), coalesce(json_extract(?1, '$.message.usage.input_tokens'), 0)"
+                             " + coalesce(json_extract(?1, '$.message.usage.cache_creation_input_tokens'), 0) + coalesce(json_extract(?1, '$.message.usage.cache_read_input_tokens'), 0)"
+                             " WHERE json_valid(?1) AND json_extract(?1, '$.type') = 'assistant' AND json_type(?1, '$.message.usage') = 'object'",
+                         -1, &q, NULL) == SQLITE_OK) {
+    for (char *end = tail + got; end > tail && ctx < 0;) { /* the last line with a response's usage */
+      char *start = end - 1;
+      while (start > tail && start[-1] != '\n') start--;
+      size_t len = (size_t)(end - start);
+      if (len > 1 && memmem(start, len, "\"usage\"", 7)) {
+        sqlite3_bind_text(q, 1, start, (int)(len - (start[len - 1] == '\n')), SQLITE_STATIC);
+        if (sqlite3_step(q) == SQLITE_ROW && sqlite3_column_text(q, 0)) {
+          snprintf(model, sizeof model, "%s", sqlite3_column_text(q, 0));
+          ctx = sqlite3_column_int64(q, 1);
+        }
+        sqlite3_reset(q);
+      }
+      end = start;
+    }
+  }
+  sqlite3_finalize(q);
+  free(tail);
+  if (ctx < 0) return;
+  q = NULL;
+  long point = 0, n = 0, left = 0;
+  double saving = 0;
+  char why[16] = "";
+  if (sqlite3_prepare_v2(db, "SELECT json_extract(m.value, '$.point'), json_extract(m.value, '$.why'),"
+                             " (SELECT json_extract(s.value, '$.n') FROM json_each(json_extract(m.value, '$.steps')) s WHERE json_extract(s.value, '$.at') = json_extract(m.value, '$.point')),"
+                             " (SELECT json_extract(s.value, '$.saving') FROM json_each(json_extract(m.value, '$.steps')) s WHERE json_extract(s.value, '$.at') = json_extract(m.value, '$.point')),"
+                             " (SELECT json_extract(s.value, '$.turns_left') FROM json_each(json_extract(m.value, '$.steps')) s WHERE json_extract(s.value, '$.at') = json_extract(m.value, '$.point'))"
+                             " FROM ctx_meta, json_each(json_extract(ctx_meta.value, '$.models')) m WHERE ctx_meta.key = 'handoff_points' AND json_extract(m.value, '$.model') = ?1",
+                         -1, &q, NULL) == SQLITE_OK) {
+    sqlite3_bind_text(q, 1, model, -1, SQLITE_STATIC);
+    if (sqlite3_step(q) == SQLITE_ROW) {
+      point = sqlite3_column_int64(q, 0);
+      snprintf(why, sizeof why, "%s", sqlite3_column_text(q, 1) ? (const char *)sqlite3_column_text(q, 1) : "");
+      n = sqlite3_column_int64(q, 2);
+      saving = sqlite3_column_double(q, 3);
+      left = sqlite3_column_int64(q, 4);
+    }
+  }
+  sqlite3_finalize(q);
+  if (!point || ctx < point) return;
+  /* once a session: a mark beside the database */
+  char id[128];
+  size_t k = 0;
+  for (const char *c = session; *c && k < sizeof id - 1; c++)
+    if (isalnum((unsigned char)*c) || *c == '-' || *c == '_') id[k++] = *c;
+  id[k] = 0;
+  if (!k) return;
+  char *dir = sidecar(".handoff-told"), mark[4400];
+  mkdir(dir, 0700);
+  snprintf(mark, sizeof mark, "%s/%s", dir, id);
+  free(dir);
+  int fd = open(mark, O_WRONLY | O_CREAT | O_EXCL, 0600);
+  if (fd < 0) return;
+  close(fd);
+  if (note->n) buf_str(note, "\n\n");
+  if (!strcmp(why, "cost"))
+    buf_fmt(note, "ctx: this session's context is %lldK tokens, past %ldK, where in %ld past %s sessions handing off cost less than going on"
+                  " (median $%.2f saved over the %ld responses they still made; `ctx usage handoff` shows the evidence).",
+            ctx / 1000, point / 1000, n, model, saving, left);
+  else
+    buf_fmt(note, "ctx: this session's context is %lldK tokens, past %ldK, where past %s sessions met more corrections and failures than at small sizes"
+                  " (`ctx usage handoff` shows the evidence).", ctx / 1000, point / 1000, model);
+  buf_str(note, " At the next natural break, consider writing a handoff with `ctx handoff` and going on in a fresh session.");
+}
+
+/* ctx usage [--hours N | --days N] [--by KEY] | collect | handoff */
 static int cmd_usage(int argc, char **argv) {
   if (argc == 1 && !strcmp(argv[0], "collect")) {
     sqlite3 *db = ctx_open();
@@ -17385,6 +17799,7 @@ static int cmd_usage(int argc, char **argv) {
     sqlite3_close(db);
     return 0;
   }
+  if (argc == 1 && !strcmp(argv[0], "handoff")) return usage_handoff();
   return usage_report(argc, argv);
 }
 
@@ -17418,7 +17833,7 @@ static int usage(void) {
         "       ctx stats [--weeks N] | --hooks [--days N]\n"
         "       ctx repeats [--inline] [--days N] [--limit N]\n"
         "       ctx status [--json]\n"
-        "       ctx usage [--hours N | --days N] [--by session|project|harness|model|account] | collect | limits-in\n"
+        "       ctx usage [--hours N | --days N] [--by session|project|harness|model|account] | collect | handoff | limits-in\n"
         "       ctx doctor\n"
         "       ctx remember TEXT [--project P] [--until DATE] [--from TURN]\n"
         "       ctx handoff TEXT... | -\n"

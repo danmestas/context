@@ -1378,6 +1378,51 @@ when an API key spent $1 or more; or when an account with no readings used 10 mi
 more. Then every account used in the day is listed. The line names no address, and it says
 "Prices date from DATE." when the newest price line is over 60 days old.
 
+**When to hand off.** Every response re-reads the whole context, so a long session's responses
+cost more and more, and a session can go on past the size where it does its best work. ctx finds,
+per model, the context size past which handing off has paid in this archive's own history, and
+`ctx hook post` tells a session once when it passes it, suggesting `ctx handoff`. There is no
+fixed percentage; with too little history there is no point and nothing is said.
+
+```sh
+ctx usage handoff     # each model's point and the evidence for it, worked out now
+```
+
+```
+claude-opus-5-5: 22 past sessions in 90 days. No point yet: too little history, or going on has not cost more.
+  context sessions    saving  saved turns left  responses  trouble
+      50K       19     -1.82    42%        176       1404     0.0%
+     250K       12      1.01    58%        300      11126     0.1%
+     350K       10      7.90    70%        355       8215     0.1%
+```
+
+Here, on the author's archive in November 2026, sessions that reached 250K tokens would mostly
+have saved by handing off, but fewer than 20 reached it, so there is no point yet.
+
+The point is the lower of two, each worked out from the last 90 days of finished main sessions
+(subagents and sessions active in the last 6 hours left out), in steps of 50K tokens of context
+(input plus cache writes plus cache reads of a response):
+
+- **Cost.** For every past session that reached a size, ctx takes what its responses from then
+  on cost, and what a fresh session's first as many responses cost: the replay curve, the mean
+  cost of the first, second, third response and so on over the model's sessions, which grows as a
+  fresh session builds its own context and so counts the cost of starting over. The difference is
+  what handing off there would have saved. A size is the cost point when, at it and at the next
+  size up, at least 20 sessions reached it, the median saving is above zero and at least 55% of
+  them would have saved.
+- **Quality.** From the archived turns, trouble is a correction from the person (a short message
+  starting "no" or saying "that's wrong", "not what I", "I said", "you didn't", "doesn't work",
+  "still broken", "undo that"), a tool failure within three tool results of another, or work undone
+  with `git revert`, `git restore`, `git reset --hard` or `git checkout --`. Each is placed at the
+  context of its session's last response before it. A size is the quality point when, at it and
+  at the next size up, trouble per response is at least 1.5 times the rate below 100K tokens and
+  at least 2 per 100 responses more, with at least 50 responses and 10 events there.
+
+The hourly scan works the points out again once a day, and `ctx usage` lists them. The hook reads
+the session's current context from the end of its transcript, and marks the session told beside
+the database (`ctx.sqlite.handoff-told`). The cost of writing a handoff note is not counted; a
+fresh session's own first responses are.
+
 ## Keep the call log as Parquet
 
 The call log is short-lived: it rotates at 1 MB and keeps about a day on a busy machine. Each end line also

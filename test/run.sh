@@ -4503,6 +4503,61 @@ CLAUDE_CONFIG_DIR="$UK" "$CTX" usage collect >/dev/null
 echo '{"session_id":"ss-3","hook_event_name":"SessionStart"}' | CTX_NOW=2027-01-15T12:00:00Z "$CTX" rules offer > "$T/uss2.json"
 grep -q 'Anthropic API key: \$2.00 since yesterday\.' "$T/uss2.json" && grep -q 'Prices date from 2026-11-03\.' "$T/uss2.json" || fail "API-key dollars and the price list's age: $(cat "$T/uss2.json")"
 
+# The handoff point, per model, from the archive's own history: past it, handing off has cost
+# less than going on, or sessions met more trouble. None until there is enough history.
+export CTX_DB="$T/handoff/ctx.sqlite"
+mkdir -p "$T/handoff"
+"$CTX" init >/dev/null
+# claude-test-c: 25 sessions whose responses cost what their context is, so a fresh start pays
+"$CTX" sql "WITH RECURSIVE s(k) AS (SELECT 1 UNION ALL SELECT k + 1 FROM s WHERE k < 25), t(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM t WHERE i < 59)
+  INSERT INTO ctx_usage(harness, session, msg, model, at, input, write_5m, write_1h, cache_read, output, dollars, price_date)
+  SELECT 'claude', 'c-' || k, 'm' || i, 'claude-test-c', strftime('%Y-%m-%dT%H:%M:%SZ', '2026-11-10', '+' || k || ' hours', '+' || i || ' minutes'),
+    0, 0, 0, 10000 * (i + 1), 10, 10000 * (i + 1) * 1e-6, '2026-11-03' FROM s, t" >/dev/null
+# claude-test-few: the same, but 19 sessions: too little history
+"$CTX" sql "WITH RECURSIVE s(k) AS (SELECT 1 UNION ALL SELECT k + 1 FROM s WHERE k < 19), t(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM t WHERE i < 59)
+  INSERT INTO ctx_usage(harness, session, msg, model, at, input, write_5m, write_1h, cache_read, output, dollars, price_date)
+  SELECT 'claude', 'f-' || k, 'm' || i, 'claude-test-few', strftime('%Y-%m-%dT%H:%M:%SZ', '2026-11-10', '+' || k || ' hours', '+' || i || ' minutes'),
+    0, 0, 0, 10000 * (i + 1), 10, 10000 * (i + 1) * 1e-6, '2026-11-03' FROM s, t" >/dev/null
+# claude-test-q: responses that cost the same at any size, and a person correcting them past 300K
+QC="$T/qcfg/projects/-w-q"
+mkdir -p "$QC"
+python3 - "$QC" <<'PY'
+import json, sys, datetime
+d = sys.argv[1]
+t0 = datetime.datetime(2026, 11, 15)
+for k in range(1, 26):
+    with open("%s/q-%d.jsonl" % (d, k), "w") as f:
+        for i in range(40):
+            at = t0 + datetime.timedelta(hours=k, minutes=i)
+            f.write(json.dumps({"type": "assistant", "uuid": "a%d-%d" % (k, i), "timestamp": at.isoformat() + "Z", "sessionId": "q-%d" % k, "cwd": "/w/q", "message": {"role": "assistant", "content": [{"type": "text", "text": "done step %d" % i}]}}) + "\n")
+            said = "no, that's wrong" if i >= 15 else "go on with step %d" % i
+            f.write(json.dumps({"type": "user", "uuid": "u%d-%d" % (k, i), "timestamp": (at + datetime.timedelta(seconds=30)).isoformat() + "Z", "sessionId": "q-%d" % k, "cwd": "/w/q", "message": {"role": "user", "content": said}}) + "\n")
+PY
+for k in $(seq 1 25); do "$CTX" archive "$QC/q-$k.jsonl" >/dev/null; done
+"$CTX" sql "WITH RECURSIVE s(k) AS (SELECT 1 UNION ALL SELECT k + 1 FROM s WHERE k < 25), t(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM t WHERE i < 39)
+  INSERT INTO ctx_usage(harness, session, msg, model, at, input, write_5m, write_1h, cache_read, output, dollars, price_date)
+  SELECT 'claude', 'q-' || k, 'm' || i, 'claude-test-q', strftime('%Y-%m-%dT%H:%M:%SZ', '2026-11-15', '+' || k || ' hours', '+' || i || ' minutes'),
+    0, 0, 0, 20000 * (i + 1), 10, 0.01, '2026-11-03' FROM s, t" >/dev/null
+CTX_NOW=2026-11-21T12:00:00Z "$CTX" usage handoff > "$T/ho.out"
+grep -q '^claude-test-c: 25 past sessions in 90 days\. Hand off past 50K tokens of context (cost point; cost point 50K, quality point 0K)\.$' "$T/ho.out" || fail "a model whose long sessions cost more gets a cost point: $(cat "$T/ho.out")"
+grep -q '^claude-test-few: 19 past sessions in 90 days\. No point yet' "$T/ho.out" || fail "too little history: no point"
+grep -q '^claude-test-q: 25 past sessions in 90 days\. Hand off past 300K tokens of context (quality point; cost point 0K, quality point 300K)\.$' "$T/ho.out" || fail "a model whose sessions meet more corrections past a size gets a quality point: $(cat "$T/ho.out")"
+CTX_NOW=2026-11-21T12:00:00Z "$CTX" usage --hours 1 | grep -q '^  claude-test-c: past 50K tokens of context; 25 past sessions that size would have saved a median \$' || fail "ctx usage shows the points"
+# ctx hook post: once a session, when its last response is past its model's point.
+live() { printf '{"type":"assistant","timestamp":"2026-11-21T11:59:00Z","sessionId":"%s","message":{"id":"m-%s","model":"%s","usage":{"input_tokens":0,"cache_read_input_tokens":%s,"output_tokens":5}}}\n' "$1" "$1" "$2" "$3" > "$QC/$1.jsonl"; }
+post() { printf '{"session_id":"%s","transcript_path":"%s","cwd":"/w/q","tool_name":"Bash","tool_input":{"command":"ls"}}' "$1" "$QC/$1.jsonl" | "$CTX" hook post; }
+live live-1 claude-test-c 400000
+post live-1 > "$T/hop.json"
+python3 -c 'import json, sys; c = json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]; assert "context is 400K tokens, past 50K" in c and "ctx handoff" in c and "25 past claude-test-c sessions" in c, c' "$T/hop.json" || fail "hook post warns a session past its point: $(cat "$T/hop.json")"
+post live-1 > "$T/hop2.json"
+[ ! -s "$T/hop2.json" ] || fail "only once a session: $(cat "$T/hop2.json")"
+live live-2 claude-test-c 40000
+post live-2 > "$T/hop3.json"
+[ ! -s "$T/hop3.json" ] || fail "nothing below the point"
+live live-3 claude-test-few 900000
+post live-3 > "$T/hop4.json"
+[ ! -s "$T/hop4.json" ] || fail "nothing for a model with too little history"
+
 # The skill eval harness works end to end with a stand-in for the model.
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"
 
