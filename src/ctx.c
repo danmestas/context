@@ -16931,7 +16931,7 @@ static void usage_file(sqlite3 *db, usage_ctx *u, const char *path, int codex, c
     pos += len;
     clock_gettime(CLOCK_MONOTONIC, &now);
     long ms = (long)((now.tv_sec - began.tv_sec) * 1000 + (now.tv_nsec - began.tv_nsec) / 1000000);
-    if (pos - batch >= BATCH_BYTES || ms >= 50) { /* a hook waits at most 200 ms: let it in between batches */
+    if (pos - batch >= BATCH_BYTES || ms >= 25) { /* a hook waits at most 200 ms: let it in between batches */
       usage_mark(db, u, path, pos - len, codex, &cs);
       db_exec(db, "COMMIT");
       usleep(50000); /* longer than SQLite's busy handler sleeps at a time, so a waiting writer sees it */

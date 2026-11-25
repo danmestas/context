@@ -1310,7 +1310,7 @@ directory) and forgotten sessions are left out of spend too: excluding a folder 
 already collected from it, and undoing that has the next collection read every record again.
 `ctx forget SESSION` removes a session's spend and its subagents', a Codex session's included. A
 `.claude.json` that cannot be read (Claude Code writing it, or a corrupt copy) changes no login.
-Big files are read in batches of at most 8 MB or 50 ms of work, with a 50 ms pause between, so a
+Big files are read in batches of at most 8 MB or 25 ms of work, with a 50 ms pause between, so a
 hook's write gets in. The places of files that no longer exist are let go. Codex limit readings
 from a session that names no account are kept under `openai:unknown`. A response retried on
 another model is priced attempt by attempt, each at its own model where the record names it.
