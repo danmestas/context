@@ -437,12 +437,13 @@ CREATE TABLE IF NOT EXISTS ctx_same_fail(
 -- price_date; NULL when no line covers the model at that time.
 CREATE TABLE IF NOT EXISTS ctx_usage(
   id         INTEGER PRIMARY KEY,
-  harness    TEXT NOT NULL,       -- claude, codex
+  harness    TEXT NOT NULL,       -- claude, codex, pic
   session    TEXT NOT NULL,
   parent     TEXT,                -- for a subagent: the session that started it
   msg        TEXT NOT NULL,       -- the response's id
   project    TEXT,
   folder     TEXT,                -- the working directory as Claude Code names its folder, which ctx exclude matches
+  purpose    TEXT,                -- pic: compaction or branch_summary; NULL for a reply
   account    TEXT,
   plan       TEXT,                -- plan name, or api-key
   billing    TEXT,

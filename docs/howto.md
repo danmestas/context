@@ -1296,6 +1296,7 @@ ctx usage collect --for 60    # at most a minute; the next collection goes on fr
 |---|---|---|
 | Claude Code | `CONFIG/projects/PROJECT/SESSION.jsonl`, and a subagent's in `SESSION/subagents/agent-*.jsonl` | each assistant record's `message.usage`, once per message id: input, cache writes (1-hour and 5-minute), cache reads, output, and thinking tokens where given; a response retried on another model counts every attempt in `usage.iterations` |
 | Codex | `CODEX_HOME/sessions/**/*.jsonl` and `archived_sessions` | each `token_count` event's `last_token_usage`, or the growth of `total_token_usage`; input there includes cached input, which ctx keeps apart as cache reads; reasoning tokens are part of output. The first `session_meta` is the rollout's own thread; a subagent's names its parent (`parent_thread_id` or `forked_from_id`) |
+| pic | each workspace's journal, `WS/.pic/journal.sqlite`, as `~/.pic/pic.sqlite` (or `CTX_PIC_DB`) lists them, read only | each finished `pic_generation`'s usage as its provider returned it (Anthropic's with cache counts apart, OpenAI's with cached input inside input), by generation, up to the first still running; compaction and branch-summary generations count, marked by `purpose`. The session is `pi-` and pic's session id, as ctx names pic's archived conversations, and a fork names its parent |
 
 A subagent's responses keep its own session and name its parent, so reports can count them under
 the session that started it. A row also has the project (from the working directory, as for
@@ -1308,7 +1309,9 @@ no account ("unknown"), which is most of the history a first collection finds. A
 names the account it was made in (`creator_account_id`); when that is the login in `auth.json`,
 the account is that login's address, otherwise `openai:` and the account id, and Codex's plan comes
 from its rate-limit readings. With no login, the account is `anthropic:api-key` or
-`openai:api-key`. Addresses stay in the local database and in `ctx usage` output on this machine;
+`openai:api-key`. For pic, the generation's credential says it without its value being read: a key
+from the environment is the provider's API key, a stored credential is an API key or a login by
+its kind and is named `PROVIDER:pic-NAME`, and a generation with none has no account. Addresses stay in the local database and in `ctx usage` output on this machine;
 nothing is sent anywhere. Folders excluded from the archive (for Codex, by the session's working
 directory) and forgotten sessions are left out of spend too: excluding a folder removes the spend
 already collected from it, and undoing that has the next collection read every record again.
