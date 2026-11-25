@@ -1207,8 +1207,8 @@ indexed queries only, about 20 ms on an archive of 400,000 turns.
 ctx reports problems with itself that it is fairly sure of, and nothing else. It files no
 tickets for them. The call log rotates within about a day on a busy machine, so the hourly
 `ctx scan` takes in each call logged since the scan before (`ctx_call`, kept 30 days), carrying on
-in the rotated file where it stopped, so no call is lost or counted twice. A start with no end a
-minute later counts as cut off; an end is matched only to a start of the same pid and name from
+in the rotated file where it stopped, so no call is lost or counted twice. A start with no end 10
+minutes later counts as cut off; an end is matched only to a start of the same pid and name from
 about when it says it began, so a reused pid does not end an old call. A log emptied and written
 again is told from the one it replaced by its first line. From those calls the scan works out each
 UTC day's figures per hook
@@ -1221,7 +1221,7 @@ rules:
 | --- | --- | --- |
 | A hook is slow | its daily p95 was over its limit (above) on at least 2 of the last 3 days, and is over it in the last 24 hours | it was over its limit on one of those days or in the last 24 hours, or passed a tenth of its limit on 2 of them |
 | Search is slow | `ctx search`'s daily p95 was over its 1 s target on at least 2 of the last 3 days, and is over it in the last 24 hours | it was over the target on one of those days, or in the last 24 hours |
-| Hooks are cut off | a hook had calls that started and had not ended a minute later on at least 2 of the last 3 days, and in the last 24 hours | it had such calls on one of those days, or in the last 24 hours |
+| Hooks are cut off | a hook had calls that started and had not ended 10 minutes later on at least 2 of the last 3 days, and in the last 24 hours | it had such calls on one of those days, or in the last 24 hours |
 | The scan is late | the scan stamp is over 2 hours old, the rule `ctx status` uses | never |
 
 Each finding has a state: `watching` (seen, below confidence), `open` (confident) or `closed`.
@@ -1265,7 +1265,7 @@ what the hook wrote to stdout. Lines from older versions, which end after `MS`, 
 No prompt, tool input or output, or file text is ever recorded.
 
 ctx takes each call from the log into the archive (`ctx_call`, kept 30 days) at every hourly scan
-and every roll, so a call outlives the log. Once a UTC day has been over for a minute, `ctx
+and every roll, so a call outlives the log. Once a UTC day has been over for 10 minutes, `ctx
 telemetry roll` takes in what the log holds and writes the day's calls from the archive to one
 Parquet file (gzip, one row group) beside the database, whole even when the log rotated more than
 once that day. It never rewrites a day that has a file. The archive hook does this in the
@@ -1285,7 +1285,9 @@ duckdb -c "SELECT date, name, outcome, count(*), median(ms)
 Files are `telemetry/calls/date=YYYY-MM-DD/calls.parquet` (directories 0700, files 0600). Columns:
 `ts` (unix seconds), `name`, `pid`, `ms` (null when the hook never ended), `ended`, `exit`,
 `outcome`, `bytes_out`, `harness`, `session`, `ctx_version` (the ctx that wrote the file). A start
-with no end for over a minute is a row with `ended` false.
+with no end 10 minutes after it began is a row with `ended` false, and a day is written
+only after then, so a call running over midnight is written as it ended. Only the last 30
+days, which `ctx_call` keeps, are rolled.
 
 `ctx telemetry page` rolls any finished days, asks the `duckdb` program (`$CTX_DUCKDB`, else
 `duckdb` on your PATH, else `/opt/homebrew/bin/duckdb`) for the numbers, and writes one HTML page

@@ -2468,6 +2468,7 @@ static void utc_day(long long day, char out[11]) {
 }
 
 static long long calls_ingest(sqlite3 *db, time_t now);
+#define CALL_CUT_SECS 600 /* a call with no end this long after it started was cut off: over every hook's budget */
 
 /* One day's calls from ctx_call, in the order the log had them, as Parquet rows. */
 static void tel_day(sqlite3 *db, long long day, tel_rows *rows) {
@@ -2493,11 +2494,11 @@ static void tel_day(sqlite3 *db, long long day, tel_rows *rows) {
   sqlite3_finalize(q);
 }
 
-/* Writes a file for every UTC day before today that ctx_call holds and that has none yet; a day
+/* Writes a file for every UTC day of the last 30 that ctx_call holds and that has none yet; a day
  * that has a file is left as it is. The calls the log holds are taken in first, and a day is
- * written only once it has been over for a minute, when a call it started that has no end was
- * cut off. ctx_call keeps every call for 30 days, so the log's rotation loses nothing here.
- * Prints each day written when `say`. Returns how many. */
+ * written only once it has been over for CALL_CUT_SECS, longer than any hook may run, so a call
+ * it started that still has no end was cut off. ctx_call keeps every call for 30 days, so the
+ * log's rotation loses nothing here. Prints each day written when `say`. Returns how many. */
 static int telemetry_roll(int say) {
   time_t now = now_time();
   char *dbp = db_path();
@@ -2507,8 +2508,11 @@ static int telemetry_roll(int say) {
   if (!have) return 0;
   sqlite3 *db = ctx_open();
   calls_ingest(db, now);
-  long long first = db_int(db, "SELECT coalesce(min(ts), -1) FROM ctx_call");
-  long long last = ((long long)now - 60) / 86400; /* the first day not yet over for a minute */
+  sqlite3_stmt *q = db_prepare(db, "SELECT coalesce(min(ts), -1) FROM ctx_call WHERE ts >= ?1"); /* a stray old row is no reason to walk years */
+  sqlite3_bind_int64(q, 1, (sqlite3_int64)now - 30 * 86400);
+  long long first = sqlite3_step(q) == SQLITE_ROW ? sqlite3_column_int64(q, 0) : -1;
+  sqlite3_finalize(q);
+  long long last = ((long long)now - CALL_CUT_SECS) / 86400; /* the first day not yet over long enough */
   char *root = telemetry_dir();
   int wrote = 0;
   for (long long day = first < 0 ? last : first / 86400; day < last; day++) {
@@ -2745,7 +2749,7 @@ static void detect_cut(const call_series *s, finding_state *f) {
     snprintf(f->title, sizeof f->title, "%ld %s call%s %s cut off in the last 24 hours, out of %ld", s->last24.cut, s->name, s->last24.cut == 1 ? "" : "s",
              s->last24.cut == 1 ? "was" : "were", s->last24.calls);
   else snprintf(f->title, sizeof f->title, "%s had calls cut off on %d of the last 3 days", s->name, bad);
-  snprintf(f->evidence, sizeof f->evidence, "Calls that started and had not ended a minute later: %s; %ld in the last 24 hours, out of %ld calls.", days,
+  snprintf(f->evidence, sizeof f->evidence, "Calls that started and had not ended 10 minutes later: %s; %ld in the last 24 hours, out of %ld calls.", days,
            s->last24.cut, s->last24.calls);
   snprintf(f->next, sizeof f->next, "Find what holds `%s` past its %s%s timeout, such as a wait on the database lock; `ctx stats --hooks --days 3`"
                                     " counts the calls cut off.", cmd, lim, budget ? "" : " harness");
@@ -2973,10 +2977,10 @@ static long long calls_ingest(sqlite3 *db, time_t now) {
 }
 
 /* Figures per name, and per UTC day or over the whole range, for calls started in [?1, ?2) as of
- * ?3: a start still within its first minute is left out. p50 and p95 are the same ranks
+ * ?3: a start with no end that is younger than CALL_CUT_SECS (600) may still be running and is left out. p50 and p95 are the same ranks
  * ctx stats --hooks takes. */
 #define CALL_FIGS(bucket)                                                                                                          \
-  "WITH c AS (SELECT " bucket " AS d, name, ms FROM ctx_call WHERE ts >= ?1 AND ts < ?2 AND (ms IS NOT NULL OR ts < ?3 - 60)),"   \
+  "WITH c AS (SELECT " bucket " AS d, name, ms FROM ctx_call WHERE ts >= ?1 AND ts < ?2 AND (ms IS NOT NULL OR ts < ?3 - 600)),"   \
   " r AS (SELECT d, name, ms, row_number() OVER (PARTITION BY d, name ORDER BY ms) - 1 AS i, count(*) OVER (PARTITION BY d, name) AS n" \
   "  FROM c WHERE ms >= 0)"                                                                                                        \
   " SELECT a.d, a.name, a.calls, a.cut, b.p50, b.p95, b.mx FROM (SELECT d, name, count(*) AS calls, sum(ms IS NULL) AS cut FROM c GROUP BY d, name) a" \
@@ -2984,7 +2988,7 @@ static long long calls_ingest(sqlite3 *db, time_t now) {
   "  FROM r GROUP BY d, name) b USING (d, name)"
 
 /* The daily figures, again from the calls held, for the full days that can have changed:
- * yesterday, whose calls cut off near midnight only count as cut a minute later, and any day the
+ * yesterday, whose calls cut off near midnight only count as cut 10 minutes later, and any day the
  * ingest touched. Kept short, since it holds the write lock the hooks wait on. */
 static void call_days(sqlite3 *db, time_t now, long long touched) {
   long long today = (long long)now / 86400, from = today - 1;
