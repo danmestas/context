@@ -4526,23 +4526,23 @@ c.execute("INSERT INTO picu_credential VALUES ('openai', 'oauth', ?, 1, 1)", (b"
 c.commit(); c.close()
 j = sqlite3.connect(ws + "/.pic/journal.sqlite")
 j.executescript("""CREATE TABLE pic_session(id TEXT PRIMARY KEY, forked_from TEXT);
-CREATE TABLE pic_submission(id INTEGER PRIMARY KEY, session_id TEXT);
+CREATE TABLE pic_submission(id INTEGER PRIMARY KEY, session_id TEXT, status TEXT NOT NULL DEFAULT 'answered');
 CREATE TABLE pic_entry(seq INTEGER PRIMARY KEY, submission_id INTEGER, provider TEXT, api TEXT, model TEXT, created_ms INTEGER);
 CREATE TABLE pic_generation(id INTEGER PRIMARY KEY, submission_id INTEGER, turn INTEGER, attempt INTEGER, state TEXT, entry_seq INTEGER, usage TEXT,
   purpose TEXT NOT NULL DEFAULT 'reply', context_tokens INTEGER, credential TEXT);
 INSERT INTO pic_session VALUES ('ses1', NULL), ('ses2', 'ses1');
-INSERT INTO pic_submission VALUES (1, 'ses1'), (2, 'ses2');""")
+INSERT INTO pic_submission VALUES (1, 'ses1', 'answered'), (2, 'ses2', 'admitted'), (5, 'ses2', 'answered');""")
 ms = 1795600000000
 j.execute("INSERT INTO pic_entry VALUES (1, 1, 'anthropic', 'anthropic-messages', 'claude-opus-5-5', ?)", (ms,))
 j.execute("INSERT INTO pic_entry VALUES (2, 1, 'openai', 'openai-responses', 'gpt-test', ?)", (ms + 1000,))
 j.execute("INSERT INTO pic_entry VALUES (3, 2, 'openai', 'openai-responses', 'gpt-test', ?)", (ms + 2000,))
-j.execute("INSERT INTO pic_entry VALUES (4, 2, 'openai', 'openai-responses', 'gpt-test', ?)", (ms + 3000,))
+j.execute("INSERT INTO pic_entry VALUES (4, 5, 'openai', 'openai-responses', 'gpt-test', ?)", (ms + 3000,))
 ant = {"input_tokens": 100, "cache_creation_input_tokens": 1000, "cache_creation": {"ephemeral_1h_input_tokens": 1000, "ephemeral_5m_input_tokens": 0}, "cache_read_input_tokens": 2000, "output_tokens": 300}
 oai = {"input_tokens": 1000, "input_tokens_details": {"cached_tokens": 400, "cache_write_tokens": 0}, "output_tokens": 50, "output_tokens_details": {"reasoning_tokens": 10}}
 j.execute("INSERT INTO pic_generation VALUES (1, 1, 1, 1, 'done', 1, ?, 'reply', 3100, 'env:ANTHROPIC_API_KEY:abc123')", (json.dumps(ant),))
 j.execute("INSERT INTO pic_generation VALUES (2, 1, 2, 1, 'done', 2, ?, 'compaction', 1000, 'openai')", (json.dumps(oai),))
 j.execute("INSERT INTO pic_generation VALUES (3, 2, 1, 1, 'started', 3, NULL, 'reply', NULL, 'openai')")
-j.execute("INSERT INTO pic_generation VALUES (4, 2, 2, 1, 'done', 4, ?, 'reply', 1000, 'openai')", (json.dumps(oai),))
+j.execute("INSERT INTO pic_generation VALUES (4, 5, 1, 1, 'done', 4, ?, 'reply', 1000, 'openai')", (json.dumps(oai),))
 j.commit(); j.close()
 PY
 CLAUDE_CONFIG_DIR="$T/none" CODEX_HOME="$T/none" CTX_PIC_DB="$T/pic-user.sqlite" "$CTX" usage collect >/dev/null
@@ -4560,6 +4560,47 @@ CLAUDE_CONFIG_DIR="$T/none" CODEX_HOME="$T/none" CTX_PIC_DB="$T/pic-user.sqlite"
 [ "$(U "SELECT count(*), count(DISTINCT msg), sum(parent = 'pi-ses1') FROM ctx_usage WHERE harness = 'pic'")" = "4 4 2" ] || fail "pic: the rest once finished, each once, a fork under its parent: $(U "SELECT msg, parent FROM ctx_usage WHERE harness = 'pic'")"
 python3 -c 'import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); assert not any(b"TOP-SECRET" in (v if isinstance(v, bytes) else str(v).encode()) for t, in c.execute("SELECT name FROM sqlite_master WHERE type = \"table\" AND name LIKE \"ctx_%\"").fetchall() for r in c.execute("SELECT * FROM \"%s\"" % t) for v in r if v is not None)' "$CTX_DB" || fail "pic: no secret is taken in"
 
+# OpenRouter's chat-completions usage is read; a shape ctx does not know is left out, not stored as zeros;
+# a generation that can no longer finish does not hold the rest back.
+python3 - "$PW/.pic/journal.sqlite" <<'PY'
+import json, sqlite3, sys
+j = sqlite3.connect(sys.argv[1])
+ms = 1795600100000
+j.execute("INSERT INTO pic_submission VALUES (3, 'ses1', 'answered'), (4, 'ses1', 'failed')")
+j.execute("INSERT INTO pic_entry VALUES (5, 3, 'openrouter', 'openai-completions', 'gpt-or', ?)", (ms,))
+j.execute("INSERT INTO pic_entry VALUES (6, 3, 'openrouter', 'openai-completions', 'gpt-or', ?)", (ms + 1000,))
+j.execute("INSERT INTO pic_entry VALUES (7, 4, 'openrouter', 'openai-completions', 'gpt-or', ?)", (ms + 2000,))
+j.execute("INSERT INTO pic_entry VALUES (8, 3, 'openrouter', 'openai-completions', 'gpt-or', ?)", (ms + 3000,))
+orr = {"prompt_tokens": 1000, "completion_tokens": 40, "prompt_tokens_details": {"cached_tokens": 300}, "completion_tokens_details": {"reasoning_tokens": 7}, "cost": 0.01}
+j.execute("INSERT INTO pic_generation VALUES (5, 3, 1, 1, 'done', 5, ?, 'reply', 1000, 'openrouter')", (json.dumps(orr),))
+j.execute("INSERT INTO pic_generation VALUES (6, 3, 2, 1, 'done', 6, ?, 'reply', 1000, 'openrouter')", (json.dumps({"some_new_field": 3}),))
+j.execute("INSERT INTO pic_generation VALUES (7, 4, 1, 1, 'started', 7, NULL, 'reply', NULL, 'openrouter')")
+j.execute("INSERT INTO pic_generation VALUES (8, 3, 3, 1, 'done', 8, ?, 'reply', 1000, 'openrouter')", (json.dumps(orr),))
+j.commit(); j.close()
+PY
+CLAUDE_CONFIG_DIR="$T/none" CODEX_HOME="$T/none" CTX_PIC_DB="$T/pic-user.sqlite" "$CTX" usage collect > "$T/picor.out"
+[ "$(U "SELECT input, cache_read, output, reasoning FROM ctx_usage WHERE msg = 'pi-ses1:g5'")" = "700 300 40 7" ] || fail "pic: OpenRouter's prompt and completion tokens are read: $(U "SELECT * FROM ctx_usage WHERE msg = 'pi-ses1:g5'")"
+[ "$(U "SELECT count(*) FROM ctx_usage WHERE msg = 'pi-ses1:g6'")" = 0 ] && grep -q '1 pic responses left out' "$T/picor.out" || fail "pic: usage in an unknown shape is left out and said: $(cat "$T/picor.out")"
+[ "$(U "SELECT count(*) FROM ctx_usage WHERE msg = 'pi-ses1:g8'")" = 1 ] || fail "pic: a generation of a failed submission does not hold back the ones after it"
+# A compaction whose entry is gone is still counted, from its submission's other entries; a run left
+# 'started' in a journal untouched for an hour does not hold the rest back.
+python3 - "$PW/.pic/journal.sqlite" <<'PY'
+import json, os, sqlite3, sys, time
+j = sqlite3.connect(sys.argv[1])
+j.execute("INSERT INTO pic_submission VALUES (6, 'ses1', 'admitted'), (7, 'ses1', 'answered')")
+j.execute("INSERT INTO pic_entry VALUES (9, 7, 'openai', 'openai-responses', 'gpt-test', 1795600200000)")
+oai = {"input_tokens": 884, "output_tokens": 20}
+j.execute("INSERT INTO pic_generation VALUES (9, 6, 1, 1, 'started', 99, NULL, 'reply', NULL, 'openai')")
+j.execute("INSERT INTO pic_generation VALUES (10, 7, 1, 1, 'done', 9, ?, 'reply', 1000, 'openai')", (json.dumps(oai),))
+j.execute("INSERT INTO pic_generation VALUES (11, 7, 2, 1, 'done', 404, ?, 'compaction', 1000, 'openai')", (json.dumps(oai),))
+j.commit(); j.close()
+old = time.time() - 7200
+for p in (sys.argv[1], sys.argv[1] + "-wal"):
+    if os.path.exists(p): os.utime(p, (old, old))
+PY
+CLAUDE_CONFIG_DIR="$T/none" CODEX_HOME="$T/none" CTX_PIC_DB="$T/pic-user.sqlite" "$CTX" usage collect >/dev/null
+[ "$(U "SELECT model, purpose, input FROM ctx_usage WHERE msg = 'pi-ses1:g11'")" = "gpt-test compaction 884" ] || fail "pic: a compaction with no entry is counted: $(U "SELECT * FROM ctx_usage WHERE msg = 'pi-ses1:g11'")"
+[ "$(U "SELECT count(*) FROM ctx_usage WHERE msg = 'pi-ses1:g10'")" = 1 ] || fail "pic: a run left started in a journal idle for an hour does not hold back the rest"
 # A .claude.json that cannot be read says nothing about the login.
 SEEN=$(U "SELECT count(*) FROM ctx_account_seen")
 printf '{"oauthAccount":{"emailAddress":"half' > "$U2/.claude.json"

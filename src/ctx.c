@@ -16810,7 +16810,7 @@ static const usage_account *login_at(const usage_logins *l, const char *at) {
 /* The statements one read uses, prepared once per collection. */
 typedef struct {
   sqlite3_stmt *claude, *codex, *limits, *ins, *lim, *pos, *setpos, *tries, *picuse;
-  long rows, unpriced, readings;
+  long rows, unpriced, readings, unread; /* unread: responses whose usage had a shape not known here */
   struct timespec until; /* when to stop: a scan holds the archive's lock, so it reads for a while and leaves the rest */
   int bounded, stopped;
 } usage_ctx;
@@ -16867,7 +16867,11 @@ static void usage_prepare(sqlite3 *db, usage_ctx *u) {
                              " coalesce(json_extract(?1, '$.cache_creation.ephemeral_1h_input_tokens'), 0), coalesce(json_extract(?1, '$.cache_read_input_tokens'), 0),"
                              " coalesce(json_extract(?1, '$.output_tokens'), 0), coalesce(json_extract(?1, '$.output_tokens_details.thinking_tokens'), 0),"
                              " coalesce(json_extract(?1, '$.input_tokens_details.cached_tokens'), 0), coalesce(json_extract(?1, '$.input_tokens_details.cache_write_tokens'), 0),"
-                             " coalesce(json_extract(?1, '$.output_tokens_details.reasoning_tokens'), 0) WHERE json_valid(?1)");
+                             " coalesce(json_extract(?1, '$.output_tokens_details.reasoning_tokens'), 0),"
+                             " json_type(?1, '$.prompt_tokens') IS NOT NULL, coalesce(json_extract(?1, '$.prompt_tokens'), 0),"
+                             " coalesce(json_extract(?1, '$.completion_tokens'), 0), coalesce(json_extract(?1, '$.prompt_tokens_details.cached_tokens'), 0),"
+                             " coalesce(json_extract(?1, '$.prompt_tokens_details.cache_write_tokens'), 0),"
+                             " coalesce(json_extract(?1, '$.completion_tokens_details.reasoning_tokens'), 0) WHERE json_valid(?1)");
   u->pos = db_prepare(db, "SELECT offset, head, state FROM ctx_usage_read WHERE path = ?1");
   u->setpos = db_prepare(db, "INSERT OR REPLACE INTO ctx_usage_read(path, offset, head, state) VALUES (?1, ?2, ?3, ?4)");
 }
@@ -17248,6 +17252,12 @@ static void usage_pic_journal(sqlite3 *db, usage_ctx *u, sqlite3 *pic, const cha
   struct stat st;
   if (usage_out_of_time(u) || stat(journal, &st) != 0) return;
   long long last = 0;
+  /* when the journal was last written, with its WAL: a generation left running in a journal untouched
+   * for an hour will not finish */
+  char walp[4200];
+  struct stat ws_;
+  snprintf(walp, sizeof walp, "%s-wal", journal);
+  time_t touched = stat(walp, &ws_) == 0 && ws_.st_mtime > st.st_mtime ? ws_.st_mtime : st.st_mtime;
   sqlite3_bind_text(u->pos, 1, journal, -1, SQLITE_STATIC);
   if (sqlite3_step(u->pos) == SQLITE_ROW) last = sqlite3_column_int64(u->pos, 0);
   sqlite3_reset(u->pos);
@@ -17255,16 +17265,36 @@ static void usage_pic_journal(sqlite3 *db, usage_ctx *u, sqlite3 *pic, const cha
   sqlite3 *j = pic_open(journal, &immutable);
   if (!j) return;
   sqlite3_stmt *upto_q = NULL, *gen = NULL;
-  long long upto = last;
-  if (sqlite3_prepare_v2(j, "SELECT coalesce((SELECT min(id) - 1 FROM pic_generation WHERE state = 'started' AND id > ?1), (SELECT max(id) FROM pic_generation), ?1)",
+  long long upto = last, max_id = 0;
+  /* the newest generation's id is the rowid, read at once: nothing newer than the last read, nothing to do */
+  if (sqlite3_prepare_v2(j, "SELECT coalesce(max(id), 0) FROM pic_generation", -1, &upto_q, NULL) == SQLITE_OK && sqlite3_step(upto_q) == SQLITE_ROW)
+    max_id = sqlite3_column_int64(upto_q, 0);
+  sqlite3_finalize(upto_q);
+  upto_q = NULL;
+  if (max_id <= last) {
+    sqlite3_close(j);
+    return;
+  }
+  /* A generation still running holds the read back to just before it, so it is read when done. One that
+   * can no longer finish does not: its submission ended, a later generation of it began, or the journal
+   * has not been written for an hour (pic stopped while it ran). */
+  if (sqlite3_prepare_v2(j, "SELECT coalesce((SELECT min(g.id) - 1 FROM pic_generation g JOIN pic_submission s ON s.id = g.submission_id"
+                            " WHERE g.state = 'started' AND g.id > ?1 AND ?2 AND s.status = 'admitted'"
+                            " AND NOT EXISTS (SELECT 1 FROM pic_generation h WHERE h.submission_id = g.submission_id AND h.id > g.id)),"
+                            " (SELECT max(id) FROM pic_generation), ?1)",
                          -1, &upto_q, NULL) == SQLITE_OK) {
     sqlite3_bind_int64(upto_q, 1, last);
+    sqlite3_bind_int(upto_q, 2, now_time() - touched < 3600);
     if (sqlite3_step(upto_q) == SQLITE_ROW) upto = sqlite3_column_int64(upto_q, 0);
   }
   sqlite3_finalize(upto_q);
   if (upto <= last ||
-      sqlite3_prepare_v2(j, "SELECT g.id, g.purpose, g.usage, g.credential, s.session_id, ps.forked_from, e.provider, e.model, e.created_ms"
-                            " FROM pic_generation g JOIN pic_entry e ON e.seq = g.entry_seq JOIN pic_submission s ON s.id = g.submission_id"
+      sqlite3_prepare_v2(j, /* a compaction may point at no entry: its submission's nearest entry gives the provider, model and time */
+                            "SELECT g.id, g.purpose, g.usage, g.credential, s.session_id, ps.forked_from,"
+                            " coalesce(e.provider, (SELECT n.provider FROM pic_entry n WHERE n.submission_id = g.submission_id AND n.provider IS NOT NULL ORDER BY n.seq DESC LIMIT 1)),"
+                            " coalesce(e.model, (SELECT n.model FROM pic_entry n WHERE n.submission_id = g.submission_id AND n.model IS NOT NULL ORDER BY n.seq DESC LIMIT 1)),"
+                            " coalesce(e.created_ms, (SELECT max(n.created_ms) FROM pic_entry n WHERE n.submission_id = g.submission_id))"
+                            " FROM pic_generation g LEFT JOIN pic_entry e ON e.seq = g.entry_seq JOIN pic_submission s ON s.id = g.submission_id"
                             " LEFT JOIN pic_session ps ON ps.id = s.session_id"
                             " WHERE g.id > ?1 AND g.id <= ?2 AND g.state = 'done' AND g.usage IS NOT NULL ORDER BY g.id", -1, &gen, NULL) != SQLITE_OK) {
     sqlite3_finalize(gen);
@@ -17312,9 +17342,17 @@ static void usage_pic_journal(sqlite3 *db, usage_ctx *u, sqlite3 *pic, const cha
     iso_time((time_t)(sqlite3_column_int64(gen, 8) / 1000), at);
     /* the provider's own usage: Anthropic's counts cache apart from input, OpenAI's inside it */
     long long t[6] = {0};
+    int counted = 0;
+    const char *prov = PG(6) ? PG(6) : "";
     sqlite3_bind_text(u->picuse, 1, PG(2), -1, SQLITE_TRANSIENT);
     if (sqlite3_step(u->picuse) == SQLITE_ROW) {
-      if (sqlite3_column_int(u->picuse, 0)) { /* anthropic */
+      if (sqlite3_column_int(u->picuse, 10)) { /* chat completions (OpenRouter and the like): cached input inside prompt_tokens */
+        t[3] = sqlite3_column_int64(u->picuse, 13);
+        t[1] = sqlite3_column_int64(u->picuse, 14);
+        t[0] = sqlite3_column_int64(u->picuse, 11) - t[3] - t[1];
+        t[4] = sqlite3_column_int64(u->picuse, 12);
+        t[5] = sqlite3_column_int64(u->picuse, 15);
+      } else if (!strcmp(prov, "anthropic") || (!*prov && sqlite3_column_int(u->picuse, 0))) { /* anthropic */
         t[0] = sqlite3_column_int64(u->picuse, 1);
         t[2] = sqlite3_column_int64(u->picuse, 3);
         t[1] = sqlite3_column_int64(u->picuse, 2) - t[2];
@@ -17328,10 +17366,17 @@ static void usage_pic_journal(sqlite3 *db, usage_ctx *u, sqlite3 *pic, const cha
         t[4] = sqlite3_column_int64(u->picuse, 5);
         t[5] = sqlite3_column_int64(u->picuse, 9);
       }
-      for (int i = 0; i < 6; i++)
+      for (int i = 0; i < 6; i++) {
         if (t[i] < 0) t[i] = 0;
+        if (t[i]) counted = 1;
+      }
     }
     sqlite3_reset(u->picuse);
+    if (!counted) { /* usage in a shape not known here: no row rather than a row of zeros */
+      u->unread++;
+      done = id;
+      continue;
+    }
     usage_account acct, *a = NULL;
     memset(&acct, 0, sizeof acct);
     const char *cred = PG(3), *provider = PG(6) ? PG(6) : "unknown";
@@ -17501,6 +17546,7 @@ static void usage_scan(sqlite3 *db, int say, long budget_ms) {
   usage_finish(&u);
   if (say) printf("%ld responses (%ld with no price line) and %ld limit readings taken in%s\n", u.rows, u.unpriced, u.readings,
                   u.stopped ? "; out of time, the rest at the next collection" : "");
+  if (say && u.unread) printf("%ld pic responses left out: their usage is in a shape ctx does not read\n", u.unread);
 }
 
 /* The share of a plan's limit each session used: every rise between two readings of an account's
