@@ -4582,6 +4582,25 @@ CLAUDE_CONFIG_DIR="$T/none" CODEX_HOME="$T/none" CTX_PIC_DB="$T/pic-user.sqlite"
 [ "$(U "SELECT input, cache_read, output, reasoning FROM ctx_usage WHERE msg = 'pi-ses1:g5'")" = "700 300 40 7" ] || fail "pic: OpenRouter's prompt and completion tokens are read: $(U "SELECT * FROM ctx_usage WHERE msg = 'pi-ses1:g5'")"
 [ "$(U "SELECT count(*) FROM ctx_usage WHERE msg = 'pi-ses1:g6'")" = 0 ] && grep -q '1 pic responses left out' "$T/picor.out" || fail "pic: usage in an unknown shape is left out and said: $(cat "$T/picor.out")"
 [ "$(U "SELECT count(*) FROM ctx_usage WHERE msg = 'pi-ses1:g8'")" = 1 ] || fail "pic: a generation of a failed submission does not hold back the ones after it"
+# A compaction whose entry is gone is still counted, from its submission's other entries; a run left
+# 'started' in a journal untouched for an hour does not hold the rest back.
+python3 - "$PW/.pic/journal.sqlite" <<'PY'
+import json, os, sqlite3, sys, time
+j = sqlite3.connect(sys.argv[1])
+j.execute("INSERT INTO pic_submission VALUES (6, 'ses1', 'admitted'), (7, 'ses1', 'answered')")
+j.execute("INSERT INTO pic_entry VALUES (9, 7, 'openai', 'openai-responses', 'gpt-test', 1795600200000)")
+oai = {"input_tokens": 884, "output_tokens": 20}
+j.execute("INSERT INTO pic_generation VALUES (9, 6, 1, 1, 'started', 99, NULL, 'reply', NULL, 'openai')")
+j.execute("INSERT INTO pic_generation VALUES (10, 7, 1, 1, 'done', 9, ?, 'reply', 1000, 'openai')", (json.dumps(oai),))
+j.execute("INSERT INTO pic_generation VALUES (11, 7, 2, 1, 'done', 404, ?, 'compaction', 1000, 'openai')", (json.dumps(oai),))
+j.commit(); j.close()
+old = time.time() - 7200
+for p in (sys.argv[1], sys.argv[1] + "-wal"):
+    if os.path.exists(p): os.utime(p, (old, old))
+PY
+CLAUDE_CONFIG_DIR="$T/none" CODEX_HOME="$T/none" CTX_PIC_DB="$T/pic-user.sqlite" "$CTX" usage collect >/dev/null
+[ "$(U "SELECT model, purpose, input FROM ctx_usage WHERE msg = 'pi-ses1:g11'")" = "gpt-test compaction 884" ] || fail "pic: a compaction with no entry is counted: $(U "SELECT * FROM ctx_usage WHERE msg = 'pi-ses1:g11'")"
+[ "$(U "SELECT count(*) FROM ctx_usage WHERE msg = 'pi-ses1:g10'")" = 1 ] || fail "pic: a run left started in a journal idle for an hour does not hold back the rest"
 # A .claude.json that cannot be read says nothing about the login.
 SEEN=$(U "SELECT count(*) FROM ctx_account_seen")
 printf '{"oauthAccount":{"emailAddress":"half' > "$U2/.claude.json"
