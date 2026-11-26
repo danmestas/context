@@ -17191,8 +17191,12 @@ static void usage_pic_journal(sqlite3 *db, usage_ctx *u, sqlite3 *pic, const cha
   }
   sqlite3_finalize(upto_q);
   if (upto <= last ||
-      sqlite3_prepare_v2(j, "SELECT g.id, g.purpose, g.usage, g.credential, s.session_id, ps.forked_from, e.provider, e.model, e.created_ms"
-                            " FROM pic_generation g JOIN pic_entry e ON e.seq = g.entry_seq JOIN pic_submission s ON s.id = g.submission_id"
+      sqlite3_prepare_v2(j, /* a compaction may point at no entry: its submission's nearest entry gives the provider, model and time */
+                            "SELECT g.id, g.purpose, g.usage, g.credential, s.session_id, ps.forked_from,"
+                            " coalesce(e.provider, (SELECT n.provider FROM pic_entry n WHERE n.submission_id = g.submission_id AND n.provider IS NOT NULL ORDER BY n.seq DESC LIMIT 1)),"
+                            " coalesce(e.model, (SELECT n.model FROM pic_entry n WHERE n.submission_id = g.submission_id AND n.model IS NOT NULL ORDER BY n.seq DESC LIMIT 1)),"
+                            " coalesce(e.created_ms, (SELECT max(n.created_ms) FROM pic_entry n WHERE n.submission_id = g.submission_id))"
+                            " FROM pic_generation g LEFT JOIN pic_entry e ON e.seq = g.entry_seq JOIN pic_submission s ON s.id = g.submission_id"
                             " LEFT JOIN pic_session ps ON ps.id = s.session_id"
                             " WHERE g.id > ?1 AND g.id <= ?2 AND g.state = 'done' AND g.usage IS NOT NULL ORDER BY g.id", -1, &gen, NULL) != SQLITE_OK) {
     sqlite3_finalize(gen);
