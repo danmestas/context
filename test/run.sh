@@ -4511,6 +4511,55 @@ CLAUDE_CONFIG_DIR="$U2" CODEX_HOME="$T/none" "$CTX" usage collect >/dev/null
 [ "$(U "SELECT input, output FROM ctx_usage WHERE msg = 'a-fb'")" = "110 55" ] || fail "every attempt of a retried response counts"
 [ "$(U "SELECT dollars IS NULL, speed FROM ctx_usage WHERE msg = 'a-fast'")" = "1 fast" ] || fail "fast mode has no price line, so no dollars"
 
+# pic: each workspace's journal, read only, by generation, up to the first still running; the
+# session is pi- and pic's id, as ctx names pic's archived conversations; the credential is
+# known by its name and kind, never its sealed value.
+PW="$T/picws"; mkdir -p "$PW/.pic"
+python3 - "$T/pic-user.sqlite" "$PW" <<'PY'
+import json, sqlite3, sys
+user, ws = sys.argv[1:3]
+c = sqlite3.connect(user)
+c.executescript("""CREATE TABLE picu_workspace(path TEXT PRIMARY KEY, journal TEXT NOT NULL, last_used_ms INTEGER NOT NULL);
+CREATE TABLE picu_credential(name TEXT PRIMARY KEY, kind TEXT NOT NULL, sealed BLOB NOT NULL, created_ms INTEGER NOT NULL, used_ms INTEGER);""")
+c.execute("INSERT INTO picu_workspace VALUES (?, ?, 1)", (ws, ws + "/.pic/journal.sqlite"))
+c.execute("INSERT INTO picu_credential VALUES ('openai', 'oauth', ?, 1, 1)", (b"TOP-SECRET-VALUE",))
+c.commit(); c.close()
+j = sqlite3.connect(ws + "/.pic/journal.sqlite")
+j.executescript("""CREATE TABLE pic_session(id TEXT PRIMARY KEY, forked_from TEXT);
+CREATE TABLE pic_submission(id INTEGER PRIMARY KEY, session_id TEXT);
+CREATE TABLE pic_entry(seq INTEGER PRIMARY KEY, submission_id INTEGER, provider TEXT, api TEXT, model TEXT, created_ms INTEGER);
+CREATE TABLE pic_generation(id INTEGER PRIMARY KEY, submission_id INTEGER, turn INTEGER, attempt INTEGER, state TEXT, entry_seq INTEGER, usage TEXT,
+  purpose TEXT NOT NULL DEFAULT 'reply', context_tokens INTEGER, credential TEXT);
+INSERT INTO pic_session VALUES ('ses1', NULL), ('ses2', 'ses1');
+INSERT INTO pic_submission VALUES (1, 'ses1'), (2, 'ses2');""")
+ms = 1795600000000
+j.execute("INSERT INTO pic_entry VALUES (1, 1, 'anthropic', 'anthropic-messages', 'claude-opus-5-5', ?)", (ms,))
+j.execute("INSERT INTO pic_entry VALUES (2, 1, 'openai', 'openai-responses', 'gpt-test', ?)", (ms + 1000,))
+j.execute("INSERT INTO pic_entry VALUES (3, 2, 'openai', 'openai-responses', 'gpt-test', ?)", (ms + 2000,))
+j.execute("INSERT INTO pic_entry VALUES (4, 2, 'openai', 'openai-responses', 'gpt-test', ?)", (ms + 3000,))
+ant = {"input_tokens": 100, "cache_creation_input_tokens": 1000, "cache_creation": {"ephemeral_1h_input_tokens": 1000, "ephemeral_5m_input_tokens": 0}, "cache_read_input_tokens": 2000, "output_tokens": 300}
+oai = {"input_tokens": 1000, "input_tokens_details": {"cached_tokens": 400, "cache_write_tokens": 0}, "output_tokens": 50, "output_tokens_details": {"reasoning_tokens": 10}}
+j.execute("INSERT INTO pic_generation VALUES (1, 1, 1, 1, 'done', 1, ?, 'reply', 3100, 'env:ANTHROPIC_API_KEY:abc123')", (json.dumps(ant),))
+j.execute("INSERT INTO pic_generation VALUES (2, 1, 2, 1, 'done', 2, ?, 'compaction', 1000, 'openai')", (json.dumps(oai),))
+j.execute("INSERT INTO pic_generation VALUES (3, 2, 1, 1, 'started', 3, NULL, 'reply', NULL, 'openai')")
+j.execute("INSERT INTO pic_generation VALUES (4, 2, 2, 1, 'done', 4, ?, 'reply', 1000, 'openai')", (json.dumps(oai),))
+j.commit(); j.close()
+PY
+CLAUDE_CONFIG_DIR="$T/none" CODEX_HOME="$T/none" CTX_PIC_DB="$T/pic-user.sqlite" "$CTX" usage collect >/dev/null
+[ "$(U "SELECT count(*) FROM ctx_usage WHERE harness = 'pic'")" = 2 ] || fail "pic: read up to the generation still running: $(U "SELECT msg FROM ctx_usage WHERE harness = 'pic'")"
+[ "$(U "SELECT session, account, plan, round(dollars, 4), write_1h, cache_read FROM ctx_usage WHERE harness = 'pic' AND model = 'claude-opus-5-5'")" = "pi-ses1 anthropic:api-key api-key 0.0148 1000 2000" ] || fail "pic: an Anthropic response, on an API key from the environment: $(U "SELECT * FROM ctx_usage WHERE harness = 'pic'")"
+[ "$(U "SELECT session, account, purpose, input, cache_read, output, reasoning FROM ctx_usage WHERE harness = 'pic' AND model = 'gpt-test'")" = "pi-ses1 openai:pic-openai compaction 600 400 50 10" ] || fail "pic: an OpenAI compaction, cached input apart, its purpose kept: $(U "SELECT * FROM ctx_usage WHERE harness = 'pic' AND model = 'gpt-test'")"
+python3 - "$PW/.pic/journal.sqlite" <<'PY'
+import json, sqlite3, sys
+j = sqlite3.connect(sys.argv[1])
+j.execute("UPDATE pic_generation SET state = 'done', usage = ? WHERE id = 3", (json.dumps({"input_tokens": 10, "output_tokens": 5}),))
+j.commit(); j.close()
+PY
+CLAUDE_CONFIG_DIR="$T/none" CODEX_HOME="$T/none" CTX_PIC_DB="$T/pic-user.sqlite" "$CTX" usage collect >/dev/null
+CLAUDE_CONFIG_DIR="$T/none" CODEX_HOME="$T/none" CTX_PIC_DB="$T/pic-user.sqlite" "$CTX" usage collect >/dev/null
+[ "$(U "SELECT count(*), count(DISTINCT msg), sum(parent = 'pi-ses1') FROM ctx_usage WHERE harness = 'pic'")" = "4 4 2" ] || fail "pic: the rest once finished, each once, a fork under its parent: $(U "SELECT msg, parent FROM ctx_usage WHERE harness = 'pic'")"
+python3 -c 'import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); assert not any(b"TOP-SECRET" in (v if isinstance(v, bytes) else str(v).encode()) for t, in c.execute("SELECT name FROM sqlite_master WHERE type = \"table\" AND name LIKE \"ctx_%\"").fetchall() for r in c.execute("SELECT * FROM \"%s\"" % t) for v in r if v is not None)' "$CTX_DB" || fail "pic: no secret is taken in"
+
 # A .claude.json that cannot be read says nothing about the login.
 SEEN=$(U "SELECT count(*) FROM ctx_account_seen")
 printf '{"oauthAccount":{"emailAddress":"half' > "$U2/.claude.json"

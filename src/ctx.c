@@ -887,7 +887,7 @@ static void schema_ensure(sqlite3 *db) {
   /* ctx_usage from before it had a folder had another key too: started again, and read again from
    * the records, which hold everything it did */
   if (db_int(db, "SELECT count(*) FROM sqlite_master WHERE name = 'ctx_usage'") &&
-      !db_int(db, "SELECT count(*) FROM pragma_table_info('ctx_usage') WHERE name = 'folder'"))
+      !db_int(db, "SELECT count(*) FROM pragma_table_info('ctx_usage') WHERE name = 'purpose'"))
     db_exec(db, "DROP TABLE ctx_usage; DELETE FROM ctx_usage_read");
   db_exec(db, ctx_state_schema);
   columns_ensure(db);
@@ -16738,7 +16738,7 @@ static const usage_account *login_at(const usage_logins *l, const char *at) {
 
 /* The statements one read uses, prepared once per collection. */
 typedef struct {
-  sqlite3_stmt *claude, *codex, *limits, *ins, *lim, *pos, *setpos, *tries;
+  sqlite3_stmt *claude, *codex, *limits, *ins, *lim, *pos, *setpos, *tries, *picuse;
   long rows, unpriced, readings;
   struct timespec until; /* when to stop: a scan holds the archive's lock, so it reads for a while and leaves the rest */
   int bounded, stopped;
@@ -16779,8 +16779,8 @@ static void usage_prepare(sqlite3 *db, usage_ctx *u) {
   u->limits = db_prepare(db, "SELECT json_extract(value, '$.window_minutes'), json_extract(value, '$.used_percent'), json_extract(value, '$.resets_at')"
                              " FROM json_each(?1) WHERE key IN ('primary', 'secondary') AND type = 'object' AND json_type(value, '$.used_percent') IN ('real', 'integer')");
   u->ins = db_prepare(db, "INSERT OR IGNORE INTO ctx_usage(harness, session, parent, msg, project, account, plan, billing, model, speed, at,"
-                          " input, write_5m, write_1h, cache_read, output, reasoning, dollars, price_date, folder)"
-                          " VALUES (?1, ?2, ?3, ?4, ?5, ?6, nullif(?7, ''), nullif(?8, ''), ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)");
+                          " input, write_5m, write_1h, cache_read, output, reasoning, dollars, price_date, folder, purpose)"
+                          " VALUES (?1, ?2, ?3, ?4, ?5, ?6, nullif(?7, ''), nullif(?8, ''), ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)");
   /* a reading the same as the one before it for that account and window says nothing new */
   u->lim = db_prepare(db, "INSERT OR IGNORE INTO ctx_limit(account, window, at, used, resets_at, session, source) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7"
                           " WHERE NOT EXISTS (SELECT 1 FROM ctx_limit l WHERE l.account = ?1 AND l.window = ?2 AND l.used = ?4 AND l.resets_at IS ?5"
@@ -16789,6 +16789,14 @@ static void usage_prepare(sqlite3 *db, usage_ctx *u) {
                             " coalesce(json_extract(value, '$.cache_creation_input_tokens'), 0) - coalesce(json_extract(value, '$.cache_creation.ephemeral_1h_input_tokens'), 0),"
                             " coalesce(json_extract(value, '$.cache_creation.ephemeral_1h_input_tokens'), 0), coalesce(json_extract(value, '$.cache_read_input_tokens'), 0),"
                             " coalesce(json_extract(value, '$.output_tokens'), 0) FROM json_each(?1, '$.message.usage.iterations')");
+  /* pic keeps each provider's usage as it came: Anthropic's with its cache counts apart, OpenAI's with
+   * cached input inside input */
+  u->picuse = db_prepare(db, "SELECT json_type(?1, '$.cache_read_input_tokens') IS NOT NULL OR json_type(?1, '$.cache_creation_input_tokens') IS NOT NULL,"
+                             " coalesce(json_extract(?1, '$.input_tokens'), 0), coalesce(json_extract(?1, '$.cache_creation_input_tokens'), 0),"
+                             " coalesce(json_extract(?1, '$.cache_creation.ephemeral_1h_input_tokens'), 0), coalesce(json_extract(?1, '$.cache_read_input_tokens'), 0),"
+                             " coalesce(json_extract(?1, '$.output_tokens'), 0), coalesce(json_extract(?1, '$.output_tokens_details.thinking_tokens'), 0),"
+                             " coalesce(json_extract(?1, '$.input_tokens_details.cached_tokens'), 0), coalesce(json_extract(?1, '$.input_tokens_details.cache_write_tokens'), 0),"
+                             " coalesce(json_extract(?1, '$.output_tokens_details.reasoning_tokens'), 0) WHERE json_valid(?1)");
   u->pos = db_prepare(db, "SELECT offset, head, state FROM ctx_usage_read WHERE path = ?1");
   u->setpos = db_prepare(db, "INSERT OR REPLACE INTO ctx_usage_read(path, offset, head, state) VALUES (?1, ?2, ?3, ?4)");
 }
@@ -16802,6 +16810,7 @@ static void usage_finish(usage_ctx *u) {
   sqlite3_finalize(u->pos);
   sqlite3_finalize(u->setpos);
   sqlite3_finalize(u->tries);
+  sqlite3_finalize(u->picuse);
 }
 
 /* A response, priced and stored. t: input, write 5m, write 1h, cache read, output, reasoning. a is
@@ -16812,7 +16821,8 @@ static double price_of(const price_line *p, const long long t[6]) {
 }
 
 static void usage_store(usage_ctx *u, const char *harness, const char *session, const char *parent, const char *msg, const char *project, const char *folder,
-                        const usage_account *a, const char *plan, const char *model, const char *speed, const char *at, const long long t[6], const double *given) {
+                        const usage_account *a, const char *plan, const char *model, const char *speed, const char *at, const long long t[6], const double *given,
+                        const char *purpose) {
   if (!model || !*model || !strcmp(model, "<synthetic>") || !msg || !at) return;
   sqlite3_stmt *q = u->ins;
   sqlite3_bind_text(q, 1, harness, -1, SQLITE_STATIC);
@@ -16837,6 +16847,7 @@ static void usage_store(usage_ctx *u, const char *harness, const char *session, 
     sqlite3_bind_null(q, 19);
   }
   sqlite3_bind_text(q, 20, folder, -1, SQLITE_STATIC);
+  sqlite3_bind_text(q, 21, purpose, -1, SQLITE_STATIC);
   sqlite3_step(q);
   int added = sqlite3_changes(sqlite3_db_handle(q));
   u->rows += added;
@@ -17019,7 +17030,7 @@ static void usage_file(sqlite3 *db, usage_ctx *u, const char *path, int codex, c
           sqlite3_reset(u->tries);
         }
         usage_store(u, "claude", session, *parent ? parent : NULL, (const char *)sqlite3_column_text(u->claude, 0), *project ? project : NULL,
-                    *folder ? folder : NULL, at && logins ? login_at(logins, at) : NULL, NULL, model, speed, at, t, tried > 1 ? &given : NULL);
+                    *folder ? folder : NULL, at && logins ? login_at(logins, at) : NULL, NULL, model, speed, at, t, tried > 1 ? &given : NULL, NULL);
       }
       sqlite3_reset(u->claude);
       continue;
@@ -17089,7 +17100,7 @@ static void usage_file(sqlite3 *db, usage_ctx *u, const char *path, int codex, c
             char msg[200];
             snprintf(msg, sizeof msg, "%s:t%lld", cs.session, total[0] + total[3]); /* one response, one running total */
             usage_store(u, "codex", cs.session, *cs.parent ? cs.parent : NULL, msg, *cs.project ? cs.project : NULL, *cs.folder ? cs.folder : NULL,
-                        cs.known ? &acct : NULL, cs.plan, *cs.model ? cs.model : NULL, NULL, at, t, NULL);
+                        cs.known ? &acct : NULL, cs.plan, *cs.model ? cs.model : NULL, NULL, at, t, NULL, NULL);
             memcpy(cs.total, total, sizeof total);
           }
         }
@@ -17154,6 +17165,177 @@ static void usage_codex_dir(sqlite3 *db, usage_ctx *u, const char *dir, const us
   if (d) closedir(d);
 }
 
+/* pic: a journal per workspace (WS/.pic/journal.sqlite, listed in pic.sqlite's picu_workspace),
+ * whose pic_generation rows are the responses, each with the usage the provider returned. Read
+ * read-only, from the generation after the last one taken in, and only up to the first still
+ * running, so one that finishes later is not passed over. The session is pi- and pic's session
+ * id, the name ctx gives pic's archived conversations, so spend lines up with them. Compaction and
+ * branch summaries are responses too, and keep their purpose. The account is what the generation's
+ * credential says without its secret: a key from the environment is the provider's API key, a
+ * stored credential is known by its name and kind, and none is unknown. */
+static void usage_pic_journal(sqlite3 *db, usage_ctx *u, sqlite3 *pic, const char *ws, const char *journal) {
+  struct stat st;
+  if (usage_out_of_time(u) || stat(journal, &st) != 0) return;
+  long long last = 0;
+  sqlite3_bind_text(u->pos, 1, journal, -1, SQLITE_STATIC);
+  if (sqlite3_step(u->pos) == SQLITE_ROW) last = sqlite3_column_int64(u->pos, 0);
+  sqlite3_reset(u->pos);
+  int immutable = 0;
+  sqlite3 *j = pic_open(journal, &immutable);
+  if (!j) return;
+  sqlite3_stmt *upto_q = NULL, *gen = NULL;
+  long long upto = last;
+  if (sqlite3_prepare_v2(j, "SELECT coalesce((SELECT min(id) - 1 FROM pic_generation WHERE state = 'started' AND id > ?1), (SELECT max(id) FROM pic_generation), ?1)",
+                         -1, &upto_q, NULL) == SQLITE_OK) {
+    sqlite3_bind_int64(upto_q, 1, last);
+    if (sqlite3_step(upto_q) == SQLITE_ROW) upto = sqlite3_column_int64(upto_q, 0);
+  }
+  sqlite3_finalize(upto_q);
+  if (upto <= last ||
+      sqlite3_prepare_v2(j, "SELECT g.id, g.purpose, g.usage, g.credential, s.session_id, ps.forked_from, e.provider, e.model, e.created_ms"
+                            " FROM pic_generation g JOIN pic_entry e ON e.seq = g.entry_seq JOIN pic_submission s ON s.id = g.submission_id"
+                            " LEFT JOIN pic_session ps ON ps.id = s.session_id"
+                            " WHERE g.id > ?1 AND g.id <= ?2 AND g.state = 'done' AND g.usage IS NOT NULL ORDER BY g.id", -1, &gen, NULL) != SQLITE_OK) {
+    sqlite3_finalize(gen);
+    sqlite3_close(j);
+    return;
+  }
+  sqlite3_bind_int64(gen, 1, last);
+  sqlite3_bind_int64(gen, 2, upto);
+  char *project = project_for(db, ws), folder[1024];
+  snprintf(folder, sizeof folder, "%s", ws);
+  for (char *c = folder; *c; c++)
+    if (!c_alnum((unsigned char)*c)) *c = '-';
+  int out = folder_excluded(db, folder);
+  sqlite3_stmt *kind = NULL;
+  if (pic) sqlite3_prepare_v2(pic, "SELECT kind FROM picu_credential WHERE name = ?1", -1, &kind, NULL); /* the name and kind only, never the sealed value */
+  db_exec(db, "BEGIN IMMEDIATE");
+  int in_txn = 1;
+  struct timespec began, now;
+  clock_gettime(CLOCK_MONOTONIC, &began);
+  long long done = last;
+  while (sqlite3_step(gen) == SQLITE_ROW) {
+    long long id = sqlite3_column_int64(gen, 0);
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if ((now.tv_sec - began.tv_sec) * 1000 + (now.tv_nsec - began.tv_nsec) / 1000000 >= 25) { /* the same short batches as files */
+      sqlite3_bind_text(u->setpos, 1, journal, -1, SQLITE_STATIC);
+      sqlite3_bind_int64(u->setpos, 2, done);
+      sqlite3_bind_null(u->setpos, 3);
+      sqlite3_bind_null(u->setpos, 4);
+      sqlite3_step(u->setpos);
+      sqlite3_reset(u->setpos);
+      db_exec(db, "COMMIT");
+      in_txn = 0;
+      if (usage_out_of_time(u)) break;
+      in_txn = 1;
+      usleep(50000);
+      db_exec(db, "BEGIN IMMEDIATE");
+      clock_gettime(CLOCK_MONOTONIC, &began);
+    }
+#define PG(i) ((const char *)sqlite3_column_text(gen, i))
+    char session[160], parent[160] = "", msg[200], at[24], purpose[24] = "";
+    snprintf(session, sizeof session, "pi-%s", PG(4) ? PG(4) : "");
+    if (PG(5) && *PG(5)) snprintf(parent, sizeof parent, "pi-%s", PG(5));
+    snprintf(msg, sizeof msg, "%s:g%lld", session, id);
+    if (PG(1) && strcmp(PG(1), "reply")) snprintf(purpose, sizeof purpose, "%s", PG(1));
+    iso_time((time_t)(sqlite3_column_int64(gen, 8) / 1000), at);
+    /* the provider's own usage: Anthropic's counts cache apart from input, OpenAI's inside it */
+    long long t[6] = {0};
+    sqlite3_bind_text(u->picuse, 1, PG(2), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(u->picuse) == SQLITE_ROW) {
+      if (sqlite3_column_int(u->picuse, 0)) { /* anthropic */
+        t[0] = sqlite3_column_int64(u->picuse, 1);
+        t[2] = sqlite3_column_int64(u->picuse, 3);
+        t[1] = sqlite3_column_int64(u->picuse, 2) - t[2];
+        t[3] = sqlite3_column_int64(u->picuse, 4);
+        t[4] = sqlite3_column_int64(u->picuse, 5);
+        t[5] = sqlite3_column_int64(u->picuse, 6);
+      } else {
+        t[3] = sqlite3_column_int64(u->picuse, 7);
+        t[0] = sqlite3_column_int64(u->picuse, 1) - t[3];
+        t[1] = sqlite3_column_int64(u->picuse, 8);
+        t[4] = sqlite3_column_int64(u->picuse, 5);
+        t[5] = sqlite3_column_int64(u->picuse, 9);
+      }
+      for (int i = 0; i < 6; i++)
+        if (t[i] < 0) t[i] = 0;
+    }
+    sqlite3_reset(u->picuse);
+    usage_account acct, *a = NULL;
+    memset(&acct, 0, sizeof acct);
+    const char *cred = PG(3), *provider = PG(6) ? PG(6) : "unknown";
+    if (cred && !strncmp(cred, "env:", 4)) { /* a key from the environment: the provider's API key */
+      snprintf(acct.account, sizeof acct.account, "%s:api-key", provider);
+      snprintf(acct.plan, sizeof acct.plan, "api-key");
+      a = &acct;
+    } else if (cred && *cred) { /* a stored credential: known by its name, an API key or a login */
+      int is_key = 0;
+      if (kind) {
+        sqlite3_bind_text(kind, 1, cred, -1, SQLITE_STATIC);
+        if (sqlite3_step(kind) == SQLITE_ROW && sqlite3_column_text(kind, 0)) is_key = !strcmp((const char *)sqlite3_column_text(kind, 0), "api_key");
+        sqlite3_reset(kind);
+      }
+      if (is_key) {
+        snprintf(acct.account, sizeof acct.account, "%s:api-key", provider);
+        snprintf(acct.plan, sizeof acct.plan, "api-key");
+      } else snprintf(acct.account, sizeof acct.account, "%s:pic-%s", provider, cred);
+      a = &acct;
+    }
+    if (!out && !session_forgotten(db, session))
+      usage_store(u, "pic", session, *parent ? parent : NULL, msg, project, folder, a, NULL, PG(7), NULL, at, t, NULL, *purpose ? purpose : NULL);
+#undef PG
+    done = id;
+  }
+  if (in_txn) {
+    sqlite3_bind_text(u->setpos, 1, journal, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(u->setpos, 2, upto); /* read to the end: failed generations up to there are passed over for good */
+    sqlite3_bind_null(u->setpos, 3);
+    sqlite3_bind_null(u->setpos, 4);
+    sqlite3_step(u->setpos);
+    sqlite3_reset(u->setpos);
+    db_exec(db, "COMMIT");
+  }
+  sqlite3_finalize(kind);
+  sqlite3_finalize(gen);
+  sqlite3_close(j);
+  free(project);
+}
+
+/* Every workspace pic.sqlite lists ($CTX_PIC_DB, else ~/.pic/pic.sqlite; empty for none). */
+static void usage_pic(sqlite3 *db, usage_ctx *u) {
+  const char *env = getenv("CTX_PIC_DB"), *home = getenv("HOME");
+  char path[4200];
+  if (env) {
+    if (!*env) return;
+    snprintf(path, sizeof path, "%s", env);
+  } else if (home && *home) snprintf(path, sizeof path, "%s/.pic/pic.sqlite", home);
+  else return;
+  int immutable = 0;
+  sqlite3 *pic = pic_open(path, &immutable);
+  if (!pic) return;
+  sqlite3_stmt *q = NULL;
+  if (sqlite3_prepare_v2(pic, "SELECT path, journal FROM picu_workspace ORDER BY last_used_ms DESC", -1, &q, NULL) == SQLITE_OK) {
+    char **ws = NULL, **jr = NULL;
+    size_t n = 0;
+    while (sqlite3_step(q) == SQLITE_ROW) { /* listed first, then read, so pic.sqlite is not held while ctx writes */
+      ws = realloc(ws, (n + 1) * sizeof *ws);
+      jr = realloc(jr, (n + 1) * sizeof *jr);
+      if (!ws || !jr) die("out of memory");
+      ws[n] = dup_text(sqlite3_column_text(q, 0));
+      jr[n++] = dup_text(sqlite3_column_text(q, 1));
+    }
+    sqlite3_finalize(q);
+    for (size_t i = 0; i < n; i++) {
+      usage_pic_journal(db, u, pic, ws[i], jr[i]);
+      free(ws[i]);
+      free(jr[i]);
+    }
+    free(ws);
+    free(jr);
+  }
+  sqlite3_close(pic);
+}
+
 /* Everything both harnesses have written since the last collection; the first collects all. The
  * places of files that are gone are let go. */
 static void usage_collect(sqlite3 *db, usage_ctx *u) {
@@ -17195,6 +17377,7 @@ static void usage_collect(sqlite3 *db, usage_ctx *u) {
   usage_codex_dir(db, u, dir, &a, 0);
   snprintf(dir, sizeof dir, "%s/archived_sessions", root);
   usage_codex_dir(db, u, dir, &a, 0);
+  usage_pic(db, u);
   sqlite3_stmt *q = db_prepare(db, "SELECT path FROM ctx_usage_read");
   sqlite3_stmt *del = db_prepare(db, "DELETE FROM ctx_usage_read WHERE path = ?1");
   char **gone = NULL;
@@ -17450,8 +17633,12 @@ static void usage_brief(sqlite3 *db, buf *out) {
   sqlite3_stmt *told = NULL, *tell = NULL;
   sqlite3_prepare_v2(db, "SELECT 1 FROM ctx_meta WHERE key = 'plan-told:' || ?1 AND value = ?2", -1, &told, NULL);
   sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO ctx_meta(key, value) VALUES ('plan-told:' || ?1, ?2)", -1, &tell, NULL);
-  char today[11];
-  utc_day((long long)now / 86400, today);
+  char today[11]; /* the person's own day, so a line said late at night is not said again after midnight UTC */
+  {
+    struct tm lt;
+    localtime_r(&now, &lt);
+    strftime(today, sizeof today, "%Y-%m-%d", &lt);
+  }
   char **said = NULL;
   size_t nsaid = 0;
   char week_ago[32];
@@ -17497,18 +17684,39 @@ static void usage_brief(sqlite3 *db, buf *out) {
       usage_shares s;
       limit_shares(db, account, 10080, since, until, 1, &s);
       if (s.rise >= 0.5) {
-        buf_fmt(&line, "; +%.0f%% since yesterday", s.rise);
+        long total = lround(s.rise);
+        buf_fmt(&line, "; +%ld%% since yesterday", total);
         sort_some(s.p, s.n, sizeof *s.p, share_order);
-        double named = 0;
+        /* the two largest and the rest, rounded so the parts add up to the total shown (largest remainder) */
+        double part[3];
+        const char *name[3] = {NULL, NULL, "rest"};
         int k = 0;
+        double named = 0;
         for (size_t i = 0; i < s.n && k < 2; i++)
           if (s.p[i].share >= 0.5) {
-            buf_fmt(&line, "%s%s %.0f", k ? ", " : " (", s.p[i].key, s.p[i].share);
+            part[k] = s.p[i].share;
+            name[k] = s.p[i].key;
             named += s.p[i].share;
             k++;
           }
-        if (k && s.rise - named >= 0.5) buf_fmt(&line, ", rest %.0f", s.rise - named);
-        if (k) buf_str(&line, ")");
+        int np = k;
+        if (k && s.rise - named > 0) part[np++] = s.rise - named;
+        if (k) {
+          long whole[3], sum = 0;
+          for (int i = 0; i < np; i++) sum += whole[i] = (long)floor(part[i]);
+          while (sum < total) { /* hand out what is left to the largest fractions */
+            int best = 0;
+            for (int i = 1; i < np; i++)
+              if (part[i] - (double)whole[i] > part[best] - (double)whole[best]) best = i;
+            whole[best]++;
+            part[best] = (double)whole[best]; /* taken: no fraction left */
+            sum++;
+          }
+          int shown = 0;
+          for (int i = 0; i < np; i++)
+            if (whole[i] > 0) buf_fmt(&line, "%s%s %ld", shown++ ? ", " : " (", i < k ? name[i] : "rest", whole[i]);
+          if (shown) buf_str(&line, ")");
+        }
       }
       buf_str(&line, ".");
       worth |= used >= BRIEF_WEEK_PCT || s.rise >= BRIEF_RISE_PCT;
