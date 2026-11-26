@@ -4805,18 +4805,153 @@ for k in $(seq 1 25); do "$CTX" archive "$QC/q-$k.jsonl" >/dev/null; done
   INSERT INTO ctx_usage(harness, session, msg, model, at, input, write_5m, write_1h, cache_read, output, dollars, price_date)
   SELECT 'claude', 'n-' || k, 'n-' || k || ':' || i, 'claude-sonnet-5-5', strftime('%Y-%m-%dT%H:%M:%SZ', '2026-11-10', '+' || k || ' hours', '+' || i || ' minutes'),
     0, 0, 0, 10000 * (i + 1), 10, 10000 * (i + 1) * 1e-9, '2026-11-03' FROM s, t" >/dev/null
-CTX_NOW=2026-11-21T12:00:00Z "$CTX" usage handoff > "$T/ho.out"
+"$CTX" usage handoff | grep -q '^No handoff points worked out yet' || fail "ctx usage handoff shows the last result, and there is none yet"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_meta WHERE key = 'handoff_points'")" = 0 ] || fail "showing the points does not work them out"
+CTX_NOW=2026-11-21T12:00:00Z "$CTX" usage handoff --recompute > "$T/ho.out"
+grep -q '^Worked out 2026-11-21T12:00:00Z' "$T/ho.out" || fail "the result says when it was worked out: $(head -1 "$T/ho.out")"
 grep -q '^claude-sonnet-5-5: 25 past sessions in 90 days\. No point yet' "$T/ho.out" || fail "the handoff note's cost is counted: $(grep sonnet "$T/ho.out")"
-grep -q '^claude-test-c: 25 past sessions in 90 days\. Hand off past 50K tokens of context (cost point; cost point 50K, quality point 0K)\.$' "$T/ho.out" || fail "a model whose long sessions cost more gets a cost point: $(cat "$T/ho.out")"
+grep -q '^claude-test-c: 25 past sessions in 90 days\. Hand off past 50K tokens of context\.$' "$T/ho.out" || fail "a model whose long sessions cost more gets a point: $(cat "$T/ho.out")"
 grep -q '^claude-test-few: 19 past sessions in 90 days\. No point yet' "$T/ho.out" || fail "too little history: no point"
-grep -q '^claude-test-q: 25 past sessions in 90 days\. Hand off past 300K tokens of context (quality point; cost point 0K, quality point 300K)\.$' "$T/ho.out" || fail "a model whose sessions meet more corrections past a size gets a quality point: $(cat "$T/ho.out")"
-CTX_NOW=2026-11-21T12:00:00Z "$CTX" usage --hours 1 | grep -q '^  claude-test-c: past 50K tokens of context; 25 past sessions that size would have saved a median \$' || fail "ctx usage shows the points"
+grep -q '^claude-test-q: 25 past sessions in 90 days\. No point yet' "$T/ho.out" || fail "trouble alone sets no point: $(cat "$T/ho.out")"
+grep -A 12 '^claude-test-q:' "$T/ho.out" | grep -q '^     300K .*%\*$' || fail "trouble is shown, marked where it runs high: $(grep -A 12 '^claude-test-q:' "$T/ho.out")"
+grep -q 'For information only' "$T/ho.out" || fail "the output says trouble does not set the point"
+"$CTX" usage handoff | cmp -s - "$T/ho.out" || fail "without --recompute, the last result is shown as it was"
+CTX_NOW=2026-11-21T12:00:00Z "$CTX" usage --hours 1 | grep -q '^  claude-test-c: past 50K tokens of context; 25 of 25 past sessions that size would have spent less by handing off, a median \$' || fail "ctx usage shows the points"
+
+# Who is counted: sessions active in the last 6 hours, sessions with a response that has no price,
+# and sessions that began before the 90 days are left out, from the sessions column and from the
+# responses and trouble alike.
+"$CTX" sql "WITH RECURSIVE s(k) AS (SELECT 1 UNION ALL SELECT k + 1 FROM s WHERE k < 25), t(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM t WHERE i < 59)
+  INSERT INTO ctx_usage(harness, session, msg, model, at, input, write_5m, write_1h, cache_read, output, dollars, price_date)
+  SELECT 'claude', 'r-' || k, 'r-' || k || ':' || i, 'claude-test-r',
+    strftime('%Y-%m-%dT%H:%M:%SZ', CASE WHEN k <= 6 THEN '2026-11-21T08:00:00' WHEN k = 7 THEN '2026-08-01' ELSE '2026-11-10' END, '+' || k || ' minutes', '+' || i || ' seconds'),
+    0, 0, 0, 10000 * (i + 1), 10, CASE WHEN k BETWEEN 8 AND 10 AND i = 30 THEN NULL ELSE 10000 * (i + 1) * 1e-6 END, '2026-11-03' FROM s, t" >/dev/null
+# r-7 began before the 90 days and ran on into them
+"$CTX" sql "INSERT INTO ctx_usage(harness, session, msg, model, at, input, write_5m, write_1h, cache_read, output, dollars, price_date)
+  VALUES ('claude', 'r-7', 'r-7:late', 'claude-test-r', '2026-11-10T00:00:00Z', 0, 0, 0, 1000, 10, 0.001, '2026-11-03')" >/dev/null
+CTX_NOW=2026-11-21T12:00:00Z "$CTX" usage handoff --recompute > "$T/ho.out"
+grep -q '^claude-test-r: 15 past sessions in 90 days\. No point yet' "$T/ho.out" || fail "recent, partly priced and earlier sessions are left out: $(grep -A 3 test-r "$T/ho.out")"
+[ "$("$CTX" sql "SELECT sum(json_extract(s.value, '$.responses')) FILTER (WHERE json_extract(s.value, '$.at') > 50000) + json_extract(m.value, '$.base_responses') FROM ctx_meta t, json_each(json_extract(t.value, '$.models')) m,
+  json_each(json_extract(m.value, '$.steps')) s WHERE t.key = 'handoff_points' AND json_extract(m.value, '$.model') = 'claude-test-r'")" = 900 ] || fail "responses are counted over the same sessions"
+
+# Sessions longer than the replay curve's cap: both sides are capped at the same number of
+# responses, so a long session's responses past the cap do not count as savings. 20 sessions of
+# 5,100 responses that cost the same each (2^-10 dollars, so sums are exact), all past 200K tokens: going on costs what starting
+# over does, so there is no point.
+"$CTX" sql "WITH RECURSIVE s(k) AS (SELECT 1 UNION ALL SELECT k + 1 FROM s WHERE k < 20), t(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM t WHERE i < 5099)
+  INSERT INTO ctx_usage(harness, session, msg, model, at, input, write_5m, write_1h, cache_read, output, dollars, price_date)
+  SELECT 'claude', 'l-' || k, 'l-' || k || ':' || i, 'claude-test-long', strftime('%Y-%m-%dT%H:%M:%SZ', '2026-11-01', '+' || k || ' hours', '+' || i || ' seconds'),
+    0, 0, 0, 200000, 10, 0.0009765625, '2026-11-03' FROM s, t" >/dev/null
+CTX_NOW=2026-11-21T12:00:00Z "$CTX" usage handoff --recompute > "$T/ho.out"
+grep -q '^claude-test-long: 20 past sessions in 90 days\. No point yet' "$T/ho.out" || fail "a session longer than the cap is compared over as many responses on both sides: $(grep -A 4 test-long "$T/ho.out")"
+"$CTX" sql "DELETE FROM ctx_usage WHERE model IN ('claude-test-long', 'claude-test-r')" >/dev/null
+
+# The trouble signal: exit 1 from grep, rg, test, diff and cmp is an answer, not a failure; a
+# failure is trouble when one of the three tool results before it failed too; corrections are
+# matched as whole words.
+cat > "$T/trouble.py" <<'EOF'
+import json, sys, datetime
+d = sys.argv[1]
+t = [datetime.datetime(2026, 11, 16, 9)]
+lines = []
+def at():
+    t[0] += datetime.timedelta(seconds=10)
+    return t[0].isoformat() + "Z"
+def user(text):
+    lines.append({"type": "user", "uuid": "tu%d" % len(lines), "timestamp": at(), "sessionId": "t-1", "cwd": "/w/q", "message": {"role": "user", "content": text}})
+def call(cmd):
+    lines.append({"type": "assistant", "uuid": "ta%d" % len(lines), "timestamp": at(), "sessionId": "t-1", "cwd": "/w/q",
+                  "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "c%d" % len(lines), "name": "Bash", "input": {"command": cmd}}]}})
+def result(text):
+    lines.append({"type": "user", "uuid": "tr%d" % len(lines), "timestamp": at(), "sessionId": "t-1", "cwd": "/w/q",
+                  "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "x", "content": text}]}})
+user("Rishi said the build was fine")                 # not a correction
+user("I said to use the other file")                  # a correction: 1
+call("grep -n foo src/a.c"); result("Exit code 1")
+call("cd src && rg bar | head"); result("Exit code 1")  # answers, not failures
+call("make"); result("Exit code 2\nerror")
+call("ls"); result("a")
+call("ls"); result("b")
+call("ls"); result("c")
+call("make"); result("Exit code 2\nerror")             # three tool results after the last failure: not trouble
+call("false"); result("Exit code 1")                  # right after one: trouble, 2
+call("ls"); result("d")
+call("ls"); result("e")
+call("false"); result("Exit code 1")                  # two after a failure: trouble, 3
+call("test -f x && echo y"); call("make")             # parallel calls, their results in order
+result("Exit code 1"); result("Exit code 2\nerror")   # test's answer, then make failing two after false: trouble, 4
+with open(d + "/t-1.jsonl", "w") as f:
+    for l in lines: f.write(json.dumps(l) + "\n")
+EOF
+python3 "$T/trouble.py" "$QC"
+"$CTX" archive "$QC/t-1.jsonl" >/dev/null
+"$CTX" sql "WITH RECURSIVE t(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM t WHERE i < 39)
+  INSERT INTO ctx_usage(harness, session, msg, model, at, input, write_5m, write_1h, cache_read, output, dollars, price_date)
+  SELECT 'claude', 't-1', 't-1:' || i, 'claude-test-t', strftime('%Y-%m-%dT%H:%M:%SZ', '2026-11-16T09:00:00', '+' || (i * 10) || ' seconds'),
+    0, 0, 0, 1000, 10, 0.01, '2026-11-03' FROM t" >/dev/null
+CTX_NOW=2026-11-21T12:00:00Z "$CTX" usage handoff --recompute > "$T/ho.out"
+[ "$("$CTX" sql "SELECT round(json_extract(m.value, '$.base_rate') * json_extract(m.value, '$.base_responses')) FROM ctx_meta t, json_each(json_extract(t.value, '$.models')) m
+  WHERE t.key = 'handoff_points' AND json_extract(m.value, '$.model') = 'claude-test-t'")" = 4.0 ] || fail "trouble: grep's no-match, far-apart failures and 'Rishi said' are not trouble: $(grep -A 3 test-t "$T/ho.out")"
+
+# One computation at a time: the daily job gives up while the lock is held, and --recompute waits.
+"$CTX" sql "DELETE FROM ctx_meta WHERE key = 'handoff_points'" >/dev/null
+cat > "$T/holock.py" <<'EOF'
+import fcntl, os, subprocess, sys, time
+lock, ctx, what = sys.argv[1:4]
+fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+env = dict(os.environ, CTX_NOW="2026-11-21T12:00:00Z")
+if what == "daily":
+    subprocess.run([ctx, "usage", "handoff-daily"], check=True, timeout=60, env=env)
+    n = subprocess.run([ctx, "sql", "SELECT count(*) FROM ctx_meta WHERE key = 'handoff_points'"], capture_output=True, text=True, timeout=60).stdout.strip()
+    assert n == "0", n
+else:
+    p = subprocess.Popen([ctx, "usage", "handoff", "--recompute"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env)
+    time.sleep(1)
+    assert p.poll() is None, "finished while the lock was held"
+    fcntl.flock(fd, fcntl.LOCK_UN)
+    err = p.communicate(timeout=120)[1].decode()
+    assert p.returncode == 0 and "waiting" in err, err
+EOF
+python3 "$T/holock.py" "$CTX_DB.handoff-points.lock" "$CTX" daily || fail "the daily job gives up while another computation holds the lock"
+python3 "$T/holock.py" "$CTX_DB.handoff-points.lock" "$CTX" recompute || fail "--recompute waits for the lock"
+
+# The daily job: a turn's hook that runs the hourly scan works the points out after it, once a day.
+"$CTX" sql "DELETE FROM ctx_meta WHERE key = 'handoff_points'" >/dev/null
+rm -f "$CTX_DB.scan"
+printf '{"session_id":"q-1","transcript_path":"%s","hook_event_name":"Stop"}' "$QC/q-1.jsonl" | CTX_NOW=2026-11-21T12:00:00Z "$CTX" hook
+i=0; while [ "$("$CTX" sql "SELECT count(*) FROM ctx_meta WHERE key = 'handoff_points'")" != 1 ] && [ $i -lt 120 ]; do sleep 0.5; i=$((i+1)); done
+[ "$("$CTX" sql "SELECT json_extract(value, '$.computed') FROM ctx_meta WHERE key = 'handoff_points'")" = 2026-11-21T12:00:00Z ] || fail "the drain starts the daily job"
+i=0; while pgrep -f "$CTX hook" >/dev/null && [ $i -lt 240 ]; do sleep 0.5; i=$((i+1)); done
+CTX_NOW=2026-11-21T13:00:00Z "$CTX" usage handoff-daily
+[ "$("$CTX" sql "SELECT json_extract(value, '$.computed') FROM ctx_meta WHERE key = 'handoff_points'")" = 2026-11-21T12:00:00Z ] || fail "the daily job runs once a day"
+
 # ctx hook post: once a session, when its last response is past its model's point.
 live() { printf '{"type":"assistant","timestamp":"2026-11-21T11:59:00Z","sessionId":"%s","message":{"id":"m-%s","model":"%s","usage":{"input_tokens":0,"cache_read_input_tokens":%s,"output_tokens":5}}}\n' "$1" "$1" "$2" "$3" > "$QC/$1.jsonl"; }
-post() { printf '{"session_id":"%s","transcript_path":"%s","cwd":"/w/q","tool_name":"Bash","tool_input":{"command":"ls"}}' "$1" "$QC/$1.jsonl" | "$CTX" hook post; }
+post() { printf '{"session_id":"%s","transcript_path":"%s","cwd":"/w/q","tool_name":"Bash","tool_input":{"command":"ls"}%s}' "$1" "$QC/$1.jsonl" "${2:-}" | "$CTX" hook post; }
 live live-1 claude-test-c 400000
+# a subagent's call carries its parent's session and transcript, and agent_id: it is never told,
+# and does not use up the session's one warning
+post live-1 ',"agent_id":"a1b2c3","agent_type":"general-purpose"' > "$T/hop.json"
+[ ! -s "$T/hop.json" ] || fail "a subagent's tool call is not warned: $(cat "$T/hop.json")"
+# a note that could not be sent does not count as told
+cat > "$T/closed.py" <<'PYEOF'
+import subprocess, sys
+p = subprocess.Popen([sys.argv[1], "hook", "post"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+p.stdout.close()  # nobody reads: the note cannot be sent
+p.stdin.write(sys.argv[2].encode()); p.stdin.close(); p.wait(timeout=60)
+PYEOF
+python3 "$T/closed.py" "$CTX" "$(printf '{"session_id":"live-1","transcript_path":"%s","cwd":"/w/q","tool_name":"Bash","tool_input":{"command":"ls"}}' "$QC/live-1.jsonl")"
 post live-1 > "$T/hop.json"
-python3 -c 'import json, sys; c = json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]; assert "context is 400K tokens, past 50K" in c and "ctx handoff" in c and "25 past claude-test-c sessions" in c, c' "$T/hop.json" || fail "hook post warns a session past its point: $(cat "$T/hop.json")"
+cat > "$T/hop.py" <<'EOF'
+import json, sys
+c = json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]
+for want in ("context is 400K tokens, past claude-test-c's handoff point of 50K.", "In 25 of 25 past sessions of this model that reached 50K, handing off there cost less",
+             "Write the handoff now with `ctx handoff`"):
+    assert want in c, (want, c)
+assert "natural break" not in c, c
+EOF
+python3 "$T/hop.py" "$T/hop.json" || fail "hook post warns a session past its point: $(cat "$T/hop.json")"
 post live-1 > "$T/hop2.json"
 [ ! -s "$T/hop2.json" ] || fail "only once a session: $(cat "$T/hop2.json")"
 live live-2 claude-test-c 40000

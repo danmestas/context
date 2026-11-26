@@ -1413,53 +1413,69 @@ apart as "account 1" and "account 2", in the order ctx first saw a response from
 "Prices date from DATE." when the newest price line is over 60 days old.
 
 **When to hand off.** Every response re-reads the whole context, so a long session's responses
-cost more and more, and a session can go on past the size where it does its best work. ctx finds,
-per model, the context size past which handing off has paid in this archive's own history, and
-`ctx hook post` tells a session once when it passes it, suggesting `ctx handoff`. There is no
-fixed percentage; with too little history there is no point and nothing is said.
+cost more and more. ctx finds, per model, the context size past which handing off has cost less
+in this archive's own history, and `ctx hook post` tells a session once when it passes it, to
+write the handoff now with `ctx handoff`. There is no fixed percentage; with too little history
+there is no point and nothing is said.
 
 ```sh
-ctx usage handoff     # each model's point and the evidence for it, worked out now
+ctx usage handoff               # each model's point and the evidence, as last worked out
+ctx usage handoff --recompute   # work them out again now (a few minutes on a large archive)
 ```
 
 ```
-claude-opus-5-5: 22 past sessions in 90 days. No point yet: too little history, or going on has not cost more.
-  context sessions    saving  saved turns left  responses  trouble
-      50K       19     -1.82    42%        176       1404     0.0%
-     250K       12      1.01    58%        300      11126     0.1%
-     350K       10      7.90    70%        355       8215     0.1%
+claude-opus-5-5: 16 past sessions in 90 days. No point yet: too little history, or going on has not cost more.
+  context sessions  saved    saving turns left  responses  trouble
+      50K        9      3     -0.54         76         94     0.0%
+     250K        5      4      3.10        225        213     0.0%
+     350K        4      3      7.26        195        110     0.0%
 ```
 
-Here, on the author's archive in November 2026, sessions that reached 250K tokens would mostly
-have saved by handing off, but fewer than 20 reached it, so there is no point yet.
+Here, on the author's archive in November 2026, 4 of the 5 sessions that reached 250K tokens
+would have spent less by handing off there, but fewer than 20 reached it, so there is no point
+yet. Most of that archive's sessions are older than the first price line, and so are not counted.
 
-The point is the lower of two, each worked out from the last 90 days of finished main sessions
-(subagents and sessions active in the last 6 hours left out), in steps of 50K tokens of context
-(input plus cache writes plus cache reads of a response):
+Each model's sessions are its main sessions (subagents left out) that began in the last 90 days,
+were not active in the last 6 hours, and have a price for every response: leaving out one
+response would shift the place of every response after it. Every column counts these same
+sessions. Sizes go in steps of 50K tokens of context (input plus cache writes plus cache reads of
+a response).
 
-- **Cost.** For every past session that reached a size, ctx takes what its responses from then
-  on cost, and what a fresh session's first as many responses cost: the replay curve, the mean
-  cost of the first, second, third response and so on over the model's sessions, which grows as a
-  fresh session builds its own context and so counts the cost of starting over. The difference is
-  what handing off there would have saved. A size is the cost point when, at it and at the next
-  size up, at least 20 sessions reached it, the median saving is above zero and at least 55% of
-  them would have saved.
-- **Quality.** From the archived turns, trouble is a correction from the person (a short message
-  starting "no" or saying "that's wrong", "not what I", "I said", "you didn't", "doesn't work",
-  "still broken", "undo that"), a tool failure within three tool results of another, or work undone
-  with `git revert`, `git restore`, `git reset --hard` or `git checkout --`. Each is placed at the
-  context of its session's last response before it. A size is the quality point when, at it and
-  at the next size up, trouble per response is at least 1.5 times the rate below 100K tokens and
-  at least 2 per 100 responses more, with at least 50 responses and 10 events there.
+For every session that reached a size, ctx takes what its responses from then on cost, and what a
+fresh session's first as many responses cost: the replay curve, the mean cost of the first,
+second, third response and so on over the model's sessions, which grows as a fresh session builds
+its own context and so counts the cost of starting over. Both sides stop at 5,000 responses, so a
+session longer than that is compared over as many responses on each side. From the difference
+ctx takes the cost of the handoff note, roughly: a note at its largest (4,000 bytes, taken as
+1,000 tokens) written once as output, written once to the new session's cache, and read again
+with each response after it, at the dated price the session's responses were priced at. What is
+left is what handing off there would have saved. The point is the first size where, at it and at
+the next size up, at least 20 sessions reached it, the median saving is above zero and at least
+55% of them would have saved.
 
-The cost of the handoff note itself is counted too, roughly: a note at its largest (4,000 bytes,
-taken as 1,000 tokens) written once as output, written once to the new session's cache, and read
-again with each response after it, at the model's price. The archive hook works the points out
-again once a day, after it has let go of the scan's lock, so no hook waits on it; `ctx usage`
-lists them. The hook reads
-the session's current context from the end of its transcript, and marks the session told beside
-the database (`ctx.sqlite.handoff-told`). The cost of writing a handoff note is not counted; a
-fresh session's own first responses are.
+The trouble column is for information only and does not set the point. Trouble is a correction
+from the person (a message under 600 characters starting "no" or "nope", or saying "that's wrong",
+"that is wrong", "not what I", "I said", "you didn't", "doesn't work", "still broken" or "undo
+that" as whole words), a failed tool result when one of the three tool results before it failed
+too, or a command that runs `git revert`, `git restore`, `git reset --hard` or `git checkout --`.
+Exit status 1 from a command that runs grep, rg, test, diff or cmp is an answer (no match, false,
+different), not a failure. Each is placed at the context of its session's last response before
+it. A `*` marks a size where trouble per response is at least 1.5 times the rate below 100K tokens
+and at least 2 per 100 responses higher, with at least 50 responses and 10 events there. Both
+thresholds are choices, not findings: 1.5 times is a rise large enough to stand out from one
+person's day-to-day variation, and the 2 per 100 floor keeps a doubling of a rate near zero from
+counting. On the author's archive in November 2026 the signal was too thin to trust: 102 events
+in 89,000 responses of 379 main sessions, flat at 0 to 0.4% across sizes, with no size marked;
+among the 167 priced sessions that set the points, 6 events in 6,300 responses.
+
+The archive hook works the points out again once a day, after it has let go of the scan's lock, so
+no hook waits on it, and `ctx usage` lists them. A lock beside the database
+(`ctx.sqlite.handoff-points.lock`) keeps two computations apart: the daily one gives up while
+`--recompute` runs, and `--recompute` waits for the daily one. The hook reads the session's current
+context from the end of its transcript. Once the note has been sent, it marks the session told
+beside the database (`ctx.sqlite.handoff-told`). A subagent's tool calls carry its parent's
+session and transcript, with an `agent_id` that Claude Code gives only from within a subagent; the
+hook says nothing to them, so a subagent never uses up its session's one note.
 
 ## Keep the call log as Parquet
 
