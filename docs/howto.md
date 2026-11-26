@@ -1146,6 +1146,46 @@ The first scan after upgrading to the version that reads every agent's instructi
 one new version of each rule made from an instruction file, adding its `agent:` line; that
 happens once, and the rule's text is unchanged.
 
+## Schema versions and rollback
+
+The archive's schema has a version, kept in SQLite's `user_version`. A `ctx` opens an older
+archive by bringing it up to its own version, in place and on first use, and refuses one from a
+newer `ctx` ("this database is from a newer ctx"). So an archive opened once by a newer `ctx` is
+locked against the older one until it is taken down again.
+
+Every release that changes the schema ships a script for each step in `schema/migrate/`:
+`V-up.sql` takes an archive from version V-1 to V, and `V-down.sql` takes it from V back to V-1.
+The up scripts do what `ctx` does on opening; they are there to read, and to run by hand with
+`sqlite3` if you want to. The down scripts are compiled into `ctx`:
+
+```sh
+ctx migrate down 21          # says which scripts it would run; changes nothing
+ctx migrate down 21 --yes    # runs them, newest first
+```
+
+It refuses unless the archive is above the version asked for and there is a script for every
+step down to it, and it waits for no one: if a drain or scan holds the archive, it says so and
+stops. A down script drops only what its version added, so every table the older version knows
+keeps its rows.
+
+To go back to an older `ctx`:
+
+1. Install the older `ctx`. Until the archive is taken down, it refuses it as from a newer
+   `ctx`.
+2. Take the archive down with the newer binary, run by its path (for example from the build
+   tree): `./ctx migrate down 21 --yes`. Run the installed one instead and the next hook brings
+   the archive straight back up.
+
+| Version | What it added | Taking it down |
+|---|---|---|
+| 22 | `ctx usage`: `ctx_usage` (spend per response), `ctx_usage_read` (how far each session record was read), `ctx_limit` (plan limit readings) | drops the three tables and the `ctx_meta` keys `account:*`, `plan-told:*` and `handoff_points` |
+| 23 | `ctx_usage` keyed on the response alone, with `folder` and `purpose`; `ctx_account_seen` (the logins seen per Claude Code config folder); the handoff points | drops `ctx_account_seen` and `handoff_points`, puts back version 22's `ctx_usage`, empty, and clears `ctx_usage_read` |
+
+Going up to 23 empties `ctx_usage` and clears `ctx_usage_read`, and the next collection reads every
+session record again into the new table: the records hold everything the old table did. Spend from
+records that are gone by then is lost. The marks beside the database (`ctx.sqlite.handoff-told`,
+`ctx.sqlite.handoff-points.lock`) mean nothing to an older `ctx` and can stay.
+
 ## Measure and improve the skill
 
 ```sh

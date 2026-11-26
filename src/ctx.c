@@ -30,6 +30,7 @@
 #include "ticket_schema.h"
 #include "page.h"
 #include "prices.h"
+#include "migrate.h"
 
 #define CTX_VERSION "0.0.1"
 #define CTX_USER_VERSION 23    /* PRAGMA user_version once initialized */
@@ -9456,6 +9457,67 @@ static void usage_unexclude(sqlite3 *db) {
               " WHERE ctx_usage.folder = x.slug OR substr(ctx_usage.folder, 1, length(x.slug) + 1) = x.slug || '-')");
 }
 
+static int usage(void);
+
+/* The script that takes an archive at version v down to v - 1, or NULL. */
+static const char *migrate_down_sql(int v) {
+  for (int i = 0; ctx_migrate_down[i].sql; i++)
+    if (ctx_migrate_down[i].version == v) return ctx_migrate_down[i].sql;
+  return NULL;
+}
+
+/* ctx migrate down N [--yes]: runs schema/migrate/V-down.sql from the archive's version down to N,
+ * as compiled in. The archive is opened as it is, never brought up to this ctx's version first. */
+static int cmd_migrate(int argc, char **argv) {
+  char *end = NULL;
+  long to = argc >= 2 ? strtol(argv[1], &end, 10) : -1;
+  if (argc < 2 || argc > 3 || strcmp(argv[0], "down") || !end || *end || to < 1 || (argc == 3 && strcmp(argv[2], "--yes"))) return usage();
+  char *path = db_path();
+  struct stat st;
+  if (stat(path, &st) != 0) die("no ctx database at %s", path);
+  sqlite3 *db = db_open(path);
+  int from = db_int(db, "PRAGMA user_version");
+  if (from == 0) die("no ctx database at %s", path);
+  if (from <= to) die("the archive is at version %d, not above %ld: there is nothing to take down", from, to);
+  for (long v = from; v > to; v--)
+    if (!migrate_down_sql((int)v)) die("the archive is at version %d, and this ctx has no script from version %ld to %ld, so it cannot take it down to %ld", from, v, v - 1, to);
+  printf("%s is at version %d. ctx migrate down %ld runs, in order:\n", path, from, to);
+  for (long v = from; v > to; v--) {
+    printf("  schema/migrate/%ld-down.sql:", v);
+    for (const char *l = migrate_down_sql((int)v); !strncmp(l, "-- ", 3) && strncmp(l, "-- Run on its own", 17);) { /* its opening comment */
+      const char *nl = strchr(l, '\n');
+      printf(" %.*s", (int)(nl ? nl - l - 3 : (long)strlen(l + 3)), l + 3);
+      if (!nl) break;
+      l = nl + 1;
+    }
+    putchar('\n');
+  }
+  printf("and leaves it at version %ld. This ctx, at version %d, would bring it up again the next time it opened it, so install the ctx of"
+         " version %ld first; until this has run, that one refuses the archive as from a newer ctx.\n", to, CTX_USER_VERSION, to);
+  if (argc < 3) {
+    puts("Nothing was changed. Run it again with --yes to do it.");
+    sqlite3_close(db);
+    free(path);
+    return 0;
+  }
+  char *lock = sidecar(".lock"); /* no drain or scan in between */
+  int fd = open(lock, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+  free(lock);
+  if (fd < 0 || flock(fd, LOCK_EX | LOCK_NB) != 0) die("another ctx is working on the archive; try again when it is done");
+  for (long v = from; v > to; v--) {
+    char *err = NULL;
+    if (sqlite3_exec(db, migrate_down_sql((int)v), NULL, NULL, &err) != SQLITE_OK) {
+      sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+      die("schema/migrate/%ld-down.sql failed: %s; the archive is at version %d", v, err ? err : sqlite3_errmsg(db), db_int(db, "PRAGMA user_version"));
+    }
+  }
+  printf("Done: the archive is at version %d.\n", db_int(db, "PRAGMA user_version"));
+  close(fd);
+  sqlite3_close(db);
+  free(path);
+  return 0;
+}
+
 static int cmd_exclude(int argc, char **argv) {
   sqlite3 *db = ctx_open();
   if (argc == 0) {
@@ -17983,7 +18045,8 @@ static int usage_report(int argc, char **argv) {
   if (sqlite3_prepare_v2(db, "SELECT json_extract(m.value, '$.model'), json_extract(m.value, '$.point'), json_extract(s.value, '$.saved'), json_extract(s.value, '$.n'),"
                              " json_extract(s.value, '$.saving'), substr(json_extract(ctx_meta.value, '$.computed'), 1, 10)"
                              " FROM ctx_meta, json_each(json_extract(ctx_meta.value, '$.models')) m, json_each(json_extract(m.value, '$.steps')) s"
-                             " WHERE ctx_meta.key = 'handoff_points' AND json_extract(m.value, '$.point') > 0 AND json_extract(s.value, '$.at') = json_extract(m.value, '$.point')",
+                             " WHERE ctx_meta.key = 'handoff_points' AND json_extract(m.value, '$.point') > 0 AND json_extract(s.value, '$.at') = json_extract(m.value, '$.point')"
+                             " AND json_type(s.value, '$.saved') IS NOT NULL",
                          -1, &ho, NULL) == SQLITE_OK) {
     int first = 1;
     while (sqlite3_step(ho) == SQLITE_ROW) {
@@ -18544,7 +18607,8 @@ static char *handoff_warn(sqlite3 *db, const char *session, const char *transcri
       sqlite3_prepare_v2(db, "SELECT json_extract(m.value, '$.point'), json_extract(s.value, '$.n'), json_extract(s.value, '$.saved'), json_extract(s.value, '$.saving'),"
                              " json_extract(s.value, '$.turns_left')"
                              " FROM ctx_meta, json_each(json_extract(ctx_meta.value, '$.models')) m, json_each(json_extract(m.value, '$.steps')) s"
-                             " WHERE ctx_meta.key = 'handoff_points' AND json_extract(m.value, '$.model') = ?1 AND json_extract(s.value, '$.at') = json_extract(m.value, '$.point')",
+                             " WHERE ctx_meta.key = 'handoff_points' AND json_extract(m.value, '$.model') = ?1 AND json_extract(s.value, '$.at') = json_extract(m.value, '$.point')"
+                             " AND json_type(s.value, '$.saved') IS NOT NULL", /* points from before the count of sessions that saved wait to be worked out again */
                          -1, &q, NULL) == SQLITE_OK) {
     sqlite3_bind_text(q, 1, model, -1, SQLITE_STATIC);
     if (sqlite3_step(q) == SQLITE_ROW) {
@@ -18620,6 +18684,7 @@ static int usage(void) {
         "       ctx status [--json]\n"
         "       ctx usage [--hours N | --days N] [--by session|project|harness|model|account] | collect [--for SECONDS] | handoff [--recompute] | limits-in\n"
         "       ctx doctor\n"
+        "       ctx migrate down VERSION [--yes]\n"
         "       ctx remember TEXT [--project P] [--until DATE] [--from TURN]\n"
         "       ctx handoff TEXT... | -\n"
         "       ctx decisions [--open] [--all] [--limit N]\n"
@@ -18687,6 +18752,7 @@ static int run(int argc, char **argv) {
   if (argc >= 2 && !strcmp(argv[1], "page")) return cmd_page(argc - 2, argv + 2);
   if (argc >= 2 && !strcmp(argv[1], "telemetry")) return cmd_telemetry(argc - 2, argv + 2);
   if (argc >= 2 && !strcmp(argv[1], "usage")) return cmd_usage(argc - 2, argv + 2);
+  if (argc >= 2 && !strcmp(argv[1], "migrate")) return cmd_migrate(argc - 2, argv + 2);
   return usage();
 }
 

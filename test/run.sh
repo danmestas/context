@@ -4961,6 +4961,110 @@ live live-3 claude-test-few 900000
 post live-3 > "$T/hop4.json"
 [ ! -s "$T/hop4.json" ] || fail "nothing for a model with too little history"
 
+# Schema versions and rollback. An archive with real-shaped data is taken down to version 21 by
+# ctx migrate down and must then match an archive as trunk makes it (test/v21-state.sql is trunk's
+# schema/state.sql); taken up again, by ctx and by schema/migrate/*-up.sql alike, and down again,
+# every table of version 21 holds the same rows.
+mkdir -p "$T/mig/cfg/projects/-w-m"
+cat > "$T/mig/session.py" <<'EOF'
+import json, sys
+with open(sys.argv[1], "w") as f:
+    for i in range(3):
+        at = "2026-11-16T10:0%d:00Z" % i
+        f.write(json.dumps({"type": "user", "uuid": "mu%d" % i, "timestamp": at, "sessionId": "m-1", "cwd": "/w/m", "message": {"role": "user", "content": "step %d of the migration" % i}}) + "\n")
+        f.write(json.dumps({"type": "assistant", "uuid": "ma%d" % i, "timestamp": at, "sessionId": "m-1", "cwd": "/w/m",
+                            "message": {"id": "msg-m%d" % i, "role": "assistant", "model": "claude-opus-5-5", "content": [{"type": "text", "text": "done %d" % i}],
+                                        "usage": {"input_tokens": 10, "cache_creation_input_tokens": 100, "cache_read_input_tokens": 1000 * (i + 1), "output_tokens": 20}}}) + "\n")
+EOF
+python3 "$T/mig/session.py" "$T/mig/cfg/projects/-w-m/m-1.jsonl"
+cat > "$T/mig/db.py" <<'EOF'
+import json, re, sqlite3, sys
+def tables(c):
+    return [n for n, s in c.execute("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name") if not s.upper().startswith("CREATE VIRTUAL")]
+def schema(c):  # ctx's own; the libfossil repositories (fslrepo_*) are libfossil's, at any version
+    return sorted((t, n, re.sub(r"\s+", " ", re.sub(r"--[^\n]*", "", s or "")).strip()) for t, n, s in c.execute(
+        "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND tbl_name NOT LIKE 'fslrepo_%'"))
+def dump(c, only=None):
+    return {t: sorted(repr(r) for r in c.execute('SELECT * FROM "%s"' % t)) for t in tables(c) if only is None or t in only}
+what, path = sys.argv[1], sys.argv[2]
+c = sqlite3.connect(path)
+c.text_factory = lambda b: b.decode("utf-8", "surrogateescape")
+if what == "make21":  # an empty archive as trunk's ctx init makes it
+    c.executescript(open(sys.argv[3]).read() + open(sys.argv[4]).read())
+    c.execute("INSERT OR REPLACE INTO ctx_meta(key, value) VALUES ('derived_version', ?)", (sys.argv[5],))
+    c.commit(); c.execute("PRAGMA user_version = 21")
+elif what == "schema":
+    json.dump(schema(c), open(sys.argv[3], "w"))
+elif what == "dump":
+    json.dump(dump(c), open(sys.argv[3], "w"))
+elif what == "same-schema":
+    a = json.load(open(sys.argv[3]))
+    b = [list(x) for x in schema(c)]
+    assert a == b, "\n".join(sorted(set(map(str, a)) ^ set(map(str, b))))
+elif what == "same-rows":  # every table of the dump holds the same rows here
+    a = json.load(open(sys.argv[3]))
+    b = dump(c, set(a))
+    bad = [t for t in a if a[t] != b.get(t)]
+    assert not bad, "rows differ in %s" % bad
+elif what == "run":
+    c.executescript(open(sys.argv[3]).read())
+else:
+    print(c.execute(sys.argv[3]).fetchone()[0])
+EOF
+M="$T/mig/db.py"
+export CTX_DB="$T/mig/r.sqlite"
+"$CTX" init >/dev/null
+"$CTX" archive "$T/mig/cfg/projects/-w-m/m-1.jsonl" >/dev/null
+CLAUDE_CONFIG_DIR="$T/mig/cfg" CODEX_HOME="$T/none" CTX_PIC_DB= "$CTX" usage collect >/dev/null
+"$CTX" remember "the migration test keeps this rule" --project '*' >/dev/null
+CTX_NOW=2026-11-21T12:00:00Z "$CTX" usage handoff --recompute >/dev/null
+"$CTX" sql "INSERT INTO ctx_meta(key, value) VALUES ('plan-told:acct', '2026-11-21')" >/dev/null
+[ "$(python3 "$M" q "$CTX_DB" "SELECT count(*) FROM ctx_usage")" = 3 ] || fail "migrate: the spend is collected at version 23"
+python3 "$M" make21 "$T/mig/e21.sqlite" test/v21-state.sql schema/index.sql "$(python3 "$M" q "$CTX_DB" "SELECT value FROM ctx_meta WHERE key = 'derived_version'")"
+python3 "$M" schema "$T/mig/e21.sqlite" "$T/mig/e21.schema"
+# refusals, and a plan that changes nothing without --yes
+"$CTX" migrate down 23 2>"$T/mig/err" && fail "migrate down to the archive's own version is refused"
+grep -q 'not above 23' "$T/mig/err" || fail "migrate: says why: $(cat "$T/mig/err")"
+"$CTX" migrate down 20 2>"$T/mig/err" && fail "migrate down with no script for the way is refused"
+grep -q 'no script from version 21 to 20' "$T/mig/err" || fail "migrate: names the missing script: $(cat "$T/mig/err")"
+"$CTX" migrate down 21 > "$T/mig/plan" || fail "migrate: the plan"
+grep -q '23-down.sql' "$T/mig/plan" && grep -q '22-down.sql' "$T/mig/plan" && grep -q 'Run it again with --yes' "$T/mig/plan" || fail "migrate: the plan names each script: $(cat "$T/mig/plan")"
+[ "$(python3 "$M" q "$CTX_DB" "PRAGMA user_version")" = 23 ] || fail "migrate: nothing changes without --yes"
+# down to 21: exactly trunk's schema, none of the stack's keys
+"$CTX" migrate down 21 --yes | grep -q 'at version 21' || fail "migrate down 21 --yes"
+[ "$(python3 "$M" q "$CTX_DB" "PRAGMA user_version")" = 21 ] || fail "migrate: user_version is 21"
+python3 "$M" same-schema "$CTX_DB" "$T/mig/e21.schema" || fail "migrate: the archive taken down has trunk's schema, no more and no less"
+[ "$(python3 "$M" q "$CTX_DB" "SELECT count(*) FROM ctx_meta WHERE key GLOB 'account:*' OR key GLOB 'plan-told:*' OR key = 'handoff_points'")" = 0 ] || fail "migrate: the stack's ctx_meta keys go"
+[ "$(python3 "$M" q "$CTX_DB" "SELECT count(*) FROM ctx_chunk")" -gt 0 ] || fail "migrate: the archived turns stay"
+python3 "$M" dump "$CTX_DB" "$T/mig/d21.json"
+cp "$CTX_DB" "$T/mig/s.sqlite"
+# up by the scripts, a version at a time; 23 rebuilds ctx_usage for its key, so the next
+# collection reads every record again
+MS="$T/mig/s.sqlite"
+python3 "$M" run "$MS" schema/migrate/22-up.sql
+[ "$(python3 "$M" q "$MS" "PRAGMA user_version")" = 22 ] || fail "migrate: 22-up.sql leaves version 22"
+python3 "$M" run "$MS" /dev/stdin <<'EOF'
+INSERT INTO ctx_usage(harness, session, msg, model, at, input, write_5m, write_1h, cache_read, output) VALUES ('claude', 'm-1', 'msg-m0', 'claude-opus-5-5', '2026-11-16T10:00:00Z', 10, 100, 0, 1000, 20);
+INSERT INTO ctx_usage_read(path, offset) VALUES ('/somewhere/m-1.jsonl', 99);
+EOF
+python3 "$M" run "$MS" schema/migrate/23-up.sql
+[ "$(python3 "$M" q "$MS" "SELECT (SELECT count(*) FROM ctx_usage) || ' ' || (SELECT count(*) FROM ctx_usage_read) || ' ' || (SELECT count(*) FROM pragma_table_info('ctx_usage') WHERE name IN ('folder', 'purpose'))")" = "0 0 2" ] || fail "migrate: 23-up.sql rebuilds ctx_usage and reads again"
+# up by ctx itself, which must come to the same schema
+"$CTX" sql "SELECT 1" >/dev/null
+[ "$(python3 "$M" q "$CTX_DB" "PRAGMA user_version")" = 23 ] || fail "migrate: ctx brings the archive up to 23"
+python3 "$M" schema "$CTX_DB" "$T/mig/r23.schema"
+python3 "$M" same-schema "$MS" "$T/mig/r23.schema" || fail "migrate: the up scripts make the schema ctx makes"
+python3 "$M" same-rows "$CTX_DB" "$T/mig/d21.json" || fail "migrate: going up leaves every version-21 table as it was"
+CTX_DB="$MS" CLAUDE_CONFIG_DIR="$T/mig/cfg" CODEX_HOME="$T/none" CTX_PIC_DB= "$CTX" usage collect >/dev/null
+[ "$(python3 "$M" q "$MS" "SELECT count(*) || ' ' || count(folder) FROM ctx_usage")" = "3 3" ] || fail "migrate: the spend is read again into the new table"
+# and down again, both ways up: version 21, trunk's schema, the same rows
+for db in "$CTX_DB" "$MS"; do
+  CTX_DB="$db" "$CTX" migrate down 21 --yes >/dev/null || fail "migrate down again"
+  [ "$(python3 "$M" q "$db" "PRAGMA user_version")" = 21 ] || fail "migrate: back at 21"
+  python3 "$M" same-schema "$db" "$T/mig/e21.schema" || fail "migrate: back to trunk's schema"
+  python3 "$M" same-rows "$db" "$T/mig/d21.json" || fail "migrate: every version-21 table has the rows it had"
+done
+
 # The skill eval harness works end to end with a stand-in for the model.
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"
 
