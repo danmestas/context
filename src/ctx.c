@@ -16594,6 +16594,8 @@ static int cmd_rebuild(void) {
 typedef struct {
   char model[64], from[11];
   double in, w5, w1, rd, out;
+  double above, tin, tw5, tw1, trd, tout; /* a dearer tier for prompts over `above` tokens; 0 for none */
+  int catalog; /* from pic's model catalog: no date, so it prices any day the file has no line for */
 } price_line;
 
 static price_line *price_lines;
@@ -16607,6 +16609,7 @@ static void prices_parse(const char *text) {
     snprintf(one, sizeof one, "%.*s", (int)(len < sizeof one ? len : sizeof one - 1), line);
     line = end ? end + 1 : NULL;
     price_line p;
+    memset(&p, 0, sizeof p);
     if (one[0] == '#' || sscanf(one, "%63s %10s %lf %lf %lf %lf %lf", p.model, p.from, &p.in, &p.w5, &p.w1, &p.rd, &p.out) != 7) continue;
     size_t k = 0;
     while (k < price_n && (strcmp(price_lines[k].model, p.model) || strcmp(price_lines[k].from, p.from))) k++;
@@ -16619,10 +16622,95 @@ static void prices_parse(const char *text) {
   }
 }
 
+static void price_add(const price_line *p) {
+  price_lines = realloc(price_lines, (price_n + 1) * sizeof *price_lines);
+  if (!price_lines) die("out of memory");
+  price_lines[price_n++] = *p;
+}
+
+/* pic's model catalog ($CTX_PIC_DB, else ~/.pic/pic.sqlite), read only: every hosted model it knows,
+ * with dollars per million tokens and any dearer tier for long prompts. A model it lists at no cost
+ * (a local one) gets no line, so its responses carry no dollars. A cache write for an hour costs
+ * twice the input, the provider's stated rule; the catalog's cacheWrite is the 5-minute price. */
+static void prices_catalog(void) {
+  const char *env = getenv("CTX_PIC_DB"), *home = getenv("HOME");
+  char path[4200];
+  if (env) {
+    if (!*env) return;
+    snprintf(path, sizeof path, "%s", env);
+  } else if (home && *home) snprintf(path, sizeof path, "%s/.pic/pic.sqlite", home);
+  else return;
+  int immutable = 0;
+  sqlite3 *pic = pic_open(path, &immutable), *mem = NULL;
+  if (!pic) return;
+  sqlite3_stmt *q = NULL, *each = NULL;
+  if (sqlite3_prepare_v2(pic, "SELECT models, sz FROM picu_catalog ORDER BY provider", -1, &q, NULL) != SQLITE_OK || sqlite3_open(":memory:", &mem) != SQLITE_OK ||
+      sqlite3_prepare_v2(mem, "SELECT json_extract(value, '$.id'), coalesce(json_extract(value, '$.cost.input'), 0), coalesce(json_extract(value, '$.cost.cacheWrite'), 0),"
+                              " coalesce(json_extract(value, '$.cost.cacheRead'), 0), coalesce(json_extract(value, '$.cost.output'), 0),"
+                              " coalesce(json_extract(value, '$.cost.tiers[0].inputTokensAbove'), 0), coalesce(json_extract(value, '$.cost.tiers[0].input'), 0),"
+                              " coalesce(json_extract(value, '$.cost.tiers[0].cacheWrite'), 0), coalesce(json_extract(value, '$.cost.tiers[0].cacheRead'), 0),"
+                              " coalesce(json_extract(value, '$.cost.tiers[0].output'), 0) FROM json_each(?1) WHERE json_valid(?1)",
+                         -1, &each, NULL) != SQLITE_OK) {
+    sqlite3_finalize(q);
+    sqlite3_finalize(each);
+    sqlite3_close(mem);
+    sqlite3_close(pic);
+    return;
+  }
+  while (sqlite3_step(q) == SQLITE_ROW) {
+    const unsigned char *blob = sqlite3_column_blob(q, 0);
+    int n = sqlite3_column_bytes(q, 0);
+    sqlite3_int64 sz = sqlite3_column_int64(q, 1);
+    if (!blob || n <= 0 || sz <= 0 || sz > (64 << 20)) continue;
+    uLongf out_len = (uLongf)sz;
+    char *json = malloc((size_t)sz + 1);
+    if (!json) die("out of memory");
+    if (uncompress((Bytef *)json, &out_len, blob, (uLong)n) != Z_OK) {
+      free(json);
+      continue;
+    }
+    sqlite3_bind_text(each, 1, json, (int)out_len, SQLITE_STATIC);
+    while (sqlite3_step(each) == SQLITE_ROW) {
+      const char *id = (const char *)sqlite3_column_text(each, 0);
+      double in = sqlite3_column_double(each, 1), out = sqlite3_column_double(each, 4);
+      if (!id || !*id || (in <= 0 && out <= 0)) continue; /* a local model: no price */
+      int known = 0;
+      for (size_t i = 0; i < price_n && !known; i++) known = price_lines[i].catalog && !strcmp(price_lines[i].model, id);
+      if (known) continue; /* the first provider listing a model sets its price */
+      price_line p;
+      memset(&p, 0, sizeof p);
+      snprintf(p.model, sizeof p.model, "%s", id);
+      p.catalog = 1;
+      p.in = in;
+      p.w5 = sqlite3_column_double(each, 2);
+      p.w1 = 2 * in;
+      p.rd = sqlite3_column_double(each, 3);
+      p.out = out;
+      p.above = sqlite3_column_double(each, 5);
+      if (p.above > 0) {
+        p.tin = sqlite3_column_double(each, 6);
+        p.tw5 = sqlite3_column_double(each, 7);
+        p.tw1 = 2 * p.tin;
+        p.trd = sqlite3_column_double(each, 8);
+        p.tout = sqlite3_column_double(each, 9);
+      }
+      price_add(&p);
+    }
+    sqlite3_reset(each);
+    sqlite3_clear_bindings(each);
+    free(json);
+  }
+  sqlite3_finalize(q);
+  sqlite3_finalize(each);
+  sqlite3_close(mem);
+  sqlite3_close(pic);
+}
+
 static void prices_load(void) {
   static int loaded;
   if (loaded) return;
   loaded = 1;
+  prices_catalog();
   prices_parse(ctx_prices);
   const char *env = getenv("CTX_PRICES");
   char *path = env && *env ? dup_text((const unsigned char *)env) : sidecar(".prices");
@@ -16640,7 +16728,7 @@ static const price_line *price_for(const char *model, const char *speed, const c
   char key[80], day[11];
   snprintf(key, sizeof key, "%s%s", model, speed && !strcmp(speed, "fast") ? "@fast" : "");
   snprintf(day, sizeof day, "%.10s", at ? at : "");
-  const price_line *best = NULL;
+  const price_line *best = NULL; /* a dated line wins over the catalog's undated one, whose from is empty */
   for (size_t i = 0; i < price_n; i++)
     if (!strcmp(price_lines[i].model, key) && strcmp(price_lines[i].from, day) <= 0 && (!best || strcmp(price_lines[i].from, best->from) > 0)) best = &price_lines[i];
   return best;
@@ -16895,6 +16983,8 @@ static void usage_finish(usage_ctx *u) {
  * NULL when the account is not known. given, when not NULL, is the dollars already worked out
  * (a retried response's attempts each at its own model), negative when one had no price. */
 static double price_of(const price_line *p, const long long t[6]) {
+  if (p->above > 0 && (double)(t[0] + t[1] + t[2] + t[3]) > p->above) /* a long prompt at the dearer tier */
+    return ((double)t[0] * p->tin + (double)t[1] * p->tw5 + (double)t[2] * p->tw1 + (double)t[3] * p->trd + (double)t[4] * p->tout) / 1e6;
   return ((double)t[0] * p->in + (double)t[1] * p->w5 + (double)t[2] * p->w1 + (double)t[3] * p->rd + (double)t[4] * p->out) / 1e6;
 }
 
@@ -16923,7 +17013,7 @@ static void usage_store(usage_ctx *u, const char *harness, const char *session, 
     p = (const price_line *)1; /* priced */
   } else if (p) {
     sqlite3_bind_double(q, 18, given ? *given : price_of(p, t));
-    sqlite3_bind_text(q, 19, p->from, -1, SQLITE_STATIC);
+    sqlite3_bind_text(q, 19, p->catalog ? "catalog" : p->from, -1, SQLITE_STATIC);
   } else {
     sqlite3_bind_null(q, 18);
     sqlite3_bind_null(q, 19);
@@ -18436,7 +18526,7 @@ static void handoff_compute(sqlite3 *db) {
   sqlite3_bind_text(q, 2, since, -1, SQLITE_STATIC);
   sqlite3_step(q);
   sqlite3_finalize(q);
-  q = db_prepare(db, "SELECT model, session, input + write_5m + write_1h + cache_read, dollars, price_date FROM ctx_usage"
+  q = db_prepare(db, "SELECT model, session, input + write_5m + write_1h + cache_read, dollars, price_date || '|' || coalesce(speed, '') FROM ctx_usage"
                      " WHERE session IN (SELECT session FROM ho_pop) AND parent IS NULL ORDER BY model, session, at, id");
   buf out = {0};
   char date[24];
@@ -18445,7 +18535,7 @@ static void handoff_compute(sqlite3 *db) {
   ho_quality_row *qrows;
   size_t nq = ho_quality_all(db, since, &qrows);
   int more = sqlite3_step(q) == SQLITE_ROW, models = 0;
-  char last_date[24] = "";
+  char last_date[40] = "";
   const price_line *last_price = NULL;
   while (more) {
     char model[64], session[128] = "";
@@ -18470,9 +18560,12 @@ static void handoff_compute(sqlite3 *db) {
         if (!x->ctx || !x->cost || !x->price) die("out of memory");
       }
       const char *pd = sqlite3_column_text(q, 4) ? (const char *)sqlite3_column_text(q, 4) : "";
-      if (strcmp(pd, last_date)) {
+      if (strcmp(pd, last_date)) { /* the line the response was priced at: its date, or pic's undated catalog line */
         snprintf(last_date, sizeof last_date, "%s", pd);
-        last_price = *pd ? price_for(model, NULL, pd) : NULL;
+        char day[24], *bar = NULL;
+        snprintf(day, sizeof day, "%s", pd);
+        if ((bar = strchr(day, '|'))) *bar++ = 0;
+        last_price = *day ? price_for(model, bar && *bar ? bar : NULL, strcmp(day, "catalog") ? day : "") : NULL;
       }
       x->ctx[x->n] = sqlite3_column_double(q, 2);
       x->price[x->n] = last_price;

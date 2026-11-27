@@ -4603,6 +4603,29 @@ PY
 CLAUDE_CONFIG_DIR="$T/none" CODEX_HOME="$T/none" CTX_PIC_DB="$T/pic-user.sqlite" "$CTX" usage collect >/dev/null
 [ "$(U "SELECT model, purpose, input FROM ctx_usage WHERE msg = 'pi-ses1:g11'")" = "gpt-test compaction 884" ] || fail "pic: a compaction with no entry is counted: $(U "SELECT * FROM ctx_usage WHERE msg = 'pi-ses1:g11'")"
 [ "$(U "SELECT count(*) FROM ctx_usage WHERE msg = 'pi-ses1:g10'")" = 1 ] || fail "pic: a run left started in a journal idle for an hour does not hold back the rest"
+# Where the price file has no line, pic's model catalog prices the response, at its long-prompt tier
+# when the prompt is over it; a model the catalog lists at no cost (a local one) has no dollars.
+python3 - "$T/pic-user.sqlite" "$PW/.pic/journal.sqlite" <<'PY'
+import json, sqlite3, sys, zlib
+u = sqlite3.connect(sys.argv[1])
+models = json.dumps([{"id": "cat-model", "cost": {"input": 2, "output": 10, "cacheRead": 0.1, "cacheWrite": 2.5, "tiers": [{"inputTokensAbove": 272000, "input": 4, "output": 15, "cacheRead": 0.2, "cacheWrite": 5}]}},
+                     {"id": "llama-local", "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}}]).encode()
+u.execute("CREATE TABLE picu_catalog(provider TEXT PRIMARY KEY, sz INTEGER NOT NULL, models BLOB NOT NULL, checked_ms INTEGER NOT NULL, last_modified_ms INTEGER NOT NULL, etag TEXT)")
+u.execute("INSERT INTO picu_catalog VALUES ('openai', ?, ?, 1, 1, NULL)", (len(models), zlib.compress(models)))
+u.commit(); u.close()
+j = sqlite3.connect(sys.argv[2])
+j.execute("INSERT INTO pic_submission VALUES (8, 'ses1', 'answered')")
+for seq, model in ((10, "cat-model"), (11, "llama-local"), (12, "cat-model")):
+    j.execute("INSERT INTO pic_entry VALUES (?, 8, 'openai', 'openai-responses', ?, 1795600300000)", (seq, model))
+j.execute("INSERT INTO pic_generation VALUES (12, 8, 1, 1, 'done', 10, ?, 'reply', 1000, 'openai')", (json.dumps({"input_tokens": 1000000, "output_tokens": 100000}),))
+j.execute("INSERT INTO pic_generation VALUES (13, 8, 2, 1, 'done', 11, ?, 'reply', 1000, 'openai')", (json.dumps({"input_tokens": 1000, "output_tokens": 10}),))
+j.execute("INSERT INTO pic_generation VALUES (14, 8, 3, 1, 'done', 12, ?, 'reply', 1000, 'openai')", (json.dumps({"input_tokens": 100000, "output_tokens": 100000}),))
+j.commit(); j.close()
+PY
+CLAUDE_CONFIG_DIR="$T/none" CODEX_HOME="$T/none" CTX_PIC_DB="$T/pic-user.sqlite" "$CTX" usage collect >/dev/null
+[ "$(U "SELECT round(dollars, 2), price_date FROM ctx_usage WHERE msg = 'pi-ses1:g12'")" = "5.5 catalog" ] || fail "catalog: a prompt over the tier is priced at the tier: $(U "SELECT dollars, price_date FROM ctx_usage WHERE msg = 'pi-ses1:g12'")"
+[ "$(U "SELECT round(dollars, 2) FROM ctx_usage WHERE msg = 'pi-ses1:g14'")" = "1.2" ] || fail "catalog: a short prompt at the base price"
+[ "$(U "SELECT dollars IS NULL FROM ctx_usage WHERE msg = 'pi-ses1:g13'")" = 1 ] || fail "catalog: a local model has no dollars"
 # A .claude.json that cannot be read says nothing about the login.
 SEEN=$(U "SELECT count(*) FROM ctx_account_seen")
 printf '{"oauthAccount":{"emailAddress":"half' > "$U2/.claude.json"
@@ -4860,6 +4883,29 @@ grep -A 12 '^claude-test-q:' "$T/ho.out" | grep -q '^     300K .*%\*$' || fail "
 grep -q 'For information only' "$T/ho.out" || fail "the output says trouble does not set the point"
 "$CTX" usage handoff | cmp -s - "$T/ho.out" || fail "without --recompute, the last result is shown as it was"
 CTX_NOW=2026-11-21T12:00:00Z "$CTX" usage --hours 1 | grep -q '^  claude-test-c: past 50K tokens of context; 25 of 25 past sessions that size would have spent less by handing off, a median \$' || fail "ctx usage shows the points"
+
+# The note is priced at the line its session's responses were: for a response pic's catalog priced
+# (before the price file's first line), the catalog's price, not the file's later dated one. Here
+# the catalog's opus price makes the note cost more than handing off saves, so there is no point.
+cat > "$T/hocat.py" <<'EOF'
+import json, sqlite3, sys, zlib
+u = sqlite3.connect(sys.argv[1])
+models = json.dumps([{"id": "claude-opus-5-5", "cost": {"input": 100, "output": 1000, "cacheRead": 10, "cacheWrite": 125}}]).encode()
+u.execute("CREATE TABLE picu_catalog(provider TEXT PRIMARY KEY, sz INTEGER NOT NULL, models BLOB NOT NULL, checked_ms INTEGER NOT NULL, last_modified_ms INTEGER NOT NULL, etag TEXT)")
+u.execute("INSERT INTO picu_catalog VALUES ('anthropic', ?, ?, 1, 1, NULL)", (len(models), zlib.compress(models)))
+u.commit()
+EOF
+python3 "$T/hocat.py" "$T/hocat.sqlite"
+"$CTX" sql "WITH RECURSIVE s(k) AS (SELECT 1 UNION ALL SELECT k + 1 FROM s WHERE k < 25), t(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM t WHERE i < 59)
+  INSERT INTO ctx_usage(harness, session, msg, model, at, input, write_5m, write_1h, cache_read, output, dollars, price_date)
+  SELECT 'claude', 'o-' || k, 'o-' || k || ':' || i, 'claude-opus-5-5', strftime('%Y-%m-%dT%H:%M:%SZ', '2026-10-20', '+' || k || ' hours', '+' || i || ' minutes'),
+    0, 0, 0, 10000 * (i + 1), 10, 10000 * (i + 1) * 1e-7, 'catalog' FROM s, t" >/dev/null
+CTX_NOW=2026-11-21T12:00:00Z CTX_PIC_DB="$T/hocat.sqlite" "$CTX" usage handoff --recompute > "$T/ho.out"
+grep -q '^claude-opus-5-5: 25 past sessions in 90 days\. No point yet' "$T/ho.out" || fail "the note is priced at the catalog line its responses were: $(grep -A 3 opus "$T/ho.out")"
+CTX_NOW=2026-11-21T12:00:00Z "$CTX" sql "UPDATE ctx_usage SET price_date = '2026-11-03' WHERE model = 'claude-opus-5-5' AND session GLOB 'o-*'" >/dev/null
+CTX_NOW=2026-11-21T12:00:00Z CTX_PIC_DB="$T/hocat.sqlite" "$CTX" usage handoff --recompute > "$T/ho.out"
+grep -q '^claude-opus-5-5: 25 past sessions in 90 days\. Hand off past 50K' "$T/ho.out" || fail "at the dated line's lower price, the same sessions have a point: $(grep -A 3 opus "$T/ho.out")"
+"$CTX" sql "DELETE FROM ctx_usage WHERE session GLOB 'o-*'" >/dev/null
 
 # Who is counted: sessions active in the last 6 hours, sessions with a response that has no price,
 # and sessions that began before the 90 days are left out, from the sessions column and from the

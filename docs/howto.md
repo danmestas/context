@@ -1377,14 +1377,15 @@ claude-opus-5-5  2026-11-03  4.00  5.00  8.00  0.20  20.00
 ```
 
 A row keeps the dollars and the date of the line it was priced by, so a later price never changes
-past spend. A response with no line for its model at its date (a model not listed, a response
-older than the model's first line, or a fast-mode response with no `MODEL@fast` line) has no
-dollars, and reports say so rather than guess; `ctx usage collect` says how many it took in. The
-built-in list holds only models whose input, output and cache-read prices its source states, with
-cache writes at the source's stated 1.25x and 2x of input; it leaves out Claude Opus 5 and 4.x,
-Sonnet 5 and 4.6, and Haiku 4.5 (no stated cache-read price), Claude Haiku 5.5 (priced by prompt
-length), fast mode, and every OpenAI model. Add lines for them in the price file when you have
-their prices.
+past spend. Where the list has no line for a model at a response's date, pic's model catalog
+prices it: pic keeps, for every hosted model of every provider it knows, dollars per million
+tokens and a dearer tier for long prompts (`ctx` reads `picu_catalog` in `~/.pic/pic.sqlite`, or
+`CTX_PIC_DB`, read only). Those rows have `catalog` as their price date. The catalog holds today's
+prices, so a response from before a price change is priced at the current one. A cache write for
+an hour costs twice the input, the provider's stated rule. A model the catalog lists at no cost,
+a local one, has no dollars, nor does a model neither knows; reports say so rather than guess,
+and `ctx usage collect` says how many it took in. pic's own responses take the cost pic recorded
+when it ran (`pic_cost`, or the provider's `cost`), with `recorded` as their price date.
 
 **Reports.** `ctx usage` shows spend over a recent window, most first, for an agent balancing
 several workers as much as for you:
@@ -1473,7 +1474,8 @@ claude-opus-5-5: 16 past sessions in 90 days. No point yet: too little history, 
 
 Here, on the author's archive in November 2026, 4 of the 5 sessions that reached 250K tokens
 would have spent less by handing off there, but fewer than 20 reached it, so there is no point
-yet. Most of that archive's sessions are older than the first price line, and so are not counted.
+yet. Most of that archive's sessions were older than the price file's first line, and had no price
+then, so they were not counted.
 
 Each model's sessions are its main sessions (subagents left out) that began in the last 90 days,
 were not active in the last 6 hours, and have a price for every response: leaving out one
@@ -1488,7 +1490,8 @@ its own context and so counts the cost of starting over. Both sides stop at 5,00
 session longer than that is compared over as many responses on each side. From the difference
 ctx takes the cost of the handoff note, roughly: a note at its largest (4,000 bytes, taken as
 1,000 tokens) written once as output, written once to the new session's cache, and read again
-with each response after it, at the dated price the session's responses were priced at. What is
+with each response after it, at the price line the session's responses were priced at (a dated
+line, or pic's catalog). What is
 left is what handing off there would have saved. The point is the first size where, at it and at
 the next size up, at least 20 sessions reached it, the median saving is above zero and at least
 55% of them would have saved.
