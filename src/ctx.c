@@ -16811,6 +16811,7 @@ static const usage_account *login_at(const usage_logins *l, const char *at) {
 typedef struct {
   sqlite3_stmt *claude, *codex, *limits, *ins, *lim, *pos, *setpos, *tries, *picuse;
   long rows, unpriced, readings, unread; /* unread: responses whose usage had a shape not known here */
+  double recorded; /* a cost the harness itself recorded for the next row, at its own prices when it ran; negative for none */
   struct timespec until; /* when to stop: a scan holds the archive's lock, so it reads for a while and leaves the rest */
   int bounded, stopped;
 } usage_ctx;
@@ -16827,6 +16828,7 @@ static int usage_out_of_time(usage_ctx *u) {
 
 static void usage_prepare(sqlite3 *db, usage_ctx *u) {
   memset(u, 0, sizeof *u);
+  u->recorded = -1;
   /* a response retried on another model lists every attempt in usage.iterations: all of them count */
 #define CU(f) "coalesce(CASE WHEN json_array_length(?1, '$.message.usage.iterations') > 1 THEN (SELECT sum(coalesce(json_extract(value, '$." f "'), 0))" \
               " FROM json_each(?1, '$.message.usage.iterations')) ELSE json_extract(?1, '$.message.usage." f "') END, 0)"
@@ -16871,7 +16873,8 @@ static void usage_prepare(sqlite3 *db, usage_ctx *u) {
                              " json_type(?1, '$.prompt_tokens') IS NOT NULL, coalesce(json_extract(?1, '$.prompt_tokens'), 0),"
                              " coalesce(json_extract(?1, '$.completion_tokens'), 0), coalesce(json_extract(?1, '$.prompt_tokens_details.cached_tokens'), 0),"
                              " coalesce(json_extract(?1, '$.prompt_tokens_details.cache_write_tokens'), 0),"
-                             " coalesce(json_extract(?1, '$.completion_tokens_details.reasoning_tokens'), 0) WHERE json_valid(?1)");
+                             " coalesce(json_extract(?1, '$.completion_tokens_details.reasoning_tokens'), 0),"
+                             " coalesce(json_extract(?1, '$.pic_cost.total'), json_extract(?1, '$.cost')) WHERE json_valid(?1)"); /* the cost pic (or the provider) recorded */
   u->pos = db_prepare(db, "SELECT offset, head, state FROM ctx_usage_read WHERE path = ?1");
   u->setpos = db_prepare(db, "INSERT OR REPLACE INTO ctx_usage_read(path, offset, head, state) VALUES (?1, ?2, ?3, ?4)");
 }
@@ -16914,7 +16917,11 @@ static void usage_store(usage_ctx *u, const char *harness, const char *session, 
   for (int i = 0; i < 6; i++) sqlite3_bind_int64(q, 12 + i, t[i]);
   const price_line *p = price_for(model, speed, at);
   if (p && given && *given < 0) p = NULL; /* an attempt with no price leaves the whole response unpriced */
-  if (p) {
+  if (u->recorded >= 0) { /* the harness priced it when it ran: that is the price at the time */
+    sqlite3_bind_double(q, 18, u->recorded);
+    sqlite3_bind_text(q, 19, "recorded", -1, SQLITE_STATIC);
+    p = (const price_line *)1; /* priced */
+  } else if (p) {
     sqlite3_bind_double(q, 18, given ? *given : price_of(p, t));
     sqlite3_bind_text(q, 19, p->from, -1, SQLITE_STATIC);
   } else {
@@ -16927,6 +16934,7 @@ static void usage_store(usage_ctx *u, const char *harness, const char *session, 
   int added = sqlite3_changes(sqlite3_db_handle(q));
   u->rows += added;
   u->unpriced += added && !p;
+  u->recorded = -1;
   sqlite3_reset(q);
   sqlite3_clear_bindings(q);
 }
@@ -17370,10 +17378,12 @@ static void usage_pic_journal(sqlite3 *db, usage_ctx *u, sqlite3 *pic, const cha
         if (t[i] < 0) t[i] = 0;
         if (t[i]) counted = 1;
       }
+      if (sqlite3_column_type(u->picuse, 16) != SQLITE_NULL && sqlite3_column_double(u->picuse, 16) >= 0) u->recorded = sqlite3_column_double(u->picuse, 16);
     }
     sqlite3_reset(u->picuse);
     if (!counted) { /* usage in a shape not known here: no row rather than a row of zeros */
       u->unread++;
+      u->recorded = -1;
       done = id;
       continue;
     }
@@ -17399,6 +17409,7 @@ static void usage_pic_journal(sqlite3 *db, usage_ctx *u, sqlite3 *pic, const cha
     }
     if (!out && !session_forgotten(db, session))
       usage_store(u, "pic", session, *parent ? parent : NULL, msg, project, folder, a, NULL, PG(7), NULL, at, t, NULL, *purpose ? purpose : NULL);
+    u->recorded = -1; /* a row kept out leaves no cost for the next */
 #undef PG
     done = id;
   }
