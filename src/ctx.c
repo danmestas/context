@@ -9492,8 +9492,9 @@ static int cmd_migrate(int argc, char **argv) {
     }
     putchar('\n');
   }
-  printf("and leaves it at version %ld. This ctx, at version %d, would bring it up again the next time it opened it, so install the ctx of"
-         " version %ld first; until this has run, that one refuses the archive as from a newer ctx.\n", to, CTX_USER_VERSION, to);
+  printf("and leaves it at version %ld. Any newer ctx run against this archive, this one (version %d) and the hooks of an installed one"
+         " included, upgrades it again, so install the older ctx first; until this has run, it refuses the archive as from a newer ctx.\n",
+         to, CTX_USER_VERSION);
   if (argc < 3) {
     puts("Nothing was changed. Run it again with --yes to do it.");
     sqlite3_close(db);
@@ -9504,13 +9505,30 @@ static int cmd_migrate(int argc, char **argv) {
   int fd = open(lock, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
   free(lock);
   if (fd < 0 || flock(fd, LOCK_EX | LOCK_NB) != 0) die("another ctx is working on the archive; try again when it is done");
+  /* every step in one transaction, the version set only at the end: a ctx that opened the archive
+   * between two steps would bring it up again, and the next step would leave a mixed archive */
+  char *err = NULL;
+  if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) die("cannot take the archive: %s", err ? err : sqlite3_errmsg(db));
   for (long v = from; v > to; v--) {
-    char *err = NULL;
-    if (sqlite3_exec(db, migrate_down_sql((int)v), NULL, NULL, &err) != SQLITE_OK) {
-      sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
-      die("schema/migrate/%ld-down.sql failed: %s; the archive is at version %d", v, err ? err : sqlite3_errmsg(db), db_int(db, "PRAGMA user_version"));
+    buf body = {0}; /* the script without its own BEGIN, COMMIT and user_version */
+    for (const char *l = migrate_down_sql((int)v); *l;) {
+      const char *nl = strchr(l, '\n');
+      size_t len = nl ? (size_t)(nl - l + 1) : strlen(l);
+      if (strncmp(l, "BEGIN IMMEDIATE;", 16) && strncmp(l, "COMMIT;", 7) && strncmp(l, "PRAGMA user_version", 19)) buf_add(&body, l, len);
+      l += len;
     }
+    buf_add(&body, "", 1);
+    if (sqlite3_exec(db, body.p, NULL, NULL, &err) != SQLITE_OK) {
+      char why[600];
+      snprintf(why, sizeof why, "%s", err ? err : sqlite3_errmsg(db));
+      sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+      die("schema/migrate/%ld-down.sql failed: %s; nothing was changed, and the archive is at version %d", v, why, db_int(db, "PRAGMA user_version"));
+    }
+    free(body.p);
   }
+  char v[64];
+  snprintf(v, sizeof v, "PRAGMA user_version = %ld; COMMIT;", to);
+  if (sqlite3_exec(db, v, NULL, NULL, &err) != SQLITE_OK) die("cannot finish: %s", err ? err : sqlite3_errmsg(db));
   printf("Done: the archive is at version %d.\n", db_int(db, "PRAGMA user_version"));
   close(fd);
   sqlite3_close(db);
@@ -11745,16 +11763,18 @@ static int hook_post(int post) {
     }
     free(text.p);
   }
+  if (told) signal(SIGPIPE, SIG_IGN); /* a reader gone is a failed write, after which the mark is taken back */
   if (any) {
     if (sqlite3_prepare_v2(db, "SELECT json_object('hookSpecificOutput', json_object('hookEventName', 'PostToolUse', 'additionalContext', ?1))", -1, &q, NULL) == SQLITE_OK) {
       sqlite3_bind_text(q, 1, note.p, (int)note.n, SQLITE_STATIC);
       if (sqlite3_step(q) == SQLITE_ROW && call_say((const char *)sqlite3_column_text(q, 0), "nudged") && told) {
-        int fd = open(told, O_WRONLY | O_CREAT | O_TRUNC, 0600); /* told only once the note is out */
-        if (fd >= 0) close(fd);
+        free(told); /* sent: the mark stays */
+        told = NULL;
       }
       sqlite3_finalize(q);
     }
   }
+  if (told) unlink(told); /* not sent: not told */
   free(told);
   free(note.p);
   hook_note_activity(db, session); /* every hook run says its session is alive */
@@ -18697,8 +18717,8 @@ static int usage_handoff(int recompute) {
 }
 
 /* For ctx hook post: when this session's last response is past its model's point, say so once. The
- * context is read from the end of the session's transcript, so it is current. Returns the mark to
- * make once the note is out, or NULL when nothing was said. */
+ * context is read from the end of the session's transcript, so it is current. Returns the mark it
+ * made, for the caller to remove if the note cannot be sent, or NULL when nothing was said. */
 static char *handoff_warn(sqlite3 *db, const char *session, const char *transcript, buf *note) {
   if (!*session || !transcript || !*transcript || strstr(transcript, "/subagents/")) return NULL;
   char id[128];
@@ -18776,6 +18796,9 @@ static char *handoff_warn(sqlite3 *db, const char *session, const char *transcri
   }
   mkdir(dir, 0700);
   free(dir);
+  int fd = open(mark, O_WRONLY | O_CREAT | O_EXCL, 0600); /* claimed: of two hooks at once, only the one that makes it speaks */
+  if (fd < 0) return NULL;
+  close(fd);
   if (note->n) buf_str(note, "\n\n");
   buf_fmt(note, "ctx: this session's context is %lldK tokens, past %s's handoff point of %ldK. In %ld of %ld past sessions of this model that reached %ldK,"
                 " handing off there cost less than going on (median $%.2f saved over the %ld responses they still made; `ctx usage handoff` shows the evidence)."

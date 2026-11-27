@@ -5043,6 +5043,11 @@ EOF
 python3 "$T/hop.py" "$T/hop.json" || fail "hook post warns a session past its point: $(cat "$T/hop.json")"
 post live-1 > "$T/hop2.json"
 [ ! -s "$T/hop2.json" ] || fail "only once a session: $(cat "$T/hop2.json")"
+# two hooks at once: the one that claims the mark speaks, the other says nothing
+live live-4 claude-test-c 400000
+for i in 1 2 3 4 5 6 7 8; do post live-4 > "$T/race-$i.json" & done
+wait
+[ "$(cat "$T"/race-*.json | grep -c 'handoff point')" = 1 ] || fail "of hooks at once, only one warns: $(cat "$T"/race-*.json | grep -c 'handoff point')"
 live live-2 claude-test-c 40000
 post live-2 > "$T/hop3.json"
 [ ! -s "$T/hop3.json" ] || fail "nothing below the point"
@@ -5118,6 +5123,17 @@ grep -q 'not above 23' "$T/mig/err" || fail "migrate: says why: $(cat "$T/mig/er
 grep -q 'no script from version 21 to 20' "$T/mig/err" || fail "migrate: names the missing script: $(cat "$T/mig/err")"
 "$CTX" migrate down 21 > "$T/mig/plan" || fail "migrate: the plan"
 grep -q '23-down.sql' "$T/mig/plan" && grep -q '22-down.sql' "$T/mig/plan" && grep -q 'Run it again with --yes' "$T/mig/plan" || fail "migrate: the plan names each script: $(cat "$T/mig/plan")"
+grep -q 'Any newer ctx run against this archive.*upgrades it again, so install the older ctx first' "$T/mig/plan" || fail "migrate: the plan says a newer ctx upgrades the archive again: $(cat "$T/mig/plan")"
+# every step is one transaction: when 22-down.sql fails, 23-down.sql's part is undone too
+python3 "$M" run "$CTX_DB" /dev/stdin <<'EOF'
+CREATE TRIGGER mig_hold BEFORE DELETE ON ctx_meta WHEN old.key GLOB 'plan-told:*' BEGIN SELECT RAISE(ABORT, 'held for the test'); END;
+EOF
+"$CTX" migrate down 21 --yes >/dev/null 2>"$T/mig/err" && fail "migrate: a failing step fails the whole"
+grep -q 'nothing was changed' "$T/mig/err" || fail "migrate: says nothing was changed: $(cat "$T/mig/err")"
+[ "$(python3 "$M" q "$CTX_DB" "SELECT (SELECT user_version FROM pragma_user_version) || ' ' || (SELECT count(*) FROM sqlite_master WHERE name = 'ctx_account_seen') || ' ' || (SELECT count(*) FROM pragma_table_info('ctx_usage') WHERE name = 'purpose') || ' ' || (SELECT count(*) FROM ctx_usage)")" = "23 1 1 3" ] || fail "migrate: a failed run leaves the archive at 23 as it was"
+python3 "$M" run "$CTX_DB" /dev/stdin <<'EOF'
+DROP TRIGGER mig_hold;
+EOF
 [ "$(python3 "$M" q "$CTX_DB" "PRAGMA user_version")" = 23 ] || fail "migrate: nothing changes without --yes"
 # down to 21: exactly trunk's schema, none of the stack's keys
 "$CTX" migrate down 21 --yes | grep -q 'at version 21' || fail "migrate down 21 --yes"
