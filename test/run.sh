@@ -4538,7 +4538,7 @@ j.execute("INSERT INTO pic_entry VALUES (2, 1, 'openai', 'openai-responses', 'gp
 j.execute("INSERT INTO pic_entry VALUES (3, 2, 'openai', 'openai-responses', 'gpt-test', ?)", (ms + 2000,))
 j.execute("INSERT INTO pic_entry VALUES (4, 5, 'openai', 'openai-responses', 'gpt-test', ?)", (ms + 3000,))
 ant = {"input_tokens": 100, "cache_creation_input_tokens": 1000, "cache_creation": {"ephemeral_1h_input_tokens": 1000, "ephemeral_5m_input_tokens": 0}, "cache_read_input_tokens": 2000, "output_tokens": 300}
-oai = {"input_tokens": 1000, "input_tokens_details": {"cached_tokens": 400, "cache_write_tokens": 0}, "output_tokens": 50, "output_tokens_details": {"reasoning_tokens": 10}}
+oai = {"input_tokens": 1000, "input_tokens_details": {"cached_tokens": 400, "cache_write_tokens": 0}, "output_tokens": 50, "output_tokens_details": {"reasoning_tokens": 10}, "pic_cost": {"input": 0.002, "output": 0.0005, "total": 0.0025}}
 j.execute("INSERT INTO pic_generation VALUES (1, 1, 1, 1, 'done', 1, ?, 'reply', 3100, 'env:ANTHROPIC_API_KEY:abc123')", (json.dumps(ant),))
 j.execute("INSERT INTO pic_generation VALUES (2, 1, 2, 1, 'done', 2, ?, 'compaction', 1000, 'openai')", (json.dumps(oai),))
 j.execute("INSERT INTO pic_generation VALUES (3, 2, 1, 1, 'started', 3, NULL, 'reply', NULL, 'openai')")
@@ -4580,6 +4580,8 @@ j.commit(); j.close()
 PY
 CLAUDE_CONFIG_DIR="$T/none" CODEX_HOME="$T/none" CTX_PIC_DB="$T/pic-user.sqlite" "$CTX" usage collect > "$T/picor.out"
 [ "$(U "SELECT input, cache_read, output, reasoning FROM ctx_usage WHERE msg = 'pi-ses1:g5'")" = "700 300 40 7" ] || fail "pic: OpenRouter's prompt and completion tokens are read: $(U "SELECT * FROM ctx_usage WHERE msg = 'pi-ses1:g5'")"
+[ "$(U "SELECT round(dollars, 4), price_date FROM ctx_usage WHERE msg = 'pi-ses1:g2'")" = "0.0025 recorded" ] || fail "pic: the cost pic recorded when it ran is the row's dollars: $(U "SELECT dollars, price_date FROM ctx_usage WHERE msg = 'pi-ses1:g2'")"
+[ "$(U "SELECT round(dollars, 4) FROM ctx_usage WHERE msg = 'pi-ses1:g5'")" = "0.01" ] || fail "pic: OpenRouter's own cost is the row's dollars"
 [ "$(U "SELECT count(*) FROM ctx_usage WHERE msg = 'pi-ses1:g6'")" = 0 ] && grep -q '1 pic responses left out' "$T/picor.out" || fail "pic: usage in an unknown shape is left out and said: $(cat "$T/picor.out")"
 [ "$(U "SELECT count(*) FROM ctx_usage WHERE msg = 'pi-ses1:g8'")" = 1 ] || fail "pic: a generation of a failed submission does not hold back the ones after it"
 # A compaction whose entry is gone is still counted, from its submission's other entries; a run left
