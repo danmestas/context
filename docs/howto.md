@@ -1161,6 +1161,46 @@ The first scan after upgrading to the version that reads every agent's instructi
 one new version of each rule made from an instruction file, adding its `agent:` line; that
 happens once, and the rule's text is unchanged.
 
+## Schema versions and rollback
+
+The archive's schema has a version, kept in SQLite's `user_version`. A `ctx` opens an older
+archive by bringing it up to its own version, in place and on first use, and refuses one from a
+newer `ctx` ("this database is from a newer ctx"). So an archive opened once by a newer `ctx` is
+locked against the older one until it is taken down again.
+
+Every release that changes the schema ships a script for each step in `schema/migrate/`:
+`V-up.sql` takes an archive from version V-1 to V, and `V-down.sql` takes it from V back to V-1.
+The up scripts do what `ctx` does on opening; they are there to read, and to run by hand with
+`sqlite3` if you want to. The down scripts are compiled into `ctx`:
+
+```sh
+ctx migrate down 21          # says which scripts it would run; changes nothing
+ctx migrate down 21 --yes    # runs them, newest first
+```
+
+It refuses unless the archive is above the version asked for and there is a script for every
+step down to it, and it waits for no one: if a drain or scan holds the archive, it says so and
+stops. A down script drops only what its version added, so every table the older version knows
+keeps its rows.
+
+To go back to an older `ctx`:
+
+1. Install the older `ctx`. Until the archive is taken down, it refuses it as from a newer
+   `ctx`.
+2. Take the archive down with the newer binary, run by its path (for example from the build
+   tree): `./ctx migrate down 21 --yes`. Run the installed one instead and the next hook brings
+   the archive straight back up.
+
+| Version | What it added | Taking it down |
+|---|---|---|
+| 22 | `ctx usage`: `ctx_usage` (spend per response), `ctx_usage_read` (how far each session record was read), `ctx_limit` (plan limit readings) | drops the three tables and the `ctx_meta` keys `account:*`, `plan-told:*` and `handoff_points` |
+| 23 | `ctx_usage` keyed on the response alone, with `folder` and `purpose`; `ctx_account_seen` (the logins seen per Claude Code config folder); the handoff points | drops `ctx_account_seen` and `handoff_points`, puts back version 22's `ctx_usage`, empty, and clears `ctx_usage_read` |
+
+Going up to 23 empties `ctx_usage` and clears `ctx_usage_read`, and the next collection reads every
+session record again into the new table: the records hold everything the old table did. Spend from
+records that are gone by then is lost. The marks beside the database (`ctx.sqlite.handoff-told`,
+`ctx.sqlite.handoff-points.lock`) mean nothing to an older `ctx` and can stay.
+
 ## Measure and improve the skill
 
 ```sh
@@ -1288,6 +1328,212 @@ time a problem opens or comes back that the session has not heard of, and never 
 problem that has not changed. A hook run with no session id is told nothing, since ctx could not
 keep from telling it again. Which problems a session has heard of is kept beside the database
 (`ctx.sqlite.heard`, cleared after 30 days). `ctx page` shows them first, with the evidence.
+
+## Track spend per session
+
+ctx keeps one row per model response (`ctx_usage`), read from the records each harness already
+writes, at the same moments ctx reads sessions: the archive hook takes in the transcript it
+archives and its subagents' files, and the hourly scan takes in everything else. Each file is read
+from where the last read stopped, a big file in batches of 8 MB so the hooks are never kept
+waiting, and a response is one row however many files repeat it (Claude Code's message id; a
+forked or copied transcript repeats its parent's). The first scan collects every
+record the harnesses still keep. The hourly scan holds the archive's lock, so it spends at most
+3 minutes on usage and leaves the rest to the next scan, which goes on from the same places; a long
+history is collected over a few hours. `ctx usage collect` does it now and goes to the end, or for
+as long as `--for SECONDS` says.
+
+```sh
+ctx usage collect     # 1240 responses (31 with no price line) and 85 limit readings taken in
+ctx usage collect --for 60    # at most a minute; the next collection goes on from there
+```
+
+| Harness | Records | Counts |
+|---|---|---|
+| Claude Code | `CONFIG/projects/PROJECT/SESSION.jsonl`, and a subagent's in `SESSION/subagents/agent-*.jsonl` | each assistant record's `message.usage`, once per message id: input, cache writes (1-hour and 5-minute), cache reads, output, and thinking tokens where given; a response retried on another model counts every attempt in `usage.iterations` |
+| Codex | `CODEX_HOME/sessions/**/*.jsonl` and `archived_sessions` | each `token_count` event's `last_token_usage`, or the growth of `total_token_usage`; input there includes cached input, which ctx keeps apart as cache reads; reasoning tokens are part of output. The first `session_meta` is the rollout's own thread; a subagent's names its parent (`parent_thread_id` or `forked_from_id`) |
+| pic | each workspace's journal, `WS/.pic/journal.sqlite`, as `~/.pic/pic.sqlite` (or `CTX_PIC_DB`) lists them, read only | each finished `pic_generation`'s usage as its provider returned it (Anthropic's with cache counts apart, OpenAI's with cached input inside input), by generation, up to the first still running; compaction and branch-summary generations count, marked by `purpose`. The session is `pi-` and pic's session id, as ctx names pic's archived conversations, and a fork names its parent |
+
+A subagent's responses keep its own session and name its parent, so reports can count them under
+the session that started it. A row also has the project (from the working directory, as for
+turns), the exact model, the time, and the account: the provider and the address the harness is
+logged in with. Claude Code's `.claude.json` (`oauthAccount`: address, plan name and billing type;
+`~/.claude.json` for the default config folder) says only who is logged in now, so ctx records
+each login it sees in a config folder with when it first saw it (`ctx_account_seen`), and gives a
+response the login seen latest at or before its time. A response older than every login seen has
+no account ("unknown"), which is most of the history a first collection finds. A Codex session
+names the account it was made in (`creator_account_id`); when that is the login in `auth.json`,
+the account is that login's address, otherwise `openai:` and the account id, and Codex's plan comes
+from its rate-limit readings. With no login, the account is `anthropic:api-key` or
+`openai:api-key`. For pic, the generation's credential says it without its value being read: a key
+from the environment is the provider's API key, a stored credential is an API key or a login by
+its kind and is named `PROVIDER:pic-NAME`, and a generation with none has no account. Addresses stay in the local database and in `ctx usage` output on this machine;
+nothing is sent anywhere. Folders excluded from the archive (for Codex, by the session's working
+directory) and forgotten sessions are left out of spend too: excluding a folder removes the spend
+already collected from it, and undoing that has the next collection read every record again.
+`ctx forget SESSION` removes a session's spend and its subagents', a Codex session's included. A
+`.claude.json` that cannot be read (Claude Code writing it, or a corrupt copy) changes no login.
+Big files are read in batches of at most 8 MB or 25 ms of work, with a 50 ms pause between, so a
+hook's write gets in. The places of files that no longer exist are let go. Codex limit readings
+from a session that names no account are kept under `openai:unknown`. A response retried on
+another model is priced attempt by attempt, each at its own model where the record names it.
+
+Codex writes its plan's limits into its records (`rate_limits`: share used, window, reset time,
+plan); each reading that differs from the one before it goes into `ctx_limit`.
+
+**Prices.** Each response is priced when it is collected at the price of its model on its own
+date: the latest line for the model dated on or before the response, from a price list compiled
+into ctx (`schema/prices.txt`, which names its source and when it was read). A file named by
+`CTX_PRICES`, or else `ctx.sqlite.prices` beside the database, adds lines in the same form, and a
+line with the same model and date replaces the built-in one:
+
+```
+# model  from  input  cache-write-5m  cache-write-1h  cache-read  output   (US dollars per million tokens)
+claude-opus-5-5  2026-11-03  4.00  5.00  8.00  0.20  20.00
+```
+
+A row keeps the dollars and the date of the line it was priced by, so a later price never changes
+past spend. Where the list has no line for a model at a response's date, pic's model catalog
+prices it: pic keeps, for every hosted model of every provider it knows, dollars per million
+tokens and a dearer tier for long prompts (`ctx` reads `picu_catalog` in `~/.pic/pic.sqlite`, or
+`CTX_PIC_DB`, read only). Those rows have `catalog` as their price date. The catalog holds today's
+prices, so a response from before a price change is priced at the current one. A cache write for
+an hour costs twice the input, the provider's stated rule. A model the catalog lists at no cost,
+a local one, has no dollars, nor does a model neither knows; reports say so rather than guess,
+and `ctx usage collect` says how many it took in. pic's own responses take the cost pic recorded
+when it ran (`pic_cost`, or the provider's `cost`), with `recorded` as their price date.
+
+**Reports.** `ctx usage` shows spend over a recent window, most first, for an agent balancing
+several workers as much as for you:
+
+```sh
+ctx usage                      # the last 24 hours, by session
+ctx usage --hours 6 --by project
+ctx usage --days 7 --by model  # or harness, or account
+```
+
+```
+Last 24 hours, by session: $1113.88 at API prices, 3.1B tokens, 11128 responses (1616 with no price line, not in the dollars).
+   dollars    tokens   resp  subs  week%  session  project  harness  models
+    473.71+      1.1B   3025    22      -  2ca4c388-...  pi-c  claude  claude-opus-5-5,claude-sonnet-5-5
+```
+
+A subagent's responses are counted in the row of the session that started it, and `subs` says how
+many subagent sessions are in the row. Dollars are what the responses cost at the dated API
+prices; on a subscription they are notional, the one way to compare an Opus session with a Sonnet
+one, and `+` marks a row with some responses that had no price. `week%` is the points of a plan's
+weekly limit the row used (below). `--by account` shows the provider, the plan and the login
+address; the address is shown nowhere else.
+
+**Plan limits.** What runs out on a subscription is the plan's limits, so ctx keeps readings of
+them in `ctx_limit`. Codex writes them into its records. Claude Code gives them only to its status
+line, so the status line passes its JSON on to `ctx usage limits-in`, which records the five-hour
+and weekly readings and the share of the context window in use, tied to the account of the
+session's config folder. It prints nothing, creates nothing, always exits 0 (with no archive or
+no `HOME` too), makes its writes in one transaction, and keeps a reading only when it differs from
+the one before. It reads the login from `.claude.json` at most every ten minutes, so a new login
+shows there within ten minutes. A status line script that reads its JSON from standard input can
+pass it on like this (bash):
+
+```sh
+input=$(cat)
+printf '%s' "$input" | ctx usage limits-in
+printf '%s' "$input" | the-rest-of-the-status-line
+```
+
+Every session's status line reports the readings it last saw, so readings of a window arrive out
+of step: an idle session repeats an old value, and one from before a reset can follow one from
+after it. So a window is known by its reset time, within 10 minutes; only the highest value read in
+the current window counts, and a rise is a value above it. A reading from an earlier window is
+stale and counts nothing, a drop and a climb back count nothing, and a reading with a clearly later
+reset starts a new window, whose whole value counts as the rise. Each rise is split among the
+sessions that made responses on that account since the rise before, in proportion to what their
+responses cost at the dated prices (or their tokens, when none had a price); a rise with no
+responses behind it is left unattributed. The prices weigh sessions against each other; they are
+not shown as spend there.
+
+**At session start**, the context ctx adds gains one line about the last 24 hours when it is worth
+saying: per subscription account, its provider and plan, the week's share used and when it resets,
+the rise since yesterday and the two projects that made most of it; dollars for an API key; tokens
+for an account with no readings. For example:
+
+```
+Plan use, for the user to know of (`ctx usage` for more): Anthropic (Ultra): week 46%, resets Sat; +18% since yesterday (pic-relay 11, valet 4, rest 3).  OpenAI (pro): week 31%, resets Sun.
+```
+
+It is worth saying when an account's week is at 50% or more, or rose 10 points or more in the day;
+when an API key spent $1 or more; or when an account with no readings used 10 million tokens or
+more. Then every account used in the day is listed, each at most once a day, so a resumed or
+compacted session does not hear it again. The week shown is the current one: a reading whose reset
+has passed is not. The line names no address: two logins on the same provider and plan are told
+apart as "account 1" and "account 2", in the order ctx first saw a response from each. It says
+"Prices date from DATE." when the newest price line is over 60 days old.
+
+**When to hand off.** Every response re-reads the whole context, so a long session's responses
+cost more and more. ctx finds, per model, the context size past which handing off has cost less
+in this archive's own history, and `ctx hook post` tells a session once when it passes it, to
+write the handoff now with `ctx handoff`. There is no fixed percentage; with too little history
+there is no point and nothing is said.
+
+```sh
+ctx usage handoff               # each model's point and the evidence, as last worked out
+ctx usage handoff --recompute   # work them out again now (a few minutes on a large archive)
+```
+
+```
+claude-opus-5-5: 16 past sessions in 90 days. No point yet: too little history, or going on has not cost more.
+  context sessions  saved    saving turns left  responses  trouble
+      50K        9      3     -0.54         76         94     0.0%
+     250K        5      4      3.10        225        213     0.0%
+     350K        4      3      7.26        195        110     0.0%
+```
+
+Here, on the author's archive in November 2026, 4 of the 5 sessions that reached 250K tokens
+would have spent less by handing off there, but fewer than 20 reached it, so there is no point
+yet. Most of that archive's sessions were older than the price file's first line, and had no price
+then, so they were not counted.
+
+Each model's sessions are its main sessions (subagents left out) that began in the last 90 days,
+were not active in the last 6 hours, and have a price for every response: leaving out one
+response would shift the place of every response after it. Every column counts these same
+sessions. Sizes go in steps of 50K tokens of context (input plus cache writes plus cache reads of
+a response).
+
+For every session that reached a size, ctx takes what its responses from then on cost, and what a
+fresh session's first as many responses cost: the replay curve, the mean cost of the first,
+second, third response and so on over the model's sessions, which grows as a fresh session builds
+its own context and so counts the cost of starting over. Both sides stop at 5,000 responses, so a
+session longer than that is compared over as many responses on each side. From the difference
+ctx takes the cost of the handoff note, roughly: a note at its largest (4,000 bytes, taken as
+1,000 tokens) written once as output, written once to the new session's cache, and read again
+with each response after it, at the price line the session's responses were priced at (a dated
+line, or pic's catalog). What is
+left is what handing off there would have saved. The point is the first size where, at it and at
+the next size up, at least 20 sessions reached it, the median saving is above zero and at least
+55% of them would have saved.
+
+The trouble column is for information only and does not set the point. Trouble is a correction
+from the person (a message under 600 characters starting "no" or "nope", or saying "that's wrong",
+"that is wrong", "not what I", "I said", "you didn't", "doesn't work", "still broken" or "undo
+that" as whole words), a failed tool result when one of the three tool results before it failed
+too, or a command that runs `git revert`, `git restore`, `git reset --hard` or `git checkout --`.
+Exit status 1 from a command that runs grep, rg, test, diff or cmp is an answer (no match, false,
+different), not a failure. Each is placed at the context of its session's last response before
+it. A `*` marks a size where trouble per response is at least 1.5 times the rate below 100K tokens
+and at least 2 per 100 responses higher, with at least 50 responses and 10 events there. Both
+thresholds are choices, not findings: 1.5 times is a rise large enough to stand out from one
+person's day-to-day variation, and the 2 per 100 floor keeps a doubling of a rate near zero from
+counting. On the author's archive in November 2026 the signal was too thin to trust: 102 events
+in 89,000 responses of 379 main sessions, flat at 0 to 0.4% across sizes, with no size marked;
+among the 167 priced sessions that set the points, 6 events in 6,300 responses.
+
+The archive hook works the points out again once a day, after it has let go of the scan's lock, so
+no hook waits on it, and `ctx usage` lists them. A lock beside the database
+(`ctx.sqlite.handoff-points.lock`) keeps two computations apart: the daily one gives up while
+`--recompute` runs, and `--recompute` waits for the daily one. The hook reads the session's current
+context from the end of its transcript. Once the note has been sent, it marks the session told
+beside the database (`ctx.sqlite.handoff-told`). A subagent's tool calls carry its parent's
+session and transcript, with an `agent_id` that Claude Code gives only from within a subagent; the
+hook says nothing to them, so a subagent never uses up its session's one note.
 
 ## Keep the call log as Parquet
 
@@ -1447,4 +1693,6 @@ ctx sql "SELECT project, count(*) FROM ctx_capture GROUP BY 1"
 | `CTX_PIC_JOURNAL` | the pic journal `ctx stats` reports on, instead of `.pic/journal.sqlite` in the working directory; empty skips it |
 | `USER` | the name on check-ins, claims and sources |
 | `CTX_SESSION` | the session `ctx wiki save` records a page against |
+| `CODEX_HOME` | where Codex's records and login are found, instead of `~/.codex` |
+| `CTX_PRICES` | a price file read after ctx's own, instead of `ctx.sqlite.prices` beside the database |
 | `CTX_NOW` | a date or time (`2026-10-11T15:45:48Z`) ctx treats as now in every query, so a replay of a past moment, on a copy of the archive cut at that moment, gets the brief it would have had then |

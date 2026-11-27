@@ -3713,7 +3713,7 @@ CLAUDE_CONFIG_DIR="$XC" "$CTX" scan >/dev/null
 "$CTX" forget 5e550000-0000-0000-0000-00000000000 2>/dev/null && fail "an ambiguous prefix is refused"
 export CTX_DB="$T/rebuild.sqlite"
 "$CTX" init >/dev/null
-[ "$("$CTX" sql "PRAGMA user_version")" = 21 ] || fail "a new file is at the current version"
+[ "$("$CTX" sql "PRAGMA user_version")" = 23 ] || fail "a new file is at the current version"
 [ "$("$CTX" sql "SELECT value FROM ctx_meta WHERE key='derived_version'")" = 7 ] || fail "derived version recorded"
 printf '{"uuid":"rb-1","timestamp":"2026-09-01T10:00:00Z","cwd":"/w/rb","message":{"role":"user","content":"the capybara rollout"}}\n{"uuid":"rb-2","timestamp":"2026-09-01T10:00:05Z","cwd":"/w/rb","message":{"role":"assistant","content":"rolled out the capybara"}}\n' > "$T/ab12cd99-rb.jsonl"
 "$CTX" archive "$T/ab12cd99-rb.jsonl" >/dev/null
@@ -3735,7 +3735,7 @@ grep -q 'rebuilding it once' "$T/rb.err" || fail "an old index is rebuilt on ope
 "$CTX" sql "DROP TABLE ctx_meta" >/dev/null; "$CTX" sql "PRAGMA user_version = 1" >/dev/null
 "$CTX" search --all capybara 2>"$T/rb3.err" | grep -q capybara || fail "an unversioned file still works"
 [ -s "$T/rb3.err" ] && fail "an unversioned file is upgraded without a rebuild"
-[ "$("$CTX" sql "PRAGMA user_version")" = 21 ] || fail "and is marked current"
+[ "$("$CTX" sql "PRAGMA user_version")" = 23 ] || fail "and is marked current"
 
 # Docs tickets: every documentation problem ctx finds becomes a ticket, once each, without the
 # person's sign-off, and the overview shows who holds it and carries a prod to that session.
@@ -4414,6 +4414,796 @@ for i in 8 9 10 11 12 13; do pair $i; done
 printf 'B %s 50 gate\n' $((IT - 3600)) >> "$CTX_DB.calls"
 printf 'E %s 50 gate 5 0 quiet 0 claude s\n' $((IT + 20)) >> "$CTX_DB.calls"
 [ "$(ing)" = 14 ] && [ "$(fsql "SELECT count(*) FROM ctx_call WHERE pid = 50 AND ms IS NULL")" = 1 ] || fail "a reused pid's end does not close an hour-old start: $(fsql "SELECT * FROM ctx_call WHERE pid = 50")"
+
+# Usage: one row per model response from each harness's own records, priced at the price of its
+# model on its date, with Codex's plan-limit readings. Addresses here are fake.
+export CTX_DB="$T/usage/ctx.sqlite"
+mkdir -p "$T/usage"
+"$CTX" init >/dev/null
+UC="$T/ucfg"; UX="$T/ucodex"
+mkdir -p "$UC/projects/-w-owl/s-1/subagents" "$UX/sessions/2026/11/20"
+printf '{"oauthAccount":{"emailAddress":"person@example.test","planDisplayName":"Max","billingType":"stripe_subscription"}}\n' > "$UC/.claude.json"
+python3 - "$UC/projects/-w-owl" "$UX" <<'PY'
+import base64, json, os, sys
+owl, ux = sys.argv[1:3]
+def asst(mid, model, at, usage, sid="s-1", extra=None):
+    r = {"type": "assistant", "timestamp": at, "sessionId": sid, "cwd": "/w/owl", "message": {"id": mid, "model": model, "role": "assistant", "content": [{"type": "text", "text": "ok"}], "usage": usage}}
+    r.update(extra or {})
+    return json.dumps(r) + "\n"
+u1 = {"input_tokens": 10, "cache_creation_input_tokens": 1000, "cache_read_input_tokens": 2000, "output_tokens": 300, "cache_creation": {"ephemeral_1h_input_tokens": 1000, "ephemeral_5m_input_tokens": 0}}
+with open(owl + "/s-1.jsonl", "w") as f:
+    f.write(json.dumps({"type": "user", "timestamp": "2026-11-20T09:59:00Z", "sessionId": "s-1", "cwd": "/w/owl", "message": {"role": "user", "content": "what does \"usage\" mean for the assistant"}}) + "\n")
+    f.write(asst("msg_1", "claude-opus-5-5", "2026-11-20T10:00:00Z", u1))
+    f.write(asst("msg_1", "claude-opus-5-5", "2026-11-20T10:00:01Z", u1))  # the same response, another content block
+    f.write(asst("msg_2", "claude-haiku-5-5", "2026-11-20T10:01:00Z", {"input_tokens": 7, "output_tokens": 3}))
+    f.write(asst("msg_0", "claude-opus-5-5", "2026-10-01T10:00:00Z", {"input_tokens": 7, "output_tokens": 3}))
+    f.write(asst("msg_x", "<synthetic>", "2026-11-20T10:02:00Z", {"input_tokens": 0, "output_tokens": 0}))
+with open(owl + "/s-1/subagents/agent-a1.jsonl", "w") as f:
+    f.write(asst("msg_s1", "claude-sonnet-5-5", "2026-11-20T10:03:00Z", {"input_tokens": 5, "cache_creation_input_tokens": 100, "output_tokens": 50}, extra={"isSidechain": True, "agentId": "a1"}))
+claims = base64.urlsafe_b64encode(json.dumps({"email": "coder@example.test"}).encode()).decode().rstrip("=")
+json.dump({"auth_mode": "chatgpt", "OPENAI_API_KEY": None, "tokens": {"id_token": "e30." + claims + ".sig", "account_id": "acct-1"}}, open(ux + "/auth.json", "w"))
+def tc(at, total, last, limits=True):
+    info = {"total_token_usage": total}
+    if last: info["last_token_usage"] = last
+    p = {"type": "token_count", "info": info}
+    if limits: p["rate_limits"] = {"primary": {"used_percent": 12.5, "window_minutes": 300, "resets_at": 1795600000}, "secondary": {"used_percent": 40.0, "window_minutes": 10080, "resets_at": 1796000000}, "plan_type": "pro"}
+    return json.dumps({"timestamp": at, "type": "event_msg", "payload": p}) + "\n"
+k = lambda i, c, o, r: {"input_tokens": i, "cached_input_tokens": c, "cache_write_input_tokens": 0, "output_tokens": o, "reasoning_output_tokens": r}
+with open(ux + "/sessions/2026/11/20/rollout-cx-1.jsonl", "w") as f:
+    f.write(json.dumps({"timestamp": "2026-11-20T11:00:00Z", "type": "session_meta", "payload": {"id": "cx-1", "cwd": "/w/owl", "creator_account_id": "acct-1"}}) + "\n")
+    f.write(json.dumps({"timestamp": "2026-11-20T11:00:01Z", "type": "turn_context", "payload": {"model": "gpt-test", "cwd": "/w/owl"}}) + "\n")
+    f.write(tc("2026-11-20T11:00:02Z", k(1000, 400, 50, 10), k(1000, 400, 50, 10)))
+    f.write(tc("2026-11-20T11:00:03Z", k(1000, 400, 50, 10), k(1000, 400, 50, 10)))  # repeated: not a new response
+    f.write(tc("2026-11-20T11:00:04Z", k(1600, 900, 80, 10), None, limits=False))  # no last: the running total's growth
+# a subagent's rollout: its own meta first, then its parent's; its counts start from its own zero
+with open(ux + "/sessions/2026/11/20/rollout-cx-2.jsonl", "w") as f:
+    f.write(json.dumps({"timestamp": "2026-11-20T11:05:00Z", "type": "session_meta", "payload": {"id": "cx-2", "cwd": "/w/owl", "creator_account_id": "acct-1", "parent_thread_id": "cx-1", "forked_from_id": "cx-1"}}) + "\n")
+    f.write(json.dumps({"timestamp": "2026-11-20T11:05:00Z", "type": "session_meta", "payload": {"id": "cx-1", "cwd": "/w/owl", "creator_account_id": "acct-1"}}) + "\n")
+    f.write(json.dumps({"timestamp": "2026-11-20T11:05:01Z", "type": "turn_context", "payload": {"model": "gpt-test", "cwd": "/w/owl"}}) + "\n")
+    f.write(tc("2026-11-20T11:05:02Z", k(1000, 400, 50, 10), k(1000, 400, 50, 10), limits=False))
+# a rollout made under another account than the one logged in now
+with open(ux + "/sessions/2026/11/20/rollout-cx-3.jsonl", "w") as f:
+    f.write(json.dumps({"timestamp": "2026-11-20T11:06:00Z", "type": "session_meta", "payload": {"id": "cx-3", "cwd": "/w/owl", "creator_account_id": "acct-old"}}) + "\n")
+    f.write(json.dumps({"timestamp": "2026-11-20T11:06:01Z", "type": "turn_context", "payload": {"model": "gpt-test", "cwd": "/w/owl"}}) + "\n")
+    f.write(tc("2026-11-20T11:06:02Z", k(10, 0, 5, 0), k(10, 0, 5, 0), limits=False))
+PY
+CLAUDE_CONFIG_DIR="$UC" CODEX_HOME="$UX" CTX_NOW=2026-11-01T00:00:00Z "$CTX" usage collect > "$T/ucol.out" || fail "ctx usage collect runs"
+grep -q '^8 responses (6 with no price line) and 2 limit readings taken in$' "$T/ucol.out" || fail "collect counts what it took in: $(cat "$T/ucol.out")"
+grep -q '@' "$T/ucol.out" && fail "collect prints no address"
+U() { "$CTX" sql "$1" | tr '\t' ' '; }
+[ "$(U "SELECT count(*) FROM ctx_usage WHERE msg = 'msg_1'")" = 1 ] || fail "one row per response, not per record"
+[ "$(U "SELECT input, write_5m, write_1h, cache_read, output, round(dollars, 6), price_date, project FROM ctx_usage WHERE msg = 'msg_1'")" = "10 0 1000 2000 300 0.01444 2026-11-03 owl" ] || fail "a response priced at its date: $(U "SELECT * FROM ctx_usage WHERE msg = 'msg_1'")"
+[ "$(U "SELECT account = 'anthropic:person@example.test', plan, billing FROM ctx_usage WHERE msg = 'msg_1'")" = "1 Max stripe_subscription" ] || fail "the Claude Code login is the account"
+[ "$(U "SELECT dollars IS NULL, price_date IS NULL FROM ctx_usage WHERE msg IN ('msg_2', 'msg_0')")" = "1 1
+1 1" ] || fail "no price line, no dollars: a model with none, and a response before its first line"
+[ "$(U "SELECT count(*) FROM ctx_usage WHERE model = '<synthetic>'")" = 0 ] || fail "a synthetic message is not a response"
+[ "$(U "SELECT session, parent, write_5m, round(dollars, 6) FROM ctx_usage WHERE msg = 'msg_s1'")" = "agent-a1 s-1 100 0.00076" ] || fail "a subagent's response, under its parent: $(U "SELECT * FROM ctx_usage WHERE msg = 'msg_s1'")"
+[ "$(U "SELECT session, model, input, cache_read, output, reasoning, project, plan FROM ctx_usage WHERE harness = 'codex' AND session = 'cx-1' ORDER BY at")" = "cx-1 gpt-test 600 400 50 10 owl pro
+cx-1 gpt-test 100 500 30 0 owl pro" ] || fail "Codex: last usage, then the running total's growth, cached input apart: $(U "SELECT * FROM ctx_usage WHERE harness = 'codex'")"
+[ "$(U "SELECT count(*) FROM ctx_usage WHERE harness = 'codex' AND session = 'cx-1' AND account = 'openai:coder@example.test' AND dollars IS NULL")" = 2 ] || fail "the Codex login is the account, and an unpriced model has no dollars"
+[ "$(U "SELECT session, parent, input FROM ctx_usage WHERE harness = 'codex' AND session <> 'cx-1' AND parent IS NOT NULL")" = "cx-2 cx-1 600" ] || fail "a Codex subagent's responses are its own, under its parent: $(U "SELECT session, parent FROM ctx_usage WHERE harness = 'codex'")"
+[ "$(U "SELECT account FROM ctx_usage WHERE session = 'cx-3'")" = "openai:acct-old" ] || fail "a Codex session made in another account keeps that account"
+[ "$(U "SELECT window, used, resets_at, source FROM ctx_limit ORDER BY window")" = "300 12.5 1795600000 codex
+10080 40.0 1796000000 codex" ] || fail "Codex's limit readings: $(U "SELECT window, used, resets_at, source FROM ctx_limit")"
+# Only what is new is read next time, and a price line added later prices new responses only.
+printf '{"type":"assistant","timestamp":"2026-11-21T10:00:00Z","sessionId":"s-1","cwd":"/w/owl","message":{"id":"msg_3","model":"claude-haiku-5-5","usage":{"input_tokens":1000000,"output_tokens":0}}}\n' >> "$UC/projects/-w-owl/s-1.jsonl"
+printf 'claude-haiku-5-5 2026-11-21 2.00 0 0 0 0 a test line\n' > "$T/uprices.txt"
+CLAUDE_CONFIG_DIR="$UC" CODEX_HOME="$UX" CTX_PRICES="$T/uprices.txt" "$CTX" usage collect | grep -q '^1 responses (0 with no price line) and 0 limit readings taken in$' || fail "a second collection reads only what is new"
+[ "$(U "SELECT round(dollars, 2), price_date FROM ctx_usage WHERE msg = 'msg_3'")" = "2.0 2026-11-21" ] || fail "a price file adds a model: $(U "SELECT dollars, price_date FROM ctx_usage WHERE msg = 'msg_3'")"
+[ "$(U "SELECT dollars IS NULL FROM ctx_usage WHERE msg = 'msg_2'")" = 1 ] || fail "a stored row keeps the price it was given"
+# The archive hook takes in the transcript it archives at once. A transcript copied or forked
+# from another repeats its responses: each stays one row.
+cp "$UC/projects/-w-owl/s-1.jsonl" "$UC/projects/-w-owl/s-2.jsonl"
+sed -i.bak 's/"s-1"/"s-2"/' "$UC/projects/-w-owl/s-2.jsonl" && rm -f "$UC/projects/-w-owl/s-2.jsonl.bak"
+printf '{"type":"assistant","timestamp":"2026-11-21T11:00:00Z","sessionId":"s-2","cwd":"/w/owl","message":{"id":"msg_new","model":"claude-opus-5-5","usage":{"input_tokens":1,"output_tokens":1}}}\n' >> "$UC/projects/-w-owl/s-2.jsonl"
+"$CTX" archive "$UC/projects/-w-owl/s-2.jsonl" >/dev/null
+[ "$(U "SELECT group_concat(msg) FROM ctx_usage WHERE session = 's-2'")" = msg_new ] || fail "archiving a transcript takes in its new responses, not its copies: $(U "SELECT msg FROM ctx_usage WHERE session = 's-2'")"
+[ "$(U "SELECT count(*), min(session) FROM ctx_usage WHERE msg = 'msg_1'")" = "1 s-1" ] || fail "a response read from two files is one row"
+# Accounts by time: a response gets the login ctx saw latest at or before it; an older one, none.
+U2="$T/ucfg2"
+mkdir -p "$U2/projects/-w-owl"
+acct() { printf '{"oauthAccount":{"emailAddress":"%s","planDisplayName":"%s","billingType":"stripe_subscription"}}\n' "$1" "$2" > "$U2/.claude.json"; }
+resp() { printf '{"type":"assistant","timestamp":"%s","sessionId":"t-1","cwd":"/w/owl","message":{"id":"%s","model":"claude-opus-5-5","usage":{"input_tokens":1,"output_tokens":1}}}\n' "$2" "$1" >> "$U2/projects/-w-owl/t-1.jsonl"; }
+resp a-old 2026-11-10T10:00:00Z
+resp a-1 2026-11-20T10:00:00Z
+acct first@example.test Pro
+CLAUDE_CONFIG_DIR="$U2" CODEX_HOME="$T/none" CTX_NOW=2026-11-15T00:00:00Z "$CTX" usage collect >/dev/null
+acct second@example.test Max
+resp a-2 2026-11-22T10:00:00Z
+resp a-3 2026-11-21T10:00:00Z
+CLAUDE_CONFIG_DIR="$U2" CODEX_HOME="$T/none" CTX_NOW=2026-11-22T00:00:00Z "$CTX" usage collect >/dev/null
+[ "$(U "SELECT group_concat(msg || '=' || coalesce(account, 'unknown') || '/' || coalesce(plan, '-'), ' ') FROM (SELECT * FROM ctx_usage WHERE session = 't-1' ORDER BY msg)")" = "a-1=anthropic:first@example.test/Pro a-2=anthropic:second@example.test/Max a-3=anthropic:first@example.test/Pro a-old=unknown/-" ] || fail "each response gets the login of its time"
+# Big files are read in batches, the write lock let go between them.
+python3 - "$U2/projects/-w-owl/t-big.jsonl" <<'PY'
+import json, sys
+pad = "x" * 4000
+with open(sys.argv[1], "w") as f:
+    for i in range(2500):
+        f.write(json.dumps({"type": "assistant", "timestamp": "2026-11-22T11:00:00Z", "sessionId": "t-big", "cwd": "/w/owl", "pad": pad, "message": {"id": "big-%d" % i, "model": "claude-opus-5-5", "usage": {"input_tokens": 1, "output_tokens": 1}}}) + "\n")
+PY
+CLAUDE_CONFIG_DIR="$U2" CODEX_HOME="$T/none" CTX_NOW=2026-11-23T00:00:00Z "$CTX" usage collect | grep -q '^2500 responses' || fail "a file over 8 MB is read whole"
+# Kept out: a Codex rollout from an excluded folder, and a forgotten session's spend.
+"$CTX" sql "INSERT INTO ctx_exclude(dir, slug) VALUES ('/w/egret', '-w-egret')" >/dev/null # as ctx exclude /w/egret records it
+python3 - "$UX/sessions/2026/11/20/rollout-cx-4.jsonl" <<'PY'
+import json, sys
+with open(sys.argv[1], "w") as f:
+    f.write(json.dumps({"timestamp": "2026-11-20T12:00:00Z", "type": "session_meta", "payload": {"id": "cx-4", "cwd": "/w/egret", "creator_account_id": "acct-1"}}) + "\n")
+    f.write(json.dumps({"timestamp": "2026-11-20T12:00:01Z", "type": "turn_context", "payload": {"model": "gpt-test"}}) + "\n")
+    f.write(json.dumps({"timestamp": "2026-11-20T12:00:02Z", "type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 5, "output_tokens": 1}}}}) + "\n")
+PY
+CLAUDE_CONFIG_DIR="$UC" CODEX_HOME="$UX" "$CTX" usage collect >/dev/null
+[ "$(U "SELECT count(*) FROM ctx_usage WHERE session = 'cx-4'")" = 0 ] || fail "a Codex rollout from an excluded folder is kept out"
+"$CTX" forget s-2 >/dev/null
+[ "$(U "SELECT count(*) FROM ctx_usage WHERE session = 's-2'")" = 0 ] || fail "forgetting a session drops its spend"
+# Places of files that are gone are let go.
+rm "$U2/projects/-w-owl/t-big.jsonl"
+CLAUDE_CONFIG_DIR="$U2" CODEX_HOME="$T/none" "$CTX" usage collect >/dev/null
+[ "$(U "SELECT count(*) FROM ctx_usage_read WHERE path LIKE '%t-big.jsonl'")" = 0 ] || fail "a deleted file's place is pruned"
+# A response retried on another model counts every attempt, and fast mode has its own price.
+printf '{"type":"assistant","timestamp":"2026-11-22T12:00:00Z","sessionId":"t-1","cwd":"/w/owl","message":{"id":"a-fb","model":"claude-opus-5-5","usage":{"input_tokens":10,"output_tokens":5,"iterations":[{"input_tokens":100,"output_tokens":50},{"input_tokens":10,"output_tokens":5}]}}}\n' >> "$U2/projects/-w-owl/t-1.jsonl"
+printf '{"type":"assistant","timestamp":"2026-11-22T12:01:00Z","sessionId":"t-1","cwd":"/w/owl","message":{"id":"a-fast","model":"claude-opus-5-5","usage":{"input_tokens":1000000,"output_tokens":0,"speed":"fast"}}}\n' >> "$U2/projects/-w-owl/t-1.jsonl"
+CLAUDE_CONFIG_DIR="$U2" CODEX_HOME="$T/none" "$CTX" usage collect >/dev/null
+[ "$(U "SELECT input, output FROM ctx_usage WHERE msg = 'a-fb'")" = "110 55" ] || fail "every attempt of a retried response counts"
+[ "$(U "SELECT dollars IS NULL, speed FROM ctx_usage WHERE msg = 'a-fast'")" = "1 fast" ] || fail "fast mode has no price line, so no dollars"
+
+# pic: each workspace's journal, read only, by generation, up to the first still running; the
+# session is pi- and pic's id, as ctx names pic's archived conversations; the credential is
+# known by its name and kind, never its sealed value.
+PW="$T/picws"; mkdir -p "$PW/.pic"
+python3 - "$T/pic-user.sqlite" "$PW" <<'PY'
+import json, sqlite3, sys
+user, ws = sys.argv[1:3]
+c = sqlite3.connect(user)
+c.executescript("""CREATE TABLE picu_workspace(path TEXT PRIMARY KEY, journal TEXT NOT NULL, last_used_ms INTEGER NOT NULL);
+CREATE TABLE picu_credential(name TEXT PRIMARY KEY, kind TEXT NOT NULL, sealed BLOB NOT NULL, created_ms INTEGER NOT NULL, used_ms INTEGER);""")
+c.execute("INSERT INTO picu_workspace VALUES (?, ?, 1)", (ws, ws + "/.pic/journal.sqlite"))
+c.execute("INSERT INTO picu_credential VALUES ('openai', 'oauth', ?, 1, 1)", (b"TOP-SECRET-VALUE",))
+c.commit(); c.close()
+j = sqlite3.connect(ws + "/.pic/journal.sqlite")
+j.executescript("""CREATE TABLE pic_session(id TEXT PRIMARY KEY, forked_from TEXT);
+CREATE TABLE pic_submission(id INTEGER PRIMARY KEY, session_id TEXT, status TEXT NOT NULL DEFAULT 'answered');
+CREATE TABLE pic_entry(seq INTEGER PRIMARY KEY, submission_id INTEGER, provider TEXT, api TEXT, model TEXT, created_ms INTEGER);
+CREATE TABLE pic_generation(id INTEGER PRIMARY KEY, submission_id INTEGER, turn INTEGER, attempt INTEGER, state TEXT, entry_seq INTEGER, usage TEXT,
+  purpose TEXT NOT NULL DEFAULT 'reply', context_tokens INTEGER, credential TEXT);
+INSERT INTO pic_session VALUES ('ses1', NULL), ('ses2', 'ses1');
+INSERT INTO pic_submission VALUES (1, 'ses1', 'answered'), (2, 'ses2', 'admitted'), (5, 'ses2', 'answered');""")
+ms = 1795600000000
+j.execute("INSERT INTO pic_entry VALUES (1, 1, 'anthropic', 'anthropic-messages', 'claude-opus-5-5', ?)", (ms,))
+j.execute("INSERT INTO pic_entry VALUES (2, 1, 'openai', 'openai-responses', 'gpt-test', ?)", (ms + 1000,))
+j.execute("INSERT INTO pic_entry VALUES (3, 2, 'openai', 'openai-responses', 'gpt-test', ?)", (ms + 2000,))
+j.execute("INSERT INTO pic_entry VALUES (4, 5, 'openai', 'openai-responses', 'gpt-test', ?)", (ms + 3000,))
+ant = {"input_tokens": 100, "cache_creation_input_tokens": 1000, "cache_creation": {"ephemeral_1h_input_tokens": 1000, "ephemeral_5m_input_tokens": 0}, "cache_read_input_tokens": 2000, "output_tokens": 300}
+oai = {"input_tokens": 1000, "input_tokens_details": {"cached_tokens": 400, "cache_write_tokens": 0}, "output_tokens": 50, "output_tokens_details": {"reasoning_tokens": 10}, "pic_cost": {"input": 0.002, "output": 0.0005, "total": 0.0025}}
+j.execute("INSERT INTO pic_generation VALUES (1, 1, 1, 1, 'done', 1, ?, 'reply', 3100, 'env:ANTHROPIC_API_KEY:abc123')", (json.dumps(ant),))
+j.execute("INSERT INTO pic_generation VALUES (2, 1, 2, 1, 'done', 2, ?, 'compaction', 1000, 'openai')", (json.dumps(oai),))
+j.execute("INSERT INTO pic_generation VALUES (3, 2, 1, 1, 'started', 3, NULL, 'reply', NULL, 'openai')")
+j.execute("INSERT INTO pic_generation VALUES (4, 5, 1, 1, 'done', 4, ?, 'reply', 1000, 'openai')", (json.dumps(oai),))
+j.commit(); j.close()
+PY
+CLAUDE_CONFIG_DIR="$T/none" CODEX_HOME="$T/none" CTX_PIC_DB="$T/pic-user.sqlite" "$CTX" usage collect >/dev/null
+[ "$(U "SELECT count(*) FROM ctx_usage WHERE harness = 'pic'")" = 2 ] || fail "pic: read up to the generation still running: $(U "SELECT msg FROM ctx_usage WHERE harness = 'pic'")"
+[ "$(U "SELECT session, account, plan, round(dollars, 4), write_1h, cache_read FROM ctx_usage WHERE harness = 'pic' AND model = 'claude-opus-5-5'")" = "pi-ses1 anthropic:api-key api-key 0.0148 1000 2000" ] || fail "pic: an Anthropic response, on an API key from the environment: $(U "SELECT * FROM ctx_usage WHERE harness = 'pic'")"
+[ "$(U "SELECT session, account, purpose, input, cache_read, output, reasoning FROM ctx_usage WHERE harness = 'pic' AND model = 'gpt-test'")" = "pi-ses1 openai:pic-openai compaction 600 400 50 10" ] || fail "pic: an OpenAI compaction, cached input apart, its purpose kept: $(U "SELECT * FROM ctx_usage WHERE harness = 'pic' AND model = 'gpt-test'")"
+python3 - "$PW/.pic/journal.sqlite" <<'PY'
+import json, sqlite3, sys
+j = sqlite3.connect(sys.argv[1])
+j.execute("UPDATE pic_generation SET state = 'done', usage = ? WHERE id = 3", (json.dumps({"input_tokens": 10, "output_tokens": 5}),))
+j.commit(); j.close()
+PY
+CLAUDE_CONFIG_DIR="$T/none" CODEX_HOME="$T/none" CTX_PIC_DB="$T/pic-user.sqlite" "$CTX" usage collect >/dev/null
+CLAUDE_CONFIG_DIR="$T/none" CODEX_HOME="$T/none" CTX_PIC_DB="$T/pic-user.sqlite" "$CTX" usage collect >/dev/null
+[ "$(U "SELECT count(*), count(DISTINCT msg), sum(parent = 'pi-ses1') FROM ctx_usage WHERE harness = 'pic'")" = "4 4 2" ] || fail "pic: the rest once finished, each once, a fork under its parent: $(U "SELECT msg, parent FROM ctx_usage WHERE harness = 'pic'")"
+python3 -c 'import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); assert not any(b"TOP-SECRET" in (v if isinstance(v, bytes) else str(v).encode()) for t, in c.execute("SELECT name FROM sqlite_master WHERE type = \"table\" AND name LIKE \"ctx_%\"").fetchall() for r in c.execute("SELECT * FROM \"%s\"" % t) for v in r if v is not None)' "$CTX_DB" || fail "pic: no secret is taken in"
+
+# OpenRouter's chat-completions usage is read; a shape ctx does not know is left out, not stored as zeros;
+# a generation that can no longer finish does not hold the rest back.
+python3 - "$PW/.pic/journal.sqlite" <<'PY'
+import json, sqlite3, sys
+j = sqlite3.connect(sys.argv[1])
+ms = 1795600100000
+j.execute("INSERT INTO pic_submission VALUES (3, 'ses1', 'answered'), (4, 'ses1', 'failed')")
+j.execute("INSERT INTO pic_entry VALUES (5, 3, 'openrouter', 'openai-completions', 'gpt-or', ?)", (ms,))
+j.execute("INSERT INTO pic_entry VALUES (6, 3, 'openrouter', 'openai-completions', 'gpt-or', ?)", (ms + 1000,))
+j.execute("INSERT INTO pic_entry VALUES (7, 4, 'openrouter', 'openai-completions', 'gpt-or', ?)", (ms + 2000,))
+j.execute("INSERT INTO pic_entry VALUES (8, 3, 'openrouter', 'openai-completions', 'gpt-or', ?)", (ms + 3000,))
+orr = {"prompt_tokens": 1000, "completion_tokens": 40, "prompt_tokens_details": {"cached_tokens": 300}, "completion_tokens_details": {"reasoning_tokens": 7}, "cost": 0.01}
+j.execute("INSERT INTO pic_generation VALUES (5, 3, 1, 1, 'done', 5, ?, 'reply', 1000, 'openrouter')", (json.dumps(orr),))
+j.execute("INSERT INTO pic_generation VALUES (6, 3, 2, 1, 'done', 6, ?, 'reply', 1000, 'openrouter')", (json.dumps({"some_new_field": 3}),))
+j.execute("INSERT INTO pic_generation VALUES (7, 4, 1, 1, 'started', 7, NULL, 'reply', NULL, 'openrouter')")
+j.execute("INSERT INTO pic_generation VALUES (8, 3, 3, 1, 'done', 8, ?, 'reply', 1000, 'openrouter')", (json.dumps(orr),))
+j.commit(); j.close()
+PY
+CLAUDE_CONFIG_DIR="$T/none" CODEX_HOME="$T/none" CTX_PIC_DB="$T/pic-user.sqlite" "$CTX" usage collect > "$T/picor.out"
+[ "$(U "SELECT input, cache_read, output, reasoning FROM ctx_usage WHERE msg = 'pi-ses1:g5'")" = "700 300 40 7" ] || fail "pic: OpenRouter's prompt and completion tokens are read: $(U "SELECT * FROM ctx_usage WHERE msg = 'pi-ses1:g5'")"
+[ "$(U "SELECT round(dollars, 4), price_date FROM ctx_usage WHERE msg = 'pi-ses1:g2'")" = "0.0025 recorded" ] || fail "pic: the cost pic recorded when it ran is the row's dollars: $(U "SELECT dollars, price_date FROM ctx_usage WHERE msg = 'pi-ses1:g2'")"
+[ "$(U "SELECT round(dollars, 4) FROM ctx_usage WHERE msg = 'pi-ses1:g5'")" = "0.01" ] || fail "pic: OpenRouter's own cost is the row's dollars"
+[ "$(U "SELECT count(*) FROM ctx_usage WHERE msg = 'pi-ses1:g6'")" = 0 ] && grep -q '1 pic responses left out' "$T/picor.out" || fail "pic: usage in an unknown shape is left out and said: $(cat "$T/picor.out")"
+[ "$(U "SELECT count(*) FROM ctx_usage WHERE msg = 'pi-ses1:g8'")" = 1 ] || fail "pic: a generation of a failed submission does not hold back the ones after it"
+# A compaction whose entry is gone is still counted, from its submission's other entries; a run left
+# 'started' in a journal untouched for an hour does not hold the rest back.
+python3 - "$PW/.pic/journal.sqlite" <<'PY'
+import json, os, sqlite3, sys, time
+j = sqlite3.connect(sys.argv[1])
+j.execute("INSERT INTO pic_submission VALUES (6, 'ses1', 'admitted'), (7, 'ses1', 'answered')")
+j.execute("INSERT INTO pic_entry VALUES (9, 7, 'openai', 'openai-responses', 'gpt-test', 1795600200000)")
+oai = {"input_tokens": 884, "output_tokens": 20}
+j.execute("INSERT INTO pic_generation VALUES (9, 6, 1, 1, 'started', 99, NULL, 'reply', NULL, 'openai')")
+j.execute("INSERT INTO pic_generation VALUES (10, 7, 1, 1, 'done', 9, ?, 'reply', 1000, 'openai')", (json.dumps(oai),))
+j.execute("INSERT INTO pic_generation VALUES (11, 7, 2, 1, 'done', 404, ?, 'compaction', 1000, 'openai')", (json.dumps(oai),))
+j.commit(); j.close()
+old = time.time() - 7200
+for p in (sys.argv[1], sys.argv[1] + "-wal"):
+    if os.path.exists(p): os.utime(p, (old, old))
+PY
+CLAUDE_CONFIG_DIR="$T/none" CODEX_HOME="$T/none" CTX_PIC_DB="$T/pic-user.sqlite" "$CTX" usage collect >/dev/null
+[ "$(U "SELECT model, purpose, input FROM ctx_usage WHERE msg = 'pi-ses1:g11'")" = "gpt-test compaction 884" ] || fail "pic: a compaction with no entry is counted: $(U "SELECT * FROM ctx_usage WHERE msg = 'pi-ses1:g11'")"
+[ "$(U "SELECT count(*) FROM ctx_usage WHERE msg = 'pi-ses1:g10'")" = 1 ] || fail "pic: a run left started in a journal idle for an hour does not hold back the rest"
+# Where the price file has no line, pic's model catalog prices the response, at its long-prompt tier
+# when the prompt is over it; a model the catalog lists at no cost (a local one) has no dollars.
+python3 - "$T/pic-user.sqlite" "$PW/.pic/journal.sqlite" <<'PY'
+import json, sqlite3, sys, zlib
+u = sqlite3.connect(sys.argv[1])
+models = json.dumps([{"id": "cat-model", "cost": {"input": 2, "output": 10, "cacheRead": 0.1, "cacheWrite": 2.5, "tiers": [{"inputTokensAbove": 272000, "input": 4, "output": 15, "cacheRead": 0.2, "cacheWrite": 5}]}},
+                     {"id": "llama-local", "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}}]).encode()
+u.execute("CREATE TABLE picu_catalog(provider TEXT PRIMARY KEY, sz INTEGER NOT NULL, models BLOB NOT NULL, checked_ms INTEGER NOT NULL, last_modified_ms INTEGER NOT NULL, etag TEXT)")
+u.execute("INSERT INTO picu_catalog VALUES ('openai', ?, ?, 1, 1, NULL)", (len(models), zlib.compress(models)))
+u.commit(); u.close()
+j = sqlite3.connect(sys.argv[2])
+j.execute("INSERT INTO pic_submission VALUES (8, 'ses1', 'answered')")
+for seq, model in ((10, "cat-model"), (11, "llama-local"), (12, "cat-model")):
+    j.execute("INSERT INTO pic_entry VALUES (?, 8, 'openai', 'openai-responses', ?, 1795600300000)", (seq, model))
+j.execute("INSERT INTO pic_generation VALUES (12, 8, 1, 1, 'done', 10, ?, 'reply', 1000, 'openai')", (json.dumps({"input_tokens": 1000000, "output_tokens": 100000}),))
+j.execute("INSERT INTO pic_generation VALUES (13, 8, 2, 1, 'done', 11, ?, 'reply', 1000, 'openai')", (json.dumps({"input_tokens": 1000, "output_tokens": 10}),))
+j.execute("INSERT INTO pic_generation VALUES (14, 8, 3, 1, 'done', 12, ?, 'reply', 1000, 'openai')", (json.dumps({"input_tokens": 100000, "output_tokens": 100000}),))
+j.commit(); j.close()
+PY
+CLAUDE_CONFIG_DIR="$T/none" CODEX_HOME="$T/none" CTX_PIC_DB="$T/pic-user.sqlite" "$CTX" usage collect >/dev/null
+[ "$(U "SELECT round(dollars, 2), price_date FROM ctx_usage WHERE msg = 'pi-ses1:g12'")" = "5.5 catalog" ] || fail "catalog: a prompt over the tier is priced at the tier: $(U "SELECT dollars, price_date FROM ctx_usage WHERE msg = 'pi-ses1:g12'")"
+[ "$(U "SELECT round(dollars, 2) FROM ctx_usage WHERE msg = 'pi-ses1:g14'")" = "1.2" ] || fail "catalog: a short prompt at the base price"
+[ "$(U "SELECT dollars IS NULL FROM ctx_usage WHERE msg = 'pi-ses1:g13'")" = 1 ] || fail "catalog: a local model has no dollars"
+# A .claude.json that cannot be read says nothing about the login.
+SEEN=$(U "SELECT count(*) FROM ctx_account_seen")
+printf '{"oauthAccount":{"emailAddress":"half' > "$U2/.claude.json"
+resp a-4 2026-11-23T10:00:00Z
+CLAUDE_CONFIG_DIR="$U2" CODEX_HOME="$T/none" CTX_NOW=2026-11-23T11:00:00Z "$CTX" usage collect >/dev/null
+[ "$(U "SELECT count(*) FROM ctx_account_seen")" = "$SEEN" ] && [ "$(U "SELECT account FROM ctx_usage WHERE msg = 'a-4'")" = "anthropic:second@example.test" ] || fail "an unreadable login file is no login change"
+rm "$U2/.claude.json"
+resp a-5 2026-11-24T10:00:00Z
+CLAUDE_CONFIG_DIR="$U2" CODEX_HOME="$T/none" CTX_NOW=2026-11-24T00:00:00Z "$CTX" usage collect >/dev/null
+[ "$(U "SELECT account FROM ctx_usage WHERE msg = 'a-5'")" = "anthropic:api-key" ] || fail "no login file is an API key"
+# A retried response's attempts are each priced at their own model.
+printf '{"type":"assistant","timestamp":"2026-11-24T11:00:00Z","sessionId":"t-1","cwd":"/w/owl","message":{"id":"a-try","model":"claude-opus-5-5","usage":{"input_tokens":1000000,"output_tokens":0,"iterations":[{"model":"claude-sonnet-5-5","input_tokens":1000000,"output_tokens":0},{"input_tokens":1000000,"output_tokens":0}]}}}\n' >> "$U2/projects/-w-owl/t-1.jsonl"
+CLAUDE_CONFIG_DIR="$U2" CODEX_HOME="$T/none" "$CTX" usage collect >/dev/null
+[ "$(U "SELECT input, round(dollars, 2) FROM ctx_usage WHERE msg = 'a-try'")" = "2000000 6.0" ] || fail "each attempt at its own model's price: $(U "SELECT input, dollars FROM ctx_usage WHERE msg = 'a-try'")"
+# Codex limit readings from a session that names no account are kept, as an unknown account's.
+python3 - "$UX/sessions/2026/11/20/rollout-cx-5.jsonl" <<'PY'
+import json, sys
+with open(sys.argv[1], "w") as f:
+    f.write(json.dumps({"timestamp": "2026-11-20T13:00:00Z", "type": "session_meta", "payload": {"id": "cx-5", "cwd": "/w/owl"}}) + "\n")
+    f.write(json.dumps({"timestamp": "2026-11-20T13:00:02Z", "type": "event_msg", "payload": {"type": "token_count", "info": None, "rate_limits": {"primary": {"used_percent": 7.0, "window_minutes": 300, "resets_at": 1795600000}}}}) + "\n")
+PY
+CLAUDE_CONFIG_DIR="$UC" CODEX_HOME="$UX" "$CTX" usage collect >/dev/null
+[ "$(U "SELECT used FROM ctx_limit WHERE account = 'openai:unknown'")" = "7.0" ] || fail "a reading with no account is kept as unknown"
+# ctx forget reaches a Codex session, which is not archived, and it is not collected again.
+"$CTX" forget cx-1 | grep -q '^forgotten cx-1: ' || fail "forget takes a Codex session"
+[ "$(U "SELECT count(*) FROM ctx_usage WHERE session = 'cx-1' OR parent = 'cx-1'")" = 0 ] || fail "a forgotten Codex session's spend, and its subagents', is gone"
+"$CTX" sql "DELETE FROM ctx_usage_read" >/dev/null
+CLAUDE_CONFIG_DIR="$UC" CODEX_HOME="$UX" "$CTX" usage collect >/dev/null
+[ "$(U "SELECT count(*) FROM ctx_usage WHERE session = 'cx-1'")" = 0 ] || fail "and it is not collected again"
+# Excluding a folder removes the spend already collected from it; undoing that brings it back.
+mkdir -p "$U2/projects/-w-kite"
+printf '{"type":"assistant","timestamp":"2026-11-24T12:00:00Z","sessionId":"k-1","cwd":"/w/kite","message":{"id":"kite-1","model":"claude-opus-5-5","usage":{"input_tokens":1,"output_tokens":1}}}\n' > "$U2/projects/-w-kite/k-1.jsonl"
+CLAUDE_CONFIG_DIR="$U2" CODEX_HOME="$T/none" "$CTX" usage collect >/dev/null
+[ "$(U "SELECT folder FROM ctx_usage WHERE msg = 'kite-1'")" = "-w-kite" ] || fail "a response keeps its folder"
+"$CTX" exclude /w/kite >/dev/null
+[ "$(U "SELECT count(*) FROM ctx_usage WHERE msg = 'kite-1'")" = 0 ] || fail "excluding a folder removes its spend"
+"$CTX" exclude --remove /w/kite >/dev/null
+CLAUDE_CONFIG_DIR="$U2" CODEX_HOME="$T/none" "$CTX" usage collect >/dev/null
+[ "$(U "SELECT count(*) FROM ctx_usage WHERE msg = 'kite-1'")" = 1 ] || fail "and undoing it brings the spend back"
+# A collection given little time stops where it can save its place; the next one goes on from
+# there, and between them every response is taken in once.
+python3 - "$U2/projects/-w-owl/t-cap.jsonl" <<'PY'
+import json, sys
+pad = "z" * 6000
+with open(sys.argv[1], "w") as f:
+    for i in range(4000):
+        f.write(json.dumps({"type": "assistant", "timestamp": "2026-11-24T14:00:00Z", "sessionId": "t-cap", "cwd": "/w/owl", "pad": pad, "message": {"id": "cap-%d" % i, "model": "claude-opus-5-5", "usage": {"input_tokens": 1, "output_tokens": 1}}}) + "\n")
+PY
+CLAUDE_CONFIG_DIR="$U2" CODEX_HOME="$T/none" "$CTX" usage collect --for 0.05 > "$T/cap1.out"
+grep -q 'out of time, the rest at the next collection$' "$T/cap1.out" || fail "a capped collection says it stopped: $(cat "$T/cap1.out")"
+FIRST=$(U "SELECT count(*) FROM ctx_usage WHERE session = 't-cap'")
+[ "$FIRST" -lt 4000 ] || fail "the cap stopped the read part way: $FIRST"
+CLAUDE_CONFIG_DIR="$U2" CODEX_HOME="$T/none" "$CTX" usage collect >/dev/null
+[ "$(U "SELECT count(*), count(DISTINCT msg) FROM ctx_usage WHERE session = 't-cap'")" = "4000 4000" ] || fail "the next collection goes on, with no loss and nothing twice"
+rm "$U2/projects/-w-owl/t-cap.jsonl"
+
+# A hook's write gets in while a big file is read.
+python3 - "$U2/projects/-w-owl/t-huge.jsonl" <<'PY'
+import json, sys
+pad = "y" * 8000
+with open(sys.argv[1], "w") as f:
+    for i in range(6000):
+        f.write(json.dumps({"type": "assistant", "timestamp": "2026-11-24T13:00:00Z", "sessionId": "t-huge", "cwd": "/w/owl", "pad": pad, "message": {"id": "huge-%d" % i, "model": "claude-opus-5-5", "usage": {"input_tokens": 1, "output_tokens": 1}}}) + "\n")
+PY
+CLAUDE_CONFIG_DIR="$U2" CODEX_HOME="$T/none" "$CTX" usage collect >/dev/null &
+UPID=$!
+python3 - "$CTX_DB" <<'PY' || fail "a write with a 200 ms wait gets in while a big file is read"
+import sqlite3, sys, time
+time.sleep(0.3)
+ok = 0
+for i in range(6):
+    c = sqlite3.connect(sys.argv[1], timeout=0.2)
+    try:
+        c.execute("INSERT OR REPLACE INTO ctx_meta(key, value) VALUES ('probe', ?)", (str(i),)); c.commit(); ok += 1
+    except sqlite3.OperationalError:
+        pass
+    c.close()
+    time.sleep(0.05)
+assert ok >= 5, ok  # a commit can be slow on a busy machine; before batches yielded, 3 of 7 failed
+PY
+wait $UPID
+# A database whose ctx_usage is from before folders is started again and read again.
+cp "$CTX_DB" "$T/usage-old.sqlite"
+USAGE_DB=$CTX_DB; CTX_DB="$T/usage-old.sqlite"
+python3 -c 'import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); c.executescript("DROP TABLE ctx_usage; CREATE TABLE ctx_usage(id INTEGER PRIMARY KEY, harness TEXT, session TEXT, msg TEXT, UNIQUE (harness, session, msg)); PRAGMA user_version = 22"); c.close()' "$CTX_DB"
+[ "$(U "SELECT count(*) FROM pragma_table_info('ctx_usage') WHERE name = 'folder'")" = 1 ] && [ "$(U "SELECT count(*) FROM ctx_usage_read")" = 0 ] || fail "an older ctx_usage is rebuilt"
+CTX_DB=$USAGE_DB
+
+# ctx usage: spend and tokens over a window, a subagent under the session that started it.
+CTX_NOW=2026-11-21T12:00:00Z "$CTX" usage --days 60 > "$T/urep.out"
+RN=$(U "SELECT count(*), sum(dollars IS NULL) FROM ctx_usage WHERE at >= '2026-09-22T12:00:00Z' AND at <= '2026-11-21T12:00:00Z'")
+grep -q "^Last 1440 hours, by session: \\\$.* at API prices, .* tokens, ${RN% *} responses (${RN#* } with no price line, not in the dollars)\\.\$" "$T/urep.out" || fail "the report's first line: $(head -1 "$T/urep.out") (want $RN)"
+awk '$NF ~ /claude-/ && / s-1 / { if ($4 == 1) ok = 1 } END { exit !ok }' "$T/urep.out" || fail "a subagent is counted under its parent, with a count: $(cat "$T/urep.out")"
+grep -q 'agent-a1' "$T/urep.out" && fail "a subagent has no row of its own"
+CTX_NOW=2026-11-21T12:00:00Z "$CTX" usage --days 60 --by account | grep -q 'Anthropic (Max) anthropic:person@example.test' || fail "by account: provider and plan, and the address on this machine"
+CTX_NOW=2026-11-21T12:00:00Z "$CTX" usage --by model --hours 1 | grep -q '^Last 1 hour, by model: \$0.00 at API prices, 0 tokens, 0 responses\.$' || fail "an empty window says so"
+if "$CTX" usage --by colour 2>/dev/null; then fail "an unknown --by is refused"; fi
+# limits-in: the status line's JSON; plan readings and the context in use, silently.
+SL() { printf '{"session_id":"s-3","transcript_path":"%s","rate_limits":{"five_hour":{"used_percentage":%s,"resets_at":1795700000},"seven_day":{"used_percentage":%s,"resets_at":1796100000}},"context_window":{"used_percentage":33}}' "$UC/projects/-w-owl/s-3.jsonl" "$1" "$2"; }
+SL 20 40 | CTX_NOW=2026-11-21T10:00:00Z "$CTX" usage limits-in > "$T/lin.out" 2>&1 || fail "limits-in exits 0"
+[ ! -s "$T/lin.out" ] || fail "limits-in is silent"
+[ "$(U "SELECT window, used, resets_at, session, source FROM ctx_limit WHERE source = 'statusline' ORDER BY window")" = "0 33.0  s-3 statusline
+300 20.0 1795700000  statusline
+10080 40.0 1796100000  statusline" ] || fail "limits-in records both windows and the context: $(U "SELECT * FROM ctx_limit WHERE source = 'statusline'")"
+[ "$(U "SELECT count(DISTINCT account) FROM ctx_limit WHERE source = 'statusline' AND account = 'anthropic:person@example.test'")" = 1 ] || fail "readings are tied to the session's account"
+SL 20 40 | CTX_NOW=2026-11-21T10:05:00Z "$CTX" usage limits-in
+[ "$(U "SELECT count(*) FROM ctx_limit WHERE source = 'statusline'")" = 3 ] || fail "an unchanged reading is not kept again"
+echo 'not json' | "$CTX" usage limits-in || fail "limits-in ignores what it cannot read"
+# A rise in a limit is split among the sessions running then, by their priced tokens.
+python3 - "$UC/projects" <<'PY'
+import json, os, sys
+root = sys.argv[1]
+# s-3 on Opus ($20 a million out) and s-4 on Sonnet ($10): $0.60 and $0.20, so 3 to 1 by dollars, 3 to 2 by tokens
+for sid, cwd, out, model in (("s-3", "/w/owl", 30000, "claude-opus-5-5"), ("s-4", "/w/heron", 20000, "claude-sonnet-5-5")):
+    d = root + "/-w-" + cwd.split("/")[-1]
+    os.makedirs(d, exist_ok=True)
+    with open(d + "/" + sid + ".jsonl", "w") as f:
+        f.write(json.dumps({"type": "assistant", "timestamp": "2026-11-21T11:00:00Z", "sessionId": sid, "cwd": cwd, "message": {"id": "m-" + sid, "model": model, "usage": {"input_tokens": 0, "output_tokens": out}}}) + "\n")
+PY
+CLAUDE_CONFIG_DIR="$UC" CODEX_HOME="$UX" "$CTX" usage collect >/dev/null
+SL 22 55 | CTX_NOW=2026-11-21T12:00:00Z "$CTX" usage limits-in
+CTX_NOW=2026-11-21T12:30:00Z "$CTX" usage --by project > "$T/ushare.out"
+awk '$NF == "owl" && $5 == "11.2" { a = 1 } $NF == "heron" && $5 == "3.8" { b = 1 } END { exit !(a && b) }' "$T/ushare.out" || fail "a 15-point rise split 3 to 1 by dollars: $(cat "$T/ushare.out")"
+# At session start: one line when it is worth saying, with no address in it.
+echo '{"session_id":"ss-1","hook_event_name":"SessionStart"}' | CTX_NOW=2026-11-21T12:30:00Z "$CTX" rules offer > "$T/uss.json"
+python3 - "$T/uss.json" <<'PY' || fail "the session-start plan line: $(cat "$T/uss.json")"
+import json, sys
+c = json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]
+line = [l for l in c.split("\n") if l.startswith("Plan use")]
+assert len(line) == 1, c
+l = line[0]
+assert "Anthropic (Max, account " in l and ": week 55%, resets " in l and "+15% since yesterday (owl 11, heron 4)." in l, l
+assert "@" not in l and "Prices date" not in l, l
+PY
+echo '{"session_id":"ss-2","hook_event_name":"SessionStart"}' | CTX_NOW=2026-11-20T12:00:00Z "$CTX" rules offer | grep -q 'Plan use' && fail "nothing is said when nothing is worth saying"
+# An API key is shown in dollars, and an old price list says how old it is.
+UK="$T/ucfg-key"
+mkdir -p "$UK/projects/-w-owl"
+printf '{}\n' > "$UK/.claude.json"
+printf '{"type":"assistant","timestamp":"2027-01-15T10:00:00Z","sessionId":"k-1","cwd":"/w/owl","message":{"id":"m-k1","model":"claude-opus-5-5","usage":{"input_tokens":500000,"output_tokens":0}}}\n' > "$UK/projects/-w-owl/k-1.jsonl"
+CLAUDE_CONFIG_DIR="$UK" "$CTX" usage collect >/dev/null
+echo '{"session_id":"ss-3","hook_event_name":"SessionStart"}' | CTX_NOW=2027-01-15T12:00:00Z "$CTX" rules offer > "$T/uss2.json"
+grep -q 'Anthropic API key: \$2.00 since yesterday\.' "$T/uss2.json" && grep -q 'Prices date from 2026-11-03\.' "$T/uss2.json" || fail "API-key dollars and the price list's age: $(cat "$T/uss2.json")"
+# limits-in: a login file that cannot be read leaves the account it had.
+cp "$UC/.claude.json" "$T/ucj.bak"
+printf '{"oauthAccount":' > "$UC/.claude.json"
+SL 30 60 | CTX_NOW=2026-11-22T10:00:00Z "$CTX" usage limits-in
+[ "$(U "SELECT account = 'anthropic:person@example.test' FROM ctx_limit WHERE source = 'statusline' AND window = 10080 ORDER BY at DESC LIMIT 1")" = 1 ] || fail "an unreadable login file keeps the account"
+cp "$T/ucj.bak" "$UC/.claude.json"
+
+# Limit readings come in out of step from several sessions' status lines: only rises above the
+# highest value of the current window count, a stale or earlier window's reading counts nothing,
+# and resets a few seconds apart are one window. Two logins on one plan are told apart.
+export CTX_DB="$T/limits/ctx.sqlite"
+mkdir -p "$T/limits"
+"$CTX" init >/dev/null
+LC="$T/lcfg"
+mkdir -p "$LC/projects/-w-lim" "$LC/projects/-w-lam" "$LC/projects/-w-old"
+ep() { python3 -c 'import calendar, sys, time; print(calendar.timegm(time.strptime(sys.argv[1], "%Y-%m-%dT%H:%M:%SZ")))' "$1"; }
+R2=$(( $(ep 2026-12-01T12:00:00Z) + 3 * 86400 )); R1=$(( R2 - 604800 ))
+login() { printf '{"oauthAccount":{"emailAddress":"%s","planDisplayName":"Max","billingType":"stripe_subscription"}}\n' "$1" > "$LC/.claude.json"; }
+lresp() { printf '{"type":"assistant","timestamp":"%s","sessionId":"%s","cwd":"/w/%s","message":{"id":"%s","model":"claude-opus-5-5","usage":{"input_tokens":0,"output_tokens":1000}}}\n' "$3" "$2" "$1" "$4" >> "$LC/projects/-w-$1/$2.jsonl"; }
+LI() { printf '{"session_id":"%s","transcript_path":"%s","rate_limits":{"seven_day":{"used_percentage":%s,"resets_at":%s}}}' "$1" "$LC/projects/-w-x/$1.jsonl" "$2" "$3" | CTX_NOW="$4" "$CTX" usage limits-in; }
+# account 1: two sessions; an idle one keeps reporting 50 while the busy one climbs to 57
+login one@example.test
+for m in 01 03; do lresp lim l-1 "2026-12-01T10:${m}:30Z" "l1-$m"; done
+CLAUDE_CONFIG_DIR="$LC" CODEX_HOME="$T/none" CTX_NOW=2026-11-30T00:00:00Z "$CTX" usage collect >/dev/null
+LI busy 50 $R2 2026-12-01T10:00:00Z; LI idle 50 $R2 2026-12-01T10:01:00Z; LI busy 53 $R2 2026-12-01T10:02:00Z
+LI idle 50 $R2 2026-12-01T10:03:00Z; LI busy 57 $R2 2026-12-01T10:04:00Z
+# account 2, same plan: a reset; the old window's reading comes back from an idle session; a reset a few seconds later
+login two@example.test
+for m in 00 01 02 03 04 05; do lresp lam l-2 "2026-12-01T11:${m}:30Z" "l2-$m"; done
+CLAUDE_CONFIG_DIR="$LC" CODEX_HOME="$T/none" CTX_NOW=2026-12-01T10:30:00Z "$CTX" usage collect >/dev/null
+LI a 90 $R1 2026-12-01T11:00:00Z; LI b 5 $R2 2026-12-01T11:01:00Z; LI a 90 $R1 2026-12-01T11:02:00Z
+LI b 8 $R2 2026-12-01T11:03:00Z; LI b 8 $((R2 + 30)) 2026-12-01T11:04:00Z; LI b 9 $((R2 + 20)) 2026-12-01T11:05:00Z
+[ "$(U "SELECT count(*) FROM ctx_limit WHERE account = 'anthropic:two@example.test'")" -ge 5 ] || fail "the second login's readings are its own"
+echo '{"session_id":"lim-ss","hook_event_name":"SessionStart"}' | CTX_NOW=2026-12-01T12:00:00Z "$CTX" rules offer > "$T/lss.json"
+python3 - "$T/lss.json" <<'PY' || fail "rises counted once, by window: $(cat "$T/lss.json")"
+import json, sys
+c = json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]
+l = [x for x in c.split("\n") if x.startswith("Plan use")][0]
+assert "Anthropic (Max, account 1): week 57%" in l and "+7% since yesterday (lim 7)" in l, l
+assert "Anthropic (Max, account 2): week 9%" in l and "+9% since yesterday (lam 9)" in l, l
+assert "@" not in l, l
+PY
+CTX_NOW=2026-12-01T12:00:00Z "$CTX" usage --by session --hours 3 | awk '$NF ~ /claude/ && / l-2 / { if ($5 == "9.0") ok = 1 } END { exit !ok }' || fail "a session across a reset gets the rises of both windows"
+# said once a day an account
+echo '{"session_id":"lim-ss2","hook_event_name":"SessionStart"}' | CTX_NOW=2026-12-01T12:30:00Z "$CTX" rules offer | grep -q 'Plan use' && fail "the plan line comes once a day"
+echo '{"session_id":"lim-ss3","hook_event_name":"SessionStart"}' | CTX_NOW=2026-12-02T09:00:00Z "$CTX" rules offer | grep -q 'Plan use' || fail "and again the next day"
+# a week whose reset has passed is not shown as current
+login three@example.test
+lresp old l-3 2026-12-12T10:00:00Z l3-0
+CLAUDE_CONFIG_DIR="$LC" CODEX_HOME="$T/none" CTX_NOW=2026-12-12T09:00:00Z "$CTX" usage collect >/dev/null
+LI c 80 $R2 2026-12-12T09:30:00Z
+echo '{"session_id":"lim-ss4","hook_event_name":"SessionStart"}' | CTX_NOW=2026-12-12T12:00:00Z "$CTX" rules offer > "$T/lss4.json"
+grep -q 'week 80' "$T/lss4.json" && fail "a past week is not shown: $(cat "$T/lss4.json")"
+# limits-in is silent and writes nothing when it has no archive, or no HOME
+mkdir -p "$T/nohome"
+OUT=$(SL 1 2 | env -u CTX_DB HOME="$T/nohome" "$CTX" usage limits-in 2>&1) || fail "limits-in exits 0 with no archive"
+[ -z "$OUT" ] && [ -z "$(ls -A "$T/nohome")" ] || fail "limits-in says and makes nothing with no archive: $OUT $(ls -A "$T/nohome")"
+OUT=$(SL 1 2 | env -u CTX_DB -u HOME "$CTX" usage limits-in 2>&1) || fail "limits-in exits 0 with no HOME"
+[ -z "$OUT" ] || fail "limits-in is silent with no HOME: $OUT"
+
+
+# The handoff point, per model, from the archive's own history: past it, handing off has cost
+# less than going on, or sessions met more trouble. None until there is enough history.
+export CTX_DB="$T/handoff/ctx.sqlite"
+mkdir -p "$T/handoff"
+"$CTX" init >/dev/null
+# claude-test-c: 25 sessions whose responses cost what their context is, so a fresh start pays
+"$CTX" sql "WITH RECURSIVE s(k) AS (SELECT 1 UNION ALL SELECT k + 1 FROM s WHERE k < 25), t(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM t WHERE i < 59)
+  INSERT INTO ctx_usage(harness, session, msg, model, at, input, write_5m, write_1h, cache_read, output, dollars, price_date)
+  SELECT 'claude', 'c-' || k, 'c-' || k || ':' || i, 'claude-test-c', strftime('%Y-%m-%dT%H:%M:%SZ', '2026-11-10', '+' || k || ' hours', '+' || i || ' minutes'),
+    0, 0, 0, 10000 * (i + 1), 10, 10000 * (i + 1) * 1e-6, '2026-11-03' FROM s, t" >/dev/null
+# claude-test-few: the same, but 19 sessions: too little history
+"$CTX" sql "WITH RECURSIVE s(k) AS (SELECT 1 UNION ALL SELECT k + 1 FROM s WHERE k < 19), t(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM t WHERE i < 59)
+  INSERT INTO ctx_usage(harness, session, msg, model, at, input, write_5m, write_1h, cache_read, output, dollars, price_date)
+  SELECT 'claude', 'f-' || k, 'f-' || k || ':' || i, 'claude-test-few', strftime('%Y-%m-%dT%H:%M:%SZ', '2026-11-10', '+' || k || ' hours', '+' || i || ' minutes'),
+    0, 0, 0, 10000 * (i + 1), 10, 10000 * (i + 1) * 1e-6, '2026-11-03' FROM s, t" >/dev/null
+# claude-test-q: responses that cost the same at any size, and a person correcting them past 300K
+QC="$T/qcfg/projects/-w-q"
+mkdir -p "$QC"
+python3 - "$QC" <<'PY'
+import json, sys, datetime
+d = sys.argv[1]
+t0 = datetime.datetime(2026, 11, 15)
+for k in range(1, 26):
+    with open("%s/q-%d.jsonl" % (d, k), "w") as f:
+        for i in range(40):
+            at = t0 + datetime.timedelta(hours=k, minutes=i)
+            f.write(json.dumps({"type": "assistant", "uuid": "a%d-%d" % (k, i), "timestamp": at.isoformat() + "Z", "sessionId": "q-%d" % k, "cwd": "/w/q", "message": {"role": "assistant", "content": [{"type": "text", "text": "done step %d" % i}]}}) + "\n")
+            said = "no, that's wrong" if i >= 15 else "go on with step %d" % i
+            f.write(json.dumps({"type": "user", "uuid": "u%d-%d" % (k, i), "timestamp": (at + datetime.timedelta(seconds=30)).isoformat() + "Z", "sessionId": "q-%d" % k, "cwd": "/w/q", "message": {"role": "user", "content": said}}) + "\n")
+PY
+for k in $(seq 1 25); do "$CTX" archive "$QC/q-$k.jsonl" >/dev/null; done
+"$CTX" sql "WITH RECURSIVE s(k) AS (SELECT 1 UNION ALL SELECT k + 1 FROM s WHERE k < 25), t(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM t WHERE i < 39)
+  INSERT INTO ctx_usage(harness, session, msg, model, at, input, write_5m, write_1h, cache_read, output, dollars, price_date)
+  SELECT 'claude', 'q-' || k, 'q-' || k || ':' || i, 'claude-test-q', strftime('%Y-%m-%dT%H:%M:%SZ', '2026-11-15', '+' || k || ' hours', '+' || i || ' minutes'),
+    0, 0, 0, 20000 * (i + 1), 10, 0.01, '2026-11-03' FROM s, t" >/dev/null
+# claude-sonnet-5-5: the same growth at a thousandth of the cost, so handing off saves less than the
+# note costs to write and read: a priced model counts the note
+"$CTX" sql "WITH RECURSIVE s(k) AS (SELECT 1 UNION ALL SELECT k + 1 FROM s WHERE k < 25), t(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM t WHERE i < 59)
+  INSERT INTO ctx_usage(harness, session, msg, model, at, input, write_5m, write_1h, cache_read, output, dollars, price_date)
+  SELECT 'claude', 'n-' || k, 'n-' || k || ':' || i, 'claude-sonnet-5-5', strftime('%Y-%m-%dT%H:%M:%SZ', '2026-11-10', '+' || k || ' hours', '+' || i || ' minutes'),
+    0, 0, 0, 10000 * (i + 1), 10, 10000 * (i + 1) * 1e-9, '2026-11-03' FROM s, t" >/dev/null
+"$CTX" usage handoff | grep -q '^No handoff points worked out yet' || fail "ctx usage handoff shows the last result, and there is none yet"
+[ "$("$CTX" sql "SELECT count(*) FROM ctx_meta WHERE key = 'handoff_points'")" = 0 ] || fail "showing the points does not work them out"
+CTX_NOW=2026-11-21T12:00:00Z "$CTX" usage handoff --recompute > "$T/ho.out"
+grep -q '^Worked out 2026-11-21T12:00:00Z' "$T/ho.out" || fail "the result says when it was worked out: $(head -1 "$T/ho.out")"
+grep -q '^claude-sonnet-5-5: 25 past sessions in 90 days\. No point yet' "$T/ho.out" || fail "the handoff note's cost is counted: $(grep sonnet "$T/ho.out")"
+grep -q '^claude-test-c: 25 past sessions in 90 days\. Hand off past 50K tokens of context\.$' "$T/ho.out" || fail "a model whose long sessions cost more gets a point: $(cat "$T/ho.out")"
+grep -q '^claude-test-few: 19 past sessions in 90 days\. No point yet' "$T/ho.out" || fail "too little history: no point"
+grep -q '^claude-test-q: 25 past sessions in 90 days\. No point yet' "$T/ho.out" || fail "trouble alone sets no point: $(cat "$T/ho.out")"
+grep -A 12 '^claude-test-q:' "$T/ho.out" | grep -q '^     300K .*%\*$' || fail "trouble is shown, marked where it runs high: $(grep -A 12 '^claude-test-q:' "$T/ho.out")"
+grep -q 'For information only' "$T/ho.out" || fail "the output says trouble does not set the point"
+"$CTX" usage handoff | cmp -s - "$T/ho.out" || fail "without --recompute, the last result is shown as it was"
+CTX_NOW=2026-11-21T12:00:00Z "$CTX" usage --hours 1 | grep -q '^  claude-test-c: past 50K tokens of context; 25 of 25 past sessions that size would have spent less by handing off, a median \$' || fail "ctx usage shows the points"
+
+# The note is priced at the line its session's responses were: for a response pic's catalog priced
+# (before the price file's first line), the catalog's price, not the file's later dated one. Here
+# the catalog's opus price makes the note cost more than handing off saves, so there is no point.
+cat > "$T/hocat.py" <<'EOF'
+import json, sqlite3, sys, zlib
+u = sqlite3.connect(sys.argv[1])
+models = json.dumps([{"id": "claude-opus-5-5", "cost": {"input": 100, "output": 1000, "cacheRead": 10, "cacheWrite": 125}}]).encode()
+u.execute("CREATE TABLE picu_catalog(provider TEXT PRIMARY KEY, sz INTEGER NOT NULL, models BLOB NOT NULL, checked_ms INTEGER NOT NULL, last_modified_ms INTEGER NOT NULL, etag TEXT)")
+u.execute("INSERT INTO picu_catalog VALUES ('anthropic', ?, ?, 1, 1, NULL)", (len(models), zlib.compress(models)))
+u.commit()
+EOF
+python3 "$T/hocat.py" "$T/hocat.sqlite"
+"$CTX" sql "WITH RECURSIVE s(k) AS (SELECT 1 UNION ALL SELECT k + 1 FROM s WHERE k < 25), t(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM t WHERE i < 59)
+  INSERT INTO ctx_usage(harness, session, msg, model, at, input, write_5m, write_1h, cache_read, output, dollars, price_date)
+  SELECT 'claude', 'o-' || k, 'o-' || k || ':' || i, 'claude-opus-5-5', strftime('%Y-%m-%dT%H:%M:%SZ', '2026-10-20', '+' || k || ' hours', '+' || i || ' minutes'),
+    0, 0, 0, 10000 * (i + 1), 10, 10000 * (i + 1) * 1e-7, 'catalog' FROM s, t" >/dev/null
+CTX_NOW=2026-11-21T12:00:00Z CTX_PIC_DB="$T/hocat.sqlite" "$CTX" usage handoff --recompute > "$T/ho.out"
+grep -q '^claude-opus-5-5: 25 past sessions in 90 days\. No point yet' "$T/ho.out" || fail "the note is priced at the catalog line its responses were: $(grep -A 3 opus "$T/ho.out")"
+CTX_NOW=2026-11-21T12:00:00Z "$CTX" sql "UPDATE ctx_usage SET price_date = '2026-11-03' WHERE model = 'claude-opus-5-5' AND session GLOB 'o-*'" >/dev/null
+CTX_NOW=2026-11-21T12:00:00Z CTX_PIC_DB="$T/hocat.sqlite" "$CTX" usage handoff --recompute > "$T/ho.out"
+grep -q '^claude-opus-5-5: 25 past sessions in 90 days\. Hand off past 50K' "$T/ho.out" || fail "at the dated line's lower price, the same sessions have a point: $(grep -A 3 opus "$T/ho.out")"
+"$CTX" sql "DELETE FROM ctx_usage WHERE session GLOB 'o-*'" >/dev/null
+
+# Who is counted: sessions active in the last 6 hours, sessions with a response that has no price,
+# and sessions that began before the 90 days are left out, from the sessions column and from the
+# responses and trouble alike.
+"$CTX" sql "WITH RECURSIVE s(k) AS (SELECT 1 UNION ALL SELECT k + 1 FROM s WHERE k < 25), t(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM t WHERE i < 59)
+  INSERT INTO ctx_usage(harness, session, msg, model, at, input, write_5m, write_1h, cache_read, output, dollars, price_date)
+  SELECT 'claude', 'r-' || k, 'r-' || k || ':' || i, 'claude-test-r',
+    strftime('%Y-%m-%dT%H:%M:%SZ', CASE WHEN k <= 6 THEN '2026-11-21T08:00:00' WHEN k = 7 THEN '2026-08-01' ELSE '2026-11-10' END, '+' || k || ' minutes', '+' || i || ' seconds'),
+    0, 0, 0, 10000 * (i + 1), 10, CASE WHEN k BETWEEN 8 AND 10 AND i = 30 THEN NULL ELSE 10000 * (i + 1) * 1e-6 END, '2026-11-03' FROM s, t" >/dev/null
+# r-7 began before the 90 days and ran on into them
+"$CTX" sql "INSERT INTO ctx_usage(harness, session, msg, model, at, input, write_5m, write_1h, cache_read, output, dollars, price_date)
+  VALUES ('claude', 'r-7', 'r-7:late', 'claude-test-r', '2026-11-10T00:00:00Z', 0, 0, 0, 1000, 10, 0.001, '2026-11-03')" >/dev/null
+CTX_NOW=2026-11-21T12:00:00Z "$CTX" usage handoff --recompute > "$T/ho.out"
+grep -q '^claude-test-r: 15 past sessions in 90 days\. No point yet' "$T/ho.out" || fail "recent, partly priced and earlier sessions are left out: $(grep -A 3 test-r "$T/ho.out")"
+[ "$("$CTX" sql "SELECT sum(json_extract(s.value, '$.responses')) FILTER (WHERE json_extract(s.value, '$.at') > 50000) + json_extract(m.value, '$.base_responses') FROM ctx_meta t, json_each(json_extract(t.value, '$.models')) m,
+  json_each(json_extract(m.value, '$.steps')) s WHERE t.key = 'handoff_points' AND json_extract(m.value, '$.model') = 'claude-test-r'")" = 900 ] || fail "responses are counted over the same sessions"
+
+# Sessions longer than the replay curve's cap: both sides are capped at the same number of
+# responses, so a long session's responses past the cap do not count as savings. 20 sessions of
+# 5,100 responses that cost the same each (2^-10 dollars, so sums are exact), all past 200K tokens: going on costs what starting
+# over does, so there is no point.
+"$CTX" sql "WITH RECURSIVE s(k) AS (SELECT 1 UNION ALL SELECT k + 1 FROM s WHERE k < 20), t(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM t WHERE i < 5099)
+  INSERT INTO ctx_usage(harness, session, msg, model, at, input, write_5m, write_1h, cache_read, output, dollars, price_date)
+  SELECT 'claude', 'l-' || k, 'l-' || k || ':' || i, 'claude-test-long', strftime('%Y-%m-%dT%H:%M:%SZ', '2026-11-01', '+' || k || ' hours', '+' || i || ' seconds'),
+    0, 0, 0, 200000, 10, 0.0009765625, '2026-11-03' FROM s, t" >/dev/null
+CTX_NOW=2026-11-21T12:00:00Z "$CTX" usage handoff --recompute > "$T/ho.out"
+grep -q '^claude-test-long: 20 past sessions in 90 days\. No point yet' "$T/ho.out" || fail "a session longer than the cap is compared over as many responses on both sides: $(grep -A 4 test-long "$T/ho.out")"
+"$CTX" sql "DELETE FROM ctx_usage WHERE model IN ('claude-test-long', 'claude-test-r')" >/dev/null
+
+# The trouble signal: exit 1 from grep, rg, test, diff and cmp is an answer, not a failure; a
+# failure is trouble when one of the three tool results before it failed too; corrections are
+# matched as whole words.
+cat > "$T/trouble.py" <<'EOF'
+import json, sys, datetime
+d = sys.argv[1]
+t = [datetime.datetime(2026, 11, 16, 9)]
+lines = []
+def at():
+    t[0] += datetime.timedelta(seconds=10)
+    return t[0].isoformat() + "Z"
+def user(text):
+    lines.append({"type": "user", "uuid": "tu%d" % len(lines), "timestamp": at(), "sessionId": "t-1", "cwd": "/w/q", "message": {"role": "user", "content": text}})
+def call(cmd):
+    lines.append({"type": "assistant", "uuid": "ta%d" % len(lines), "timestamp": at(), "sessionId": "t-1", "cwd": "/w/q",
+                  "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "c%d" % len(lines), "name": "Bash", "input": {"command": cmd}}]}})
+def result(text):
+    lines.append({"type": "user", "uuid": "tr%d" % len(lines), "timestamp": at(), "sessionId": "t-1", "cwd": "/w/q",
+                  "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "x", "content": text}]}})
+user("Rishi said the build was fine")                 # not a correction
+user("I said to use the other file")                  # a correction: 1
+call("grep -n foo src/a.c"); result("Exit code 1")
+call("cd src && rg bar | head"); result("Exit code 1")  # answers, not failures
+call("make"); result("Exit code 2\nerror")
+call("ls"); result("a")
+call("ls"); result("b")
+call("ls"); result("c")
+call("make"); result("Exit code 2\nerror")             # three tool results after the last failure: not trouble
+call("false"); result("Exit code 1")                  # right after one: trouble, 2
+call("ls"); result("d")
+call("ls"); result("e")
+call("false"); result("Exit code 1")                  # two after a failure: trouble, 3
+call("test -f x && echo y"); call("make")             # parallel calls, their results in order
+result("Exit code 1"); result("Exit code 2\nerror")   # test's answer, then make failing two after false: trouble, 4
+with open(d + "/t-1.jsonl", "w") as f:
+    for l in lines: f.write(json.dumps(l) + "\n")
+EOF
+python3 "$T/trouble.py" "$QC"
+"$CTX" archive "$QC/t-1.jsonl" >/dev/null
+"$CTX" sql "WITH RECURSIVE t(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM t WHERE i < 39)
+  INSERT INTO ctx_usage(harness, session, msg, model, at, input, write_5m, write_1h, cache_read, output, dollars, price_date)
+  SELECT 'claude', 't-1', 't-1:' || i, 'claude-test-t', strftime('%Y-%m-%dT%H:%M:%SZ', '2026-11-16T09:00:00', '+' || (i * 10) || ' seconds'),
+    0, 0, 0, 1000, 10, 0.01, '2026-11-03' FROM t" >/dev/null
+CTX_NOW=2026-11-21T12:00:00Z "$CTX" usage handoff --recompute > "$T/ho.out"
+[ "$("$CTX" sql "SELECT round(json_extract(m.value, '$.base_rate') * json_extract(m.value, '$.base_responses')) FROM ctx_meta t, json_each(json_extract(t.value, '$.models')) m
+  WHERE t.key = 'handoff_points' AND json_extract(m.value, '$.model') = 'claude-test-t'")" = 4.0 ] || fail "trouble: grep's no-match, far-apart failures and 'Rishi said' are not trouble: $(grep -A 3 test-t "$T/ho.out")"
+
+# One computation at a time: the daily job gives up while the lock is held, and --recompute waits.
+"$CTX" sql "DELETE FROM ctx_meta WHERE key = 'handoff_points'" >/dev/null
+cat > "$T/holock.py" <<'EOF'
+import fcntl, os, subprocess, sys, time
+lock, ctx, what = sys.argv[1:4]
+fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+env = dict(os.environ, CTX_NOW="2026-11-21T12:00:00Z")
+if what == "daily":
+    subprocess.run([ctx, "usage", "handoff-daily"], check=True, timeout=60, env=env)
+    n = subprocess.run([ctx, "sql", "SELECT count(*) FROM ctx_meta WHERE key = 'handoff_points'"], capture_output=True, text=True, timeout=60).stdout.strip()
+    assert n == "0", n
+else:
+    p = subprocess.Popen([ctx, "usage", "handoff", "--recompute"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env)
+    time.sleep(1)
+    assert p.poll() is None, "finished while the lock was held"
+    fcntl.flock(fd, fcntl.LOCK_UN)
+    err = p.communicate(timeout=120)[1].decode()
+    assert p.returncode == 0 and "waiting" in err, err
+EOF
+python3 "$T/holock.py" "$CTX_DB.handoff-points.lock" "$CTX" daily || fail "the daily job gives up while another computation holds the lock"
+python3 "$T/holock.py" "$CTX_DB.handoff-points.lock" "$CTX" recompute || fail "--recompute waits for the lock"
+
+# The daily job: a turn's hook that runs the hourly scan works the points out after it, once a day.
+"$CTX" sql "DELETE FROM ctx_meta WHERE key = 'handoff_points'" >/dev/null
+rm -f "$CTX_DB.scan"
+printf '{"session_id":"q-1","transcript_path":"%s","hook_event_name":"Stop"}' "$QC/q-1.jsonl" | CTX_NOW=2026-11-21T12:00:00Z "$CTX" hook
+i=0; while [ "$("$CTX" sql "SELECT count(*) FROM ctx_meta WHERE key = 'handoff_points'")" != 1 ] && [ $i -lt 120 ]; do sleep 0.5; i=$((i+1)); done
+[ "$("$CTX" sql "SELECT json_extract(value, '$.computed') FROM ctx_meta WHERE key = 'handoff_points'")" = 2026-11-21T12:00:00Z ] || fail "the drain starts the daily job"
+i=0; while pgrep -f "$CTX hook" >/dev/null && [ $i -lt 240 ]; do sleep 0.5; i=$((i+1)); done
+CTX_NOW=2026-11-21T13:00:00Z "$CTX" usage handoff-daily
+[ "$("$CTX" sql "SELECT json_extract(value, '$.computed') FROM ctx_meta WHERE key = 'handoff_points'")" = 2026-11-21T12:00:00Z ] || fail "the daily job runs once a day"
+
+# ctx hook post: once a session, when its last response is past its model's point.
+live() { printf '{"type":"assistant","timestamp":"2026-11-21T11:59:00Z","sessionId":"%s","message":{"id":"m-%s","model":"%s","usage":{"input_tokens":0,"cache_read_input_tokens":%s,"output_tokens":5}}}\n' "$1" "$1" "$2" "$3" > "$QC/$1.jsonl"; }
+post() { printf '{"session_id":"%s","transcript_path":"%s","cwd":"/w/q","tool_name":"Bash","tool_input":{"command":"ls"}%s}' "$1" "$QC/$1.jsonl" "${2:-}" | "$CTX" hook post; }
+live live-1 claude-test-c 400000
+# a subagent's call carries its parent's session and transcript, and agent_id: it is never told,
+# and does not use up the session's one warning
+post live-1 ',"agent_id":"a1b2c3","agent_type":"general-purpose"' > "$T/hop.json"
+[ ! -s "$T/hop.json" ] || fail "a subagent's tool call is not warned: $(cat "$T/hop.json")"
+# a note that could not be sent does not count as told
+cat > "$T/closed.py" <<'PYEOF'
+import subprocess, sys
+p = subprocess.Popen([sys.argv[1], "hook", "post"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+p.stdout.close()  # nobody reads: the note cannot be sent
+p.stdin.write(sys.argv[2].encode()); p.stdin.close(); p.wait(timeout=60)
+PYEOF
+python3 "$T/closed.py" "$CTX" "$(printf '{"session_id":"live-1","transcript_path":"%s","cwd":"/w/q","tool_name":"Bash","tool_input":{"command":"ls"}}' "$QC/live-1.jsonl")"
+post live-1 > "$T/hop.json"
+cat > "$T/hop.py" <<'EOF'
+import json, sys
+c = json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]
+for want in ("context is 400K tokens, past claude-test-c's handoff point of 50K.", "In 25 of 25 past sessions of this model that reached 50K, handing off there cost less",
+             "Write the handoff now with `ctx handoff`"):
+    assert want in c, (want, c)
+assert "natural break" not in c, c
+EOF
+python3 "$T/hop.py" "$T/hop.json" || fail "hook post warns a session past its point: $(cat "$T/hop.json")"
+post live-1 > "$T/hop2.json"
+[ ! -s "$T/hop2.json" ] || fail "only once a session: $(cat "$T/hop2.json")"
+# two hooks at once: the one that claims the mark speaks, the other says nothing
+live live-4 claude-test-c 400000
+for i in 1 2 3 4 5 6 7 8; do post live-4 > "$T/race-$i.json" & done
+wait
+[ "$(cat "$T"/race-*.json | grep -c 'handoff point')" = 1 ] || fail "of hooks at once, only one warns: $(cat "$T"/race-*.json | grep -c 'handoff point')"
+live live-2 claude-test-c 40000
+post live-2 > "$T/hop3.json"
+[ ! -s "$T/hop3.json" ] || fail "nothing below the point"
+live live-3 claude-test-few 900000
+post live-3 > "$T/hop4.json"
+[ ! -s "$T/hop4.json" ] || fail "nothing for a model with too little history"
+
+# Schema versions and rollback. An archive with real-shaped data is taken down to version 21 by
+# ctx migrate down and must then match an archive as trunk makes it (test/v21-state.sql is trunk's
+# schema/state.sql); taken up again, by ctx and by schema/migrate/*-up.sql alike, and down again,
+# every table of version 21 holds the same rows.
+mkdir -p "$T/mig/cfg/projects/-w-m"
+cat > "$T/mig/session.py" <<'EOF'
+import json, sys
+with open(sys.argv[1], "w") as f:
+    for i in range(3):
+        at = "2026-11-16T10:0%d:00Z" % i
+        f.write(json.dumps({"type": "user", "uuid": "mu%d" % i, "timestamp": at, "sessionId": "m-1", "cwd": "/w/m", "message": {"role": "user", "content": "step %d of the migration" % i}}) + "\n")
+        f.write(json.dumps({"type": "assistant", "uuid": "ma%d" % i, "timestamp": at, "sessionId": "m-1", "cwd": "/w/m",
+                            "message": {"id": "msg-m%d" % i, "role": "assistant", "model": "claude-opus-5-5", "content": [{"type": "text", "text": "done %d" % i}],
+                                        "usage": {"input_tokens": 10, "cache_creation_input_tokens": 100, "cache_read_input_tokens": 1000 * (i + 1), "output_tokens": 20}}}) + "\n")
+EOF
+python3 "$T/mig/session.py" "$T/mig/cfg/projects/-w-m/m-1.jsonl"
+cat > "$T/mig/db.py" <<'EOF'
+import json, re, sqlite3, sys
+def tables(c):
+    return [n for n, s in c.execute("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name") if not s.upper().startswith("CREATE VIRTUAL")]
+def schema(c):  # ctx's own; the libfossil repositories (fslrepo_*) are libfossil's, at any version
+    return sorted((t, n, re.sub(r"\s+", " ", re.sub(r"--[^\n]*", "", s or "")).strip()) for t, n, s in c.execute(
+        "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND tbl_name NOT LIKE 'fslrepo_%'"))
+def dump(c, only=None):
+    return {t: sorted(repr(r) for r in c.execute('SELECT * FROM "%s"' % t)) for t in tables(c) if only is None or t in only}
+what, path = sys.argv[1], sys.argv[2]
+c = sqlite3.connect(path)
+c.text_factory = lambda b: b.decode("utf-8", "surrogateescape")
+if what == "make21":  # an empty archive as trunk's ctx init makes it
+    c.executescript(open(sys.argv[3]).read() + open(sys.argv[4]).read())
+    c.execute("INSERT OR REPLACE INTO ctx_meta(key, value) VALUES ('derived_version', ?)", (sys.argv[5],))
+    c.commit(); c.execute("PRAGMA user_version = 21")
+elif what == "schema":
+    json.dump(schema(c), open(sys.argv[3], "w"))
+elif what == "dump":
+    json.dump(dump(c), open(sys.argv[3], "w"))
+elif what == "same-schema":
+    a = json.load(open(sys.argv[3]))
+    b = [list(x) for x in schema(c)]
+    assert a == b, "\n".join(sorted(set(map(str, a)) ^ set(map(str, b))))
+elif what == "same-rows":  # every table of the dump holds the same rows here
+    a = json.load(open(sys.argv[3]))
+    b = dump(c, set(a))
+    bad = [t for t in a if a[t] != b.get(t)]
+    assert not bad, "rows differ in %s" % bad
+elif what == "run":
+    c.executescript(open(sys.argv[3]).read())
+else:
+    print(c.execute(sys.argv[3]).fetchone()[0])
+EOF
+M="$T/mig/db.py"
+export CTX_DB="$T/mig/r.sqlite"
+"$CTX" init >/dev/null
+"$CTX" archive "$T/mig/cfg/projects/-w-m/m-1.jsonl" >/dev/null
+CLAUDE_CONFIG_DIR="$T/mig/cfg" CODEX_HOME="$T/none" CTX_PIC_DB= "$CTX" usage collect >/dev/null
+"$CTX" remember "the migration test keeps this rule" --project '*' >/dev/null
+CTX_NOW=2026-11-21T12:00:00Z "$CTX" usage handoff --recompute >/dev/null
+"$CTX" sql "INSERT INTO ctx_meta(key, value) VALUES ('plan-told:acct', '2026-11-21')" >/dev/null
+[ "$(python3 "$M" q "$CTX_DB" "SELECT count(*) FROM ctx_usage")" = 3 ] || fail "migrate: the spend is collected at version 23"
+python3 "$M" make21 "$T/mig/e21.sqlite" test/v21-state.sql schema/index.sql "$(python3 "$M" q "$CTX_DB" "SELECT value FROM ctx_meta WHERE key = 'derived_version'")"
+python3 "$M" schema "$T/mig/e21.sqlite" "$T/mig/e21.schema"
+# refusals, and a plan that changes nothing without --yes
+"$CTX" migrate down 23 2>"$T/mig/err" && fail "migrate down to the archive's own version is refused"
+grep -q 'not above 23' "$T/mig/err" || fail "migrate: says why: $(cat "$T/mig/err")"
+"$CTX" migrate down 20 2>"$T/mig/err" && fail "migrate down with no script for the way is refused"
+grep -q 'no script from version 21 to 20' "$T/mig/err" || fail "migrate: names the missing script: $(cat "$T/mig/err")"
+"$CTX" migrate down 21 > "$T/mig/plan" || fail "migrate: the plan"
+grep -q '23-down.sql' "$T/mig/plan" && grep -q '22-down.sql' "$T/mig/plan" && grep -q 'Run it again with --yes' "$T/mig/plan" || fail "migrate: the plan names each script: $(cat "$T/mig/plan")"
+grep -q 'Any newer ctx run against this archive.*upgrades it again, so install the older ctx first' "$T/mig/plan" || fail "migrate: the plan says a newer ctx upgrades the archive again: $(cat "$T/mig/plan")"
+# every step is one transaction: when 22-down.sql fails, 23-down.sql's part is undone too
+python3 "$M" run "$CTX_DB" /dev/stdin <<'EOF'
+CREATE TRIGGER mig_hold BEFORE DELETE ON ctx_meta WHEN old.key GLOB 'plan-told:*' BEGIN SELECT RAISE(ABORT, 'held for the test'); END;
+EOF
+"$CTX" migrate down 21 --yes >/dev/null 2>"$T/mig/err" && fail "migrate: a failing step fails the whole"
+grep -q 'nothing was changed' "$T/mig/err" || fail "migrate: says nothing was changed: $(cat "$T/mig/err")"
+[ "$(python3 "$M" q "$CTX_DB" "SELECT (SELECT user_version FROM pragma_user_version) || ' ' || (SELECT count(*) FROM sqlite_master WHERE name = 'ctx_account_seen') || ' ' || (SELECT count(*) FROM pragma_table_info('ctx_usage') WHERE name = 'purpose') || ' ' || (SELECT count(*) FROM ctx_usage)")" = "23 1 1 3" ] || fail "migrate: a failed run leaves the archive at 23 as it was"
+python3 "$M" run "$CTX_DB" /dev/stdin <<'EOF'
+DROP TRIGGER mig_hold;
+EOF
+[ "$(python3 "$M" q "$CTX_DB" "PRAGMA user_version")" = 23 ] || fail "migrate: nothing changes without --yes"
+# down to 21: exactly trunk's schema, none of the stack's keys
+"$CTX" migrate down 21 --yes | grep -q 'at version 21' || fail "migrate down 21 --yes"
+[ "$(python3 "$M" q "$CTX_DB" "PRAGMA user_version")" = 21 ] || fail "migrate: user_version is 21"
+python3 "$M" same-schema "$CTX_DB" "$T/mig/e21.schema" || fail "migrate: the archive taken down has trunk's schema, no more and no less"
+[ "$(python3 "$M" q "$CTX_DB" "SELECT count(*) FROM ctx_meta WHERE key GLOB 'account:*' OR key GLOB 'plan-told:*' OR key = 'handoff_points'")" = 0 ] || fail "migrate: the stack's ctx_meta keys go"
+[ "$(python3 "$M" q "$CTX_DB" "SELECT count(*) FROM ctx_chunk")" -gt 0 ] || fail "migrate: the archived turns stay"
+python3 "$M" dump "$CTX_DB" "$T/mig/d21.json"
+cp "$CTX_DB" "$T/mig/s.sqlite"
+# up by the scripts, a version at a time; 23 rebuilds ctx_usage for its key, so the next
+# collection reads every record again
+MS="$T/mig/s.sqlite"
+python3 "$M" run "$MS" schema/migrate/22-up.sql
+[ "$(python3 "$M" q "$MS" "PRAGMA user_version")" = 22 ] || fail "migrate: 22-up.sql leaves version 22"
+python3 "$M" run "$MS" /dev/stdin <<'EOF'
+INSERT INTO ctx_usage(harness, session, msg, model, at, input, write_5m, write_1h, cache_read, output) VALUES ('claude', 'm-1', 'msg-m0', 'claude-opus-5-5', '2026-11-16T10:00:00Z', 10, 100, 0, 1000, 20);
+INSERT INTO ctx_usage_read(path, offset) VALUES ('/somewhere/m-1.jsonl', 99);
+EOF
+python3 "$M" run "$MS" schema/migrate/23-up.sql
+[ "$(python3 "$M" q "$MS" "SELECT (SELECT count(*) FROM ctx_usage) || ' ' || (SELECT count(*) FROM ctx_usage_read) || ' ' || (SELECT count(*) FROM pragma_table_info('ctx_usage') WHERE name IN ('folder', 'purpose'))")" = "0 0 2" ] || fail "migrate: 23-up.sql rebuilds ctx_usage and reads again"
+# up by ctx itself, which must come to the same schema
+"$CTX" sql "SELECT 1" >/dev/null
+[ "$(python3 "$M" q "$CTX_DB" "PRAGMA user_version")" = 23 ] || fail "migrate: ctx brings the archive up to 23"
+python3 "$M" schema "$CTX_DB" "$T/mig/r23.schema"
+python3 "$M" same-schema "$MS" "$T/mig/r23.schema" || fail "migrate: the up scripts make the schema ctx makes"
+python3 "$M" same-rows "$CTX_DB" "$T/mig/d21.json" || fail "migrate: going up leaves every version-21 table as it was"
+CTX_DB="$MS" CLAUDE_CONFIG_DIR="$T/mig/cfg" CODEX_HOME="$T/none" CTX_PIC_DB= "$CTX" usage collect >/dev/null
+[ "$(python3 "$M" q "$MS" "SELECT count(*) || ' ' || count(folder) FROM ctx_usage")" = "3 3" ] || fail "migrate: the spend is read again into the new table"
+# and down again, both ways up: version 21, trunk's schema, the same rows
+for db in "$CTX_DB" "$MS"; do
+  CTX_DB="$db" "$CTX" migrate down 21 --yes >/dev/null || fail "migrate down again"
+  [ "$(python3 "$M" q "$db" "PRAGMA user_version")" = 21 ] || fail "migrate: back at 21"
+  python3 "$M" same-schema "$db" "$T/mig/e21.schema" || fail "migrate: back to trunk's schema"
+  python3 "$M" same-rows "$db" "$T/mig/d21.json" || fail "migrate: every version-21 table has the rows it had"
+done
 
 # The skill eval harness works end to end with a stand-in for the model.
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/../eval/test_eval.py" "$CTX" || fail "eval harness"

@@ -1,0 +1,27 @@
+# Model prices for ctx usage, in US dollars per million tokens. ctx prices each response at the
+# latest line for its model dated on or before the response, so a new price never rewrites past
+# spend. Lines in the file named by CTX_PRICES, or else ctx.sqlite.prices beside the database,
+# are read after these: they add models and dates, and replace a line with the same model and date.
+#
+# Columns: model  from  input  cache-write-5m  cache-write-1h  cache-read  output  source
+# from is the date the line is known to hold from: here, the day the source was read. A response
+# made before a model's first line has no price, and ctx says so rather than guess.
+# A fast-mode response is priced as MODEL@fast; no such line is known, so those have no price.
+#
+# Source for every line below: Anthropic's pricing as given by the Claude API reference
+# (https://platform.claude.com/docs/en/about-claude/pricing), read as cached on 2026-11-03.
+# Only models whose input, output and cache-read prices it states are listed. Cache writes are its
+# stated rule for every model, 1.25x input for the 5-minute TTL and 2x for the 1-hour TTL, which
+# it also states as $10 / $16 for Fable 5.2.
+# Left out, since the source does not state all of their prices: Claude Opus 5 and 4.x, Sonnet 5
+# and 4.6, and Haiku 4.5 (no stated cache-read price, only "about 0.1x"); Claude Haiku 5.5 (its price
+# depends on prompt length); fast mode (Opus 5.5's input and output are stated, its cache reads are
+# not); and every OpenAI model. Their responses have no dollars, and reports say so.
+claude-fable-5-2   2026-11-03  8.00  10.00  16.00  0.20  40.00  pricing 2026-11-03
+claude-mythos-5-2  2026-11-03  8.00  10.00  16.00  0.20  40.00  pricing 2026-11-03
+claude-fable-5-1   2026-11-03  10.00 12.50  20.00  0.25  50.00  pricing 2026-11-03
+claude-mythos-5-1  2026-11-03  10.00 12.50  20.00  0.25  50.00  pricing 2026-11-03
+claude-fable-5     2026-11-03  10.00 12.50  20.00  1.00  50.00  pricing 2026-11-03
+claude-mythos-5    2026-11-03  10.00 12.50  20.00  1.00  50.00  pricing 2026-11-03
+claude-opus-5-5    2026-11-03  4.00  5.00   8.00   0.20  20.00  pricing 2026-11-03
+claude-sonnet-5-5  2026-11-03  2.00  2.50   4.00   0.10  10.00  pricing 2026-11-03

@@ -424,3 +424,78 @@ CREATE TABLE IF NOT EXISTS ctx_same_fail(
   sig   TEXT PRIMARY KEY,
   fails INTEGER NOT NULL
 ) STRICT, WITHOUT ROWID;
+
+-- One row per model response, from the session records each harness writes (Claude Code's
+-- transcripts and subagent files, Codex's rollouts), taken in as ctx reads them. Tokens as the
+-- harness reports them for that one response; for Codex, input excludes the cached part, which is
+-- cache_read. account is the provider and the login address (or "anthropic:api-key" and the like),
+-- kept only here, and NULL when it is not known: a Claude Code response made before ctx first saw
+-- the login that was current when it read it (ctx_account_seen), or a Codex session that does not
+-- name its account. msg is the harness's message id for Claude Code, which a forked or copied
+-- transcript repeats, so a response is one row whichever file it is read from; for Codex it is the
+-- session and its running total. dollars is the response priced, when collected, at the price line dated
+-- price_date; NULL when no line covers the model at that time.
+CREATE TABLE IF NOT EXISTS ctx_usage(
+  id         INTEGER PRIMARY KEY,
+  harness    TEXT NOT NULL,       -- claude, codex, pic
+  session    TEXT NOT NULL,
+  parent     TEXT,                -- for a subagent: the session that started it
+  msg        TEXT NOT NULL,       -- the response's id
+  project    TEXT,
+  folder     TEXT,                -- the working directory as Claude Code names its folder, which ctx exclude matches
+  purpose    TEXT,                -- pic: compaction or branch_summary; NULL for a reply
+  account    TEXT,
+  plan       TEXT,                -- plan name, or api-key
+  billing    TEXT,
+  model      TEXT NOT NULL,
+  speed      TEXT,
+  at         TEXT NOT NULL,       -- ISO 8601, UTC
+  input      INTEGER NOT NULL,
+  write_5m   INTEGER NOT NULL,
+  write_1h   INTEGER NOT NULL,
+  cache_read INTEGER NOT NULL,
+  output     INTEGER NOT NULL,
+  reasoning  INTEGER NOT NULL DEFAULT 0, -- part of output, where the harness says
+  dollars    REAL,
+  price_date TEXT,
+  UNIQUE (harness, msg)
+) STRICT;
+CREATE INDEX IF NOT EXISTS ctx_usage_at ON ctx_usage(at);
+CREATE INDEX IF NOT EXISTS ctx_usage_session ON ctx_usage(session);
+
+-- The logins ctx has seen in each Claude Code config folder, from when it first saw each. A
+-- response is given the login seen latest at or before its time; one older than every login seen
+-- has none, since .claude.json says only who is logged in now.
+CREATE TABLE IF NOT EXISTS ctx_account_seen(
+  config     TEXT NOT NULL,       -- the config folder
+  first_seen TEXT NOT NULL,       -- ISO 8601, UTC
+  account    TEXT NOT NULL,
+  plan       TEXT,
+  billing    TEXT,
+  PRIMARY KEY (config, first_seen)
+) STRICT, WITHOUT ROWID;
+
+-- How far each session record file has been read for ctx_usage: the byte after the last whole
+-- line, a hash of the file's start to notice a replaced file, and what a Codex rollout said
+-- earlier that later lines need (its session, model, project, running totals), as JSON.
+CREATE TABLE IF NOT EXISTS ctx_usage_read(
+  path   TEXT PRIMARY KEY,
+  offset INTEGER NOT NULL,
+  head   TEXT,
+  state  TEXT
+) STRICT, WITHOUT ROWID;
+
+-- Readings of a plan's limits: how much of a window is used, when it resets. Codex writes them
+-- into its rollouts; Claude Code gives them to its status line, which hands them to
+-- ctx usage limits-in. window is the window's length in minutes (300 for five hours, 10080 for a
+-- week); context readings use window 0 and used is the share of the context window.
+CREATE TABLE IF NOT EXISTS ctx_limit(
+  account   TEXT NOT NULL,
+  window    INTEGER NOT NULL,
+  at        TEXT NOT NULL,        -- ISO 8601, UTC
+  used      REAL NOT NULL,        -- percent
+  resets_at INTEGER,              -- unix seconds
+  session   TEXT,
+  source    TEXT NOT NULL,        -- codex, statusline
+  PRIMARY KEY (account, window, at)
+) STRICT, WITHOUT ROWID;

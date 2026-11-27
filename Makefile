@@ -32,13 +32,27 @@ build/ticket_schema.h: schema/ticket-table.sql | build
 	     { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); print "\"" $$0 "\\n\"" } \
 	     END { print ";" }' $< > $@
 
+# The scripts that take an archive down a schema version, for ctx migrate down, the same way.
+MIGRATE_DOWN = $(sort $(wildcard schema/migrate/*-down.sql))
+build/migrate.h: $(MIGRATE_DOWN) | build
+	awk 'BEGIN { print "static const struct { int version; const char *sql; } ctx_migrate_down[] = {" } \
+	     FNR == 1 { if (NR > 1) print "},"; v = FILENAME; sub(/.*\//, "", v); sub(/-down\.sql$$/, "", v); print "{" v ", " } \
+	     { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); print "\"" $$0 "\\n\"" } \
+	     END { if (NR) print "},"; print "{0, NULL}};" }' $(MIGRATE_DOWN) > $@
+
+# The model prices ctx usage starts from, the same way.
+build/prices.h: schema/prices.txt | build
+	awk 'BEGIN { print "static const char ctx_prices[] =" } \
+	     { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); print "\"" $$0 "\\n\"" } \
+	     END { print ";" }' $< > $@
+
 # The page ctx page writes is compiled in the same way.
 build/page.h: src/page.html | build
 	awk 'BEGIN { print "static const char ctx_page[] =" } \
 	     { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); print "\"" $$0 "\\n\"" } \
 	     END { print ";" }' $< > $@
 
-build/ctx.o: src/ctx.c build/schema.h build/state_schema.h build/ticket_schema.h build/page.h | build
+build/ctx.o: src/ctx.c build/schema.h build/state_schema.h build/ticket_schema.h build/page.h build/prices.h build/migrate.h | build
 	$(CC) $(CFLAGS) -Wall -Wextra -I$(VENDOR) -Ibuild -c -o $@ $<
 
 build/sqlite3.o: $(VENDOR)/sqlite3.c | build
@@ -54,7 +68,7 @@ test: ctx
 SANFLAGS = -O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=undefined
 build/san/%.o: | build
 	mkdir -p build/san
-build/san/ctx.o: src/ctx.c build/schema.h build/state_schema.h build/ticket_schema.h build/page.h
+build/san/ctx.o: src/ctx.c build/schema.h build/state_schema.h build/ticket_schema.h build/page.h build/prices.h build/migrate.h
 	mkdir -p build/san
 	$(CC) $(SANFLAGS) -Wall -Wextra -I$(VENDOR) -Ibuild -c -o $@ $<
 build/san/sqlite3.o: $(VENDOR)/sqlite3.c
@@ -81,7 +95,7 @@ build/fuzz/sqlite3.o: $(VENDOR)/sqlite3.c
 	@test -n "$(FUZZCC)" || { echo "no clang with libFuzzer; set FUZZCC" >&2; exit 1; }
 	mkdir -p build/fuzz
 	$(FUZZCC) $(SANFLAGS) $(SQLITE) -w -c -o $@ $<
-build/fuzz/%: fuzz/fuzz_%.c src/ctx.c build/fuzz/libfossil.o build/fuzz/sqlite3.o build/schema.h build/state_schema.h build/ticket_schema.h build/page.h
+build/fuzz/%: fuzz/fuzz_%.c src/ctx.c build/fuzz/libfossil.o build/fuzz/sqlite3.o build/schema.h build/state_schema.h build/ticket_schema.h build/page.h build/prices.h build/migrate.h
 	$(FUZZCC) $(SANFLAGS) -fsanitize=fuzzer -w -I$(VENDOR) -Ibuild -o $@ $< build/fuzz/libfossil.o build/fuzz/sqlite3.o $(LDLIBS)
 # CI fuzzes briefly where a fuzzing clang exists, and says so where it does not.
 fuzz-ci:
@@ -106,12 +120,12 @@ build/filc/sqlite3.o: $(VENDOR)/sqlite3.c
 	@test -n "$(FILCC)" || { echo "no Fil-C compiler; set FILCC" >&2; exit 1; }
 	mkdir -p build/filc
 	$(FILC) $(SQLITE) -w -c -o $@ $<
-build/filc/ctx.o: src/ctx.c build/schema.h build/state_schema.h build/ticket_schema.h build/page.h
+build/filc/ctx.o: src/ctx.c build/schema.h build/state_schema.h build/ticket_schema.h build/page.h build/prices.h build/migrate.h
 	mkdir -p build/filc
 	$(FILC) -Wall -Wextra -I$(VENDOR) -Ibuild -c -o $@ $<
 ctx-filc: build/filc/ctx.o build/filc/libfossil.o build/filc/sqlite3.o
 	$(FILC) $(FILC_LDFLAGS) -o $@ $^ $(LDLIBS)
-build/filc/replay-%: fuzz/fuzz_%.c fuzz/replay.c src/ctx.c build/filc/libfossil.o build/filc/sqlite3.o build/schema.h build/state_schema.h build/ticket_schema.h build/page.h
+build/filc/replay-%: fuzz/fuzz_%.c fuzz/replay.c src/ctx.c build/filc/libfossil.o build/filc/sqlite3.o build/schema.h build/state_schema.h build/ticket_schema.h build/page.h build/prices.h build/migrate.h
 	$(FILC) -w -I$(VENDOR) -Ibuild $(FILC_LDFLAGS) -o $@ $< fuzz/replay.c build/filc/libfossil.o build/filc/sqlite3.o $(LDLIBS)
 filc: ctx-filc $(FUZZERS:%=build/filc/replay-%)
 	CTX=$(PWD)/ctx-filc sh test/run.sh
