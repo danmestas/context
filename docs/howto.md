@@ -1337,14 +1337,15 @@ claude-opus-5-5  2026-11-03  4.00  5.00  8.00  0.20  20.00
 ```
 
 A row keeps the dollars and the date of the line it was priced by, so a later price never changes
-past spend. A response with no line for its model at its date (a model not listed, a response
-older than the model's first line, or a fast-mode response with no `MODEL@fast` line) has no
-dollars, and reports say so rather than guess; `ctx usage collect` says how many it took in. The
-built-in list holds only models whose input, output and cache-read prices its source states, with
-cache writes at the source's stated 1.25x and 2x of input; it leaves out Claude Opus 5 and 4.x,
-Sonnet 5 and 4.6, and Haiku 4.5 (no stated cache-read price), Claude Haiku 5.5 (priced by prompt
-length), fast mode, and every OpenAI model. Add lines for them in the price file when you have
-their prices.
+past spend. Where the list has no line for a model at a response's date, pic's model catalog
+prices it: pic keeps, for every hosted model of every provider it knows, dollars per million
+tokens and a dearer tier for long prompts (`ctx` reads `picu_catalog` in `~/.pic/pic.sqlite`, or
+`CTX_PIC_DB`, read only). Those rows have `catalog` as their price date. The catalog holds today's
+prices, so a response from before a price change is priced at the current one. A cache write for
+an hour costs twice the input, the provider's stated rule. A model the catalog lists at no cost,
+a local one, has no dollars, nor does a model neither knows; reports say so rather than guess,
+and `ctx usage collect` says how many it took in. pic's own responses take the cost pic recorded
+when it ran (`pic_cost`, or the provider's `cost`), with `recorded` as their price date.
 
 ## Keep the call log as Parquet
 
